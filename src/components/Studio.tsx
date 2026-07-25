@@ -2,40 +2,28 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { WorkspaceBar } from "./WorkspaceBar";
+import { Chat, type AgentStatus, type ChatItem } from "./Chat";
+import { Rail, type RailKey } from "./Rail";
+import { SidePanel, type LibraryItem } from "./SidePanel";
 
 const RunFrame = dynamic(
   () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-full w-full items-center justify-center text-sm text-neutral-500">
-        Caricamento runtime tscircuit...
+      <div className="flex h-full w-full items-center justify-center bg-substrate">
+        <div className="flex items-center gap-2 font-mono text-xs text-faint">
+          <span className="led led-busy" />
+          avvio runtime tscircuit
+        </div>
       </div>
     ),
   },
 );
 
-type ChatItem =
-  | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string }
-  | { kind: "tool"; name: string; detail: string; ok?: boolean }
-  | { kind: "error"; text: string };
-
-type AgentStatus = "idle" | "thinking" | "tool";
-
 function useProjectId(): string {
-  // finche' non c'e' il selettore progetti (fase persistenza L3), ?project=<id>
   if (typeof window === "undefined") return "default";
   return new URLSearchParams(window.location.search).get("project") ?? "default";
-}
-
-interface LibraryItem {
-  id: number;
-  name: string;
-  description: string;
-  source: string;
-  version: number;
 }
 
 export function Studio({ user }: { user: { email: string; name: string | null } }) {
@@ -45,10 +33,9 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [library, setLibrary] = useState<LibraryItem[]>([]);
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [panel, setPanel] = useState<RailKey>(null);
   const [uploading, setUploading] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  // user/assistant turns only; tool traffic stays server-side per request
+  const [projectCount, setProjectCount] = useState<number | undefined>();
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
 
   useEffect(() => {
@@ -57,22 +44,27 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
       .then((d) => {
         setFsMap(d.fsMap);
         setLibrary((d.library ?? []) as LibraryItem[]);
-        const messages = (d.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>;
+        const messages = (d.messages ?? []) as Array<{
+          role: "user" | "assistant";
+          content: string;
+        }>;
         historyRef.current = messages.map((m) => ({ role: m.role, content: m.content }));
         setChat(
           messages.map((m) =>
             m.role === "user"
-              ? { kind: "user", text: m.content }
-              : { kind: "assistant", text: m.content },
+              ? ({ kind: "user", text: m.content } as ChatItem)
+              : ({ kind: "assistant", text: m.content } as ChatItem),
           ),
         );
       })
-      .catch(() => setChat((c) => [...c, { kind: "error", text: "Impossibile caricare il progetto" }]));
-  }, []);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat, status]);
+      .catch(() =>
+        setChat((c) => [...c, { kind: "error", text: "Impossibile caricare il progetto" }]),
+      );
+    fetch("/api/projects")
+      .then((r) => r.json())
+      .then((d) => setProjectCount(d.projects?.length))
+      .catch(() => undefined);
+  }, [projectId]);
 
   const refreshLibrary = useCallback(async () => {
     const d = await fetch(`/api/project?projectId=${projectId}`)
@@ -98,13 +90,14 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
           {
             kind: "tool",
             name: "datasheet",
-            detail: `${d.title} caricato (${d.pages} pagine) - id ${d.id}`,
+            detail: `${d.title} · ${d.pages} pagine · id ${d.id}`,
             ok: true,
           },
         ]);
         setInput(
           `Ho caricato il datasheet "${d.title}" (id ${d.id}). Crea il componente di libreria corrispondente e usalo nel progetto.`,
         );
+        setPanel(null);
       } catch (err) {
         setChat((c) => [
           ...c,
@@ -156,12 +149,12 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
             setStatus("thinking");
           } else if (event === "tool_call") {
             setStatus("tool");
-            setChat((c) => [...c, { kind: "tool", name: data.name, detail: toolDetail(data.name, data.args) }]);
+            setChat((c) => [
+              ...c,
+              { kind: "tool", name: data.name, detail: toolDetail(data.name, data.args) },
+            ]);
           } else if (event === "tool_result") {
-            if (
-              data.name === "library_save" ||
-              data.name === "import_component_from_lcsc"
-            ) {
+            if (data.name === "library_save" || data.name === "import_component_from_lcsc") {
               void refreshLibrary();
             }
             setStatus("thinking");
@@ -171,7 +164,11 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                 for (let i = copy.length - 1; i >= 0; i--) {
                   const item = copy[i];
                   if (item.kind === "tool" && item.name === "compile" && item.ok === undefined) {
-                    copy[i] = { ...item, ok: data.result?.ok, detail: data.result?.message ?? item.detail };
+                    copy[i] = {
+                      ...item,
+                      ok: data.result?.ok,
+                      detail: data.result?.message ?? item.detail,
+                    };
                     break;
                   }
                 }
@@ -186,220 +183,158 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         }
       }
     } catch (err) {
-      setChat((c) => [...c, { kind: "error", text: err instanceof Error ? err.message : String(err) }]);
+      setChat((c) => [
+        ...c,
+        { kind: "error", text: err instanceof Error ? err.message : String(err) },
+      ]);
     } finally {
       if (assistantText) historyRef.current.push({ role: "assistant", content: assistantText });
       setStatus("idle");
     }
-  }, [input, status]);
+  }, [input, status, projectId, refreshLibrary]);
 
   return (
-    <div className="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
-      <header className="relative flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
-        <span className="text-sm font-semibold tracking-wide text-neutral-100">PCB Studio</span>
-        <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">{projectId}</span>
-        <nav className="ml-4 flex gap-2">
-          {(["gerber", "bom", "pnp"] as const).map((kind) => (
+    <div className="flex h-dvh overflow-hidden bg-substrate">
+      <Rail
+        active={panel}
+        onSelect={setPanel}
+        counts={{ library: library.length, projects: projectCount }}
+      />
+
+      {panel && (
+        <SidePanel
+          panel={panel}
+          projectId={projectId}
+          user={user}
+          library={library}
+          uploading={uploading}
+          onClose={() => setPanel(null)}
+          onUploadDatasheet={uploadDatasheet}
+        />
+      )}
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar projectId={projectId} status={status} email={user.email} />
+        <div className="flex min-h-0 flex-1">
+          <Chat
+            items={chat}
+            status={status}
+            input={input}
+            onInput={setInput}
+            onSend={() => void send()}
+            disabled={status !== "idle"}
+          />
+          <main className="substrate-grid relative min-w-0 flex-1">
+            {fsMap ? (
+              <div className="viewer-frame absolute inset-3 overflow-hidden rounded-lg border border-edge shadow-[0_1px_0_rgba(255,255,255,0.04),0_20px_50px_-20px_rgba(0,0,0,0.9)]">
+                <RunFrame
+                  fsMap={fsMap}
+                  mainComponentPath="main.tsx"
+                  showRunButton={false}
+                  availableTabs={["schematic", "pcb", "cad", "bom"]}
+                  defaultActiveTab="schematic"
+                />
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center font-mono text-xs text-faint">
+                caricamento progetto
+              </div>
+            )}
+          </main>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TopBar({
+  projectId,
+  status,
+  email,
+}: {
+  projectId: string;
+  status: AgentStatus;
+  email: string;
+}) {
+  const led =
+    status === "idle" ? "led-idle" : status === "tool" ? "led-live" : "led-busy";
+  const label = status === "idle" ? "pronto" : status === "tool" ? "strumento" : "pensa";
+
+  return (
+    <header className="power-on flex h-12 flex-none items-center gap-4 border-b border-edge bg-panel px-4">
+      <div className="flex items-baseline gap-2.5">
+        <span className="text-sm font-semibold tracking-tight text-ink">PCB Studio</span>
+        <span className="text-faint">/</span>
+        <span className="font-mono text-xs text-solder">{projectId}</span>
+      </div>
+
+      <div className="flex items-center gap-1.5 rounded-md border border-edge px-2 py-1">
+        <span className={`led ${led}`} />
+        <span className="font-mono text-[10px] uppercase tracking-wider text-faint">
+          {label}
+        </span>
+      </div>
+
+      <div className="ml-auto flex items-center gap-3">
+        <div className="flex items-center gap-1">
+          <span className="silk mr-1">export</span>
+          {(
+            [
+              ["gerber", "gerber"],
+              ["bom", "bom"],
+              ["pnp", "pnp"],
+            ] as const
+          ).map(([kind, label]) => (
             <a
               key={kind}
               href={`/api/export?projectId=${projectId}&kind=${kind}`}
               download
-              className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-600 hover:text-emerald-400"
+              className="rounded-md border border-edge px-2 py-1 font-mono text-[10px] text-dim transition-colors hover:border-copper/50 hover:text-copper"
             >
-              ⬇ {kind === "gerber" ? "gerber.zip" : `${kind}.csv`}
+              {label}
             </a>
           ))}
-        </nav>
-
-        <div className="ml-4 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setLibraryOpen((v) => !v)}
-            className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-600 hover:text-emerald-400"
-          >
-            📚 Libreria ({library.length})
-          </button>
-          <label className="cursor-pointer rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-600 hover:text-emerald-400">
-            {uploading ? "Caricamento..." : "📄 Datasheet"}
-            <input
-              type="file"
-              accept="application/pdf"
-              className="hidden"
-              disabled={uploading}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) void uploadDatasheet(file);
-              }}
-            />
-          </label>
         </div>
 
-        <WorkspaceBar projectId={projectId} user={user} />
-        <StatusBadge status={status} />
-      </header>
+        <div className="h-5 w-px bg-edge" />
 
-      {libraryOpen && (
-        <div className="border-b border-neutral-800 bg-neutral-900/60 px-4 py-2">
-          {library.length === 0 ? (
-            <p className="text-xs text-neutral-500">
-              Libreria vuota. Chiedi in chat: &quot;importa il componente LCSC C7593 in
-              libreria&quot;, oppure carica un datasheet PDF e fallo creare all&apos;agente.
-            </p>
-          ) : (
-            <ul className="flex flex-wrap gap-2">
-              {library.map((c) => (
-                <li
-                  key={c.id}
-                  className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs"
-                  title={c.description}
-                >
-                  <span className="font-mono text-emerald-400">{c.name}</span>
-                  <span className="ml-2 text-neutral-500">
-                    v{c.version} · {c.source}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-[380px] shrink-0 flex-col border-r border-neutral-800">
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
-            {chat.length === 0 && (
-              <p className="pt-8 text-center text-sm text-neutral-500">
-                Descrivi il circuito che vuoi costruire.
-                <br />
-                <span className="text-neutral-600">es. &quot;un LED blinker col 555 a 9V&quot;</span>
-              </p>
-            )}
-            {chat.map((item, i) => (
-              <ChatBubble key={i} item={item} />
-            ))}
-            {status !== "idle" && (
-              <div className="px-2 text-xs text-amber-400/80">
-                {status === "thinking" ? "L'agente sta ragionando..." : "Esecuzione tool..."}
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
-          <form
-            className="flex gap-2 border-t border-neutral-800 p-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void send();
-            }}
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] text-faint" title={email}>
+            {email.split("@")[0]}
+          </span>
+          <a
+            href="/api/auth/signout"
+            className="rounded-md border border-edge px-2 py-1 text-[10px] text-dim transition-colors hover:border-alert/50 hover:text-alert"
           >
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Descrivi il circuito..."
-              className="min-w-0 flex-1 rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none placeholder:text-neutral-600 focus:border-emerald-600"
-            />
-            <button
-              type="submit"
-              disabled={status !== "idle" || !input.trim()}
-              className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
-            >
-              Invia
-            </button>
-          </form>
-        </aside>
-
-        <main className="min-w-0 flex-1 bg-white">
-          {fsMap ? (
-            <RunFrame
-              fsMap={fsMap}
-              mainComponentPath="main.tsx"
-              showRunButton={false}
-              availableTabs={["schematic", "pcb", "cad", "bom"]}
-              defaultActiveTab="schematic"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-sm text-neutral-400">
-              Caricamento progetto...
-            </div>
-          )}
-        </main>
+            esci
+          </a>
+        </div>
       </div>
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: AgentStatus }) {
-  const styles: Record<AgentStatus, string> = {
-    idle: "bg-neutral-800 text-neutral-400",
-    thinking: "bg-amber-950 text-amber-400",
-    tool: "bg-emerald-950 text-emerald-400",
-  };
-  const labels: Record<AgentStatus, string> = {
-    idle: "idle",
-    thinking: "thinking",
-    tool: "running tool",
-  };
-  return (
-    <span className={`ml-auto rounded-full px-2.5 py-0.5 text-xs ${styles[status]}`}>
-      ● {labels[status]}
-    </span>
-  );
-}
-
-function ChatBubble({ item }: { item: ChatItem }) {
-  if (item.kind === "user") {
-    return (
-      <div className="ml-8 rounded-lg bg-emerald-900/40 px-3 py-2 text-sm whitespace-pre-wrap">
-        {item.text}
-      </div>
-    );
-  }
-  if (item.kind === "assistant") {
-    return (
-      <div className="mr-4 rounded-lg bg-neutral-900 px-3 py-2 text-sm whitespace-pre-wrap">
-        {item.text}
-      </div>
-    );
-  }
-  if (item.kind === "error") {
-    return (
-      <div className="rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-xs text-red-300">
-        {item.text}
-      </div>
-    );
-  }
-  const okMark = item.ok === undefined ? "" : item.ok ? " ✓" : " ✗";
-  return (
-    <div className="mr-8 rounded border border-neutral-800 bg-neutral-900/60 px-2.5 py-1.5 font-mono text-xs text-neutral-400">
-      <span className={item.ok === false ? "text-red-400" : "text-emerald-500"}>
-        {item.name}
-        {okMark}
-      </span>{" "}
-      {item.detail}
-    </div>
+    </header>
   );
 }
 
 function toolDetail(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case "write_file":
-      return `${args.path} (${args.chars} chars)`;
+      return `${args.path} · ${args.chars} char`;
     case "read_file":
       return String(args.path ?? "");
     case "compile":
-      return "compilazione...";
+      return "compilazione in corso";
     case "import_component_from_lcsc":
       return String(args.lcsc ?? "");
     case "library_save":
-      return String(args.name ?? "");
     case "library_read":
       return String(args.name ?? "");
     case "read_datasheet":
       return `#${args.id}${args.search ? ` "${args.search}"` : ""}`;
     case "fetch_datasheet_url":
-      return String(args.url ?? "").slice(0, 60);
+      return String(args.url ?? "").slice(0, 50);
     case "search_parts":
       return String(args.query ?? "");
+    case "simulate":
+      return "spice";
     default:
       return "";
   }
