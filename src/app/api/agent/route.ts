@@ -1,6 +1,13 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import { z } from "zod";
 import { executeTool, TOOL_DEFINITIONS } from "@/lib/agent-tools";
-import { appendChatMessage } from "@/lib/project-store";
+import {
+  appendChatMessage,
+  countRecentRunsByIp,
+  getProject,
+  recordAgentRun,
+  saveRevision,
+} from "@/lib/project-store";
 import { GLM_MAX_TOKENS, GLM_MODEL, GLM_THINKING_BUDGET, glmClient } from "@/lib/glm";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 
@@ -10,16 +17,23 @@ export const maxDuration = 300;
 // Resource cap only (billing/runaway protection), not flow logic: the loop's
 // sole termination condition is the model producing final text.
 const MAX_STEPS = 40;
+const MAX_RUNS_PER_IP_PER_HOUR = 30;
 
-interface ChatTurn {
-  role: "user" | "assistant";
-  content: string;
-}
-
-interface AgentRequest {
-  projectId?: string;
-  history: ChatTurn[];
-}
+const AgentRequestSchema = z.object({
+  projectId: z
+    .string()
+    .regex(/^[\w-]{1,64}$/)
+    .default("default"),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().max(20_000),
+      }),
+    )
+    .min(1)
+    .max(200),
+});
 
 function sseEncode(event: string, data: unknown): Uint8Array {
   return new TextEncoder().encode(
@@ -27,15 +41,26 @@ function sseEncode(event: string, data: unknown): Uint8Array {
   );
 }
 
+function jsonError(message: string, status: number): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 export async function POST(req: Request): Promise<Response> {
-  const body = (await req.json()) as AgentRequest;
-  const projectId = body.projectId ?? "default";
-  const history = Array.isArray(body.history) ? body.history.slice(-40) : [];
-  if (history.length === 0 || history[history.length - 1].role !== "user") {
-    return new Response(JSON.stringify({ error: "history must end with a user message" }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    });
+  const parsed = AgentRequestSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return jsonError("invalid request body", 400);
+  const { projectId } = parsed.data;
+  const history = parsed.data.history.slice(-40);
+  if (history[history.length - 1].role !== "user") {
+    return jsonError("history must end with a user message", 400);
+  }
+
+  const ip =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+  if ((await countRecentRunsByIp(ip).catch(() => 0)) >= MAX_RUNS_PER_IP_PER_HOUR) {
+    return jsonError("rate limit exceeded, retry later", 429);
   }
 
   const client = glmClient();
@@ -49,7 +74,15 @@ export async function POST(req: Request): Promise<Response> {
       const emit = (event: string, data: unknown) =>
         controller.enqueue(sseEncode(event, data));
 
+      const startedAt = Date.now();
       let assistantTranscript = "";
+      let steps = 0;
+      let tokensIn = 0;
+      let tokensOut = 0;
+      let stopReason = "unknown";
+      let filesChanged = false;
+      let lastCompileSummary: unknown = null;
+
       try {
         await appendChatMessage(projectId, "user", history[history.length - 1].content);
         for (let step = 0; step < MAX_STEPS; step++) {
@@ -64,6 +97,10 @@ export async function POST(req: Request): Promise<Response> {
             })
             .finalMessage();
 
+          steps += 1;
+          tokensIn += response.usage?.input_tokens ?? 0;
+          tokensOut += response.usage?.output_tokens ?? 0;
+
           for (const block of response.content) {
             if (block.type === "text" && block.text.trim()) {
               assistantTranscript += (assistantTranscript ? "\n\n" : "") + block.text;
@@ -76,7 +113,8 @@ export async function POST(req: Request): Promise<Response> {
           );
 
           if (toolUses.length === 0 || response.stop_reason !== "tool_use") {
-            emit("done", { stop_reason: response.stop_reason });
+            stopReason = response.stop_reason ?? "end_turn";
+            emit("done", { stop_reason: stopReason });
             break;
           }
 
@@ -89,7 +127,11 @@ export async function POST(req: Request): Promise<Response> {
             emit("tool_call", { name: toolUse.name, args: summarizeArgs(toolUse.name, args) });
 
             const { result, fileChanged } = await executeTool(projectId, toolUse.name, args);
-            if (fileChanged) emit("file_changed", fileChanged);
+            if (fileChanged) {
+              filesChanged = true;
+              emit("file_changed", fileChanged);
+            }
+            if (toolUse.name === "compile") lastCompileSummary = result;
             emit("tool_result", {
               name: toolUse.name,
               result: toolUse.name === "read_file" ? { truncated: true } : result,
@@ -104,17 +146,33 @@ export async function POST(req: Request): Promise<Response> {
           messages.push({ role: "user", content: toolResults });
 
           if (step === MAX_STEPS - 1) {
+            stopReason = "step_cap";
             emit("error", { message: "Step cap reached: stopping this run." });
-            emit("done", { stop_reason: "step_cap" });
+            emit("done", { stop_reason: stopReason });
           }
         }
       } catch (err) {
+        stopReason = "error";
         emit("error", { message: err instanceof Error ? err.message : String(err) });
-        emit("done", { stop_reason: "error" });
+        emit("done", { stop_reason: stopReason });
       } finally {
         if (assistantTranscript) {
           await appendChatMessage(projectId, "assistant", assistantTranscript).catch(() => {});
         }
+        if (filesChanged) {
+          // una revisione per turno agente che ha modificato file: rollback/audit
+          const files = await getProject(projectId).catch(() => null);
+          if (files) await saveRevision(projectId, files, lastCompileSummary).catch(() => {});
+        }
+        await recordAgentRun({
+          projectId,
+          ip,
+          steps,
+          tokensIn,
+          tokensOut,
+          stopReason,
+          durationMs: Date.now() - startedAt,
+        }).catch(() => {});
         controller.close();
       }
     },

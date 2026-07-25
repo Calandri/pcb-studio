@@ -1,4 +1,5 @@
 import { runTscircuitCode } from "@tscircuit/eval";
+import { runDrcChecks, type DrcViolation } from "./drc";
 import type { FsMap } from "./project-store";
 
 export interface CompileSummary {
@@ -10,6 +11,8 @@ export interface CompileSummary {
   connections: string[];
   /** connections declared in source but with no routed pcb trace */
   unroutedConnections: string[];
+  /** deterministic design-rule violations (JLCPCB defaults) */
+  drcViolations: DrcViolation[];
   sourceTraces: number;
   pcbTraces: number;
   message: string;
@@ -39,6 +42,7 @@ export async function compileProject(fsMap: FsMap): Promise<CompileSummary> {
       nets: [],
       connections: [],
       unroutedConnections: [],
+      drcViolations: [],
       sourceTraces: 0,
       pcbTraces: 0,
       message: `Compilation failed: ${message}`,
@@ -98,11 +102,14 @@ export async function compileProject(fsMap: FsMap): Promise<CompileSummary> {
   const sourceTraces = sourceTraceEls.length;
   const pcbTraces = pcbTraceEls.length;
 
+  const drcViolations = runDrcChecks(circuitJson);
+
   const ok = errors.length === 0;
   const message = ok
     ? `Compile OK: ${components.length} components, ${nets.length} nets, ` +
       `${pcbTraces} routed pcb traces (${sourceTraces} source traces` +
-      `${unroutedConnections.length ? `, ${unroutedConnections.length} UNROUTED` : ""}).`
+      `${unroutedConnections.length ? `, ${unroutedConnections.length} UNROUTED` : ""})` +
+      `${drcViolations.length ? ` - ${drcViolations.length} DRC violation(s)` : " - DRC clean"}.`
     : `Compile finished with ${errors.length} error(s).`;
 
   return {
@@ -112,6 +119,7 @@ export async function compileProject(fsMap: FsMap): Promise<CompileSummary> {
     nets,
     connections,
     unroutedConnections,
+    drcViolations,
     sourceTraces,
     pcbTraces,
     message,
