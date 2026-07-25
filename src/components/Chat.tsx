@@ -12,9 +12,9 @@ export type ChatItem =
 export type AgentStatus = "idle" | "thinking" | "tool";
 
 const SUGGESTIONS = [
-  "Un LED blinker col 555 a 9V",
-  "Alimentatore 5V→3.3V con LDO reale",
-  "Importa il componente LCSC C7593",
+  { title: "Un LED che lampeggia", text: "Fammi un LED blinker col 555 alimentato a 9V" },
+  { title: "Alimentazione 3.3V", text: "Alimentatore da 5V a 3.3V con un LDO reale in stock" },
+  { title: "Componente reale", text: "Importa in libreria il componente LCSC C7593 e usalo" },
 ];
 
 export function Chat({
@@ -38,27 +38,30 @@ export function Chat({
   }, [items, status]);
 
   return (
-    <section className="flex w-[380px] flex-none flex-col border-r border-edge bg-panel">
-      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-4">
+    <section className="flex w-[400px] flex-none flex-col">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5">
         {items.length === 0 && (
-          <div className="power-on space-y-4 px-1 pt-6">
-            <p className="text-sm leading-relaxed text-dim">
-              Descrivi il circuito che vuoi costruire.
-              <br />
-              <span className="text-faint">
-                L&apos;agente scrive il progetto, lo compila e lo verifica.
-              </span>
-            </p>
-            <div className="space-y-1.5">
+          <div className="rise space-y-4 pt-4">
+            <div>
+              <h2 className="text-base font-bold tracking-tight text-text">
+                Cosa costruiamo oggi?
+              </h2>
+              <p className="mt-1 text-sm leading-relaxed text-muted">
+                Descrivi il circuito: l&apos;agente scrive il progetto, lo compila e
+                controlla le regole di produzione.
+              </p>
+            </div>
+            <div className="space-y-2">
               {SUGGESTIONS.map((s, i) => (
                 <button
-                  key={s}
+                  key={s.title}
                   type="button"
-                  style={{ animationDelay: `${120 + i * 70}ms` }}
-                  onClick={() => onInput(s)}
-                  className="power-on block w-full rounded-md border border-edge px-3 py-2 text-left text-xs text-dim transition-colors hover:border-solder-dim/60 hover:bg-raised hover:text-ink"
+                  style={{ animationDelay: `${100 + i * 70}ms` }}
+                  onClick={() => onInput(s.text)}
+                  className="rise card w-full px-3.5 py-3 text-left transition-all hover:-translate-y-px hover:border-brand hover:shadow-md"
                 >
-                  {s}
+                  <p className="text-sm font-semibold text-text">{s.title}</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-faint">{s.text}</p>
                 </button>
               ))}
             </div>
@@ -70,10 +73,10 @@ export function Chat({
         ))}
 
         {status !== "idle" && (
-          <div className="flex items-center gap-2 px-1 py-1">
-            <span className={`led ${status === "tool" ? "led-live" : "led-busy"}`} />
-            <span className="font-mono text-[11px] text-dim">
-              {status === "thinking" ? "ragionamento in corso" : "esecuzione strumento"}
+          <div className="flex items-center gap-2 px-1">
+            <span className={`dot ${status === "tool" ? "dot-live" : "dot-busy"}`} />
+            <span className="text-xs text-muted">
+              {status === "thinking" ? "Sto ragionando..." : "Sto usando uno strumento..."}
             </span>
           </div>
         )}
@@ -81,13 +84,13 @@ export function Chat({
       </div>
 
       <form
-        className="border-t border-edge p-3"
+        className="px-4 pb-4"
         onSubmit={(e) => {
           e.preventDefault();
           onSend();
         }}
       >
-        <div className="flex items-end gap-2 rounded-lg border border-edge bg-substrate p-1.5 transition-colors focus-within:border-solder-dim/60">
+        <div className="card flex items-end gap-2 p-2 transition-shadow focus-within:border-brand focus-within:shadow-md">
           <textarea
             value={input}
             rows={1}
@@ -99,25 +102,28 @@ export function Chat({
               }
             }}
             placeholder="Descrivi il circuito..."
-            className="max-h-32 min-h-[32px] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-ink outline-none placeholder:text-faint"
+            className="max-h-40 min-h-[36px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-text outline-none placeholder:text-faint"
           />
           <button
             type="submit"
             disabled={disabled || !input.trim()}
-            className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-solder-dim text-substrate transition-colors hover:bg-solder disabled:bg-edge disabled:text-faint"
             title="Invia"
+            className="flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-brand text-white transition-colors hover:bg-brand-strong disabled:bg-sunken disabled:text-faint"
           >
             <svg viewBox="0 0 16 16" fill="none" className="h-4 w-4">
               <path
                 d="M8 13V3M8 3L4 7M8 3l4 4"
                 stroke="currentColor"
-                strokeWidth="1.6"
+                strokeWidth="1.7"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
             </svg>
           </button>
         </div>
+        <p className="mt-2 text-center text-[11px] text-faint">
+          Invio per mandare · Shift+Invio per andare a capo
+        </p>
       </form>
     </section>
   );
@@ -126,34 +132,34 @@ export function Chat({
 function Bubble({ item }: { item: ChatItem }) {
   if (item.kind === "user") {
     return (
-      <div className="ml-6 rounded-lg rounded-br-sm border border-solder-dim/30 bg-solder-dim/10 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap text-ink">
+      <div className="ml-8 rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-white shadow-sm">
         {item.text}
       </div>
     );
   }
   if (item.kind === "assistant") {
     return (
-      <div className="mr-2 rounded-lg rounded-bl-sm border border-edge bg-raised px-3 py-2.5 text-[13px] text-ink/90">
+      <div className="card mr-2 px-4 py-3 text-[13px] text-text">
         <Markdown text={item.text} />
       </div>
     );
   }
   if (item.kind === "error") {
     return (
-      <div className="rounded-md border border-alert/40 bg-alert/10 px-3 py-2 font-mono text-[11px] text-alert">
+      <div className="rounded-xl bg-danger-wash px-3.5 py-2.5 text-xs leading-relaxed text-danger">
         {item.text}
       </div>
     );
   }
-  const dot =
-    item.ok === undefined ? "bg-faint" : item.ok ? "bg-solder" : "bg-alert";
+  const tone =
+    item.ok === undefined ? "bg-faint" : item.ok ? "bg-brand" : "bg-danger";
   return (
-    <div className="mr-6 flex items-start gap-2 px-1 py-0.5">
-      <span className={`mt-1.5 h-1.5 w-1.5 flex-none rounded-full ${dot}`} />
-      <div className="min-w-0 font-mono text-[11px] leading-relaxed">
-        <span className={item.ok === false ? "text-alert" : "text-copper"}>{item.name}</span>{" "}
-        <span className="text-faint">{item.detail}</span>
-      </div>
+    <div className="flex items-start gap-2 px-1.5">
+      <span className={`mt-[7px] h-1.5 w-1.5 flex-none rounded-full ${tone}`} />
+      <p className="min-w-0 text-xs leading-relaxed text-faint">
+        <span className="font-mono font-medium text-muted">{item.name}</span>{" "}
+        {item.detail}
+      </p>
     </div>
   );
 }

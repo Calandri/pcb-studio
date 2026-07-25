@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import { JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
-// IBM Plex: disegnato per il mondo dell'ingegneria e della strumentazione,
-// coerente con un tool EDA (e non l'ennesima UI in Inter).
-const plexSans = IBM_Plex_Sans({
-  variable: "--font-plex-sans",
+// Plus Jakarta Sans: geometrica e cordiale, adatta a un prodotto che deve
+// risultare accessibile anche a chi non fa l'elettronico di mestiere.
+const jakarta = Plus_Jakarta_Sans({
+  variable: "--font-jakarta",
   subsets: ["latin"],
-  weight: ["400", "500", "600"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const plexMono = IBM_Plex_Mono({
-  variable: "--font-plex-mono",
+const jbMono = JetBrains_Mono({
+  variable: "--font-jbmono",
   subsets: ["latin"],
   weight: ["400", "500"],
 });
@@ -29,9 +29,9 @@ export default function RootLayout({
   return (
     <html
       lang="it"
-      className={`${plexSans.variable} ${plexMono.variable} h-full antialiased`}
+      className={`${jakarta.variable} ${jbMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full bg-substrate text-ink">{children}</body>
+      <body className="min-h-full bg-canvas text-text">{children}</body>
     </html>
   );
 }

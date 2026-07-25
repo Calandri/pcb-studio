@@ -11,36 +11,43 @@ export default async function LoginPage({
   const params = await searchParams;
 
   return (
-    <div className="substrate-grid flex h-dvh items-center justify-center bg-substrate px-6">
-      <div className="power-on w-full max-w-sm">
-        <div className="mb-8 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md border border-solder-dim/40 bg-solder-dim/10">
-            <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5 text-solder">
+    <div className="flex h-dvh items-center justify-center bg-canvas px-6">
+      <div className="rise w-full max-w-[380px]">
+        <div className="mb-6 flex flex-col items-center text-center">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand text-white shadow-sm">
+            <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5">
               <path
                 d="M3 10h3.2l1.6-4 2.4 8 1.8-4H17"
                 stroke="currentColor"
-                strokeWidth="1.5"
+                strokeWidth="1.7"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
             </svg>
           </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight text-ink">PCB Studio</h1>
-            <p className="silk mt-0.5">schematici · pcb · produzione</p>
-          </div>
+          <h1 className="mt-3 text-xl font-bold tracking-tight text-text">PCB Studio</h1>
+          <p className="mt-1 text-sm leading-relaxed text-muted">
+            Progetta schede elettroniche conversando con un agente AI.
+          </p>
         </div>
 
-        <div className="rounded-lg border border-edge bg-panel p-5">
+        <div className="card p-6">
           {params.sent ? (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="led led-live" />
-                <p className="text-sm text-ink">Link inviato</p>
+            <div className="space-y-2 text-center">
+              <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-brand-wash">
+                <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5 text-brand">
+                  <path
+                    d="M3.5 6.5 10 11l6.5-4.5M3.5 5.5h13v9h-13v-9Z"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </div>
-              <p className="text-xs leading-relaxed text-dim">
-                Controlla la posta (anche lo spam) e apri il link per accedere. Scade tra
-                24 ore.
+              <p className="text-sm font-semibold text-text">Controlla la posta</p>
+              <p className="text-xs leading-relaxed text-muted">
+                Ti abbiamo inviato un link per accedere. Scade tra 24 ore; se non lo trovi,
+                guarda nello spam.
               </p>
             </div>
           ) : (
@@ -54,18 +61,21 @@ export default async function LoginPage({
                 });
               }}
             >
-              <label className="silk block">indirizzo email</label>
+              <label htmlFor="email" className="section-label">
+                Il tuo indirizzo email
+              </label>
               <input
+                id="email"
                 type="email"
                 name="email"
                 required
                 autoFocus
                 placeholder="nome@azienda.com"
-                className="w-full rounded-md border border-edge bg-substrate px-3 py-2.5 text-sm text-ink outline-none transition-colors placeholder:text-faint focus:border-solder-dim"
+                className="w-full rounded-lg border border-line bg-surface px-3.5 py-2.5 text-sm text-text outline-none transition-colors placeholder:text-faint focus:border-brand focus:ring-2 focus:ring-brand/15"
               />
               <button
                 type="submit"
-                className="w-full rounded-md bg-solder-dim px-4 py-2.5 text-sm font-medium text-substrate transition-colors hover:bg-solder"
+                className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-strong"
               >
                 Inviami il link di accesso
               </button>
@@ -73,14 +83,14 @@ export default async function LoginPage({
           )}
 
           {params.error && (
-            <p className="mt-4 rounded-md border border-alert/40 bg-alert/10 px-3 py-2 font-mono text-[11px] text-alert">
-              accesso non riuscito: {params.error}
+            <p className="mt-4 rounded-lg bg-danger-wash px-3 py-2 text-xs text-danger">
+              Accesso non riuscito ({params.error}). Riprova.
             </p>
           )}
         </div>
 
         <p className="mt-4 text-center text-xs text-faint">
-          Nessuna password: ricevi un link via email.
+          Nessuna password da ricordare: accedi con un link via email.
         </p>
       </div>
     </div>

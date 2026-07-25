@@ -2,13 +2,12 @@
 
 import type { ReactNode } from "react";
 
-/** Primitivi condivisi: bottoni, campi, badge dello strumento. */
-
 export function Btn({
   children,
   onClick,
   type = "button",
   variant = "ghost",
+  size = "md",
   disabled,
   title,
   className = "",
@@ -16,18 +15,23 @@ export function Btn({
   children: ReactNode;
   onClick?: () => void;
   type?: "button" | "submit";
-  variant?: "ghost" | "solid" | "danger";
+  variant?: "ghost" | "primary" | "quiet" | "danger";
+  size?: "sm" | "md";
   disabled?: boolean;
   title?: string;
   className?: string;
 }) {
-  const base =
-    "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 disabled:pointer-events-none";
+  const sizes = {
+    sm: "px-2.5 py-1.5 text-xs rounded-lg",
+    md: "px-3.5 py-2 text-sm rounded-lg",
+  } as const;
   const variants = {
+    primary:
+      "bg-brand text-white shadow-sm hover:bg-brand-strong active:translate-y-px",
     ghost:
-      "border border-edge text-dim hover:border-edge-bright hover:text-ink hover:bg-raised",
-    solid: "bg-solder-dim text-substrate hover:bg-solder",
-    danger: "border border-edge text-alert hover:border-alert/60 hover:bg-alert/10",
+      "border border-line bg-surface text-muted hover:border-line-strong hover:text-text hover:bg-sunken",
+    quiet: "text-muted hover:bg-sunken hover:text-text",
+    danger: "text-danger hover:bg-danger-wash",
   } as const;
   return (
     <button
@@ -35,7 +39,7 @@ export function Btn({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`${base} ${variants[variant]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 font-medium transition-all disabled:pointer-events-none disabled:opacity-45 ${sizes[size]} ${variants[variant]} ${className}`}
     >
       {children}
     </button>
@@ -47,14 +51,12 @@ export function Field({
   type = "text",
   placeholder,
   required,
-  defaultValue,
   className = "",
 }: {
   name: string;
   type?: string;
   placeholder?: string;
   required?: boolean;
-  defaultValue?: string;
   className?: string;
 }) {
   return (
@@ -63,8 +65,7 @@ export function Field({
       type={type}
       required={required}
       placeholder={placeholder}
-      defaultValue={defaultValue}
-      className={`rounded-md border border-edge bg-substrate px-2.5 py-1.5 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-solder-dim ${className}`}
+      className={`rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-text outline-none transition-colors placeholder:text-faint focus:border-brand focus:ring-2 focus:ring-brand/15 ${className}`}
     />
   );
 }
@@ -81,7 +82,7 @@ export function Select({
   return (
     <select
       name={name}
-      className={`rounded-md border border-edge bg-substrate px-2 py-1.5 text-xs text-dim outline-none focus:border-solder-dim ${className}`}
+      className={`cursor-pointer rounded-lg border border-line-strong bg-surface px-2.5 py-2 text-sm text-muted outline-none transition-colors focus:border-brand ${className}`}
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -92,10 +93,42 @@ export function Select({
   );
 }
 
-export function Silk({ children }: { children: ReactNode }) {
-  return <p className="silk">{children}</p>;
+export function SectionLabel({ children }: { children: ReactNode }) {
+  return <p className="section-label">{children}</p>;
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <p className="px-1 py-6 text-center text-xs text-faint">{children}</p>;
+export function EmptyState({
+  title,
+  hint,
+}: {
+  title: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-dashed border-line px-4 py-8 text-center">
+      <p className="text-sm font-medium text-muted">{title}</p>
+      {hint && <p className="mt-1 text-xs leading-relaxed text-faint">{hint}</p>}
+    </div>
+  );
+}
+
+export function Chip({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode;
+  tone?: "neutral" | "brand" | "accent";
+}) {
+  const tones = {
+    neutral: "bg-sunken text-faint",
+    brand: "bg-brand-wash text-brand-strong",
+    accent: "bg-accent-wash text-accent",
+  } as const;
+  return (
+    <span
+      className={`inline-flex items-center rounded-md px-1.5 py-0.5 font-mono text-[10px] font-medium ${tones[tone]}`}
+    >
+      {children}
+    </span>
+  );
 }

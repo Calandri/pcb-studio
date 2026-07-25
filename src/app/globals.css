@@ -3,152 +3,145 @@
 @import "tailwindcss" source("../../src");
 
 /*
- * PCB Studio design language: "laboratory instrument".
- * Dark FR4 substrate, soldermask green + copper accents, technical type.
+ * PCB Studio: interfaccia chiara, ariosa, con aree nettamente separate.
+ * Il canvas di tscircuit e' chiaro: l'app gli sta intorno senza stonare.
  */
 :root {
-  --substrate: #080b0a;
-  --panel: #0e1312;
-  --panel-raised: #141a18;
-  --edge: #1e2624;
-  --edge-bright: #2c3835;
+  --canvas: #f4f6f8;
+  --surface: #ffffff;
+  --surface-sunken: #f9fafb;
+  --line: #e6e9ef;
+  --line-strong: #d3d8e2;
 
-  --ink: #e6ebe8;
-  --ink-dim: #94a39d;
-  --ink-faint: #5d6b66;
+  --text: #101828;
+  --text-muted: #5a6478;
+  --text-faint: #9aa3b5;
 
-  --solder: #34d399;
-  --solder-dim: #10b981;
-  --copper: #d99a4e;
-  --alert: #f87171;
-  --signal: #60a5fa;
+  --brand: #0f9d76;
+  --brand-strong: #0b7d5e;
+  --brand-wash: #e8f7f2;
+  --accent: #e08b32;
+  --accent-wash: #fdf3e7;
+  --danger: #d94a4a;
+  --danger-wash: #fdeeee;
 
-  --grid: rgba(52, 211, 153, 0.055);
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-float: 0 12px 32px -12px rgba(16, 24, 40, 0.18);
 }
 
 @theme inline {
-  --color-substrate: var(--substrate);
-  --color-panel: var(--panel);
-  --color-raised: var(--panel-raised);
-  --color-edge: var(--edge);
-  --color-edge-bright: var(--edge-bright);
-  --color-ink: var(--ink);
-  --color-dim: var(--ink-dim);
-  --color-faint: var(--ink-faint);
-  --color-solder: var(--solder);
-  --color-copper: var(--copper);
-  --color-alert: var(--alert);
-  --color-signal: var(--signal);
-  --font-sans: var(--font-plex-sans);
-  --font-mono: var(--font-plex-mono);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-sunken: var(--surface-sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-wash: var(--brand-wash);
+  --color-accent: var(--accent);
+  --color-accent-wash: var(--accent-wash);
+  --color-danger: var(--danger);
+  --color-danger-wash: var(--danger-wash);
+  --font-sans: var(--font-jakarta);
+  --font-mono: var(--font-jbmono);
 }
 
 html,
 body {
-  background: var(--substrate);
-  color: var(--ink);
-  font-family: var(--font-plex-sans), system-ui, sans-serif;
+  background: var(--canvas);
+  color: var(--text);
+  font-family: var(--font-jakarta), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Substrato: griglia di fabbricazione appena percettibile. */
-.substrate-grid {
-  background-image:
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size: 22px 22px;
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
 }
 
-/* Etichette tecniche: minuscole, spaziate, come una serigrafia. */
-.silk {
-  font-family: var(--font-plex-mono), monospace;
-  font-size: 10px;
-  letter-spacing: 0.14em;
+/* Etichetta di sezione: piccola, spaziata, sempre sopra un gruppo. */
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--ink-faint);
+  color: var(--text-faint);
 }
 
-/* LED di stato dello strumento. */
-.led {
+/* Pallino di stato dell'agente. */
+.dot {
   width: 7px;
   height: 7px;
   border-radius: 999px;
   flex: none;
 }
-.led-idle {
-  background: var(--ink-faint);
+.dot-idle {
+  background: var(--text-faint);
 }
-.led-busy {
-  background: var(--copper);
-  animation: led-pulse 1.1s ease-in-out infinite;
-  box-shadow: 0 0 0 0 rgba(217, 154, 78, 0.5);
+.dot-busy {
+  background: var(--accent);
+  animation: dot-pulse 1.2s ease-in-out infinite;
 }
-.led-live {
-  background: var(--solder);
-  animation: led-pulse 0.9s ease-in-out infinite;
-  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5);
+.dot-live {
+  background: var(--brand);
+  animation: dot-pulse 1s ease-in-out infinite;
 }
-@keyframes led-pulse {
-  0% {
-    box-shadow: 0 0 0 0 currentColor;
-    opacity: 1;
-  }
-  70% {
-    box-shadow: 0 0 0 5px transparent;
-    opacity: 0.55;
-  }
+@keyframes dot-pulse {
+  0%,
   100% {
-    box-shadow: 0 0 0 0 transparent;
     opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
   }
 }
 
-/* Rivelazione scaglionata all'avvio: la scheda "si accende". */
-@keyframes power-on {
+@keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
-.power-on {
-  animation: power-on 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+.rise {
+  animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-@keyframes panel-in {
+@keyframes slide-in {
   from {
     opacity: 0;
-    transform: translateX(-10px);
+    transform: translateX(-8px);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
-.panel-in {
-  animation: panel-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+.slide-in {
+  animation: slide-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* Scrollbar coerente con lo strumento. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--edge-bright) transparent;
-}
 *::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--edge-bright);
+  background: var(--line-strong);
   border-radius: 999px;
-  border: 2px solid transparent;
+  border: 3px solid transparent;
   background-clip: content-box;
 }
-
-/* Il viewer tscircuit porta i suoi stili chiari: lo isoliamo in una cornice. */
-.viewer-frame {
-  background: #f7f8f7;
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
 }

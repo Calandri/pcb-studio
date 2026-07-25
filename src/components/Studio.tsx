@@ -3,18 +3,17 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
-import { Rail, type RailKey } from "./Rail";
-import { SidePanel, type LibraryItem } from "./SidePanel";
+import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 
 const RunFrame = dynamic(
   () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-full w-full items-center justify-center bg-substrate">
-        <div className="flex items-center gap-2 font-mono text-xs text-faint">
-          <span className="led led-busy" />
-          avvio runtime tscircuit
+      <div className="flex h-full w-full items-center justify-center">
+        <div className="flex items-center gap-2 text-sm text-faint">
+          <span className="dot dot-busy" />
+          Avvio dell&apos;ambiente di progettazione
         </div>
       </div>
     ),
@@ -33,9 +32,8 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [library, setLibrary] = useState<LibraryItem[]>([]);
-  const [panel, setPanel] = useState<RailKey>(null);
+  const [section, setSection] = useState<SectionKey>("projects");
   const [uploading, setUploading] = useState(false);
-  const [projectCount, setProjectCount] = useState<number | undefined>();
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
 
   useEffect(() => {
@@ -60,10 +58,6 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
       .catch(() =>
         setChat((c) => [...c, { kind: "error", text: "Impossibile caricare il progetto" }]),
       );
-    fetch("/api/projects")
-      .then((r) => r.json())
-      .then((d) => setProjectCount(d.projects?.length))
-      .catch(() => undefined);
   }, [projectId]);
 
   const refreshLibrary = useCallback(async () => {
@@ -97,7 +91,6 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         setInput(
           `Ho caricato il datasheet "${d.title}" (id ${d.id}). Crea il componente di libreria corrispondente e usalo nel progetto.`,
         );
-        setPanel(null);
       } catch (err) {
         setChat((c) => [
           ...c,
@@ -151,7 +144,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
             setStatus("tool");
             setChat((c) => [
               ...c,
-              { kind: "tool", name: data.name, detail: toolDetail(data.name, data.args) },
+              { kind: "tool", name: toolLabel(data.name), detail: toolDetail(data.name, data.args) },
             ]);
           } else if (event === "tool_result") {
             if (data.name === "library_save" || data.name === "import_component_from_lcsc") {
@@ -163,7 +156,11 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                 const copy = [...c];
                 for (let i = copy.length - 1; i >= 0; i--) {
                   const item = copy[i];
-                  if (item.kind === "tool" && item.name === "compile" && item.ok === undefined) {
+                  if (
+                    item.kind === "tool" &&
+                    item.name === toolLabel("compile") &&
+                    item.ok === undefined
+                  ) {
                     copy[i] = {
                       ...item,
                       ok: data.result?.ok,
@@ -194,27 +191,19 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   }, [input, status, projectId, refreshLibrary]);
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-substrate">
-      <Rail
-        active={panel}
-        onSelect={setPanel}
-        counts={{ library: library.length, projects: projectCount }}
+    <div className="flex h-dvh overflow-hidden bg-canvas">
+      <Sidebar
+        section={section}
+        onSection={setSection}
+        projectId={projectId}
+        user={user}
+        library={library}
+        uploading={uploading}
+        onUploadDatasheet={uploadDatasheet}
       />
 
-      {panel && (
-        <SidePanel
-          panel={panel}
-          projectId={projectId}
-          user={user}
-          library={library}
-          uploading={uploading}
-          onClose={() => setPanel(null)}
-          onUploadDatasheet={uploadDatasheet}
-        />
-      )}
-
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar projectId={projectId} status={status} email={user.email} />
+        <Header projectId={projectId} status={status} />
         <div className="flex min-h-0 flex-1">
           <Chat
             items={chat}
@@ -224,9 +213,9 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
             onSend={() => void send()}
             disabled={status !== "idle"}
           />
-          <main className="substrate-grid relative min-w-0 flex-1">
-            {fsMap ? (
-              <div className="viewer-frame absolute inset-3 overflow-hidden rounded-lg border border-edge shadow-[0_1px_0_rgba(255,255,255,0.04),0_20px_50px_-20px_rgba(0,0,0,0.9)]">
+          <main className="min-w-0 flex-1 py-5 pr-5 pl-1">
+            <div className="card h-full overflow-hidden">
+              {fsMap ? (
                 <RunFrame
                   fsMap={fsMap}
                   mainComponentPath="main.tsx"
@@ -234,12 +223,12 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                   availableTabs={["schematic", "pcb", "cad", "bom"]}
                   defaultActiveTab="schematic"
                 />
-              </div>
-            ) : (
-              <div className="flex h-full items-center justify-center font-mono text-xs text-faint">
-                caricamento progetto
-              </div>
-            )}
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-faint">
+                  Caricamento del progetto...
+                </div>
+              )}
+            </div>
           </main>
         </div>
       </div>
@@ -247,94 +236,82 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   );
 }
 
-function TopBar({
-  projectId,
-  status,
-  email,
-}: {
-  projectId: string;
-  status: AgentStatus;
-  email: string;
-}) {
-  const led =
-    status === "idle" ? "led-idle" : status === "tool" ? "led-live" : "led-busy";
-  const label = status === "idle" ? "pronto" : status === "tool" ? "strumento" : "pensa";
+function Header({ projectId, status }: { projectId: string; status: AgentStatus }) {
+  const dot = status === "idle" ? "dot-idle" : status === "tool" ? "dot-live" : "dot-busy";
+  const label =
+    status === "idle" ? "Pronto" : status === "tool" ? "Strumento in corso" : "Sto ragionando";
 
   return (
-    <header className="power-on flex h-12 flex-none items-center gap-4 border-b border-edge bg-panel px-4">
-      <div className="flex items-baseline gap-2.5">
-        <span className="text-sm font-semibold tracking-tight text-ink">PCB Studio</span>
-        <span className="text-faint">/</span>
-        <span className="font-mono text-xs text-solder">{projectId}</span>
-      </div>
-
-      <div className="flex items-center gap-1.5 rounded-md border border-edge px-2 py-1">
-        <span className={`led ${led}`} />
-        <span className="font-mono text-[10px] uppercase tracking-wider text-faint">
-          {label}
-        </span>
-      </div>
-
-      <div className="ml-auto flex items-center gap-3">
-        <div className="flex items-center gap-1">
-          <span className="silk mr-1">export</span>
-          {(
-            [
-              ["gerber", "gerber"],
-              ["bom", "bom"],
-              ["pnp", "pnp"],
-            ] as const
-          ).map(([kind, label]) => (
-            <a
-              key={kind}
-              href={`/api/export?projectId=${projectId}&kind=${kind}`}
-              download
-              className="rounded-md border border-edge px-2 py-1 font-mono text-[10px] text-dim transition-colors hover:border-copper/50 hover:text-copper"
-            >
-              {label}
-            </a>
-          ))}
+    <header className="rise flex h-16 flex-none items-center gap-4 px-5">
+      <div className="min-w-0">
+        <h1 className="truncate text-[15px] font-bold tracking-tight text-text">{projectId}</h1>
+        <div className="mt-0.5 flex items-center gap-1.5">
+          <span className={`dot ${dot}`} />
+          <span className="text-xs text-faint">{label}</span>
         </div>
+      </div>
 
-        <div className="h-5 w-px bg-edge" />
-
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-[10px] text-faint" title={email}>
-            {email.split("@")[0]}
-          </span>
+      <div className="ml-auto flex items-center gap-2">
+        <span className="section-label mr-1">Scarica</span>
+        {(
+          [
+            ["gerber", "Gerber"],
+            ["bom", "Distinta"],
+            ["pnp", "Pick & place"],
+          ] as const
+        ).map(([kind, label]) => (
           <a
-            href="/api/auth/signout"
-            className="rounded-md border border-edge px-2 py-1 text-[10px] text-dim transition-colors hover:border-alert/50 hover:text-alert"
+            key={kind}
+            href={`/api/export?projectId=${projectId}&kind=${kind}`}
+            download
+            className="rounded-lg border border-line bg-surface px-3 py-1.5 text-xs font-medium text-muted shadow-sm transition-all hover:-translate-y-px hover:border-line-strong hover:text-text"
           >
-            esci
+            {label}
           </a>
-        </div>
+        ))}
       </div>
     </header>
   );
 }
 
+function toolLabel(name: string): string {
+  const labels: Record<string, string> = {
+    write_file: "Scrittura progetto",
+    read_file: "Lettura file",
+    list_files: "Elenco file",
+    compile: "Compilazione",
+    search_parts: "Ricerca componenti",
+    import_component_from_lcsc: "Import componente",
+    library_save: "Salvataggio in libreria",
+    library_read: "Lettura libreria",
+    library_list: "Elenco libreria",
+    read_datasheet: "Lettura datasheet",
+    fetch_datasheet_url: "Scarico datasheet",
+    list_datasheets: "Elenco datasheet",
+    simulate: "Simulazione SPICE",
+  };
+  return labels[name] ?? name;
+}
+
 function toolDetail(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case "write_file":
-      return `${args.path} · ${args.chars} char`;
+      return `${args.path}`;
     case "read_file":
       return String(args.path ?? "");
     case "compile":
-      return "compilazione in corso";
+      return "in corso...";
     case "import_component_from_lcsc":
       return String(args.lcsc ?? "");
     case "library_save":
     case "library_read":
       return String(args.name ?? "");
     case "read_datasheet":
-      return `#${args.id}${args.search ? ` "${args.search}"` : ""}`;
+      return `#${args.id}${args.search ? ` · "${args.search}"` : ""}`;
     case "fetch_datasheet_url":
-      return String(args.url ?? "").slice(0, 50);
+      return String(args.url ?? "").slice(0, 46);
     case "search_parts":
       return String(args.query ?? "");
-    case "simulate":
-      return "spice";
     default:
       return "";
   }

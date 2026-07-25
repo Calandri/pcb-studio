@@ -33,7 +33,7 @@ function parseBlocks(text: string): ReactNode[] {
       out.push(
         <pre
           key={key++}
-          className="overflow-x-auto rounded-md border border-edge bg-substrate p-2.5 font-mono text-[11px] leading-relaxed text-dim"
+          className="overflow-x-auto rounded-lg bg-sunken p-3 font-mono text-[11px] leading-relaxed text-muted"
         >
           {body.join("\n")}
         </pre>,
@@ -62,7 +62,7 @@ function parseBlocks(text: string): ReactNode[] {
                 {head?.map((c, j) => (
                   <th
                     key={j}
-                    className="border-b border-edge px-2 py-1 text-left font-medium text-faint"
+                    className="border-b border-line px-2 py-1.5 text-left text-[11px] font-semibold text-faint"
                   >
                     {inline(c)}
                   </th>
@@ -73,7 +73,7 @@ function parseBlocks(text: string): ReactNode[] {
               {body.map((row, r) => (
                 <tr key={r}>
                   {row.map((c, j) => (
-                    <td key={j} className="border-b border-edge/50 px-2 py-1 text-dim">
+                    <td key={j} className="border-b border-line px-2 py-1.5 text-muted">
                       {inline(c)}
                     </td>
                   ))}
@@ -92,7 +92,7 @@ function parseBlocks(text: string): ReactNode[] {
       out.push(
         <p
           key={key++}
-          className="pt-1 text-[13px] font-semibold tracking-tight text-ink"
+          className="pt-1 text-[13px] font-bold tracking-tight text-text"
         >
           {inline(heading[2])}
         </p>,
@@ -112,7 +112,7 @@ function parseBlocks(text: string): ReactNode[] {
         <ul key={key++} className="space-y-1 pl-1">
           {items.map((it, j) => (
             <li key={j} className="flex gap-2">
-              <span className="mt-[7px] h-1 w-1 flex-none rounded-full bg-faint" />
+              <span className="mt-[7px] h-1 w-1 flex-none rounded-full bg-line-strong" />
               <span className="min-w-0 flex-1">{inline(it)}</span>
             </li>
           ))}
@@ -160,7 +160,7 @@ function inline(text: string): ReactNode[] {
     const token = m[0];
     if (token.startsWith("**")) {
       parts.push(
-        <strong key={key++} className="font-semibold text-ink">
+        <strong key={key++} className="font-semibold text-text">
           {token.slice(2, -2)}
         </strong>,
       );
@@ -168,7 +168,7 @@ function inline(text: string): ReactNode[] {
       parts.push(
         <code
           key={key++}
-          className="rounded bg-substrate px-1 py-0.5 font-mono text-[11px] text-copper"
+          className="rounded bg-accent-wash px-1.5 py-0.5 font-mono text-[11px] text-accent"
         >
           {token.slice(1, -1)}
         </code>,
