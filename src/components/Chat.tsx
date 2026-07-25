@@ -18,6 +18,7 @@ const SUGGESTIONS = [
 ];
 
 export function Chat({
+  projectId,
   items,
   status,
   input,
@@ -25,6 +26,7 @@ export function Chat({
   onSend,
   disabled,
 }: {
+  projectId: string;
   items: ChatItem[];
   status: AgentStatus;
   input: string;
@@ -37,9 +39,25 @@ export function Chat({
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [items, status]);
 
+  const dotClass =
+    status === "idle" ? "dot-idle" : status === "tool" ? "dot-live" : "dot-busy";
+  const statusLabel =
+    status === "idle"
+      ? "Pronto"
+      : status === "tool"
+        ? "Sto usando uno strumento"
+        : "Sto ragionando";
+
   return (
-    <section className="flex w-[400px] flex-none flex-col">
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5">
+    <section className="flex w-[390px] flex-none flex-col">
+      <header className="flex items-center gap-2 px-4 pt-4 pb-2">
+        <h1 className="min-w-0 flex-1 truncate text-[15px] font-bold tracking-tight text-text">
+          {projectId}
+        </h1>
+        <span className={`dot ${dotClass}`} />
+        <span className="text-[11px] text-faint">{statusLabel}</span>
+      </header>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-1">
         {items.length === 0 && (
           <div className="rise space-y-4 pt-4">
             <div>
@@ -75,9 +93,7 @@ export function Chat({
         {status !== "idle" && (
           <div className="flex items-center gap-2 px-1">
             <span className={`dot ${status === "tool" ? "dot-live" : "dot-busy"}`} />
-            <span className="text-xs text-muted">
-              {status === "thinking" ? "Sto ragionando..." : "Sto usando uno strumento..."}
-            </span>
+            <span className="text-xs text-muted">un momento...</span>
           </div>
         )}
         <div ref={endRef} />

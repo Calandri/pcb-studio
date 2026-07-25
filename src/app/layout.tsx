@@ -30,7 +30,16 @@ export default function RootLayout({
     <html
       lang="it"
       className={`${jakarta.variable} ${jbMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      <head>
+        {/* prima del render: evita il lampo bianco entrando col tema scuro */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem("pcb-studio-theme");if(!t){t=window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}if(t==="dark"){document.documentElement.classList.add("dark")}}catch(e){}})()`,
+          }}
+        />
+      </head>
       <body className="min-h-full bg-canvas text-text">{children}</body>
     </html>
   );

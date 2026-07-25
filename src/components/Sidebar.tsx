@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ThemeToggle, type Theme } from "./ThemeToggle";
 import { Btn, Chip, EmptyState, Field, SectionLabel, Select } from "./ui";
 
 export type SectionKey = "projects" | "library" | "datasheets" | "team";
@@ -97,6 +98,10 @@ export function Sidebar({
   library,
   uploading,
   onUploadDatasheet,
+  collapsed,
+  onToggleCollapsed,
+  theme,
+  onTheme,
 }: {
   section: SectionKey;
   onSection: (s: SectionKey) => void;
@@ -105,6 +110,10 @@ export function Sidebar({
   library: LibraryItem[];
   uploading: boolean;
   onUploadDatasheet: (file: File) => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  theme: Theme;
+  onTheme: (t: Theme) => void;
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -178,10 +187,19 @@ export function Sidebar({
   };
 
   return (
-    <aside className="flex w-[264px] flex-none flex-col border-r border-line bg-surface">
-      <div className="flex items-center gap-2.5 px-4 py-4">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand text-white">
-          <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4">
+    <aside
+      className={`flex flex-none flex-col border-r border-line bg-surface transition-[width] duration-200 ${
+        collapsed ? "w-[60px]" : "w-[264px]"
+      }`}
+    >
+      <div className={`flex items-center py-4 ${collapsed ? "flex-col gap-2 px-2" : "gap-2.5 px-4"}`}>
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          title={collapsed ? "Espandi il menu" : "Riduci il menu"}
+          className="group relative flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-brand text-white transition-transform hover:scale-105"
+        >
+          <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 group-hover:opacity-0">
             <path
               d="M3 10h3.2l1.6-4 2.4 8 1.8-4H17"
               stroke="currentColor"
@@ -190,11 +208,26 @@ export function Sidebar({
               strokeLinejoin="round"
             />
           </svg>
-        </div>
-        <span className="text-[15px] font-bold tracking-tight text-text">PCB Studio</span>
+          <svg
+            viewBox="0 0 20 20"
+            fill="none"
+            className="absolute h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100"
+          >
+            <path
+              d={collapsed ? "M7.5 5 12.5 10l-5 5" : "M12.5 5 7.5 10l5 5"}
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        {!collapsed && (
+          <span className="text-[15px] font-bold tracking-tight text-text">PCB Studio</span>
+        )}
       </div>
 
-      <nav className="flex gap-1 px-3 pb-3">
+      <nav className={`flex gap-1 pb-3 ${collapsed ? "flex-col items-center px-2" : "px-3"}`}>
         {NAV.map((item) => {
           const active = section === item.key;
           return (
@@ -203,16 +236,18 @@ export function Sidebar({
               type="button"
               onClick={() => onSection(item.key)}
               title={item.label}
-              className={`group relative flex flex-1 flex-col items-center gap-1 rounded-lg px-1 py-2 transition-colors ${
+              className={`group relative flex items-center justify-center rounded-lg transition-colors ${
+                collapsed ? "h-10 w-10" : "flex-1 flex-col gap-1 px-1 py-2"
+              } ${
                 active ? "bg-brand-wash text-brand-strong" : "text-faint hover:bg-sunken hover:text-muted"
               }`}
             >
               <svg viewBox="0 0 20 20" fill="none" className="h-[17px] w-[17px]">
                 {item.icon}
               </svg>
-              <span className="text-[10px] font-semibold">{item.label}</span>
+              {!collapsed && <span className="text-[10px] font-semibold">{item.label}</span>}
               {counts[item.key] !== undefined && (
-                <span className="absolute right-1.5 top-1 font-mono text-[9px] text-faint">
+                <span className="absolute right-1 top-0.5 font-mono text-[9px] text-faint">
                   {counts[item.key]}
                 </span>
               )}
@@ -221,7 +256,11 @@ export function Sidebar({
         })}
       </nav>
 
-      <div className="min-h-0 flex-1 overflow-y-auto border-t border-line px-4 py-4">
+      <div
+        className={`min-h-0 flex-1 overflow-y-auto border-t border-line px-4 py-4 ${
+          collapsed ? "hidden" : ""
+        }`}
+      >
         {note && (
           <p className="mb-3 rounded-lg bg-accent-wash px-3 py-2 text-xs leading-relaxed text-accent">
             {note}
@@ -512,13 +551,23 @@ export function Sidebar({
         )}
       </div>
 
-      <div className="flex items-center gap-2.5 border-t border-line px-4 py-3">
-        <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full bg-brand-wash text-[10px] font-bold text-brand-strong">
+      <div
+        className={`flex border-t border-line py-3 ${
+          collapsed ? "flex-col items-center gap-2 px-2" : "items-center gap-2 px-4"
+        }`}
+      >
+        <span
+          className="flex h-7 w-7 flex-none items-center justify-center rounded-full bg-brand-wash text-[10px] font-bold text-brand-strong"
+          title={user.email}
+        >
           {user.email.slice(0, 2).toUpperCase()}
         </span>
-        <span className="min-w-0 flex-1 truncate text-xs text-muted" title={user.email}>
-          {user.email}
-        </span>
+        {!collapsed && (
+          <span className="min-w-0 flex-1 truncate text-xs text-muted" title={user.email}>
+            {user.email}
+          </span>
+        )}
+        <ThemeToggle theme={theme} onChange={onTheme} compact={collapsed} />
         <a
           href="/api/auth/signout"
           title="Esci"

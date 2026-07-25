@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
+import { useTheme } from "./ThemeToggle";
 
 const RunFrame = dynamic(
   () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
@@ -51,11 +52,33 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [section, setSection] = useState<SectionKey>("projects");
+  const [collapsed, setCollapsed] = useState(false);
+  const [theme, setTheme] = useTheme();
   const [uploading, setUploading] = useState(false);
   // server-validated routed circuit (truth); stale after any file change
   const [circuitJson, setCircuitJson] = useState<unknown[] | null>(null);
   const [circuitStale, setCircuitStale] = useState(false);
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
+
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem("pcb-studio-sidebar") === "collapsed");
+    } catch {
+      // storage non disponibile: menu esteso di default
+    }
+  }, []);
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem("pcb-studio-sidebar", next ? "collapsed" : "expanded");
+      } catch {
+        // preferenza valida solo per questa sessione
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     fetch(`/api/project?projectId=${projectId}`)
@@ -235,12 +258,16 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         library={library}
         uploading={uploading}
         onUploadDatasheet={uploadDatasheet}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+        theme={theme}
+        onTheme={setTheme}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Header projectId={projectId} status={status} />
         <div className="flex min-h-0 flex-1">
           <Chat
+            projectId={projectId}
             items={chat}
             status={status}
             input={input}
@@ -248,8 +275,28 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
             onSend={() => void send()}
             disabled={status !== "idle"}
           />
-          <main className="min-w-0 flex-1 py-5 pr-5 pl-1">
-            <div className="card h-full overflow-hidden">
+          <main className="relative min-w-0 flex-1 py-3 pr-3 pl-0">
+            <div className="viewer-shell card relative h-full overflow-hidden">
+              {/* i download vivono nella barra del viewer: cosi' il canvas
+                  guadagna tutta l'altezza della finestra */}
+              <div className="pointer-events-none absolute left-[108px] top-2.5 z-10 flex items-center gap-1.5">
+                {(
+                  [
+                    ["gerber", "Gerber"],
+                    ["bom", "Distinta"],
+                    ["pnp", "Pick & place"],
+                  ] as const
+                ).map(([kind, label]) => (
+                  <a
+                    key={kind}
+                    href={`/api/export?projectId=${projectId}&kind=${kind}`}
+                    download
+                    className="pointer-events-auto rounded-lg border border-[#d3d8e2] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#101828] shadow-sm transition-all hover:-translate-y-px hover:border-[#0f9d76] hover:bg-[#e8f7f2] hover:text-[#0b7d5e]"
+                  >
+                    {label}
+                  </a>
+                ))}
+              </div>
               {circuitJson && !circuitStale ? (
                 <CircuitJsonPreview
                   circuitJson={circuitJson as never}
@@ -274,44 +321,6 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         </div>
       </div>
     </div>
-  );
-}
-
-function Header({ projectId, status }: { projectId: string; status: AgentStatus }) {
-  const dot = status === "idle" ? "dot-idle" : status === "tool" ? "dot-live" : "dot-busy";
-  const label =
-    status === "idle" ? "Pronto" : status === "tool" ? "Strumento in corso" : "Sto ragionando";
-
-  return (
-    <header className="rise flex h-16 flex-none items-center gap-4 px-5">
-      <div className="min-w-0">
-        <h1 className="truncate text-[15px] font-bold tracking-tight text-text">{projectId}</h1>
-        <div className="mt-0.5 flex items-center gap-1.5">
-          <span className={`dot ${dot}`} />
-          <span className="text-xs text-faint">{label}</span>
-        </div>
-      </div>
-
-      <div className="ml-auto flex items-center gap-2">
-        <span className="section-label mr-1">Scarica</span>
-        {(
-          [
-            ["gerber", "Gerber"],
-            ["bom", "Distinta"],
-            ["pnp", "Pick & place"],
-          ] as const
-        ).map(([kind, label]) => (
-          <a
-            key={kind}
-            href={`/api/export?projectId=${projectId}&kind=${kind}`}
-            download
-            className="rounded-lg border border-line bg-surface px-3 py-1.5 text-xs font-medium text-muted shadow-sm transition-all hover:-translate-y-px hover:border-line-strong hover:text-text"
-          >
-            {label}
-          </a>
-        ))}
-      </div>
-    </header>
   );
 }
 
