@@ -11,6 +11,9 @@ patchedDependencies:
   '@tscircuit/pcb-viewer':
     hash: 4oaijp2v6z4hac7qkqszkmvgvq
     path: patches/@tscircuit__pcb-viewer.patch
+  circuit-json-to-gerber:
+    hash: oavrcynxautxagsypkghucikcq
+    path: patches/circuit-json-to-gerber.patch
 
 importers:
 
@@ -87,7 +90,7 @@ importers:
         version: 0.0.14(typescript@5.9.3)
       circuit-json-to-gerber:
         specifier: ^0.0.85
-        version: 0.0.85(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(tscircuit@0.0.2142(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(three@0.165.0)(typescript@5.9.3))(typescript@5.9.3)
+        version: 0.0.85(patch_hash=oavrcynxautxagsypkghucikcq)(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(tscircuit@0.0.2142(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(three@0.165.0)(typescript@5.9.3))(typescript@5.9.3)
       circuit-json-to-pnp-csv:
         specifier: ^0.0.8
         version: 0.0.8(@tscircuit/soup-util@0.0.41(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(typescript@5.9.3)
@@ -6824,7 +6827,7 @@ snapshots:
       '@tscircuit/math-utils': 0.0.9(typescript@5.9.3)
       typescript: 5.9.3
 
-  circuit-json-to-gerber@0.0.85(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(tscircuit@0.0.2142(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(three@0.165.0)(typescript@5.9.3))(typescript@5.9.3):
+  circuit-json-to-gerber@0.0.85(patch_hash=oavrcynxautxagsypkghucikcq)(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(tscircuit@0.0.2142(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(three@0.165.0)(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
       '@tscircuit/alphabet': 0.0.25(typescript@5.9.3)
       circuit-json: 0.0.455(format-si-unit@0.0.7(typescript@5.9.3))

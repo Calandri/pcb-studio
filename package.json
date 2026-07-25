@@ -74,7 +74,8 @@
       "zod": "3.25.76"
     },
     "patchedDependencies": {
-      "@tscircuit/pcb-viewer": "patches/@tscircuit__pcb-viewer.patch"
+      "@tscircuit/pcb-viewer": "patches/@tscircuit__pcb-viewer.patch",
+      "circuit-json-to-gerber": "patches/circuit-json-to-gerber.patch"
     }
   }
 }
