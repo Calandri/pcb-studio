@@ -177,3 +177,30 @@ body {
   background: var(--text-faint);
   background-clip: content-box;
 }
+
+/*
+ * Barra strumenti del PCB viewer (@tscircuit/pcb-viewer).
+ * I suoi pulsanti sono <div> senza classi con stile INLINE (grigio, spigoli a
+ * 2px, sans-serif di sistema): l'unico modo di rivestirli senza forkare il
+ * pacchetto e' agganciarli dallo stile inline e vincere con !important.
+ * Se un aggiornamento del pacchetto cambia quegli stili, questi selettori
+ * smettono semplicemente di applicarsi: la barra torna com'era, niente si rompe.
+ */
+.viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"] {
+  font-family: var(--font-jakarta), system-ui, sans-serif !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em !important;
+  padding: 6px 11px !important;
+  border-radius: 8px !important;
+  background-color: rgba(28, 34, 43, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  color: #e8edf2 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease !important;
+}
+.viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"]:hover {
+  background-color: rgba(45, 212, 167, 0.16) !important;
+  border-color: rgba(45, 212, 167, 0.55) !important;
+  transform: translateY(-1px) !important;
+}

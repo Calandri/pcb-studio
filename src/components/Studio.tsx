@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { useTheme } from "./ThemeToggle";
@@ -103,6 +103,22 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         setChat((c) => [...c, { kind: "error", text: "Impossibile caricare il progetto" }]),
       );
   }, [projectId]);
+
+  // larghezze effettivamente usate sul rame: senza questo, guardando il canvas
+  // non si capisce quale pista e' di potenza e quale di segnale
+  const traceWidths = useMemo(() => {
+    if (!circuitJson) return [] as number[];
+    const widths = new Set<number>();
+    for (const el of circuitJson as Array<Record<string, unknown>>) {
+      if (el?.type !== "pcb_trace") continue;
+      for (const point of (el.route as Array<{ width?: number }> | undefined) ?? []) {
+        if (typeof point.width === "number") {
+          widths.add(Math.round(point.width * 1000) / 1000);
+        }
+      }
+    }
+    return [...widths].sort((a, b) => a - b);
+  }, [circuitJson]);
 
   const refreshLibrary = useCallback(async () => {
     const d = await fetch(`/api/project?projectId=${projectId}`)
@@ -291,11 +307,40 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                     key={kind}
                     href={`/api/export?projectId=${projectId}&kind=${kind}`}
                     download
-                    className="pointer-events-auto rounded-lg border border-[#d3d8e2] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#101828] shadow-sm transition-all hover:-translate-y-px hover:border-[#0f9d76] hover:bg-[#e8f7f2] hover:text-[#0b7d5e]"
+                    style={{
+                      // colori espliciti: questi bottoni stanno SOPRA il canvas
+                      // del viewer, che ha un fondo suo e non segue il tema
+                      background: "rgba(28, 34, 43, 0.92)",
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      color: "#e8edf2",
+                    }}
+                    className="pointer-events-auto rounded-lg px-3 py-1.5 text-[11px] font-semibold shadow-sm transition-transform hover:-translate-y-px"
                   >
                     {label}
                   </a>
                 ))}
+                {traceWidths.length > 0 && (
+                  <span
+                    style={{
+                      background: "rgba(28, 34, 43, 0.92)",
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      color: "#9aa8b6",
+                    }}
+                    className="pointer-events-auto ml-1 rounded-lg px-3 py-1.5 font-mono text-[11px] shadow-sm"
+                    title="Larghezze delle piste presenti sulla scheda (la piu' larga e' la potenza)"
+                  >
+                    piste{" "}
+                    {traceWidths.map((w, i) => (
+                      <span
+                        key={w}
+                        style={{ color: i === traceWidths.length - 1 && traceWidths.length > 1 ? "#eba75a" : "#e8edf2" }}
+                      >
+                        {w}
+                        {i < traceWidths.length - 1 ? " · " : " mm"}
+                      </span>
+                    ))}
+                  </span>
+                )}
               </div>
               {circuitJson && !circuitStale ? (
                 <CircuitJsonPreview
