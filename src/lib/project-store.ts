@@ -1,4 +1,10 @@
+import { neon } from "@neondatabase/serverless";
+
 export type FsMap = Record<string, string>;
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
 
 const DEMO_MAIN = `export default () => (
   <board width="34mm" height="24mm">
@@ -43,31 +49,108 @@ const DEMO_MAIN = `export default () => (
 )
 `;
 
-// globalThis so the store survives Next dev HMR reloads. Persistence on Neon
-// replaces this in the persistence phase of the masterplan.
+function db() {
+  const url = process.env.DATABASE_URL;
+  return url ? neon(url) : null;
+}
+
+// In-memory fallback (no DATABASE_URL, e.g. offline dev): survives HMR only.
 const globalStore = globalThis as unknown as {
   __pcbStudioProjects?: Map<string, FsMap>;
+  __pcbStudioChats?: Map<string, ChatMessage[]>;
 };
-
-function projects(): Map<string, FsMap> {
-  if (!globalStore.__pcbStudioProjects) {
-    globalStore.__pcbStudioProjects = new Map();
-  }
-  return globalStore.__pcbStudioProjects;
+function memProjects(): Map<string, FsMap> {
+  return (globalStore.__pcbStudioProjects ??= new Map());
+}
+function memChats(): Map<string, ChatMessage[]> {
+  return (globalStore.__pcbStudioChats ??= new Map());
 }
 
-export function getProject(projectId: string): FsMap {
-  const store = projects();
-  if (!store.has(projectId)) {
-    store.set(projectId, { "main.tsx": DEMO_MAIN });
+export async function getProject(projectId: string): Promise<FsMap> {
+  const sql = db();
+  if (!sql) {
+    const store = memProjects();
+    if (!store.has(projectId)) store.set(projectId, { "main.tsx": DEMO_MAIN });
+    return store.get(projectId)!;
   }
-  return store.get(projectId)!;
+
+  const rows = (await sql`
+    SELECT path, content FROM project_files WHERE project_id = ${projectId}
+  `) as Array<{ path: string; content: string }>;
+
+  if (rows.length === 0) {
+    await sql`
+      INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
+    `;
+    await sql`
+      INSERT INTO project_files (project_id, path, content)
+      VALUES (${projectId}, 'main.tsx', ${DEMO_MAIN})
+      ON CONFLICT (project_id, path) DO NOTHING
+    `;
+    return { "main.tsx": DEMO_MAIN };
+  }
+
+  return Object.fromEntries(rows.map((r) => [r.path, r.content]));
 }
 
-export function writeProjectFile(
+export async function writeProjectFile(
   projectId: string,
   path: string,
   content: string,
-): void {
-  getProject(projectId)[path] = content;
+): Promise<void> {
+  const sql = db();
+  if (!sql) {
+    const store = memProjects();
+    const fsMap = store.get(projectId) ?? {};
+    fsMap[path] = content;
+    store.set(projectId, fsMap);
+    return;
+  }
+
+  await sql`
+    INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO project_files (project_id, path, content)
+    VALUES (${projectId}, ${path}, ${content})
+    ON CONFLICT (project_id, path)
+    DO UPDATE SET content = EXCLUDED.content, updated_at = now()
+  `;
+  await sql`UPDATE projects SET updated_at = now() WHERE id = ${projectId}`;
+}
+
+export async function getChatMessages(
+  projectId: string,
+  limit = 80,
+): Promise<ChatMessage[]> {
+  const sql = db();
+  if (!sql) return memChats().get(projectId) ?? [];
+
+  const rows = (await sql`
+    SELECT role, content FROM chat_messages
+    WHERE project_id = ${projectId}
+    ORDER BY id DESC LIMIT ${limit}
+  `) as ChatMessage[];
+  return rows.reverse();
+}
+
+export async function appendChatMessage(
+  projectId: string,
+  role: ChatMessage["role"],
+  content: string,
+): Promise<void> {
+  const sql = db();
+  if (!sql) {
+    const chats = memChats();
+    chats.set(projectId, [...(chats.get(projectId) ?? []), { role, content }]);
+    return;
+  }
+
+  await sql`
+    INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO chat_messages (project_id, role, content)
+    VALUES (${projectId}, ${role}, ${content})
+  `;
 }

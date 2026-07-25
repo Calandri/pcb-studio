@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { executeTool, TOOL_DEFINITIONS } from "@/lib/agent-tools";
+import { appendChatMessage } from "@/lib/project-store";
 import { GLM_MAX_TOKENS, GLM_MODEL, GLM_THINKING_BUDGET, glmClient } from "@/lib/glm";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 
@@ -48,7 +49,9 @@ export async function POST(req: Request): Promise<Response> {
       const emit = (event: string, data: unknown) =>
         controller.enqueue(sseEncode(event, data));
 
+      let assistantTranscript = "";
       try {
+        await appendChatMessage(projectId, "user", history[history.length - 1].content);
         for (let step = 0; step < MAX_STEPS; step++) {
           const response = await client.messages
             .stream({
@@ -63,6 +66,7 @@ export async function POST(req: Request): Promise<Response> {
 
           for (const block of response.content) {
             if (block.type === "text" && block.text.trim()) {
+              assistantTranscript += (assistantTranscript ? "\n\n" : "") + block.text;
               emit("assistant_text", { text: block.text });
             }
           }
@@ -108,6 +112,9 @@ export async function POST(req: Request): Promise<Response> {
         emit("error", { message: err instanceof Error ? err.message : String(err) });
         emit("done", { stop_reason: "error" });
       } finally {
+        if (assistantTranscript) {
+          await appendChatMessage(projectId, "assistant", assistantTranscript).catch(() => {});
+        }
         controller.close();
       }
     },

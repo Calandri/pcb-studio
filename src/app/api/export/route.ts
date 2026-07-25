@@ -30,7 +30,7 @@ export async function GET(req: Request): Promise<Response> {
 
   let circuitJson: AnyCircuitJson;
   try {
-    circuitJson = (await runTscircuitCode(getProject(projectId), {
+    circuitJson = (await runTscircuitCode(await getProject(projectId), {
       mainComponentPath: "main.tsx",
     })) as AnyCircuitJson;
   } catch (err) {

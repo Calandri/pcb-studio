@@ -37,7 +37,18 @@ export function Studio() {
   useEffect(() => {
     fetch(`/api/project?projectId=${PROJECT_ID}`)
       .then((r) => r.json())
-      .then((d) => setFsMap(d.fsMap))
+      .then((d) => {
+        setFsMap(d.fsMap);
+        const messages = (d.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>;
+        historyRef.current = messages.map((m) => ({ role: m.role, content: m.content }));
+        setChat(
+          messages.map((m) =>
+            m.role === "user"
+              ? { kind: "user", text: m.content }
+              : { kind: "assistant", text: m.content },
+          ),
+        );
+      })
       .catch(() => setChat((c) => [...c, { kind: "error", text: "Impossibile caricare il progetto" }]));
   }, []);
 

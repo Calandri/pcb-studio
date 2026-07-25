@@ -77,7 +77,7 @@ export async function executeTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolExecution> {
-  const fsMap = getProject(projectId);
+  const fsMap = await getProject(projectId);
 
   switch (name) {
     case "list_files":
@@ -105,7 +105,7 @@ export async function executeTool(
       if (content.length > MAX_FILE_CHARS) {
         return { result: { error: `File too large (${content.length} chars, max ${MAX_FILE_CHARS})` } };
       }
-      writeProjectFile(projectId, path, content);
+      await writeProjectFile(projectId, path, content);
       return {
         result: { ok: true, path, chars: content.length },
         fileChanged: { path, content },
