@@ -267,12 +267,40 @@ function localRouterDef(effort: number) {
 // ---------------------------------------------------------------------------
 
 function summarize(circuitJson: CircuitElement[]): CompileSummary {
-  const errors = circuitJson
+  const allErrors = circuitJson
     .filter((el) => el.type.endsWith("_error"))
     .map((el) => ({
       type: el.type,
       message: String(el.message ?? el.error_type ?? JSON.stringify(el)).slice(0, 500),
     }));
+
+  /*
+   * Quando l'autorouting viene SALTATO per errori di piazzamento, ogni
+   * connessione risulta mancante: 11 sovrapposizioni producono un centinaio di
+   * trace_missing/port_not_connected che sono solo la conseguenza. Elencarli
+   * tutti annega il modello e lo fa girare a vuoto sui sintomi.
+   * Qui si mette davanti la CAUSA e si dichiarano derivati gli altri.
+   */
+  const DERIVED = new Set(["pcb_trace_missing_error", "pcb_port_not_connected_error"]);
+  const routingSkipped = allErrors.some(
+    (e) => e.type === "pcb_autorouting_error" && /skipped/i.test(e.message),
+  );
+  const rootCauses = allErrors.filter((e) => !DERIVED.has(e.type));
+  const derivedCount = allErrors.length - rootCauses.length;
+
+  const errors = routingSkipped && derivedCount > 0
+    ? [
+        {
+          type: "root_cause_first",
+          message:
+            `L'autorouting NON e' stato eseguito a causa di ${rootCauses.length} problemi di ` +
+            `piazzamento: risolvi SOLO quelli e le ${derivedCount} connessioni mancanti ` +
+            `spariranno da sole (sono la conseguenza, non la causa). ` +
+            `Sposta i componenti che si sovrappongono e riporta tutto dentro il bordo scheda.`,
+        },
+        ...rootCauses,
+      ]
+    : allErrors;
 
   const components = circuitJson
     .filter((el) => el.type === "source_component")
