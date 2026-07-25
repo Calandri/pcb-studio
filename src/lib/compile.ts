@@ -6,6 +6,10 @@ export interface CompileSummary {
   errors: Array<{ type: string; message: string }>;
   components: Array<{ name: string; ftype?: string; value?: string }>;
   nets: string[];
+  /** every declared connection, e.g. ".R1 > .pin1 to net.VCC" */
+  connections: string[];
+  /** connections declared in source but with no routed pcb trace */
+  unroutedConnections: string[];
   sourceTraces: number;
   pcbTraces: number;
   message: string;
@@ -33,6 +37,8 @@ export async function compileProject(fsMap: FsMap): Promise<CompileSummary> {
       errors: [{ type: "compile_exception", message }],
       components: [],
       nets: [],
+      connections: [],
+      unroutedConnections: [],
       sourceTraces: 0,
       pcbTraces: 0,
       message: `Compilation failed: ${message}`,
@@ -58,13 +64,39 @@ export async function compileProject(fsMap: FsMap): Promise<CompileSummary> {
     .filter((el) => el.type === "source_net")
     .map((el) => String(el.name ?? "?"));
 
-  const sourceTraces = circuitJson.filter((el) => el.type === "source_trace").length;
-  const pcbTraces = circuitJson.filter((el) => el.type === "pcb_trace").length;
+  const sourceTraceEls = circuitJson.filter((el) => el.type === "source_trace");
+  const pcbTraceEls = circuitJson.filter((el) => el.type === "pcb_trace");
+  const routedSourceIds = new Set(
+    pcbTraceEls.map((el) => String(el.source_trace_id ?? "")).filter(Boolean),
+  );
+
+  const traceLabel = (el: CircuitElement) =>
+    String(el.display_name ?? el.source_trace_id ?? "trace");
+  const connections = sourceTraceEls.map(traceLabel).slice(0, 40);
+  const unroutedConnections = sourceTraceEls
+    .filter((el) => !routedSourceIds.has(String(el.source_trace_id ?? "")))
+    .map(traceLabel)
+    .slice(0, 40);
+
+  const sourceTraces = sourceTraceEls.length;
+  const pcbTraces = pcbTraceEls.length;
 
   const ok = errors.length === 0;
   const message = ok
-    ? `Compile OK: ${components.length} components, ${nets.length} nets, ${pcbTraces} routed pcb traces (${sourceTraces} source traces).`
+    ? `Compile OK: ${components.length} components, ${nets.length} nets, ` +
+      `${pcbTraces} routed pcb traces (${sourceTraces} source traces` +
+      `${unroutedConnections.length ? `, ${unroutedConnections.length} UNROUTED` : ""}).`
     : `Compile finished with ${errors.length} error(s).`;
 
-  return { ok, errors, components, nets, sourceTraces, pcbTraces, message };
+  return {
+    ok,
+    errors,
+    components,
+    nets,
+    connections,
+    unroutedConnections,
+    sourceTraces,
+    pcbTraces,
+    message,
+  };
 }

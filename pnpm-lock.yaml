@@ -79,6 +79,15 @@ importers:
       '@tscircuit/solver-utils':
         specifier: ^0.0.19
         version: 0.0.19(graphics-debug@0.0.96(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
+      circuit-json-to-bom-csv:
+        specifier: ^0.0.14
+        version: 0.0.14(typescript@5.9.3)
+      circuit-json-to-gerber:
+        specifier: ^0.0.85
+        version: 0.0.85(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(tscircuit@0.0.2142(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(three@0.165.0)(typescript@5.9.3))(typescript@5.9.3)
+      circuit-json-to-pnp-csv:
+        specifier: ^0.0.8
+        version: 0.0.8(@tscircuit/soup-util@0.0.41(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(typescript@5.9.3)
       circuit-to-svg:
         specifier: ^0.0.393
         version: 0.0.393(@tscircuit/alphabet@0.0.23(typescript@5.9.3))(typescript@5.9.3)
@@ -2345,6 +2354,11 @@ packages:
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
 
+  circuit-json-to-bom-csv@0.0.14:
+    resolution: {integrity: sha512-YOGEk40KhNkwtdCUCsMIEIYwVzMgdaEivRMUNfW0OKq0zYAMEl4Vc6/Xj2AyF1BKyVLum2Mgwier/DHJrwYgsA==}
+    peerDependencies:
+      typescript: ^5.0.0
+
   circuit-json-to-bpc@0.0.13:
     resolution: {integrity: sha512-3wSMtPa6tJkiBQN4tsm7f0Mb7Wp90X2c8dNbULoDVE4mGGoFqP1DXqBlyvvZZl+4SjqznzQQ0EioLe2SCQTOcg==}
     peerDependencies:
@@ -2367,6 +2381,14 @@ packages:
     peerDependencies:
       typescript: ^5.9.3
 
+  circuit-json-to-gerber@0.0.85:
+    resolution: {integrity: sha512-a9nBmCf1DAb78svcP80OrWwgLlbqMsh/9LKQyvgoFilOBvIqtdJDstdKyTM4dII1F0TKPdSWqntLAnuxEut2rA==}
+    hasBin: true
+    peerDependencies:
+      circuit-json: '*'
+      tscircuit: '*'
+      typescript: ^5.0.0
+
   circuit-json-to-gltf@0.0.107:
     resolution: {integrity: sha512-YuER0b6d+bYk/S/FAClS3RPW3ipo/CQb+OoNZiNkNqObsuRh6N/UxQeo/M1NXh+b0j2tfeL0nlSIkfSmKx9lyQ==}
     peerDependencies:
@@ -2381,6 +2403,12 @@ packages:
         optional: true
       '@resvg/resvg-wasm':
         optional: true
+
+  circuit-json-to-pnp-csv@0.0.8:
+    resolution: {integrity: sha512-m3ycvl5Cx1woE3qNdf457f2r/6WBxBxwbbkYbXbB/a+eEe7Y1Kk9BIq8GBsq7j25MTBeR0mbDMGL6yZGqSAVDA==}
+    peerDependencies:
+      '@tscircuit/soup-util': '*'
+      typescript: ^5.0.0
 
   circuit-json-to-simple-3d@0.0.9:
     resolution: {integrity: sha512-thpCtDb9LpAQfGO+Z0hae19sxVAmJAMYM/It9UTMCtyXC3zoUHwRcp/oqtMO/ZIW+JDBhiR8AHmmtKScL2kW7Q==}
@@ -2914,6 +2942,9 @@ packages:
   for-each@0.3.5:
     resolution: {integrity: sha512-dKx12eRCVIzqCxFGplyFKJMPvLEWgmNtUrpTiJIR5u97zEhRG8ySrtboPHZXx7daLxQVrl643cTzbab2tkQjxg==}
     engines: {node: '>= 0.4'}
+
+  format-si-prefix@0.3.2:
+    resolution: {integrity: sha512-gtCZh4RpmlmEZtyzyvs+FXXWOmdfpQQ0M7mjc81zpAYm5QpsoUDPKhAK+Lj7fJCtZSJpE5xbpCYgspCBxahObQ==}
 
   format-si-unit@0.0.7:
     resolution: {integrity: sha512-wTi2TqGqPG9LvUwhshiMlaert+1kWtxMEzIpKIkVbmOz4bopcDtqpDKV06JT6xpGIquOSFbkV1fQoMHq6UJZ1g==}
@@ -3672,6 +3703,9 @@ packages:
   pako@1.0.11:
     resolution: {integrity: sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==}
 
+  papaparse@5.5.4:
+    resolution: {integrity: sha512-SwzWD9gl/ElwYLCI0nUja1mFJzjq2D8ziShfNBa7zCHzkOozeOGDwHWQ+tvCzEZcewecWZ5U7kUopDnG+DFYEQ==}
+
   parent-module@1.0.1:
     resolution: {integrity: sha512-GQ2EWRpQV8/o+Aw8YqtfZZPfNRWZYkbidE9k5rpl/hC3vtHHBfGm2Ifi6qWV+coDGkrUKZAxE3Lot5kcsRlh+g==}
     engines: {node: '>=6'}
@@ -3685,6 +3719,9 @@ packages:
 
   parsel-js@1.2.3:
     resolution: {integrity: sha512-kJHFmSNnujpusFfVEXjNaoJ09VYHF8Ih0aVUn7Clu+Ug8AFoA2wx7Ezh17JfW4+vhm/lauAd9A+//uFkmydZtQ==}
+
+  parseunit@0.3.1:
+    resolution: {integrity: sha512-kKtTgCJDsktOHsnvRR/B5DhWi3a/RZ5M9XjVQZGbOatcam+/tk4sMOCQ1WM9Rswfr78zWGBgHNbWTyJvfR0ejg==}
 
   path-exists@4.0.0:
     resolution: {integrity: sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w==}
@@ -3734,6 +3771,9 @@ packages:
   polished@4.3.1:
     resolution: {integrity: sha512-OBatVyC/N7SCW/FaDHrSd+vn0o5cS855TOmYi4OkdWUMSJCET/xip//ch8xGUvtr3i44X9LVyWwQlRMTN3pwSA==}
     engines: {node: '>=10'}
+
+  polygon-clipping@0.15.7:
+    resolution: {integrity: sha512-nhfdr83ECBg6xtqOAJab1tbksbBAOMUltN60bU+llHVOL0e5Onm1WpAXXWXVB39L8AJFssoIhEVuy/S90MmotA==}
 
   poppygl@0.0.26:
     resolution: {integrity: sha512-5jnQuKpDCfFT0b9aCm/AidGdzwjw/I3obFpc10j66FY7ZtDPMRekHYU76BzfKDyV5iU8BBWQzxX+8lS9+EEkbg==}
@@ -3816,6 +3856,11 @@ packages:
     resolution: {integrity: sha512-AXJdLo8kgMbimY95O2aKQqsz2iWi9jMgKJhRBAxECE4IFxfcazB2LmzloIoibJI3C12IlY20+KFaLv+71bUJeQ==}
     peerDependencies:
       react: ^19.2.4
+
+  react-dom@19.2.8:
+    resolution: {integrity: sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ==}
+    peerDependencies:
+      react: ^19.2.8
 
   react-error-boundary@6.1.2:
     resolution: {integrity: sha512-3DpCr5HVdZ0caUjYE/kIHBEJN0mNP3ZCgf16c48uJ5TbWjorKVp+YG8W3XqlJ7vJAVNw6wNIImyPXmFydwmyng==}
@@ -3918,6 +3963,10 @@ packages:
     resolution: {integrity: sha512-9nfp2hYpCwOjAN+8TZFGhtWEwgvWHXqESH8qT89AT/lWklpLON22Lc8pEtnpsZz7VmawabSU0gCjnj8aC0euHQ==}
     engines: {node: '>=0.10.0'}
 
+  react@19.2.8:
+    resolution: {integrity: sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==}
+    engines: {node: '>=0.10.0'}
+
   readable-stream@2.3.8:
     resolution: {integrity: sha512-8p0AUk4XODgIewSi0l8Epjs+EVnWiK7NoDIEGU0HhE7+ZyY8D1IMY7odu5lRrFXGg71L15KG8QrPmum45RTtdA==}
 
@@ -3976,6 +4025,9 @@ packages:
     resolution: {integrity: sha512-JZkJMZkAGFFPP2YqXZXPbMlMBgsxzE8ILs4lMIX/2o0L9UBw9O/Y3o6wFw/i9YLapcUJWwqbi3kdxIPdC62TIA==}
     deprecated: Rimraf versions prior to v4 are no longer supported
     hasBin: true
+
+  robust-predicates@3.0.3:
+    resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
 
   rolldown@1.1.5:
     resolution: {integrity: sha512-t9z29cJjXf/vxQ8dyhCSpt6H6aSwHTk8cT5I3iy6SMXuFpk5mB6PL6XfC8PCwrPTx93udwKUm9HRteAlTGBLiA==}
@@ -4124,6 +4176,10 @@ packages:
     resolution: {integrity: sha512-iktSN1BteKEpou3158v25fxGJsNZ4MFeBVV0bZFZ5UZ5NnqusVxVQ1ZrPnCO+2FCmTIBqTD66n0GKMxF6+N/xg==}
     peerDependencies:
       typescript: ^5
+
+  splaytree@3.2.3:
+    resolution: {integrity: sha512-7OXrNWzy6CK+r7Ch9OLPBDTKfB6XlWHjX4P0RU5B3IgFuWPeYN0XtRtlexGRjgbQxpfaUve6jTAwBGWuGntz/w==}
+    engines: {node: '>=18.20 || >=20'}
 
   stable-hash@0.0.5:
     resolution: {integrity: sha512-+L3ccpzibovGXFK+Ap/f8LOS0ahMrHTf3xu7mMLSpEGU0EO9ucaysSylKo9eRDFNhWve/y275iPmIZ4z39a9iA==}
@@ -6170,6 +6226,13 @@ snapshots:
       transformation-matrix: 2.16.1
       zod: 3.25.76
 
+  '@tscircuit/soup-util@0.0.41(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76)':
+    dependencies:
+      circuit-json: 0.0.455(format-si-unit@0.0.7(typescript@5.9.3))
+      parsel-js: 1.2.3
+      transformation-matrix: 2.16.1
+      zod: 3.25.76
+
   '@tybys/wasm-util@0.10.3':
     dependencies:
       tslib: 2.8.1
@@ -6716,6 +6779,15 @@ snapshots:
 
   chownr@1.1.4: {}
 
+  circuit-json-to-bom-csv@0.0.14(typescript@5.9.3):
+    dependencies:
+      format-si-prefix: 0.3.2
+      lucide-react: 1.26.0(react@19.2.8)
+      papaparse: 5.5.4
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+      typescript: 5.9.3
+
   circuit-json-to-bpc@0.0.13(bpc-graph@0.0.57(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(typescript@5.9.3))(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(typescript@5.9.3):
     dependencies:
       bpc-graph: 0.0.57(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(typescript@5.9.3)
@@ -6743,6 +6815,16 @@ snapshots:
       '@tscircuit/math-utils': 0.0.9(typescript@5.9.3)
       typescript: 5.9.3
 
+  circuit-json-to-gerber@0.0.85(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(tscircuit@0.0.2142(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(three@0.165.0)(typescript@5.9.3))(typescript@5.9.3):
+    dependencies:
+      '@tscircuit/alphabet': 0.0.25(typescript@5.9.3)
+      circuit-json: 0.0.455(format-si-unit@0.0.7(typescript@5.9.3))
+      fast-json-stable-stringify: 2.1.0
+      polygon-clipping: 0.15.7
+      transformation-matrix: 3.1.0
+      tscircuit: 0.0.2142(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(three@0.165.0)(typescript@5.9.3)
+      typescript: 5.9.3
+
   circuit-json-to-gltf@0.0.107(@resvg/resvg-js@2.6.2)(@tscircuit/alphabet@0.0.25(typescript@5.9.3))(@tscircuit/circuit-json-util@0.0.100(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(@tscircuit/footprinter@0.0.380(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(typescript@5.9.3))(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(circuit-to-svg@0.0.391(@tscircuit/alphabet@0.0.25(typescript@5.9.3))(typescript@5.9.3))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(three@0.165.0)(typescript@5.9.3):
     dependencies:
       '@jscad/modeling': 2.13.0
@@ -6764,6 +6846,12 @@ snapshots:
       - react
       - react-dom
       - three
+
+  circuit-json-to-pnp-csv@0.0.8(@tscircuit/soup-util@0.0.41(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(typescript@5.9.3):
+    dependencies:
+      '@tscircuit/soup-util': 0.0.41(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76)
+      papaparse: 5.5.4
+      typescript: 5.9.3
 
   circuit-json-to-simple-3d@0.0.9(typescript@5.9.3):
     dependencies:
@@ -7462,6 +7550,10 @@ snapshots:
     dependencies:
       is-callable: 1.2.7
 
+  format-si-prefix@0.3.2:
+    dependencies:
+      parseunit: 0.3.1
+
   format-si-unit@0.0.7(typescript@5.9.3):
     dependencies:
       typescript: 5.9.3
@@ -8017,6 +8109,10 @@ snapshots:
     dependencies:
       react: 18.3.1
 
+  lucide-react@1.26.0(react@19.2.8):
+    dependencies:
+      react: 19.2.8
+
   magic-string@0.30.21:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
@@ -8204,6 +8300,8 @@ snapshots:
 
   pako@1.0.11: {}
 
+  papaparse@5.5.4: {}
+
   parent-module@1.0.1:
     dependencies:
       callsites: 3.1.0
@@ -8220,6 +8318,8 @@ snapshots:
       lines-and-columns: 1.2.4
 
   parsel-js@1.2.3: {}
+
+  parseunit@0.3.1: {}
 
   path-exists@4.0.0: {}
 
@@ -8248,6 +8348,11 @@ snapshots:
   polished@4.3.1:
     dependencies:
       '@babel/runtime': 7.29.7
+
+  polygon-clipping@0.15.7:
+    dependencies:
+      robust-predicates: 3.0.3
+      splaytree: 3.2.3
 
   poppygl@0.0.26(typescript@5.9.3):
     dependencies:
@@ -8351,6 +8456,11 @@ snapshots:
       react: 19.2.4
       scheduler: 0.27.0
 
+  react-dom@19.2.8(react@19.2.8):
+    dependencies:
+      react: 19.2.8
+      scheduler: 0.27.0
+
   react-error-boundary@6.1.2(react@19.2.4):
     dependencies:
       react: 19.2.4
@@ -8443,6 +8553,8 @@ snapshots:
 
   react@19.2.4: {}
 
+  react@19.2.8: {}
+
   readable-stream@2.3.8:
     dependencies:
       core-util-is: 1.0.3
@@ -8520,6 +8632,8 @@ snapshots:
   rimraf@3.0.2:
     dependencies:
       glob: 7.2.3
+
+  robust-predicates@3.0.3: {}
 
   rolldown@1.1.5:
     dependencies:
@@ -8765,6 +8879,8 @@ snapshots:
   spicey@0.0.14(typescript@5.9.3):
     dependencies:
       typescript: 5.9.3
+
+  splaytree@3.2.3: {}
 
   stable-hash@0.0.5: {}
 

@@ -40,6 +40,23 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "search_parts",
+    description:
+      "Search real, in-stock JLCPCB parts (via jlcsearch). Returns LCSC part numbers, " +
+      "package, stock and unit price. Use it whenever the user wants real/orderable " +
+      "components, then reference the chosen part in code with " +
+      'supplierPartNumbers={{ jlcpcb: ["C<lcsc>"] }} and a matching tscircuit footprint.',
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: 'e.g. "NE555", "AMS1117-3.3", "100nF 0603"' },
+        package: { type: "string", description: 'optional package filter, e.g. "SOIC-8", "0603"' },
+        limit: { type: "number", description: "max results (default 8)" },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "compile",
     description:
       "Compile the project to Circuit JSON (includes autorouting). Returns errors, " +
@@ -95,10 +112,51 @@ export async function executeTool(
       };
     }
 
+    case "search_parts":
+      return { result: await searchParts(args) };
+
     case "compile":
       return { result: await compileProject(fsMap) };
 
     default:
       return { result: { error: `Unknown tool: ${name}` } };
+  }
+}
+
+const JLCSEARCH_BASE = "https://jlcsearch.tscircuit.com";
+
+/**
+ * Proxy to jlcsearch. Results are untrusted external data: only whitelisted
+ * fields pass through, strings are truncated, nothing is interpreted.
+ */
+async function searchParts(args: Record<string, unknown>): Promise<unknown> {
+  const query = String(args.query ?? "").slice(0, 120);
+  if (!query.trim()) return { error: "query is required" };
+  const limit = Math.min(Math.max(Number(args.limit) || 8, 1), 20);
+
+  const url = new URL(`${JLCSEARCH_BASE}/api/search`);
+  url.searchParams.set("q", query);
+  url.searchParams.set("limit", String(limit));
+  if (args.package) url.searchParams.set("package", String(args.package).slice(0, 40));
+
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return { error: `jlcsearch HTTP ${res.status}` };
+    const data = (await res.json()) as {
+      components?: Array<Record<string, unknown>>;
+    };
+    const parts = (data.components ?? []).map((c) => ({
+      lcsc: `C${c.lcsc}`,
+      mfr: String(c.mfr ?? "").slice(0, 80),
+      package: String(c.package ?? "").slice(0, 40),
+      description: String(c.description ?? "").slice(0, 120),
+      stock: Number(c.stock) || 0,
+      priceUsd: typeof c.price === "number" ? Math.round(c.price * 10000) / 10000 : null,
+      basicPart: Boolean(c.is_basic),
+      preferred: Boolean(c.is_preferred),
+    }));
+    return { query, parts };
+  } catch (err) {
+    return { error: `jlcsearch unreachable: ${err instanceof Error ? err.message : String(err)}` };
   }
 }

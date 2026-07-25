@@ -120,6 +120,18 @@ export function Studio() {
       <header className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
         <span className="text-sm font-semibold tracking-wide text-neutral-100">PCB Studio</span>
         <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">{PROJECT_ID}</span>
+        <nav className="ml-4 flex gap-2">
+          {(["gerber", "bom", "pnp"] as const).map((kind) => (
+            <a
+              key={kind}
+              href={`/api/export?projectId=${PROJECT_ID}&kind=${kind}`}
+              download
+              className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-600 hover:text-emerald-400"
+            >
+              ⬇ {kind === "gerber" ? "gerber.zip" : `${kind}.csv`}
+            </a>
+          ))}
+        </nav>
         <StatusBadge status={status} />
       </header>
 
