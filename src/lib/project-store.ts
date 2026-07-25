@@ -1,22 +1,6 @@
-"use client";
+export type FsMap = Record<string, string>;
 
-import dynamic from "next/dynamic";
-
-const RunFrame = dynamic(
-  () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
-  { ssr: false, loading: () => <FullscreenMessage text="Caricamento runtime tscircuit..." /> },
-);
-
-function FullscreenMessage({ text }: { text: string }) {
-  return (
-    <div className="flex h-full w-full items-center justify-center text-sm text-neutral-400">
-      {text}
-    </div>
-  );
-}
-
-const DEMO_FS_MAP: Record<string, string> = {
-  "main.tsx": `export default () => (
+const DEMO_MAIN = `export default () => (
   <board width="34mm" height="24mm">
     <chip
       name="U1"
@@ -57,20 +41,33 @@ const DEMO_FS_MAP: Record<string, string> = {
     <trace from=".D1 > .cathode" to="net.GND" />
   </board>
 )
-`,
+`;
+
+// globalThis so the store survives Next dev HMR reloads. Persistence on Neon
+// replaces this in the persistence phase of the masterplan.
+const globalStore = globalThis as unknown as {
+  __pcbStudioProjects?: Map<string, FsMap>;
 };
 
-export function StudioDemo() {
-  return (
-    <div className="h-dvh w-full bg-neutral-950">
-      <RunFrame
-        fsMap={DEMO_FS_MAP}
-        mainComponentPath="main.tsx"
-        defaultToFullScreen
-        showRunButton={false}
-        availableTabs={["schematic", "pcb", "cad", "bom"]}
-        defaultActiveTab="schematic"
-      />
-    </div>
-  );
+function projects(): Map<string, FsMap> {
+  if (!globalStore.__pcbStudioProjects) {
+    globalStore.__pcbStudioProjects = new Map();
+  }
+  return globalStore.__pcbStudioProjects;
+}
+
+export function getProject(projectId: string): FsMap {
+  const store = projects();
+  if (!store.has(projectId)) {
+    store.set(projectId, { "main.tsx": DEMO_MAIN });
+  }
+  return store.get(projectId)!;
+}
+
+export function writeProjectFile(
+  projectId: string,
+  path: string,
+  content: string,
+): void {
+  getProject(projectId)[path] = content;
 }
