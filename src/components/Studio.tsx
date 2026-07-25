@@ -81,6 +81,19 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   }, []);
 
   useEffect(() => {
+    // ATTENZIONE: ?circuit=1 e' un endpoint separato che risponde SOLO col
+    // circuito compilato (niente file ne' messaggi): vanno chiesti in due
+    // chiamate distinte, non unite in una.
+    fetch(`/api/project?projectId=${projectId}&circuit=1`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.compile?.circuitJson) {
+          setCircuitJson(d.compile.circuitJson as unknown[]);
+          setCircuitStale(Boolean(d.compile.stale));
+        }
+      })
+      .catch(() => undefined);
+
     fetch(`/api/project?projectId=${projectId}`)
       .then((r) => r.json())
       .then((d) => {
@@ -268,7 +281,11 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
     <div className="flex h-dvh overflow-hidden bg-canvas">
       <Sidebar
         section={section}
-        onSection={setSection}
+        onSection={(next) => {
+          setSection(next);
+          // a menu ridotto un'icona non aprirebbe nulla: la si espande
+          if (collapsed) toggleCollapsed();
+        }}
         projectId={projectId}
         user={user}
         library={library}
@@ -278,6 +295,12 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         onToggleCollapsed={toggleCollapsed}
         theme={theme}
         onTheme={setTheme}
+        circuitJson={circuitJson}
+        circuitStale={circuitStale}
+        onAsk={(prompt) => {
+          setInput(prompt);
+          setCollapsed(false);
+        }}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">

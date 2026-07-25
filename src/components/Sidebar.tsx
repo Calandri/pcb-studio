@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { InspectPanel } from "./InspectPanel";
 import { ThemeToggle, type Theme } from "./ThemeToggle";
 import { Btn, Chip, EmptyState, Field, SectionLabel, Select } from "./ui";
 
-export type SectionKey = "projects" | "library" | "datasheets" | "team";
+export type SectionKey = "projects" | "library" | "inspect" | "datasheets" | "team";
 
 export interface LibraryItem {
   id: number;
@@ -68,6 +69,17 @@ const NAV: Array<{ key: SectionKey; label: string; icon: React.ReactNode }> = [
     ),
   },
   {
+    key: "inspect",
+    label: "Ispeziona",
+    icon: (
+      <>
+        <circle cx="9" cy="9" r="4.6" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M12.4 12.4 16.6 16.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <path d="M7.2 9h3.6M9 7.2v3.6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      </>
+    ),
+  },
+  {
     key: "datasheets",
     label: "Datasheet",
     icon: (
@@ -102,6 +114,9 @@ export function Sidebar({
   onToggleCollapsed,
   theme,
   onTheme,
+  circuitJson,
+  circuitStale,
+  onAsk,
 }: {
   section: SectionKey;
   onSection: (s: SectionKey) => void;
@@ -114,6 +129,9 @@ export function Sidebar({
   onToggleCollapsed: () => void;
   theme: Theme;
   onTheme: (t: Theme) => void;
+  circuitJson: unknown[] | null;
+  circuitStale: boolean;
+  onAsk: (prompt: string) => void;
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -182,6 +200,7 @@ export function Sidebar({
   const counts: Record<SectionKey, number | undefined> = {
     projects: projects.length || undefined,
     library: library.length || undefined,
+    inspect: undefined,
     datasheets: datasheets.length || undefined,
     team: undefined,
   };
@@ -339,6 +358,10 @@ export function Sidebar({
               )}
             </ul>
           </div>
+        )}
+
+        {section === "inspect" && (
+          <InspectPanel circuitJson={circuitJson} stale={circuitStale} onAsk={onAsk} />
         )}
 
         {section === "datasheets" && (
