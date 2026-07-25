@@ -29,12 +29,23 @@ function useProjectId(): string {
   return new URLSearchParams(window.location.search).get("project") ?? "default";
 }
 
+interface LibraryItem {
+  id: number;
+  name: string;
+  description: string;
+  source: string;
+  version: number;
+}
+
 export function Studio() {
   const projectId = useProjectId();
   const [fsMap, setFsMap] = useState<Record<string, string> | null>(null);
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AgentStatus>("idle");
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   // user/assistant turns only; tool traffic stays server-side per request
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
@@ -44,6 +55,7 @@ export function Studio() {
       .then((r) => r.json())
       .then((d) => {
         setFsMap(d.fsMap);
+        setLibrary((d.library ?? []) as LibraryItem[]);
         const messages = (d.messages ?? []) as Array<{ role: "user" | "assistant"; content: string }>;
         historyRef.current = messages.map((m) => ({ role: m.role, content: m.content }));
         setChat(
@@ -60,6 +72,49 @@ export function Studio() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chat, status]);
+
+  const refreshLibrary = useCallback(async () => {
+    const d = await fetch(`/api/project?projectId=${projectId}`)
+      .then((r) => r.json())
+      .catch(() => null);
+    if (d?.library) setLibrary(d.library as LibraryItem[]);
+  }, [projectId]);
+
+  const uploadDatasheet = useCallback(
+    async (file: File) => {
+      setUploading(true);
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch(`/api/datasheet?projectId=${projectId}`, {
+          method: "POST",
+          body: form,
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+        setChat((c) => [
+          ...c,
+          {
+            kind: "tool",
+            name: "datasheet",
+            detail: `${d.title} caricato (${d.pages} pagine) - id ${d.id}`,
+            ok: true,
+          },
+        ]);
+        setInput(
+          `Ho caricato il datasheet "${d.title}" (id ${d.id}). Crea il componente di libreria corrispondente e usalo nel progetto.`,
+        );
+      } catch (err) {
+        setChat((c) => [
+          ...c,
+          { kind: "error", text: err instanceof Error ? err.message : String(err) },
+        ]);
+      } finally {
+        setUploading(false);
+      }
+    },
+    [projectId],
+  );
 
   const send = useCallback(async () => {
     const text = input.trim();
@@ -102,6 +157,12 @@ export function Studio() {
             setStatus("tool");
             setChat((c) => [...c, { kind: "tool", name: data.name, detail: toolDetail(data.name, data.args) }]);
           } else if (event === "tool_result") {
+            if (
+              data.name === "library_save" ||
+              data.name === "import_component_from_lcsc"
+            ) {
+              void refreshLibrary();
+            }
             setStatus("thinking");
             if (data.name === "compile") {
               setChat((c) => {
@@ -148,8 +209,59 @@ export function Studio() {
             </a>
           ))}
         </nav>
+
+        <div className="ml-4 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setLibraryOpen((v) => !v)}
+            className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-600 hover:text-emerald-400"
+          >
+            📚 Libreria ({library.length})
+          </button>
+          <label className="cursor-pointer rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-600 hover:text-emerald-400">
+            {uploading ? "Caricamento..." : "📄 Datasheet"}
+            <input
+              type="file"
+              accept="application/pdf"
+              className="hidden"
+              disabled={uploading}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void uploadDatasheet(file);
+              }}
+            />
+          </label>
+        </div>
+
         <StatusBadge status={status} />
       </header>
+
+      {libraryOpen && (
+        <div className="border-b border-neutral-800 bg-neutral-900/60 px-4 py-2">
+          {library.length === 0 ? (
+            <p className="text-xs text-neutral-500">
+              Libreria vuota. Chiedi in chat: &quot;importa il componente LCSC C7593 in
+              libreria&quot;, oppure carica un datasheet PDF e fallo creare all&apos;agente.
+            </p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {library.map((c) => (
+                <li
+                  key={c.id}
+                  className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs"
+                  title={c.description}
+                >
+                  <span className="font-mono text-emerald-400">{c.name}</span>
+                  <span className="ml-2 text-neutral-500">
+                    v{c.version} · {c.source}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[380px] shrink-0 flex-col border-r border-neutral-800">
@@ -274,6 +386,18 @@ function toolDetail(name: string, args: Record<string, unknown>): string {
       return String(args.path ?? "");
     case "compile":
       return "compilazione...";
+    case "import_component_from_lcsc":
+      return String(args.lcsc ?? "");
+    case "library_save":
+      return String(args.name ?? "");
+    case "library_read":
+      return String(args.name ?? "");
+    case "read_datasheet":
+      return `#${args.id}${args.search ? ` "${args.search}"` : ""}`;
+    case "fetch_datasheet_url":
+      return String(args.url ?? "").slice(0, 60);
+    case "search_parts":
+      return String(args.query ?? "");
     default:
       return "";
   }

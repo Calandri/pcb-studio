@@ -11,6 +11,7 @@ import {
 } from "circuit-json-to-bom-csv";
 import { convertCircuitJsonToPickAndPlaceCsv } from "circuit-json-to-pnp-csv";
 import JSZip from "jszip";
+import { withLibrary } from "@/lib/agent-tools";
 import { getProject } from "@/lib/project-store";
 
 export const runtime = "nodejs";
@@ -30,7 +31,7 @@ export async function GET(req: Request): Promise<Response> {
 
   let circuitJson: AnyCircuitJson;
   try {
-    circuitJson = (await runTscircuitCode(await getProject(projectId), {
+    circuitJson = (await runTscircuitCode(await withLibrary(await getProject(projectId)), {
       mainComponentPath: "main.tsx",
     })) as AnyCircuitJson;
   } catch (err) {

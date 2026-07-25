@@ -7,7 +7,7 @@ export interface ChatMessage {
 }
 
 const DEMO_MAIN = `export default () => (
-  <board width="34mm" height="24mm">
+  <board width="34mm" height="24mm" autorouter="auto_cloud">
     <chip
       name="U1"
       footprint="soic8"

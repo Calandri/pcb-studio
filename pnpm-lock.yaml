@@ -109,6 +109,9 @@ importers:
       debug:
         specifier: ^4.4.0
         version: 4.4.3
+      easyeda:
+        specifier: ^0.0.276
+        version: 0.0.276(typescript@5.9.3)(zod@3.25.76)
       fflate:
         specifier: ^0.8.2
         version: 0.8.3
@@ -157,6 +160,9 @@ importers:
       tailwind-merge:
         specifier: ^2.6.0
         version: 2.6.1
+      unpdf:
+        specifier: ^1.8.0
+        version: 1.8.0
       zod:
         specifier: 3.25.76
         version: 3.25.76
@@ -2666,6 +2672,13 @@ packages:
   earcut@3.2.3:
     resolution: {integrity: sha512-vnS4AVwp1KHAF13i1vp1/2D5evWy3k5u/iW/B81QVsUZtV8cv2tU0b2VNFlqvh4kYwrFMDdjPCfAmfyJW9y14Q==}
 
+  easyeda@0.0.276:
+    resolution: {integrity: sha512-VgsR+u+PHWVVclhI5gB4XJLtydKZySvAH/mcUK0AkTIl+RXgcSxOIszqIaLojXOD9Wst34b0V6B71eyoAyk1fw==}
+    hasBin: true
+    peerDependencies:
+      typescript: ^5.5.2
+      zod: 3.25.76
+
   electron-to-chromium@1.5.396:
     resolution: {integrity: sha512-yHiw2Y3C3H9U6TMbOfoWK/BPreiOPXRfTWPBwQBoZG6/8TB6eOPnsy5oaRYuatR7Fw2SJ4kKforgufeo7fq0EQ==}
 
@@ -4432,6 +4445,15 @@ packages:
 
   unload@2.2.0:
     resolution: {integrity: sha512-B60uB5TNBLtN6/LsgAf3udH9saB5p7gqJwcFfbOEZ8BcBHnGwCf6G/TGiEqkRAxX7zAFIUtzdrXQSdL3Q/wqNA==}
+
+  unpdf@1.8.0:
+    resolution: {integrity: sha512-jQlkckbe5nKxRHQdbvo9IKHlU6Cjq00UlxxB8lrCIxvS2o5IbAL1wM+4a1Yc3+BIohg9p5AsoaftwO+G4Aq/qQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      '@napi-rs/canvas': ^0.1.69 || ^1.0.0
+    peerDependenciesMeta:
+      '@napi-rs/canvas':
+        optional: true
 
   unrs-resolver@1.12.2:
     resolution: {integrity: sha512-dmlRxBJJayXjqTwC+JtF1HhJmgf3ftQ3YejFcZrf4+KKtJv0qDsK1pjqaaVjG7wJ5NJ6UVP1OqRMQ71Z4C3rxQ==}
@@ -7124,6 +7146,11 @@ snapshots:
 
   earcut@3.2.3: {}
 
+  easyeda@0.0.276(typescript@5.9.3)(zod@3.25.76):
+    dependencies:
+      typescript: 5.9.3
+      zod: 3.25.76
+
   electron-to-chromium@1.5.396: {}
 
   emoji-regex@9.2.2: {}
@@ -9295,6 +9322,8 @@ snapshots:
     dependencies:
       '@babel/runtime': 7.29.7
       detect-node: 2.1.0
+
+  unpdf@1.8.0: {}
 
   unrs-resolver@1.12.2:
     dependencies:
