@@ -1,9 +1,22 @@
 import { neon } from "@neondatabase/serverless";
+import { createHash } from "node:crypto";
 
 export type FsMap = Record<string, string>;
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+/** stable hash of the project sources: validity key for the compile cache */
+export function filesHash(fsMap: FsMap): string {
+  const hash = createHash("sha256");
+  for (const path of Object.keys(fsMap).sort()) {
+    hash.update(path);
+    hash.update("\0");
+    hash.update(fsMap[path]);
+    hash.update("\0");
+  }
+  return hash.digest("hex").slice(0, 32);
 }
 
 const DEMO_MAIN = `export default () => (
@@ -198,4 +211,83 @@ export async function appendChatMessage(
     INSERT INTO chat_messages (project_id, role, content)
     VALUES (${projectId}, ${role}, ${content})
   `;
+}
+
+// ---------------------------------------------------------------------------
+// Compile cache: the routed Circuit JSON validated server-side is the truth —
+// exports are generated from it (Gerber = what the user sees) and the FE can
+// render it instead of re-routing in the browser (routers are not
+// deterministic, so FE and BE compiles could diverge).
+// ---------------------------------------------------------------------------
+
+export interface CompileCache {
+  filesHash: string;
+  circuitJson: unknown[];
+  summary: unknown;
+  createdAt: string;
+}
+
+let compileCacheDdlPromise: Promise<void> | null = null;
+async function ensureCompileCacheTable(
+  sql: NonNullable<ReturnType<typeof db>>,
+): Promise<void> {
+  compileCacheDdlPromise ??= sql`
+    CREATE TABLE IF NOT EXISTS project_compiles (
+      project_id text PRIMARY KEY,
+      files_hash text NOT NULL,
+      circuit_json jsonb NOT NULL,
+      summary jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `.then(() => undefined);
+  await compileCacheDdlPromise;
+}
+
+export async function saveCompileCache(
+  projectId: string,
+  hash: string,
+  circuitJson: unknown[],
+  summary: unknown,
+): Promise<void> {
+  const sql = db();
+  if (!sql) return;
+  await ensureCompileCacheTable(sql);
+  await sql`
+    INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary)
+    VALUES (${projectId}, ${hash}, ${JSON.stringify(circuitJson)}::jsonb,
+            ${JSON.stringify(summary)}::jsonb)
+    ON CONFLICT (project_id)
+    DO UPDATE SET files_hash = EXCLUDED.files_hash,
+                  circuit_json = EXCLUDED.circuit_json,
+                  summary = EXCLUDED.summary,
+                  created_at = now()
+  `;
+}
+
+export async function getCompileCache(
+  projectId: string,
+): Promise<CompileCache | null> {
+  const sql = db();
+  if (!sql) return null;
+  try {
+    await ensureCompileCacheTable(sql);
+    const [row] = (await sql`
+      SELECT files_hash, circuit_json, summary, created_at
+      FROM project_compiles WHERE project_id = ${projectId}
+    `) as Array<{
+      files_hash: string;
+      circuit_json: unknown[];
+      summary: unknown;
+      created_at: string;
+    }>;
+    if (!row) return null;
+    return {
+      filesHash: row.files_hash,
+      circuitJson: row.circuit_json,
+      summary: row.summary,
+      createdAt: row.created_at,
+    };
+  } catch {
+    return null;
+  }
 }

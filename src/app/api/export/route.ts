@@ -13,7 +13,7 @@ import { convertCircuitJsonToPickAndPlaceCsv } from "circuit-json-to-pnp-csv";
 import JSZip from "jszip";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
-import { getProject } from "@/lib/project-store";
+import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -33,16 +33,27 @@ export async function GET(req: Request): Promise<Response> {
   const { ok } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
+  const fsMap = await withLibrary(await getProject(projectId));
+
+  // Gerber/BOM/PnP must come from the SAME routed circuit the agent validated:
+  // if the compile cache matches the current sources, use it instead of
+  // recompiling (autorouters are not deterministic — a fresh compile could
+  // route differently from what the user saw and what was DRC-checked).
   let circuitJson: AnyCircuitJson;
-  try {
-    circuitJson = (await runTscircuitCode(await withLibrary(await getProject(projectId)), {
-      mainComponentPath: "main.tsx",
-    })) as AnyCircuitJson;
-  } catch (err) {
-    return Response.json(
-      { error: `Compile failed: ${err instanceof Error ? err.message : String(err)}` },
-      { status: 422 },
-    );
+  const cache = await getCompileCache(projectId).catch(() => null);
+  if (cache && cache.filesHash === filesHash(fsMap)) {
+    circuitJson = cache.circuitJson as AnyCircuitJson;
+  } else {
+    try {
+      circuitJson = (await runTscircuitCode(fsMap, {
+        mainComponentPath: "main.tsx",
+      })) as AnyCircuitJson;
+    } catch (err) {
+      return Response.json(
+        { error: `Compile failed: ${err instanceof Error ? err.message : String(err)}` },
+        { status: 422 },
+      );
+    }
   }
 
   try {

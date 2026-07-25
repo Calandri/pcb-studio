@@ -12,7 +12,13 @@ import {
   saveDatasheet,
   saveLibraryComponent,
 } from "./library-store";
-import { getProject, writeProjectFile, type FsMap } from "./project-store";
+import {
+  filesHash,
+  getProject,
+  saveCompileCache,
+  writeProjectFile,
+  type FsMap,
+} from "./project-store";
 import { runSimulation } from "./simulate";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
@@ -170,9 +176,20 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: "compile",
     description:
       "Compile the project to Circuit JSON (includes autorouting). Returns errors, " +
-      "components, nets and routed-trace counts. Always compile after editing and " +
-      "fix every error before answering.",
-    input_schema: { type: "object", properties: {}, required: [] },
+      "components, nets, routed-trace counts, per-unrouted-connection pad coordinates, " +
+      "board congestion cells and ratsnest placement metrics. If connections remain " +
+      "unrouted, it automatically retries with a harder local router (rip-up & retry). " +
+      "Always compile after editing and fix every error before answering.",
+    input_schema: {
+      type: "object",
+      properties: {
+        retries: {
+          type: "number",
+          description: "extra routing attempts with escalating effort when unrouted (0-3, default 2)",
+        },
+      },
+      required: [],
+    },
   },
 ];
 
@@ -345,8 +362,17 @@ export async function executeTool(
     case "simulate":
       return { result: runSimulation(String(args.netlist ?? "")) };
 
-    case "compile":
-      return { result: await compileProject(await withLibrary(fsMap)) };
+    case "compile": {
+      const compileFsMap = await withLibrary(fsMap);
+      const { summary, circuitJson } = await compileProject(compileFsMap, {
+        retries: typeof args.retries === "number" ? args.retries : undefined,
+      });
+      // persist the routed truth: exports and the FE viewer render THIS
+      void saveCompileCache(projectId, filesHash(compileFsMap), circuitJson, summary).catch(
+        () => {},
+      );
+      return { result: summary };
+    }
 
     default:
       return { result: { error: `Unknown tool: ${name}` } };

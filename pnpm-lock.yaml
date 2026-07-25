@@ -64,6 +64,9 @@ importers:
       '@tscircuit/assembly-viewer':
         specifier: ^0.0.6
         version: 0.0.6(@tscircuit/core@0.0.1512(2kcxtle6yfurffoh6xgxjraibm))(@tscircuit/props@0.0.592(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(react@19.2.4)(zod@3.25.76))(circuit-to-svg@0.0.393(@tscircuit/alphabet@0.0.23(typescript@5.9.3))(typescript@5.9.3))(react@19.2.4)(typescript@5.9.3)
+      '@tscircuit/capacity-autorouter':
+        specifier: ^0.0.717
+        version: 0.0.717(typescript@5.9.3)
       '@tscircuit/core':
         specifier: ^0.0.1512
         version: 0.0.1512(2kcxtle6yfurffoh6xgxjraibm)

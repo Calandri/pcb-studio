@@ -55,6 +55,11 @@ export const SYSTEM_PROMPT = `You are PCB Studio's electronics design agent. The
 ## Connections
 - The compile result lists every declared connection and flags UNROUTED ones: a design is not done while unroutedConnections is non-empty (add space, move parts, or reroute differently).
 - Every component pin that matters must be connected via <trace>; use named nets for rails and shared signals.
+- Use the compile's GEOMETRIC feedback to place parts instead of guessing:
+  - unroutedDetail: for each unrouted connection, the net name and the exact pad coordinates (x, y, layer) that still need connecting. Move components so those pads face each other with a clear path.
+  - congestion: board cells (A1..F4) with the highest copper coverage. Spread parts out of high-coverage cells or enlarge the board.
+  - ratsnest: totalLengthMm (ideal routed length — lower is better), estimatedCrossings (net segments crossing each other — reduce by moving parts so connected pads are on the same side), longestNets with centroids. When tuning placement, try to reduce crossings and the longest nets.
+- If unrouted persists after your placement fixes, the compile already retried with a harder local router; you can also try autorouterEffortLevel="5x" on the <board> for a final push (slower).
 
 ## Rules
 - ALWAYS read a file before rewriting it; write_file replaces the whole file.
