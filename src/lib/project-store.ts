@@ -231,6 +231,8 @@ let compileCacheDdlPromise: Promise<void> | null = null;
 async function ensureCompileCacheTable(
   sql: NonNullable<ReturnType<typeof db>>,
 ): Promise<void> {
+  // reset on failure: a transient error must not kill the cache for the
+  // lifetime of this lambda instance
   compileCacheDdlPromise ??= sql`
     CREATE TABLE IF NOT EXISTS project_compiles (
       project_id text PRIMARY KEY,
@@ -239,7 +241,12 @@ async function ensureCompileCacheTable(
       summary jsonb,
       created_at timestamptz NOT NULL DEFAULT now()
     )
-  `.then(() => undefined);
+  `
+    .then(() => undefined)
+    .catch((err) => {
+      compileCacheDdlPromise = null;
+      throw err;
+    });
   await compileCacheDdlPromise;
 }
 

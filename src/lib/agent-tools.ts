@@ -367,8 +367,10 @@ export async function executeTool(
       const { summary, circuitJson } = await compileProject(compileFsMap, {
         retries: typeof args.retries === "number" ? args.retries : undefined,
       });
-      // persist the routed truth: exports and the FE viewer render THIS
-      void saveCompileCache(projectId, filesHash(compileFsMap), circuitJson, summary).catch(
+      // persist the routed truth BEFORE the tool_result goes out: the FE
+      // fetches ?circuit=1 as soon as it receives it, and on serverless a
+      // fire-and-forget write could be frozen after the response
+      await saveCompileCache(projectId, filesHash(compileFsMap), circuitJson, summary).catch(
         () => {},
       );
       return { result: summary };

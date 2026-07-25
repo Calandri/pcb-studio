@@ -106,17 +106,21 @@ export async function compileProject(
   // state object: flow narrowing can't track assignments made inside closures
   const state: {
     best: { circuitJson: CircuitElement[]; router: CompileSummary["router"] } | null;
-    bestScore: { unrouted: number; vias: number } | null;
+    bestScore: { errors: number; unrouted: number; vias: number } | null;
     attempts: number;
     fatalError: string | null;
   } = { best: null, bestScore: null, attempts: 0, fatalError: null };
 
   const consider = (circuitJson: CircuitElement[], router: CompileSummary["router"]) => {
     const score = scoreCircuit(circuitJson);
+    const prev = state.bestScore;
     if (
-      !state.bestScore ||
-      score.unrouted < state.bestScore.unrouted ||
-      (score.unrouted === state.bestScore.unrouted && score.vias < state.bestScore.vias)
+      !prev ||
+      score.errors < prev.errors ||
+      (score.errors === prev.errors && score.unrouted < prev.unrouted) ||
+      (score.errors === prev.errors &&
+        score.unrouted === prev.unrouted &&
+        score.vias < prev.vias)
     ) {
       state.best = { circuitJson, router };
       state.bestScore = score;
@@ -161,6 +165,10 @@ export async function compileProject(
   const summary = summarize(circuitJson);
   summary.routingAttempts = state.attempts;
   summary.router = state.best.router;
+  if (state.best.router === "local_retry") {
+    summary.message +=
+      " (routed by the LOCAL pipeline after the board router left connections unrouted — consider autorouterEffortLevel=\"5x\" or adjusting placement)";
+  }
   return { summary, circuitJson };
 }
 
@@ -188,8 +196,12 @@ function emptySummary(
   };
 }
 
-/** unrouted connectivity groups + via count: the score minimized across retries */
-function scoreCircuit(circuitJson: CircuitElement[]): { unrouted: number; vias: number } {
+/** errors + unrouted connectivity groups + via count: score minimized across retries */
+function scoreCircuit(circuitJson: CircuitElement[]): {
+  errors: number;
+  unrouted: number;
+  vias: number;
+} {
   const sourceTraceEls = circuitJson.filter((el) => el.type === "source_trace");
   const pcbTraceEls = circuitJson.filter((el) => el.type === "pcb_trace");
   const routedSourceIds = new Set(
@@ -206,6 +218,7 @@ function scoreCircuit(circuitJson: CircuitElement[]): { unrouted: number; vias: 
     sourceTraceEls.map(groupKey).filter((k) => !routedGroups.has(k)),
   );
   return {
+    errors: circuitJson.filter((el) => el.type.endsWith("_error")).length,
     unrouted: unroutedGroups.size,
     vias: circuitJson.filter((el) => el.type === "pcb_via").length,
   };
