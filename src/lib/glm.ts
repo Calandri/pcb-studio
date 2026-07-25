@@ -14,5 +14,5 @@ export function glmClient(): Anthropic {
 
 // GLM's thinking eats the whole output budget if max_tokens is small: keep
 // max_tokens comfortably above the thinking budget.
-export const GLM_MAX_TOKENS = 32000;
+export const GLM_MAX_TOKENS = 64000;
 export const GLM_THINKING_BUDGET = 8000;

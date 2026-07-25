@@ -73,10 +73,27 @@ export async function compileProject(fsMap: FsMap): Promise<CompileSummary> {
   const traceLabel = (el: CircuitElement) =>
     String(el.display_name ?? el.source_trace_id ?? "trace");
   const connections = sourceTraceEls.map(traceLabel).slice(0, 40);
-  const unroutedConnections = sourceTraceEls
-    .filter((el) => !routedSourceIds.has(String(el.source_trace_id ?? "")))
-    .map(traceLabel)
-    .slice(0, 40);
+
+  // Routing is judged per CONNECTIVITY GROUP, not per source trace: traces on
+  // the same net get merged by the router, so only some of them carry the
+  // pcb_trace. A group counts as unrouted only if NONE of its traces routed.
+  const groupKey = (el: CircuitElement) =>
+    String(el.subcircuit_connectivity_map_key ?? el.source_trace_id ?? "");
+  const routedGroups = new Set(
+    sourceTraceEls
+      .filter((el) => routedSourceIds.has(String(el.source_trace_id ?? "")))
+      .map(groupKey),
+  );
+  const unroutedGroupSeen = new Set<string>();
+  const unroutedConnections: string[] = [];
+  for (const el of sourceTraceEls) {
+    const key = groupKey(el);
+    if (!routedGroups.has(key) && !unroutedGroupSeen.has(key)) {
+      unroutedGroupSeen.add(key);
+      unroutedConnections.push(traceLabel(el));
+      if (unroutedConnections.length >= 40) break;
+    }
+  }
 
   const sourceTraces = sourceTraceEls.length;
   const pcbTraces = pcbTraceEls.length;

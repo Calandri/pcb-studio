@@ -23,9 +23,14 @@ type ChatItem =
 
 type AgentStatus = "idle" | "thinking" | "tool";
 
-const PROJECT_ID = "default";
+function useProjectId(): string {
+  // finche' non c'e' il selettore progetti (fase persistenza L3), ?project=<id>
+  if (typeof window === "undefined") return "default";
+  return new URLSearchParams(window.location.search).get("project") ?? "default";
+}
 
 export function Studio() {
+  const projectId = useProjectId();
   const [fsMap, setFsMap] = useState<Record<string, string> | null>(null);
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
@@ -35,7 +40,7 @@ export function Studio() {
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
 
   useEffect(() => {
-    fetch(`/api/project?projectId=${PROJECT_ID}`)
+    fetch(`/api/project?projectId=${projectId}`)
       .then((r) => r.json())
       .then((d) => {
         setFsMap(d.fsMap);
@@ -69,7 +74,7 @@ export function Studio() {
       const res = await fetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId: PROJECT_ID, history: historyRef.current }),
+        body: JSON.stringify({ projectId, history: historyRef.current }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -130,12 +135,12 @@ export function Studio() {
     <div className="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
       <header className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
         <span className="text-sm font-semibold tracking-wide text-neutral-100">PCB Studio</span>
-        <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">{PROJECT_ID}</span>
+        <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">{projectId}</span>
         <nav className="ml-4 flex gap-2">
           {(["gerber", "bom", "pnp"] as const).map((kind) => (
             <a
               key={kind}
-              href={`/api/export?projectId=${PROJECT_ID}&kind=${kind}`}
+              href={`/api/export?projectId=${projectId}&kind=${kind}`}
               download
               className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:border-emerald-600 hover:text-emerald-400"
             >
