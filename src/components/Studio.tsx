@@ -59,6 +59,14 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   // server-validated routed circuit (truth); stale after any file change
   const [circuitJson, setCircuitJson] = useState<unknown[] | null>(null);
   const [circuitStale, setCircuitStale] = useState(false);
+  // per-section routing variants (Fase 3.d), refreshed after compile/pick
+  const [variantSections, setVariantSections] = useState<
+    Array<{
+      section: string;
+      picked: string | null;
+      candidates: Array<{ label: string; traces: number; vias: number; lengthMm: number; drc: number }>;
+    }>
+  >([]);
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
 
   useEffect(() => {
@@ -258,7 +266,26 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                     }
                   })
                   .catch(() => {});
+                fetch(`/api/variants?projectId=${projectId}`)
+                  .then((r) => r.json())
+                  .then((d) => setVariantSections(d.sections ?? []))
+                  .catch(() => {});
               }
+            }
+            if (data.name === "pick_variant" && data.result?.ok) {
+              fetch(`/api/project?projectId=${projectId}&circuit=1`)
+                .then((r) => r.json())
+                .then((d) => {
+                  if (d.compile?.circuitJson) {
+                    setCircuitJson(d.compile.circuitJson as unknown[]);
+                    setCircuitStale(false);
+                  }
+                })
+                .catch(() => {});
+              fetch(`/api/variants?projectId=${projectId}`)
+                .then((r) => r.json())
+                .then((d) => setVariantSections(d.sections ?? []))
+                .catch(() => {});
             }
           } else if (event === "file_changed") {
             setFsMap((m) => ({ ...(m ?? {}), [data.path]: data.content }));
@@ -381,6 +408,38 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                   </span>
                 )}
               </div>
+              {variantSections.length > 0 && (
+                <div className="absolute bottom-2.5 left-[108px] right-3 z-10 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[#d3d8e2] bg-white/95 px-3 py-1.5 shadow-sm">
+                  {variantSections.map((sec) => (
+                    <div key={sec.section} className="flex items-center gap-1.5">
+                      <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-[#667085]">
+                        {sec.section}
+                      </span>
+                      {sec.candidates.map((cand) => {
+                        const active = cand.label === sec.picked;
+                        return (
+                          <button
+                            key={cand.label}
+                            type="button"
+                            title={`${cand.vias} via · ${cand.lengthMm}mm · ${cand.drc} violazioni DRC`}
+                            onClick={() =>
+                              setInput(`usa la variante ${cand.label} per la sezione ${sec.section}`)
+                            }
+                            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
+                              active
+                                ? "border-[#0f9d76] bg-[#e8f7f2] text-[#0b7d5e]"
+                                : "border-[#d3d8e2] text-[#475467] hover:border-[#0f9d76] hover:text-[#0b7d5e]"
+                            }`}
+                          >
+                            {cand.label}
+                            {cand.drc > 0 ? ` ⚠${cand.drc}` : ""}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
               {circuitJson && !circuitStale ? (
                 <CircuitJsonPreview
                   circuitJson={circuitJson as never}

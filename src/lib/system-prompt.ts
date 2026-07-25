@@ -55,6 +55,8 @@ export const SYSTEM_PROMPT = `You are PCB Studio's electronics design agent. The
 ## Connections
 - The compile result lists every declared connection and flags UNROUTED ones: a design is not done while unroutedConnections is non-empty (add space, move parts, or reroute differently).
 - Every component pin that matters must be connected via <trace>; use named nets for rails and shared signals.
+- Organize the board into FUNCTIONAL SECTIONS with <group name="power" subcircuit> ... </group> (e.g. power, mcu, sensors, connectors): put the section's components AND its traces inside the group. The variant engine re-routes each section independently with JLCPCB design rules and gives you per-section candidates.
+- compile({variants: 3}) returns variantReport: for every section, the routing candidates with vias/length/DRC score and which one was auto-picked. Use it on non-trivial boards. If another variant looks better (or the user asks), switch it with pick_variant(section, variant) — the viewer and the export update immediately. When a section is marked closeCall, mention the alternatives to the user.
 - Use the compile's GEOMETRIC feedback to place parts instead of guessing:
   - unroutedDetail: for each unrouted connection, the net name and the exact pad coordinates (x, y, layer) that still need connecting. Move components so those pads face each other with a clear path.
   - congestion: board cells (A1..F4) with the highest copper coverage. Spread parts out of high-coverage cells or enlarge the board.
