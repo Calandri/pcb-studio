@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
+    "@auth/neon-adapter": "^1.11.3",
+    "@aws-sdk/client-ses": "^3.1095.0",
     "@neondatabase/serverless": "^1.1.0",
     "@radix-ui/react-alert-dialog": "^1.1.6",
     "@radix-ui/react-checkbox": "^1.1.4",
@@ -49,6 +51,7 @@
     "marked": "^15.0.12",
     "minimatch": "^10.0.3",
     "next": "16.2.11",
+    "next-auth": "5.0.0-beta.32",
     "posthog-js": "^1.253.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",

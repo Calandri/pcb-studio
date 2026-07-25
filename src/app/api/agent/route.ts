@@ -1,6 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { executeTool, TOOL_DEFINITIONS } from "@/lib/agent-tools";
+import { claimProject, currentViewer, projectAccess } from "@/lib/acl";
+import { listUserOrganizations } from "@/lib/org-store";
 import {
   appendChatMessage,
   countRecentRunsByIp,
@@ -56,6 +58,16 @@ export async function POST(req: Request): Promise<Response> {
   if (history[history.length - 1].role !== "user") {
     return jsonError("history must end with a user message", 400);
   }
+
+  // solo utenti autenticati con accesso in modifica al progetto: l'agente
+  // consuma token e riscrive i file
+  const viewer = await currentViewer();
+  if (!viewer) return jsonError("unauthenticated", 401);
+  if ((await projectAccess(projectId, viewer)) !== "edit") {
+    return jsonError("forbidden: no edit access to this project", 403);
+  }
+  const orgs = await listUserOrganizations(viewer.userId).catch(() => []);
+  await claimProject(projectId, viewer, orgs[0]?.id ?? null).catch(() => {});
 
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";

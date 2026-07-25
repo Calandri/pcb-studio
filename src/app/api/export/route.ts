@@ -12,6 +12,7 @@ import {
 import { convertCircuitJsonToPickAndPlaceCsv } from "circuit-json-to-pnp-csv";
 import JSZip from "jszip";
 import { withLibrary } from "@/lib/agent-tools";
+import { requireProjectAccess } from "@/lib/acl";
 import { getProject } from "@/lib/project-store";
 
 export const runtime = "nodejs";
@@ -28,6 +29,9 @@ export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const projectId = url.searchParams.get("projectId") ?? "default";
   const kind = url.searchParams.get("kind");
+
+  const { ok } = await requireProjectAccess(projectId, "view");
+  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
   let circuitJson: AnyCircuitJson;
   try {

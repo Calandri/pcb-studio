@@ -1,3 +1,4 @@
+import { requireProjectAccess } from "@/lib/acl";
 import { extractDatasheetText } from "@/lib/datasheet";
 import { listDatasheets, saveDatasheet } from "@/lib/library-store";
 
@@ -8,12 +9,16 @@ const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
 
 export async function GET(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "default";
+  const { ok } = await requireProjectAccess(projectId, "view");
+  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
   return Response.json({ datasheets: await listDatasheets(projectId) });
 }
 
 /** Upload di un datasheet PDF: il testo estratto diventa contesto per l'agente. */
 export async function POST(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "default";
+  const { ok } = await requireProjectAccess(projectId, "edit");
+  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");

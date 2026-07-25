@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { WorkspaceBar } from "./WorkspaceBar";
 
 const RunFrame = dynamic(
   () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
@@ -37,7 +38,7 @@ interface LibraryItem {
   version: number;
 }
 
-export function Studio() {
+export function Studio({ user }: { user: { email: string; name: string | null } }) {
   const projectId = useProjectId();
   const [fsMap, setFsMap] = useState<Record<string, string> | null>(null);
   const [chat, setChat] = useState<ChatItem[]>([]);
@@ -194,7 +195,7 @@ export function Studio() {
 
   return (
     <div className="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
-      <header className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
+      <header className="relative flex items-center gap-3 border-b border-neutral-800 px-4 py-2">
         <span className="text-sm font-semibold tracking-wide text-neutral-100">PCB Studio</span>
         <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">{projectId}</span>
         <nav className="ml-4 flex gap-2">
@@ -234,6 +235,7 @@ export function Studio() {
           </label>
         </div>
 
+        <WorkspaceBar projectId={projectId} user={user} />
         <StatusBadge status={status} />
       </header>
 
