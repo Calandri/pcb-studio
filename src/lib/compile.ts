@@ -192,9 +192,18 @@ export interface CompileOptions {
  * chance of being closed.
  */
 export async function compileProject(
-  fsMap: FsMap,
+  projectFsMap: FsMap,
   opts: CompileOptions = {},
 ): Promise<CompileResult> {
+  /*
+   * Le modifiche manuali dell'utente (manual-edits.json) entrano QUI e solo
+   * qui: si compilano sorgenti in cui le posizioni fissate a mano sono diventate
+   * prop schX/schY e pcbX/pcbY, mentre i file del progetto restano quelli
+   * scritti dall'agente. E' cio' che permette all'agente di riscrivere main.tsx
+   * quante volte vuole senza cancellare il lavoro di posizionamento dell'umano.
+   */
+  const fsMap = applyManualEditsToFsMap(projectFsMap);
+  const manualEdits = countManualEdits(parseManualEdits(projectFsMap[MANUAL_EDITS_PATH]));
   const retries = Math.max(0, Math.min(opts.retries ?? 2, 3));
   const variantCount = Math.max(0, Math.min(opts.variants ?? 1, 4));
   const efforts = [2, 5, 10];
@@ -327,7 +336,11 @@ export async function compileProject(
   }
 
   const circuitJson = state.best.circuitJson;
-  const summary = summarize(circuitJson, fsMap);
+  // si analizzano le sorgenti VERE, non quelle con le prop iniettate: altrimenti
+  // ogni componente fissato a mano verrebbe segnalato come schX/schY di troppo
+  // e l'agente inseguirebbe un difetto che non esiste
+  const summary = summarize(circuitJson, projectFsMap);
+  summary.manualEdits = manualEdits;
   summary.routingAttempts = state.attempts;
   summary.router = state.best.router;
   if (state.variants) {
@@ -385,6 +398,7 @@ function emptySummary(
     ratsnest: { totalLengthMm: 0, estimatedCrossings: 0, longestNets: [] },
     schematicQuality: emptySchematicQuality(),
     erc: emptyErcReport(),
+    manualEdits: { schematic: 0, pcb: 0, traceHints: 0, total: 0 },
     footprintProvenance: emptyFootprintProvenance(),
     targets: {
       errors: 1,
@@ -1005,6 +1019,9 @@ function summarize(
     ratsnest,
     schematicQuality,
     erc,
+    // il conteggio vero lo scrive compileProject, che ha in mano il file delle
+    // modifiche manuali; qui si riassume un circuito gia' compilato
+    manualEdits: { schematic: 0, pcb: 0, traceHints: 0, total: 0 },
     footprintProvenance,
     targets,
     routingAttempts: 1,

@@ -42,6 +42,16 @@ export async function GET(req: Request): Promise<Response> {
     "## Regole per lo schematico (vincolanti)",
     SCHEMATIC_RULES.split("\n").slice(1).join("\n"),
     "",
+    // L'agente esterno riceve solo main.tsx: senza questa riga rimetterebbe le
+    // mani sulle coordinate di componenti che l'utente ha piazzato apposta, e
+    // il risultato sarebbe invisibile perche' le modifiche manuali vincono.
+    ...(summary.manualEdits.total > 0
+      ? [
+          "## Componenti fissati a mano dall'utente",
+          `L'utente ha fissato ${summary.manualEdits.schematic} simboli sullo schematico, ${summary.manualEdits.pcb} componenti sul rame e instradato ${summary.manualEdits.traceHints} piste a mano. Quelle posizioni vivono fuori da main.tsx e vincono su qualsiasi pcbX/pcbY tu scriva: cambia il circuito, non il piazzamento di quei componenti.`,
+          "",
+        ]
+      : []),
     "## Stato dell'ultima compilazione",
     `- esito: ${summary.message}`,
     `- componenti: ${components.length}`,

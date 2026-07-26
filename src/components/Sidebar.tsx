@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { InspectPanel } from "./InspectPanel";
 import { Btn, Chip, EmptyState, Field, SectionLabel, Select } from "./ui";
+import { LogoMark } from "./Logo";
 
 export type SectionKey = "projects" | "library" | "inspect" | "datasheets" | "team";
 
@@ -219,17 +220,9 @@ export function Sidebar({
           type="button"
           onClick={onToggleCollapsed}
           title={collapsed ? "Espandi il menu" : "Riduci il menu"}
-          className="group relative flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-brand text-ink transition-transform hover:scale-105"
+          className="group relative flex h-8 w-8 flex-none items-center justify-center rounded-lg transition-transform hover:scale-105"
         >
-          <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 group-hover:opacity-0">
-            <path
-              d="M3 10h3.2l1.6-4 2.4 8 1.8-4H17"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          <LogoMark size={32} className="group-hover:opacity-0" />
           <svg
             viewBox="0 0 20 20"
             fill="none"
@@ -245,7 +238,10 @@ export function Sidebar({
           </svg>
         </button>
         {!collapsed && (
-          <span className="text-[15px] font-bold tracking-tight text-text">PCB Studio</span>
+          <span className="flex flex-col leading-none">
+            <span className="text-[15px] font-bold tracking-tight text-text">PCB Studio</span>
+            <span className="mt-[3px] text-[10px] text-faint">AI PCB Designer</span>
+          </span>
         )}
       </div>
 

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth, signIn } from "@/auth";
+import { LogoMark } from "@/components/Logo";
 
 export default async function LoginPage({
   searchParams,
@@ -14,19 +15,10 @@ export default async function LoginPage({
     <div className="flex h-dvh items-center justify-center bg-canvas px-6">
       <div className="rise w-full max-w-[380px]">
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand text-ink shadow-sm">
-            <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5">
-              <path
-                d="M3 10h3.2l1.6-4 2.4 8 1.8-4H17"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </div>
+          <LogoMark size={52} className="shadow-sm" />
           <h1 className="mt-3 text-xl font-bold tracking-tight text-text">PCB Studio</h1>
-          <p className="mt-1 text-sm leading-relaxed text-muted">
+          <p className="mt-0.5 text-sm text-faint">AI PCB Designer</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted">
             Progetta schede elettroniche conversando con un agente AI.
           </p>
         </div>

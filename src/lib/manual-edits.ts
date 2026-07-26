@@ -204,7 +204,7 @@ export function readAttr(attrs: string, attr: string): string | null {
   const re = new RegExp(`(^|\\s)${attr}\\s*=\\s*`, "g");
   const m = re.exec(attrs);
   if (!m) return null;
-  let i = m.index + m[0].length;
+  const i = m.index + m[0].length;
   if (attrs[i] === '"' || attrs[i] === "'") {
     const q = attrs[i];
     const end = attrs.indexOf(q, i + 1);
@@ -403,7 +403,7 @@ export function applyEditEvents({
   edits: ManualEdits;
   events: EditEvent[];
 }): ManualEdits {
-  let out: ManualEdits = {
+  const out: ManualEdits = {
     schematic_placements: [...edits.schematic_placements],
     pcb_placements: [...edits.pcb_placements],
     manual_trace_hints: [...edits.manual_trace_hints],

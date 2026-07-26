@@ -6,11 +6,15 @@ import { buildBoardReport, type BoardReport } from "@/lib/board-report";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
 import { PcbView } from "./PcbView";
+import { SchematicView } from "./SchematicView";
+import { EditorBar } from "./workspace/EditorBar";
+import { useManualEditor } from "./workspace/useManualEditor";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
 import { Footer, Header, type BoardTab } from "./workspace/Chrome";
 import { LeftRail, type SchematicSummary, type SheetNet } from "./workspace/LeftRail";
 import { extractComponents } from "@/lib/inspect";
+import { applyManualEditsToFsMap } from "@/lib/manual-edits";
 import { BomView } from "./workspace/BomView";
 import { PartCard } from "./workspace/PartCard";
 import { PartPicker } from "./workspace/PartPicker";
@@ -183,6 +187,22 @@ export function Studio({
     }
   }, [projectId, loadCircuit, loadVariants]);
 
+  /*
+   * Editor manuale. Applicare una modifica significa scriverla in
+   * manual-edits.json e ricompilare: spostare un componente cambia il rame, e
+   * le piste devono seguirlo, altrimenti si guarderebbe uno sbroglio che non
+   * corrisponde piu' alla scheda.
+   */
+  const editor = useManualEditor({ projectId, onApplied: recompile });
+
+  // "instrada" esiste solo sul rame: cambiando scheda la modalita' resterebbe
+  // accesa senza fare nulla, e il mouse sembrerebbe rotto
+  useEffect(() => {
+    if (tab !== "pcb" && editor.mode === "route") editor.setMode("move");
+    if (tab !== "pcb" && tab !== "schematic" && editor.mode !== "view") {
+      editor.setMode("view");
+    }
+  }, [tab, editor]);
 
   useEffect(() => {
     void loadCircuit();
@@ -547,9 +567,21 @@ export function Studio({
                   flags={flags}
                   layer={layer}
                   xray={xray}
+                  mode={editor.mode}
+                  editEvents={editor.pending}
+                  onEditEvents={editor.replacePending}
+                  editorKey={editor.viewerKey}
                 />
               ) : tab === "bom" ? (
                 <BomView projectId={projectId} />
+              ) : tab === "schematic" ? (
+                <SchematicView
+                  circuitJson={circuitJson}
+                  editing={editor.mode !== "view"}
+                  editEvents={editor.pending}
+                  onEditEvent={editor.pushPending}
+                  viewerKey={editor.viewerKey}
+                />
               ) : (
                 <CircuitJsonPreview
                   key={tab}
@@ -561,7 +593,10 @@ export function Studio({
               )
             ) : fsMap && circuitChecked ? (
               <RunFrame
-                fsMap={fsMap}
+                // anche la compilazione di ripiego nel browser deve vedere le
+                // posizioni fissate a mano, altrimenti il disegno salta
+                // indietro ogni volta che manca la compilazione del server
+                fsMap={applyManualEditsToFsMap(fsMap)}
                 mainComponentPath="main.tsx"
                 showRunButton={false}
                 availableTabs={["schematic", "pcb", "cad", "bom"]}
@@ -573,6 +608,12 @@ export function Studio({
               </div>
             )}
           </div>
+
+          {/* modifiche a mano: solo dove hanno senso, cioe' dove si vede la
+              geometria. In 3D e sulla distinta non c'e' niente da spostare */}
+          {(tab === "pcb" || tab === "schematic") && circuitJson && !circuitStale && (
+            <EditorBar editor={editor} scope={tab === "pcb" ? "pcb" : "schematic"} />
+          )}
 
           {/* cosa si sta guardando, sempre leggibile sopra il canvas (non
               sulla distinta, dove coprirebbe le righe della tabella) */}
@@ -647,7 +688,8 @@ export function Studio({
 
           {/* varianti di sbroglio per sezione: si scelgono chiedendole all'agente */}
           {tab === "pcb" && variantSections.length > 0 && (
-            <div className="absolute inset-x-[34px] top-[18px] flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[12px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3.5 py-2 backdrop-blur">
+            /* sotto la barra dell'editor, che occupa la fascia in alto */
+            <div className="absolute inset-x-[34px] top-[86px] flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[12px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3.5 py-2 backdrop-blur">
               {variantSections.map((sec) => (
                 <div key={sec.section} className="flex items-center gap-1.5">
                   <span className="font-mono text-[10px] font-semibold tracking-[0.05em] text-[#5F726C]">

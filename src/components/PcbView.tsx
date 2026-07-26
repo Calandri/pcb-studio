@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useMemo } from "react";
+import type { EditEvent } from "@/lib/manual-edits";
 import type { ViewFlags } from "./ViewPresets";
 
 // Il viewer PCB usato direttamente (non via RunFrame): e' l'unico modo per
@@ -29,16 +30,28 @@ export function PcbView({
   flags,
   layer,
   xray = 0,
+  mode = "view",
+  editEvents,
+  onEditEvents,
+  editorKey = 0,
 }: {
   circuitJson: unknown[];
   flags: ViewFlags;
   layer: string;
   /** 0-100: schiarisce la vista per far emergere il rame degli strati sotto */
   xray?: number;
+  /** view = sola lettura, move = sposta componenti, route = disegna piste */
+  mode?: "view" | "move" | "route";
+  /** modifiche non ancora salvate, ridisegnate dal viewer (vista controllata) */
+  editEvents?: EditEvent[];
+  onEditEvents?: (events: EditEvent[]) => void;
+  /** cambia per rimontare il viewer dopo un annulla */
+  editorKey?: number;
 }) {
   const viewerKey = useMemo(
-    () => `${layer}-${Object.values(flags).map((v) => (v ? 1 : 0)).join("")}`,
-    [layer, flags],
+    () =>
+      `${layer}-${Object.values(flags).map((v) => (v ? 1 : 0)).join("")}-${mode}-${editorKey}`,
+    [layer, flags, mode, editorKey],
   );
 
   return (
@@ -53,7 +66,20 @@ export function PcbView({
       <PcbViewer
         key={viewerKey}
         circuitJson={circuitJson as never}
-        initialState={{ ...flags, selected_layer: layer } as never}
+        initialState={
+          {
+            ...flags,
+            selected_layer: layer,
+            // la modalita' arriva da fuori, dalla barra dell'editor: la
+            // barra interna del viewer resta ma non e' piu' l'unico comando
+            in_edit_mode: mode !== "view",
+            in_move_footprint_mode: mode === "move",
+            in_draw_trace_mode: mode === "route",
+          } as never
+        }
+        allowEditing={mode !== "view"}
+        editEvents={editEvents as never}
+        onEditEventsChanged={onEditEvents as never}
         clickToInteractEnabled={false}
       />
     </div>

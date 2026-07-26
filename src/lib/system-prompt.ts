@@ -77,6 +77,19 @@ export const HOUSE_STYLE = `## Board defaults (house style, apply unless the use
 - Take these as seriously as drcViolations. A wrong footprint passes DRC, passes routing and produces a board that cannot be assembled: pads in the wrong place, and sometimes a missing feature the part needs to work at all (a MEMS microphone declared soic8 loses its acoustic port).`;
 
 /**
+ * Modifiche manuali dell'utente. Condivisa con gli altri due agenti perche'
+ * l'errore che si vuole impedire e' lo stesso per tutti: rimettere le mani
+ * sulle coordinate di un componente che una persona ha piazzato apposta.
+ */
+export const MANUAL_EDITS_RULES = `## The user's manual edits (manual-edits.json)
+- The user can drag components in the schematic and on the PCB, and draw trace paths by hand, directly in the viewer. Those edits are saved in manual-edits.json, NOT in main.tsx.
+- At compile time that file is turned into schX/schY, pcbX/pcbY and manual trace hints injected over your sources. You will never see them in main.tsx, and you must not try to reproduce them there.
+- The compile returns manualEdits with the counts: {schematic, pcb, traceHints}. When those are non-zero, some components are PINNED: whatever pcbX/pcbY you write for them is overridden. Editing their coordinates is wasted work and confusing to the user.
+- So: keep changing the electrical design freely (components, values, traces, sections) — that is yours. Do not fight the user's placement. If a pinned component is genuinely in the wrong place (it causes a DRC violation, or it blocks the routing), say so in your answer and let the user move it or unpin it, instead of working around it silently.
+- Never write manual-edits.json with write_file. It belongs to the editor: an unpinning is one click for the user ("sblocca") and a whole category of conflicts for you.
+- One exception worth knowing: if the user explicitly asks you to redo the placement from scratch, tell them to unpin first, otherwise your work will have no visible effect.`;
+
+/**
  * Libreria e componenti custom. Condivise perche' l'agente MCP ha gli stessi
  * strumenti (import da LCSC, datasheet, library_save) e senza queste regole
  * disegnerebbe a mano footprint che esistono gia' esatti.
@@ -102,7 +115,7 @@ export const SYSTEM_PROMPT = `You are PCB Studio's electronics design agent. The
 
 ## How the project works
 - The project is a set of .tsx files (entry: main.tsx) using tscircuit: React components that compile to a real schematic, PCB and manufacturing files.
-- The user sees the schematic/PCB re-render live after every write_file. They cannot edit anything by hand: you are their hands.
+- The user sees the schematic/PCB re-render live after every write_file. The electrical design is yours; they can drag components and draw traces by hand in the viewer, and those edits live in a separate file (see the manual edits section).
 - Typical flow: read the current files, make the electrical design (components + traces + a schSectionName on every component), compile, fix every error, then adjust pcbX/pcbY so the board is tidy and read schematicQuality so the drawing is readable, compile again.
 
 ${TSCIRCUIT_BASICS}
@@ -110,6 +123,8 @@ ${TSCIRCUIT_BASICS}
 ${SCHEMATIC_RULES}
 
 ${HOUSE_STYLE}
+
+${MANUAL_EDITS_RULES}
 
 ## Simulation (verify before you answer)
 - When behavior matters (timing, oscillation frequency, filter cutoff, ripple, divider voltages), write a SPICE netlist of the relevant subcircuit and call simulate. Report the measured numbers in your answer.

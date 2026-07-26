@@ -1,6 +1,7 @@
 "use client";
 
 import type { BoardReport } from "@/lib/board-report";
+import { LogoMark } from "../Logo";
 
 export type BoardTab = "schematic" | "pcb" | "cad" | "bom";
 
@@ -42,9 +43,7 @@ export function Header({
         title="Progetti, libreria e condivisione"
         className="group flex h-full flex-none items-center gap-[11px] border-r border-line pr-[18px] text-left"
       >
-        <span className="grid h-[30px] w-[30px] flex-none place-items-center rounded-lg border border-[#2B4B41] bg-gradient-to-br from-[#123027] to-[#0E1A17] transition-colors group-hover:border-brand">
-          <span className="h-3 w-3 rounded-[2px] border-[1.5px] border-brand" />
-        </span>
+        <LogoMark size={30} className="flex-none transition-transform group-hover:scale-105" />
         <span className="flex flex-col gap-0.5 whitespace-nowrap">
           <span className="text-sm font-semibold tracking-[-0.01em]">{projectId}</span>
           <span className="font-mono text-[10px] tracking-[0.03em] text-faint">
