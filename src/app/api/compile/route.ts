@@ -1,6 +1,7 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
 import { compileProject } from "@/lib/compile";
+import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
   filesHash,
   getProject,
@@ -40,7 +41,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const { summary, circuitJson, variants } = await compileProject(fsMap);
     const hash = filesHash(fsMap);
-    await saveCompileCache(projectId, hash, circuitJson, summary).catch(() => {});
+    await saveCompileCache(projectId, hash, circuitJson, summary, CHECKS_ENGINE_VERSION).catch(() => {});
     if (variants) {
       await saveRouteVariants(
         projectId,

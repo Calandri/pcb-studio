@@ -11,6 +11,7 @@ import JSZip from "jszip";
 import { bomToCsv, buildBom } from "@/lib/bom";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
+import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
 
 export const runtime = "nodejs";
@@ -49,7 +50,14 @@ export async function GET(req: Request): Promise<Response> {
 
   let circuitJson: AnyCircuitJson;
   const cache = await getCompileCache(projectId).catch(() => null);
-  if (cache && (wantsComponentsOnly || cache.filesHash === filesHash(fsMap))) {
+  // la cache e' verita' solo se prodotta dagli stessi sorgenti E dagli stessi
+  // controlli: se il motore di check e' piu' nuovo si ricompila, niente Gerber
+  // da una verifica stantia
+  if (
+    cache &&
+    (wantsComponentsOnly ||
+      (cache.filesHash === filesHash(fsMap) && cache.engineVersion >= CHECKS_ENGINE_VERSION))
+  ) {
     circuitJson = cache.circuitJson as AnyCircuitJson;
   } else {
     try {

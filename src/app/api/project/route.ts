@@ -1,4 +1,5 @@
 import { requireProjectAccess } from "@/lib/acl";
+import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { getChatMessages, getCompileCache, getProject } from "@/lib/project-store";
 import { listLibraryComponents } from "@/lib/library-store";
 
@@ -17,7 +18,16 @@ export async function GET(req: Request): Promise<Response> {
     return Response.json({
       projectId,
       compile: cache
-        ? { filesHash: cache.filesHash, circuitJson: cache.circuitJson, summary: cache.summary, createdAt: cache.createdAt }
+        ? {
+            filesHash: cache.filesHash,
+            circuitJson: cache.circuitJson,
+            summary: cache.summary,
+            createdAt: cache.createdAt,
+            engineVersion: cache.engineVersion,
+            currentEngineVersion: CHECKS_ENGINE_VERSION,
+            // i controlli sono piu' nuovi della verifica: la scheda va ricontrollata
+            checksStale: cache.engineVersion < CHECKS_ENGINE_VERSION,
+          }
         : null,
     });
   }

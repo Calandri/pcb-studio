@@ -253,6 +253,8 @@ export interface CompileCache {
   circuitJson: unknown[];
   summary: unknown;
   createdAt: string;
+  /** versione del motore di controlli che ha prodotto questa cache */
+  engineVersion: number;
 }
 
 let compileCacheDdlPromise: Promise<void> | null = null;
@@ -270,6 +272,10 @@ async function ensureCompileCacheTable(
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `
+    .then(
+      () =>
+        sql`ALTER TABLE project_compiles ADD COLUMN IF NOT EXISTS engine_version int NOT NULL DEFAULT 0`,
+    )
     .then(() => undefined)
     .catch((err) => {
       compileCacheDdlPromise = null;
@@ -283,18 +289,20 @@ export async function saveCompileCache(
   hash: string,
   circuitJson: unknown[],
   summary: unknown,
+  engineVersion = 0,
 ): Promise<void> {
   const sql = db();
   if (!sql) return;
   await ensureCompileCacheTable(sql);
   await sql`
-    INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary)
+    INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version)
     VALUES (${projectId}, ${hash}, ${JSON.stringify(circuitJson)}::jsonb,
-            ${JSON.stringify(summary)}::jsonb)
+            ${JSON.stringify(summary)}::jsonb, ${engineVersion})
     ON CONFLICT (project_id)
     DO UPDATE SET files_hash = EXCLUDED.files_hash,
                   circuit_json = EXCLUDED.circuit_json,
                   summary = EXCLUDED.summary,
+                  engine_version = EXCLUDED.engine_version,
                   created_at = now()
   `;
 }
@@ -307,13 +315,14 @@ export async function getCompileCache(
   try {
     await ensureCompileCacheTable(sql);
     const [row] = (await sql`
-      SELECT files_hash, circuit_json, summary, created_at
+      SELECT files_hash, circuit_json, summary, created_at, engine_version
       FROM project_compiles WHERE project_id = ${projectId}
     `) as Array<{
       files_hash: string;
       circuit_json: unknown[];
       summary: unknown;
       created_at: string;
+      engine_version: number;
     }>;
     if (!row) return null;
     return {
@@ -321,6 +330,7 @@ export async function getCompileCache(
       circuitJson: row.circuit_json,
       summary: row.summary,
       createdAt: row.created_at,
+      engineVersion: Number(row.engine_version ?? 0),
     };
   } catch {
     return null;

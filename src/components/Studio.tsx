@@ -69,6 +69,9 @@ export function Studio({
   // server-validated routed circuit (truth); stale after any file change
   const [circuitJson, setCircuitJson] = useState<unknown[] | null>(null);
   const [circuitStale, setCircuitStale] = useState(false);
+  // i controlli sono piu' nuovi della verifica in cache: da ricontrollare
+  const [checksStale, setChecksStale] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
   // finche' non si sa se esiste una compilazione salvata non si monta il
   // fallback: altrimenti parte una compilazione nel browser (senza la libreria
   // condivisa, che vive sul server) che fallisce e sparisce un attimo dopo
@@ -162,6 +165,37 @@ export function Studio({
     setCircuitJson(d.compile.circuitJson as unknown[]);
     setSummary(d.compile.summary ?? null);
     setCircuitStale(Boolean(d.compile.stale));
+    setChecksStale(Boolean(d.compile.checksStale));
+  }, [projectId]);
+
+  /** rivaluta la scheda coi controlli correnti SENZA ri-routare */
+  const recheck = useCallback(async () => {
+    setRechecking(true);
+    try {
+      const res = await fetch("/api/recheck", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const d = await res.json();
+      if (d.error) {
+        setChat((c) => [...c, { kind: "error", text: String(d.error) }]);
+      } else {
+        setChecksStale(false);
+        setSummary(d.summary ?? null);
+        setChat((c) => [
+          ...c,
+          {
+            kind: "tool",
+            name: "ricontrollo",
+            detail: d.summary?.message ?? "scheda rivalutata coi controlli correnti",
+            ok: Boolean(d.summary?.ok ?? true),
+          },
+        ]);
+      }
+    } finally {
+      setRechecking(false);
+    }
   }, [projectId]);
 
   const loadVariants = useCallback(async () => {
@@ -604,6 +638,25 @@ export function Studio({
               backgroundSize: "28px 28px",
             }}
           />
+
+          {/* i controlli sono piu' nuovi della verifica in cache: ricontrolla,
+              senza ri-routare — le piste non si toccano, si rivaluta e basta */}
+          {checksStale && circuitJson && (
+            <div className="absolute right-4 top-3 z-10 flex items-center gap-2.5 rounded-[10px] border border-[#4A3A16] bg-[rgba(32,24,8,0.92)] px-3 py-2 backdrop-blur">
+              <span className="h-1.5 w-1.5 flex-none rounded-full bg-[#E8B23B]" />
+              <span className="text-[11px] leading-tight text-[#E8C97A]">
+                Controlli aggiornati: questa verifica e' vecchia
+              </span>
+              <button
+                type="button"
+                onClick={() => void recheck()}
+                disabled={rechecking}
+                className="flex-none rounded-md bg-[#E8B23B] px-2.5 py-1 text-[11px] font-semibold text-[#1E1608] transition-colors hover:bg-[#F0C556] disabled:opacity-50"
+              >
+                {rechecking ? "Ricontrollo…" : "Ricontrolla"}
+              </button>
+            </div>
+          )}
 
           <div className="absolute inset-0">
             {circuitJson && (!circuitStale || tab === "cad") ? (

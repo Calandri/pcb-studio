@@ -22,6 +22,7 @@ import {
   writeProjectFile,
   type FsMap,
 } from "./project-store";
+import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { runSimulation } from "./simulate";
 import { compileProject, summarizeCircuit } from "./compile";
 import {
@@ -463,7 +464,7 @@ export async function executeTool(
       // fetches ?circuit=1 as soon as it receives it, and on serverless a
       // fire-and-forget write could be frozen after the response
       const hash = filesHash(compileFsMap);
-      await saveCompileCache(projectId, hash, circuitJson, summary).catch(() => {});
+      await saveCompileCache(projectId, hash, circuitJson, summary, CHECKS_ENGINE_VERSION).catch(() => {});
       if (variants) {
         await saveRouteVariants(
           projectId,
@@ -548,7 +549,7 @@ export async function executeTool(
       }
       await markVariantPicked(projectId, sectionKey, label).catch(() => {});
       const summary = summarizeCircuit(assembled, fsMap);
-      await saveCompileCache(projectId, cache.filesHash, assembled, summary).catch(() => {});
+      await saveCompileCache(projectId, cache.filesHash, assembled, summary, CHECKS_ENGINE_VERSION).catch(() => {});
       return {
         result: {
           ok: true,
