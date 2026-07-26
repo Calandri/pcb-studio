@@ -633,17 +633,15 @@ export function Studio({
                   onUnlink={editor.addUnlink}
                 />
               ) : (
-                // tab 3D: il designer di scocche (scheda in GLB dal server,
-                // scocche e moduli importati come mesh nella stessa scena)
-                <EnclosureCanvas
-                  projectId={projectId}
-                  boardWidthMm={report.widthMm}
-                  boardHeightMm={report.heightMm}
-                  parts={parts}
-                  meshes={enclosures.meshes}
-                  showEnclosures={showEnclosures}
-                  enclosureOpacity={enclosureOpacity}
-                  explodedMm={explodedMm}
+                /* tab 3D: il designer di scocche non e' ancora nel repo
+                   (EnclosureCanvas e il worker JSCAD sono rimasti non
+                   tracciati), quindi qui resta la vista 3D di tscircuit */
+                <CircuitJsonPreview
+                  key={tab}
+                  circuitJson={circuitJson as never}
+                  defaultActiveTab={tab as never}
+                  availableTabs={[tab] as never}
+                  showToggleFullScreen={false}
                 />
               )
             ) : fsMap && circuitChecked ? (
