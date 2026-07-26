@@ -258,13 +258,23 @@ export function runDrcChecks(
   const ESCAPE_MAX_DEG = 12;
   const padAt = (x: number, y: number): El | null =>
     circuitJson.find((el) => {
-      if (el.type !== "pcb_smtpad") return false;
-      const px = num(el.x);
-      const py = num(el.y);
-      if (px === null || py === null) return false;
-      const w = (num(el.width) ?? (num(el.radius) ?? 0) * 2) / 2;
-      const h = (num(el.height) ?? (num(el.radius) ?? 0) * 2) / 2;
-      return Math.abs(px - x) <= w + 1e-6 && Math.abs(py - y) <= h + 1e-6;
+      if (el.type === "pcb_smtpad") {
+        const px = num(el.x);
+        const py = num(el.y);
+        if (px === null || py === null) return false;
+        const w = (num(el.width) ?? (num(el.radius) ?? 0) * 2) / 2;
+        const h = (num(el.height) ?? (num(el.radius) ?? 0) * 2) / 2;
+        return Math.abs(px - x) <= w + 1e-6 && Math.abs(py - y) <= h + 1e-6;
+      }
+      // anche i fori passanti (pinheader, connettori): l'uscita dritta vale uguale
+      if (el.type === "pcb_plated_hole") {
+        const px = num(el.x);
+        const py = num(el.y);
+        const d = num(el.outer_diameter) ?? num(el.hole_diameter);
+        if (px === null || py === null || d === null) return false;
+        return Math.hypot(px - x, py - y) <= d / 2 + 1e-6;
+      }
+      return false;
     }) ?? null;
 
   for (const el of circuitJson) {
