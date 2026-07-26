@@ -198,7 +198,9 @@ body {
     opacity: 0.25;
   }
 }
-/* solo l'opacita': il rombo ha gia' un transform di rotazione tutto suo */
+/* solo l'opacita': cosi' vale sia per il nostro cerchio sia per il rombo del
+   vecchio viewer, che resta nelle modalita' di modifica */
+.drc-marker,
 .viewer-shell svg[style*="mix-blend-mode: difference"] > rect {
   animation: drc-pulse 1.6s ease-in-out infinite;
 }

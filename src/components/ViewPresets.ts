@@ -16,6 +16,8 @@ export interface ViewFlags {
   is_showing_autorouting: boolean;
   is_showing_pcb_groups: boolean;
   is_showing_group_anchor_offsets: boolean;
+  /** apertura dello stencil: dove va la pasta salda, piu' piccola del pad */
+  is_showing_paste_mask: boolean;
 }
 
 const NONE: ViewFlags = {
@@ -30,6 +32,7 @@ const NONE: ViewFlags = {
   is_showing_autorouting: false,
   is_showing_pcb_groups: false,
   is_showing_group_anchor_offsets: false,
+  is_showing_paste_mask: false,
 };
 
 export interface ViewPreset {
@@ -56,7 +59,12 @@ export const VIEW_PRESETS: ViewPreset[] = [
     label: "Montaggio",
     description:
       "La scheda come esce dalla fabbrica: la vernice verde copre il rame (quindi le piste non si vedono, esattamente come dal vero) e restano scoperti pad e serigrafia.",
-    flags: { ...NONE, is_showing_silkscreen: true, is_showing_solder_mask: true },
+    flags: {
+      ...NONE,
+      is_showing_silkscreen: true,
+      is_showing_solder_mask: true,
+      is_showing_paste_mask: true,
+    },
   },
   {
     key: "copper",
@@ -92,12 +100,13 @@ export const VIEW_PRESETS: ViewPreset[] = [
     key: "fabrication",
     label: "Produzione",
     description:
-      "Quello che vede il fabbricante: serigrafia, mask, note e quote di fabbricazione.",
+      "Quello che vede il fabbricante: serigrafia, vernice verde, pasta salda e note di fabbricazione. La pasta salda e' l'apertura dello stencil, sempre piu' piccola del pad.",
     flags: {
       ...NONE,
       is_showing_silkscreen: true,
       is_showing_solder_mask: true,
       is_showing_fabrication_notes: true,
+      is_showing_paste_mask: true,
     },
   },
   {
@@ -116,6 +125,7 @@ export const VIEW_PRESETS: ViewPreset[] = [
       is_showing_autorouting: false,
       is_showing_pcb_groups: true,
       is_showing_group_anchor_offsets: false,
+      is_showing_paste_mask: true,
     },
   },
 ];

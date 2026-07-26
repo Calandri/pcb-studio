@@ -6,6 +6,7 @@ import { buildBoardReport, type BoardReport } from "@/lib/board-report";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
 import { PcbView } from "./PcbView";
+import { BoardCanvas } from "./board/BoardCanvas";
 import { SchematicView } from "./SchematicView";
 import { EditorBar } from "./workspace/EditorBar";
 import { useManualEditor } from "./workspace/useManualEditor";
@@ -47,6 +48,19 @@ const CircuitJsonPreview = dynamic(
   },
 );
 
+const EnclosureCanvas = dynamic(
+  () =>
+    import("./workspace/EnclosureCanvas").then((m) => m.EnclosureCanvas),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
+        <span className="dot dot-busy" /> Avvio del designer 3D...
+      </div>
+    ),
+  },
+);
+
 export function Studio({
   projectId,
   user,
@@ -80,6 +94,12 @@ export function Studio({
   const [layer, setLayer] = useState("top");
   const [xray, setXray] = useState(0);
   const [partId, setPartId] = useState<string | null>(null);
+  // designer scocche: stato scena 3D (le mesh arrivano dalla Fase 3/4)
+  const [showEnclosures, setShowEnclosures] = useState(true);
+  const [enclosureOpacity, setEnclosureOpacity] = useState(0.92);
+  const [explodedMm, setExplodedMm] = useState(0);
+  /** componente sotto il mouse sulla scheda: e' lui a comandare la scheda info */
+  const [hoverPartId, setHoverPartId] = useState<string | null>(null);
   /**
    * Il cartellino che spiega la vista serve la prima volta e poi copre la
    * scheda: si chiude con la X e non torna piu'. Parte chiuso e si apre dopo il
@@ -265,6 +285,25 @@ export function Studio({
     return markers.length > 0 ? [...circuitJson, ...markers] : circuitJson;
   }, [circuitJson, summary]);
 
+  const drcMarkers = useMemo(() => {
+    const violations =
+      (summary as { drcViolations?: Array<{ rule: string; message: string; points?: Array<{ x: number; y: number }> }> } | null)
+        ?.drcViolations ?? [];
+    const out: Array<{ id: string; x: number; y: number; message: string; severity: "err" | "warn" }> = [];
+    for (const v of violations) {
+      for (const point of v.points ?? []) {
+        out.push({
+          id: `${v.rule}-${out.length}`,
+          x: point.x,
+          y: point.y,
+          message: v.message,
+          severity: /via|escape/.test(v.rule) ? "warn" : "err",
+        });
+      }
+    }
+    return out;
+  }, [summary]);
+
   const parts = useMemo(() => extractComponents(circuitJson), [circuitJson]);
   const sheetNets = useMemo(
     () =>
@@ -280,7 +319,10 @@ export function Studio({
     const q = (summary as { schematicQuality?: SchematicSummary } | null)?.schematicQuality;
     return q ?? null;
   }, [summary]);
-  const part = useMemo(() => parts.find((p) => p.id === partId) ?? null, [parts, partId]);
+  const part = useMemo(
+    () => parts.find((p) => p.id === (hoverPartId ?? partId)) ?? null,
+    [parts, hoverPartId, partId],
+  );
 
   // larghezze effettivamente usate sul rame: senza questo, guardando il canvas
   // non si capisce quale pista e' di potenza e quale di segnale
@@ -562,16 +604,33 @@ export function Studio({
           <div className="absolute inset-0">
             {circuitJson && !circuitStale ? (
               tab === "pcb" ? (
-                <PcbView
-                  circuitJson={circuitWithIssues ?? circuitJson}
-                  flags={flags}
-                  layer={layer}
-                  xray={xray}
-                  mode={editor.mode}
-                  editEvents={editor.pending}
-                  onEditEvents={editor.replacePending}
-                  editorKey={editor.viewerKey}
-                />
+                editor.mode === "view" ? (
+                  // in sola lettura si usa il visualizzatore nostro: hover sui
+                  // componenti, pasta salda, segnalazioni al punto giusto.
+                  // Per spostare e instradare a mano resta quello di tscircuit,
+                  // che di quelle modifiche sa gia' tutto.
+                  <BoardCanvas
+                    circuitJson={circuitJson}
+                    flags={flags}
+                    layer={layer}
+                    xray={xray}
+                    markers={drcMarkers}
+                    hoveredComponentId={hoverPartId}
+                    onHoverComponent={setHoverPartId}
+                    onPickComponent={setPartId}
+                  />
+                ) : (
+                  <PcbView
+                    circuitJson={circuitWithIssues ?? circuitJson}
+                    flags={flags}
+                    layer={layer}
+                    xray={xray}
+                    mode={editor.mode}
+                    editEvents={editor.pending}
+                    onEditEvents={editor.replacePending}
+                    editorKey={editor.viewerKey}
+                  />
+                )
               ) : tab === "bom" ? (
                 <BomView projectId={projectId} />
               ) : tab === "schematic" ? (
