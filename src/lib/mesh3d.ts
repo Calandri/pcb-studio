@@ -65,9 +65,15 @@ export function meshDataFromGeometry(geometry: THREE.BufferGeometry): MeshData {
  * Normalizza il gruppo della scheda: qualunque sia l'orientamento del GLB in
  * ingresso, la scheda finisce sdraiata sul piano XZ (Y verso l'alto), centrata
  * sull'origine, con la faccia inferiore a y=0. L'asse con l'estensione minima
- * e' lo spessore della scheda (~1,6 mm): quello va in verticale.
+ * e' lo spessore della scheda (~1,6 mm): quello va in verticale. Se le
+ * dimensioni attese sono note (mm) e il modello e' in un'altra unita' (metri,
+ * unita' arbitrarie), lo scala: scocche e scheda devono parlare la stessa
+ * unita' di misura.
  */
-export function normalizeBoardGroup(group: THREE.Group): void {
+export function normalizeBoardGroup(
+  group: THREE.Group,
+  expected?: { widthMm: number | null; heightMm: number | null },
+): void {
   group.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(group);
   if (box.isEmpty()) return;
@@ -81,6 +87,20 @@ export function normalizeBoardGroup(group: THREE.Group): void {
     group.rotation.z = Math.PI / 2;
   }
   // se lo spessore e' gia' su Y non serve ruotare
+
+  if (expected?.widthMm && expected?.heightMm) {
+    group.updateMatrixWorld(true);
+    const before = new THREE.Box3().setFromObject(group).getSize(new THREE.Vector3());
+    const modelHoriz = Math.max(before.x, before.z);
+    const expectedHoriz = Math.max(expected.widthMm, expected.heightMm);
+    if (modelHoriz > 0) {
+      const ratio = expectedHoriz / modelHoriz;
+      // tolleranza larga: la sagoma puo' includere elementi fuori bordo
+      if (ratio < 0.7 || ratio > 1.4) {
+        group.scale.multiplyScalar(ratio);
+      }
+    }
+  }
 
   group.updateMatrixWorld(true);
   const aligned = new THREE.Box3().setFromObject(group);

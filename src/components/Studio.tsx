@@ -20,6 +20,7 @@ import { BomView } from "./workspace/BomView";
 import { PartCard } from "./workspace/PartCard";
 import { PartPicker } from "./workspace/PartPicker";
 import { RightRail, type ErcSummary } from "./workspace/RightRail";
+import { useEnclosures } from "@/lib/use-enclosures";
 
 const RunFrame = dynamic(
   () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
@@ -36,13 +37,14 @@ const RunFrame = dynamic(
   },
 );
 
-const CircuitJsonPreview = dynamic(
-  () => import("@tscircuit/runframe/runner").then((m) => m.CircuitJsonPreview),
+const EnclosureCanvas = dynamic(
+  () =>
+    import("./workspace/EnclosureCanvas").then((m) => m.EnclosureCanvas),
   {
     ssr: false,
     loading: () => (
       <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
-        <span className="dot dot-busy" /> Caricamento vista...
+        <span className="dot dot-busy" /> Avvio del designer 3D...
       </div>
     ),
   },
@@ -241,6 +243,9 @@ export function Studio({
     () => buildBoardReport(circuitJson, summary),
     [circuitJson, summary],
   );
+
+  // designer scocche: record dal server + mesh compilate per il canvas 3D
+  const enclosures = useEnclosures(projectId, report.widthMm, report.heightMm);
 
   /**
    * Le segnalazioni del DRC diventano elementi di errore dentro il Circuit
@@ -505,6 +510,9 @@ export function Studio({
               void loadCircuit();
               void loadVariants();
             }
+            if (data.name === "enclosure_save" && data.result?.ok) {
+              void enclosures.reload();
+            }
           } else if (event === "file_changed") {
             setFsMap((m) => ({ ...(m ?? {}), [data.path]: data.content }));
             setCircuitStale(true);
@@ -535,7 +543,7 @@ export function Studio({
       if (assistantText) historyRef.current.push({ role: "assistant", content: assistantText });
       setStatus("idle");
     }
-  }, [input, status, projectId, refreshLibrary, loadCircuit, loadVariants]);
+  }, [input, status, projectId, refreshLibrary, loadCircuit, loadVariants, enclosures]);
 
   const activePreset =
     VIEW_PRESETS.find((p) => p.key === preset) ?? null;
@@ -575,6 +583,15 @@ export function Studio({
           xray={xray}
           onXray={setXray}
           onAskCopilot={() => setCopilot(true)}
+          enclosures={enclosures}
+          scene={{
+            showEnclosures,
+            onShowEnclosures: setShowEnclosures,
+            opacity: enclosureOpacity,
+            onOpacity: setEnclosureOpacity,
+            explodedMm,
+            onExplodedMm: setExplodedMm,
+          }}
         />
 
         <section className="viewer-shell @container relative min-w-0 overflow-hidden bg-[radial-gradient(1100px_700px_at_52%_42%,#0D1614_0%,#070A09_72%)]">
@@ -589,7 +606,7 @@ export function Studio({
           />
 
           <div className="absolute inset-0">
-            {circuitJson && !circuitStale ? (
+            {circuitJson && (!circuitStale || tab === "cad") ? (
               tab === "pcb" ? (
                 editor.mode === "view" ? (
                   // in sola lettura si usa il visualizzatore nostro: hover sui
@@ -633,15 +650,17 @@ export function Studio({
                   onUnlink={editor.addUnlink}
                 />
               ) : (
-                /* tab 3D: il designer di scocche non e' ancora nel repo
-                   (EnclosureCanvas e il worker JSCAD sono rimasti non
-                   tracciati), quindi qui resta la vista 3D di tscircuit */
-                <CircuitJsonPreview
-                  key={tab}
-                  circuitJson={circuitJson as never}
-                  defaultActiveTab={tab as never}
-                  availableTabs={[tab] as never}
-                  showToggleFullScreen={false}
+                // tab 3D: il designer di scocche (scheda in GLB dal server,
+                // scocche e moduli importati come mesh nella stessa scena)
+                <EnclosureCanvas
+                  projectId={projectId}
+                  boardWidthMm={report.widthMm}
+                  boardHeightMm={report.heightMm}
+                  parts={parts}
+                  meshes={enclosures.meshes}
+                  showEnclosures={showEnclosures}
+                  enclosureOpacity={enclosureOpacity}
+                  explodedMm={explodedMm}
                 />
               )
             ) : fsMap && circuitChecked ? (
@@ -784,6 +803,7 @@ export function Studio({
           onShowOnBoard={showOnBoard}
           onRecompile={() => void recompile()}
           recompiling={recompiling}
+          enclosures={enclosures}
         />
         {copilot && (
           <aside className="flex min-h-0 min-w-0 flex-col border-l border-line bg-surface">
@@ -919,6 +939,8 @@ function toolLabel(name: string): string {
     fetch_datasheet_url: "Scarico datasheet",
     list_datasheets: "Elenco datasheet",
     simulate: "Simulazione SPICE",
+    enclosure_save: "Scocca 3D",
+    enclosure_list: "Lettura scocche",
   };
   return labels[name] ?? name;
 }
@@ -942,6 +964,8 @@ function toolDetail(name: string, args: Record<string, unknown>): string {
       return String(args.url ?? "").slice(0, 46);
     case "search_parts":
       return String(args.query ?? "");
+    case "enclosure_save":
+      return String(args.name ?? "");
     default:
       return "";
   }

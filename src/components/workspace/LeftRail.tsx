@@ -1,7 +1,11 @@
 "use client";
 
+import { useRef } from "react";
 import type { BoardReport } from "@/lib/board-report";
 import type { InspectComponent } from "@/lib/inspect";
+import type { EnclosuresApi } from "@/lib/use-enclosures";
+import { CAD_IMPORT_EXTENSIONS } from "@/lib/cad-import";
+import { BOARD_THICKNESS_MM } from "@/lib/enclosure-template";
 import { VIEW_PRESETS, type ViewPreset } from "../ViewPresets";
 import type { BoardTab } from "./Chrome";
 
@@ -65,6 +69,8 @@ export function LeftRail({
   xray,
   onXray,
   onAskCopilot,
+  enclosures,
+  scene,
 }: {
   tab: BoardTab;
   projectId: string;
@@ -79,6 +85,16 @@ export function LeftRail({
   xray: number;
   onXray: (v: number) => void;
   onAskCopilot: () => void;
+  /** designer scocche: stato e azioni (solo tab 3D) */
+  enclosures: EnclosuresApi | null;
+  scene: {
+    showEnclosures: boolean;
+    onShowEnclosures: (v: boolean) => void;
+    opacity: number;
+    onOpacity: (v: number) => void;
+    explodedMm: number;
+    onExplodedMm: (v: number) => void;
+  } | null;
 }) {
   const hint =
     tab === "pcb"
@@ -86,7 +102,7 @@ export function LeftRail({
       : tab === "schematic"
         ? "«questo schema si legge bene?»"
         : tab === "cad"
-          ? "«questi componenti ci stanno?»"
+          ? "«progettami la scocca»"
           : "«quanto costano i componenti?»";
 
   return (
@@ -107,7 +123,14 @@ export function LeftRail({
         {tab === "schematic" && (
           <SchematicSections schematic={schematic} nets={nets} projectId={projectId} />
         )}
-        {tab === "cad" && <ThreeDSections report={report} parts={parts} />}
+        {tab === "cad" && enclosures && scene && (
+          <EnclosureSections
+            report={report}
+            parts={parts}
+            enclosures={enclosures}
+            scene={scene}
+          />
+        )}
         {tab === "bom" && <BomSections report={report} parts={parts} />}
       </div>
 
@@ -392,22 +415,163 @@ const NET_COLOR: Record<SheetNet["role"], string> = {
 
 // ---------------------------------------------------------------------- 3D
 
-function ThreeDSections({
+function EnclosureSections({
   report,
   parts,
+  enclosures,
+  scene,
 }: {
   report: BoardReport;
   parts: InspectComponent[];
+  enclosures: EnclosuresApi;
+  scene: {
+    showEnclosures: boolean;
+    onShowEnclosures: (v: boolean) => void;
+    opacity: number;
+    onOpacity: (v: number) => void;
+    explodedMm: number;
+    onExplodedMm: (v: number) => void;
+  };
 }) {
+  const fileInput = useRef<HTMLInputElement>(null);
+  const { params, setParams, records, errors, dismissError, busy, patchRecord, remove } =
+    enclosures;
+  const boardW = report.widthMm;
+  const boardH = report.heightMm;
+  const outerW = boardW ? boardW + 2 * (params.clearanceMm + params.wallMm) : null;
+  const outerH = boardH ? boardH + 2 * (params.clearanceMm + params.wallMm) : null;
+  const totalH =
+    params.bottomHeightMm + params.wallMm + BOARD_THICKNESS_MM + params.splitMm +
+    params.topHeightMm + params.wallMm;
   const top = parts.filter((p) => p.layer !== "bottom").length;
   const bottom = parts.length - top;
-  const biggest = [...parts]
-    .filter((p) => p.widthMm && p.heightMm)
-    .sort((a, b) => b.widthMm! * b.heightMm! - a.widthMm! * a.heightMm!)
-    .slice(0, 5);
+  const modules = records.filter((r) => r.kind !== "parametric");
 
   return (
     <>
+      <section className="flex flex-col gap-2.5">
+        <SectionHead title="SCENA" />
+        <div className="flex flex-col gap-3 rounded-2xl border border-line bg-gradient-to-b from-[#0E1514] to-[#0A0F0E] px-3 py-3.5">
+          <ToggleRow
+            label="Scocche e moduli"
+            checked={scene.showEnclosures}
+            onChange={scene.onShowEnclosures}
+          />
+          <SliderRow
+            label="Scocca trasparente"
+            value={Math.round((1 - scene.opacity) * 100)}
+            min={0}
+            max={80}
+            unit="%"
+            onChange={(v) => scene.onOpacity(1 - v / 100)}
+          />
+          <SliderRow
+            label="Vista esplosa"
+            value={scene.explodedMm}
+            min={0}
+            max={40}
+            unit=" mm"
+            onChange={scene.onExplodedMm}
+          />
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-2.5">
+        <SectionHead
+          title="SCOCCA PARAMETRICA"
+          aside={outerW && outerH ? `${outerW.toFixed(0)}×${outerH.toFixed(0)}×${totalH.toFixed(0)}` : undefined}
+        />
+        <div className="flex flex-col gap-3 rounded-2xl border border-line bg-gradient-to-b from-[#0E1514] to-[#0A0F0E] px-3 py-3.5">
+          <SliderRow label="Margine laterale" value={params.clearanceMm} min={0.5} max={10} step={0.5} unit=" mm" onChange={(v) => setParams({ clearanceMm: v })} />
+          <SliderRow label="Spessore parete" value={params.wallMm} min={0.8} max={4} step={0.1} unit=" mm" onChange={(v) => setParams({ wallMm: v })} />
+          <SliderRow label="Spazio sopra" value={params.topHeightMm} min={3} max={40} step={1} unit=" mm" onChange={(v) => setParams({ topHeightMm: v })} />
+          <SliderRow label="Spazio sotto" value={params.bottomHeightMm} min={0} max={15} step={0.5} unit=" mm" onChange={(v) => setParams({ bottomHeightMm: v })} />
+          <SliderRow label="Divisione gusci" value={params.splitMm} min={-1} max={20} step={0.5} unit=" mm" onChange={(v) => setParams({ splitMm: v })} />
+          <SliderRow label="Raggio spigoli" value={params.cornerRadiusMm} min={0} max={10} step={0.5} unit=" mm" onChange={(v) => setParams({ cornerRadiusMm: v })} />
+          <ToggleRow
+            label="Colonnine di fissaggio"
+            checked={params.posts}
+            onChange={(v) => setParams({ posts: v })}
+          />
+          <div className="flex items-center gap-2.5">
+            <span className="flex-1 text-[12px] text-muted">Colore</span>
+            <input
+              type="color"
+              value={params.color}
+              onChange={(e) => setParams({ color: e.target.value })}
+              className="h-6 w-10 cursor-pointer rounded-md border border-line bg-transparent"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-2.5">
+        <SectionHead title="MODULI 3D" aside={modules.length ? `${modules.length}` : undefined} />
+        <input
+          ref={fileInput}
+          type="file"
+          accept={CAD_IMPORT_EXTENSIONS.join(",")}
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            for (const file of Array.from(e.target.files ?? [])) {
+              void enclosures.importFile(file);
+            }
+            e.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileInput.current?.click()}
+          disabled={busy !== null}
+          className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-[#2C4C42] px-3 py-[11px] text-[12px] font-semibold text-brand transition-colors hover:bg-brand-wash disabled:opacity-50"
+        >
+          {busy ? (
+            <>
+              <span className="dot dot-busy" /> Apro {busy}...
+            </>
+          ) : (
+            <>Importa CAD (STEP, STL, OBJ, GLB)</>
+          )}
+        </button>
+
+        {modules.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {modules.map((record) => (
+              <ModuleRow
+                key={record.name}
+                record={record}
+                onToggle={(v) => void patchRecord(record.name, { visible: v })}
+                onRemove={() => void remove(record.name)}
+              />
+            ))}
+          </div>
+        )}
+
+        {errors.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {errors.map((err) => (
+              <div
+                key={err.name}
+                className="flex items-start gap-2 rounded-[9px] border border-[#3E1F1D] bg-[#160F0F] px-3 py-2"
+              >
+                <span className="min-w-0 flex-1 text-[11px] leading-[1.4] break-words text-[#D7B4AF]">
+                  {err.name}: {err.message}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => dismissError(err.name)}
+                  className="text-[#B98C85] hover:text-text"
+                  title="Chiudi"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="flex flex-col gap-2.5">
         <SectionHead title="COME SARÀ MONTATA" />
         <div className="flex flex-col gap-2 rounded-2xl border border-line bg-gradient-to-b from-[#0E1514] to-[#0A0F0E] px-3 py-3.5">
@@ -415,42 +579,159 @@ function ThreeDSections({
           <Row label="Lato saldature" value={`${bottom} pezzi`} />
           <Row
             label="Scheda"
-            value={
-              report.widthMm && report.heightMm
-                ? `${report.widthMm} × ${report.heightMm} mm`
-                : "—"
-            }
+            value={boardW && boardH ? `${boardW} × ${boardH} mm` : "—"}
           />
-          <Row label="Spessore" value="1,6 mm" />
+          <Row label="Spessore" value={`${BOARD_THICKNESS_MM} mm`} />
           <Row label="Strati di rame" value={`${report.layerCount}`} />
         </div>
         <p className="text-[11px] leading-[1.4] text-[#5F726C]">
-          Trascina per girare la scheda, rotella per avvicinarti.
+          Trascina per girare il modello, rotella per avvicinarti.
         </p>
       </section>
 
-      {biggest.length > 0 && (
-        <section className="flex flex-col gap-2.5">
-          <SectionHead title="I PEZZI PIÙ INGOMBRANTI" />
-          <div className="flex flex-col gap-1">
-            {biggest.map((p) => (
-              <div
-                key={p.id}
-                className="flex items-baseline gap-2 rounded-[9px] border border-line px-3 py-2"
-              >
-                <span className="font-mono text-[12px] text-text">{p.name}</span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-faint">
-                  {p.ftype ?? ""}
-                </span>
-                <span className="font-mono text-[10px] whitespace-nowrap text-[#4E625C]">
-                  {p.widthMm} × {p.heightMm}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      <BiggestParts parts={parts} />
     </>
+  );
+}
+
+function ModuleRow({
+  record,
+  onToggle,
+  onRemove,
+}: {
+  record: EnclosuresApi["records"][number];
+  onToggle: (visible: boolean) => void;
+  onRemove: () => void;
+}) {
+  const kindLabel =
+    record.kind === "jscad" ? "AI" : (record.fileName?.split(".").pop() ?? "CAD").toUpperCase();
+  return (
+    <div className="flex items-center gap-2 rounded-[9px] border border-line px-3 py-2">
+      <button
+        type="button"
+        onClick={() => onToggle(!record.visible)}
+        title={record.visible ? "Nascondi" : "Mostra"}
+        className={`h-[7px] w-[7px] flex-none rounded-full transition-colors ${
+          record.visible ? "bg-brand" : "bg-[#42544F]"
+        }`}
+      />
+      <span className="min-w-0 flex-1 truncate text-[12px] text-text">{record.name}</span>
+      <span className="font-mono text-[9px] tracking-[0.05em] text-[#4E625C]">{kindLabel}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Elimina dal progetto"
+        className="text-faint transition-colors hover:text-[#FF6B5A]"
+      >
+        <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none">
+          <path
+            d="M4 4l8 8M12 4l-8 8"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function SliderRow({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  unit,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  unit: string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-[5px]">
+      <span className="flex items-baseline gap-2">
+        <span className="flex-1 text-[12px] text-muted">{label}</span>
+        <span className="font-mono text-[11px] text-[#E7EFEC]">
+          {value}
+          {unit}
+        </span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-1 w-full rounded-[3px] bg-line accent-[#3BE8B0]"
+      />
+    </label>
+  );
+}
+
+function ToggleRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className="flex items-center gap-2.5 text-left"
+    >
+      <span className="flex-1 text-[12px] text-muted">{label}</span>
+      <span
+        className={`flex h-[18px] w-[32px] items-center rounded-full px-[3px] transition-colors ${
+          checked ? "justify-end bg-[#2C4C42]" : "justify-start bg-line"
+        }`}
+      >
+        <span
+          className={`h-3 w-3 rounded-full transition-colors ${
+            checked ? "bg-brand" : "bg-[#5F726C]"
+          }`}
+        />
+      </span>
+    </button>
+  );
+}
+
+function BiggestParts({ parts }: { parts: InspectComponent[] }) {
+  const biggest = [...parts]
+    .filter((p) => p.widthMm && p.heightMm)
+    .sort((a, b) => b.widthMm! * b.heightMm! - a.widthMm! * a.heightMm!)
+    .slice(0, 5);
+  if (biggest.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-2.5">
+      <SectionHead title="I PEZZI PIÙ INGOMBRANTI" />
+      <div className="flex flex-col gap-1">
+        {biggest.map((p) => (
+          <div
+            key={p.id}
+            className="flex items-baseline gap-2 rounded-[9px] border border-line px-3 py-2"
+          >
+            <span className="font-mono text-[12px] text-text">{p.name}</span>
+            <span className="min-w-0 flex-1 truncate text-[11px] text-faint">
+              {p.ftype ?? ""}
+            </span>
+            <span className="font-mono text-[10px] whitespace-nowrap text-[#4E625C]">
+              {p.widthMm} × {p.heightMm}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { estimateCost, type BoardReport, type Severity } from "@/lib/board-report";
+import { BOARD_THICKNESS_MM } from "@/lib/enclosure-template";
+import { downloadTextFile, meshesToStl } from "@/lib/stl-export";
+import type { EnclosuresApi } from "@/lib/use-enclosures";
 import type { BoardTab } from "./Chrome";
 
 export interface ErcSummary {
@@ -52,6 +55,7 @@ export function RightRail({
   onShowOnBoard,
   onRecompile,
   recompiling,
+  enclosures,
 }: {
   tab: BoardTab;
   report: BoardReport;
@@ -59,6 +63,45 @@ export function RightRail({
   compiledAgo: string;
   onAsk: (prompt: string) => void;
   /** accende sulla scheda la vista che mostra quella verifica */
+  onShowOnBoard: (preset: string) => void;
+  onRecompile: () => void;
+  recompiling: boolean;
+  /** designer scocche (solo tab 3D) */
+  enclosures: EnclosuresApi | null;
+}) {
+  // sul tab 3D DRC e costi non servono: contano le verifiche meccaniche
+  if (tab === "cad" && enclosures) {
+    return <CadRail report={report} enclosures={enclosures} onAsk={onAsk} />;
+  }
+  return (
+    <BoardRail
+      report={report}
+      erc={erc}
+      compiledAgo={compiledAgo}
+      tab={tab}
+      onAsk={onAsk}
+      onShowOnBoard={onShowOnBoard}
+      onRecompile={onRecompile}
+      recompiling={recompiling}
+    />
+  );
+}
+
+function BoardRail({
+  report,
+  erc,
+  compiledAgo,
+  tab,
+  onAsk,
+  onShowOnBoard,
+  onRecompile,
+  recompiling,
+}: {
+  tab: BoardTab;
+  report: BoardReport;
+  erc: ErcSummary | null;
+  compiledAgo: string;
+  onAsk: (prompt: string) => void;
   onShowOnBoard: (preset: string) => void;
   onRecompile: () => void;
   recompiling: boolean;
@@ -384,5 +427,121 @@ function PreflightRow({
         {value}
       </span>
     </div>
+  );
+}
+
+// --------------------------------------------------------------------- 3D
+
+/**
+ * Rail destro del tab 3D: verifiche meccaniche della scocca e export. DRC,
+ * ERC e costi restano sugli altri tab, dove servono.
+ */
+function CadRail({
+  report,
+  enclosures,
+  onAsk,
+}: {
+  report: BoardReport;
+  enclosures: EnclosuresApi;
+  onAsk: (prompt: string) => void;
+}) {
+  const { params, meshes, errors } = enclosures;
+  const boardW = report.widthMm;
+  const boardH = report.heightMm;
+  const outerW = boardW ? boardW + 2 * (params.clearanceMm + params.wallMm) : null;
+  const outerH = boardH ? boardH + 2 * (params.clearanceMm + params.wallMm) : null;
+  const totalH =
+    params.bottomHeightMm + params.wallMm + BOARD_THICKNESS_MM + params.splitMm +
+    params.topHeightMm + params.wallMm;
+
+  const parametric = meshes.find((m) => m.kind === "parametric");
+  const visible = meshes.filter((m) => m.visible);
+
+  const exportStl = (target: typeof meshes, fileName: string) => {
+    const all = target.flatMap((m) => m.meshes);
+    if (all.length === 0) return;
+    downloadTextFile(fileName, meshesToStl(all, "scocca"), "model/stl");
+  };
+
+  return (
+    <aside className="flex flex-col gap-[18px] overflow-auto border-l border-line bg-sunken px-3.5 py-4">
+      <section className="flex flex-col gap-2">
+        <div className="text-[10px] font-bold tracking-[0.11em] text-faint">
+          VERIFICHE MECCANICHE
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <PreflightRow
+            ok={params.wallMm >= 1.2}
+            label="Parete stampabile"
+            value={`${params.wallMm} mm`}
+          />
+          <PreflightRow
+            ok={params.bottomHeightMm >= 1.5}
+            label="Spazio lato saldature"
+            value={`${params.bottomHeightMm} mm`}
+          />
+          <PreflightRow
+            ok={params.topHeightMm >= 5}
+            label="Spazio sopra i componenti"
+            value={`${params.topHeightMm} mm`}
+          />
+          <PreflightRow
+            ok={outerW !== null}
+            label="Ingombro esterno"
+            value={
+              outerW && outerH
+                ? `${outerW.toFixed(0)}×${outerH.toFixed(0)}×${totalH.toFixed(0)} mm`
+                : "senza dimensioni scheda"
+            }
+          />
+          {errors.map((err) => (
+            <PreflightRow key={err.name} ok={false} label={err.name} value="errore mesh" />
+          ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <div className="text-[10px] font-bold tracking-[0.11em] text-faint">ESPORTA 3D</div>
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            disabled={!parametric}
+            onClick={() => parametric && exportStl([parametric], "scocca.stl")}
+            className="rounded-[10px] border border-line-strong bg-[#141C1A] px-[15px] py-[9px] text-[13px] font-medium text-[#C7D6D1] transition-colors hover:border-[#3A5A50] disabled:opacity-40"
+          >
+            Scocca parametrica (STL)
+          </button>
+          <button
+            type="button"
+            disabled={visible.length === 0}
+            onClick={() => exportStl(visible, "assemblato-3d.stl")}
+            className="rounded-[10px] border border-line-strong bg-[#141C1A] px-[15px] py-[9px] text-[13px] font-medium text-[#C7D6D1] transition-colors hover:border-[#3A5A50] disabled:opacity-40"
+          >
+            Tutto il visibile (STL)
+          </button>
+        </div>
+        <p className="text-[11px] leading-[1.4] text-[#5F726C]">
+          L&apos;STL è in millimetri, pronto per slicer e CAD meccanici.
+        </p>
+      </section>
+
+      <div className="mt-auto flex flex-col gap-2.5 rounded-[13px] border border-[#23332E] bg-gradient-to-br from-[#101A17] to-[#0B1211] p-3.5">
+        <div className="text-[11px] leading-[1.45] text-muted">
+          Il copilota conosce le dimensioni della scheda: può progettare una
+          scocca su misura, con fori, feritoie e sedi per i connettori.
+        </div>
+        <button
+          type="button"
+          onClick={() =>
+            onAsk(
+              "Progetta una scocca per questa scheda: due gusci a incastro, con le aperture per i connettori che vedi sul bordo. Salvala e mostramela.",
+            )
+          }
+          className="rounded-[10px] bg-brand px-[15px] py-[9px] text-[13px] font-semibold text-[#06110D] transition-opacity hover:opacity-90"
+        >
+          Fai progettare la scocca al copilota
+        </button>
+      </div>
+    </aside>
   );
 }
