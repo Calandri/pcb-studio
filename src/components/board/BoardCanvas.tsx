@@ -116,9 +116,17 @@ export function BoardCanvas({
   const usedLayers = LAYER_ORDER.filter(
     (l) => scene.board.layers >= 4 || l === "top" || l === "bottom",
   );
+  /*
+   * Lo strato scelto si disegna PER ULTIMO, quindi sopra tutti gli altri.
+   * Prima l'ordine era fisso (il rame del top sempre in cima) e lavorare su un
+   * piano interno era impossibile: quello che si stava guardando finiva sotto.
+   */
+  const drawOrder: LayerId[] = [...usedLayers.filter((l) => l !== active), active];
   // gli strati che non sono in primo piano si vedono in trasparenza: la
   // radiografia decide quanto
-  const layerOpacity = (l: LayerId) => (l === active ? 1 : 0.18 + (xray / 100) * 0.6);
+  // gli altri strati restano come riferimento, mai come disturbo: a radiografia
+  // zero sono un'ombra, alzandola tornano leggibili
+  const layerOpacity = (l: LayerId) => (l === active ? 1 : 0.1 + (xray / 100) * 0.65);
 
   const mmPerPx = 1 / view.k;
   const showSilk = flags.is_showing_silkscreen;
@@ -167,7 +175,7 @@ export function BoardCanvas({
 
           {/* piani di rame, dal fondo verso l'alto */}
           {showPours &&
-            usedLayers.map((l) =>
+            drawOrder.map((l) =>
               scene.pours
                 .filter((p) => p.layer === l)
                 .map((p) => (
@@ -182,7 +190,7 @@ export function BoardCanvas({
             )}
 
           {/* piste */}
-          {usedLayers.map((l) => (
+          {drawOrder.map((l) => (
             <g key={`tr-${l}`} opacity={layerOpacity(l)}>
               {scene.traces
                 .filter((t) => t.layer === l && t.points.length > 1)
@@ -201,7 +209,7 @@ export function BoardCanvas({
           ))}
 
           {/* piazzole */}
-          {usedLayers.map((l) => (
+          {drawOrder.map((l) => (
             <g key={`pad-${l}`} opacity={layerOpacity(l)}>
               {scene.pads
                 .filter((p) => p.layer === l)
@@ -293,10 +301,13 @@ export function BoardCanvas({
               />
             ))}
 
-          {/* serigrafia */}
+          {/* serigrafia: quella del lato che si sta guardando, e smorzata quando
+              si lavora su un piano interno (li' non c'entra nulla) */}
           {showSilk && (
-            <g opacity={0.85}>
-              {scene.silkPaths.map((s) => (
+            <g opacity={active === "top" || active === "bottom" ? 0.85 : 0.25}>
+              {scene.silkPaths
+                .filter((p) => p.layer === (active === "bottom" ? "bottom" : "top"))
+                .map((s) => (
                 <polyline
                   key={s.id}
                   points={s.points.map((p) => `${p.x},${p.y}`).join(" ")}
