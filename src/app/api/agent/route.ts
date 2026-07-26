@@ -14,7 +14,9 @@ import { GLM_MAX_TOKENS, GLM_MODEL, GLM_THINKING_BUDGET, glmClient } from "@/lib
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+// Vercel uccide la funzione oltre questo limite: i turni lunghi (schede grandi,
+// molte compile) sforavano i 300s e l'utente non vedeva mai la risposta.
+export const maxDuration = 800;
 
 // Resource cap only (billing/runaway protection), not flow logic: the loop's
 // sole termination condition is the model producing final text.
@@ -88,6 +90,7 @@ export async function POST(req: Request): Promise<Response> {
 
       const startedAt = Date.now();
       let assistantTranscript = "";
+      let persistedText = false;
       let steps = 0;
       let tokensIn = 0;
       let tokensOut = 0;
@@ -117,6 +120,10 @@ export async function POST(req: Request): Promise<Response> {
             if (block.type === "text" && block.text.trim()) {
               assistantTranscript += (assistantTranscript ? "\n\n" : "") + block.text;
               emit("assistant_text", { text: block.text });
+              // persistenza immediata: se il turno viene troncato a meta',
+              // al reload l'utente ritrova comunque quello che l'agente ha detto
+              void appendChatMessage(projectId, "assistant", block.text).catch(() => {});
+              persistedText = true;
             }
           }
 
@@ -168,7 +175,7 @@ export async function POST(req: Request): Promise<Response> {
         emit("error", { message: err instanceof Error ? err.message : String(err) });
         emit("done", { stop_reason: stopReason });
       } finally {
-        if (assistantTranscript) {
+        if (assistantTranscript && !persistedText) {
           await appendChatMessage(projectId, "assistant", assistantTranscript).catch(() => {});
         }
         if (filesChanged) {

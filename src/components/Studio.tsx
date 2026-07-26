@@ -196,6 +196,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let completed = false;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -261,10 +262,23 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
           } else if (event === "file_changed") {
             setFsMap((m) => ({ ...(m ?? {}), [data.path]: data.content }));
             setCircuitStale(true);
+          } else if (event === "done") {
+            completed = true;
           } else if (event === "error") {
             setChat((c) => [...c, { kind: "error", text: data.message }]);
           }
         }
+      }
+      if (!completed) {
+        // lo stream si e' chiuso senza segnale di fine: la funzione e' stata
+        // interrotta (di solito per durata massima). Il lavoro gia' fatto e' salvato.
+        setChat((c) => [
+          ...c,
+          {
+            kind: "error",
+            text: "Il turno è stato interrotto prima della fine (durata massima). Le modifiche già applicate sono salvate: scrivi «continua» per riprendere.",
+          },
+        ]);
       }
     } catch (err) {
       setChat((c) => [
