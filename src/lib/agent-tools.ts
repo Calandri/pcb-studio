@@ -184,8 +184,11 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       "components, nets, routed-trace counts, per-unrouted-connection pad coordinates, " +
       "board congestion cells and ratsnest placement metrics. With variants >= 1 the " +
       "variant engine re-routes each named <group subcircuit> with JLCPCB design rules " +
-      "and reports per-section candidates (variantReport). " +
-      "Always compile after editing and fix every error before answering.",
+      "and reports per-section candidates (variantReport). It also returns " +
+      "schematicQuality: overlapping symbols with coordinates, net labels drawn over " +
+      "symbols, wire crossings, sheet bounding box and density, and the functional " +
+      "sections found in the sources. Always compile after editing and fix every error, " +
+      "every drcViolation and every schematicQuality issue before answering.",
     input_schema: {
       type: "object",
       properties: {
@@ -469,7 +472,7 @@ export async function executeTool(
         }
       }
       await markVariantPicked(projectId, sectionKey, label).catch(() => {});
-      const summary = summarizeCircuit(assembled);
+      const summary = summarizeCircuit(assembled, fsMap);
       await saveCompileCache(projectId, cache.filesHash, assembled, summary).catch(() => {});
       return {
         result: {

@@ -3,6 +3,11 @@ import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
 import { runDrcChecks, type DrcViolation } from "./drc";
 import { runPrcChecks, type PrcViolation } from "./prc";
+import {
+  analyzeSchematic,
+  emptySchematicQuality,
+  type SchematicQuality,
+} from "./schematic-quality";
 import { FAB_RULESETS } from "./design-rules";
 import type { FsMap } from "./project-store";
 import {
@@ -75,6 +80,12 @@ export interface CompileSummary {
     estimatedCrossings: number;
     longestNets: RatsnestNet[];
   };
+  /**
+   * readability of the SCHEMATIC drawing: overlapping symbols, net labels over
+   * symbols, wire crossings, sheet density, functional sections found in the
+   * sources. Same role congestion/ratsnest play for the PCB.
+   */
+  schematicQuality: SchematicQuality;
   routingAttempts: number;
   router: "default" | "local_retry" | "variants";
   /** per-section variant report (Fase 3.d), present when variants were generated */
@@ -256,7 +267,7 @@ export async function compileProject(
   }
 
   const circuitJson = state.best.circuitJson;
-  const summary = summarize(circuitJson);
+  const summary = summarize(circuitJson, fsMap);
   summary.routingAttempts = state.attempts;
   summary.router = state.best.router;
   if (state.variants) {
@@ -284,8 +295,11 @@ export async function compileProject(
 }
 
 /** re-summarize an already-assembled circuit (used by pick_variant) */
-export function summarizeCircuit(circuitJson: unknown[]): CompileSummary {
-  return summarize(circuitJson as CircuitElement[]);
+export function summarizeCircuit(
+  circuitJson: unknown[],
+  sources: FsMap = {},
+): CompileSummary {
+  return summarize(circuitJson as CircuitElement[], sources);
 }
 
 function emptySummary(
@@ -309,6 +323,7 @@ function emptySummary(
     stats: { vias: 0, totalTraceLengthMm: 0, traceLengthByLayerMm: {} },
     congestion: [],
     ratsnest: { totalLengthMm: 0, estimatedCrossings: 0, longestNets: [] },
+    schematicQuality: emptySchematicQuality(),
     routingAttempts: 1,
     router: "default",
     message,
@@ -509,7 +524,10 @@ function adaptSolver(solver: SolverLike) {
 // summary building (geometric feedback for the model)
 // ---------------------------------------------------------------------------
 
-function summarize(circuitJson: CircuitElement[]): CompileSummary {
+function summarize(
+  circuitJson: CircuitElement[],
+  sources: FsMap = {},
+): CompileSummary {
   const allErrors = circuitJson
     .filter((el) => el.type.endsWith("_error"))
     .map((el) => ({
@@ -686,8 +704,30 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
   const fabClass = fabClasses.find((f) => f.ok)?.label ?? null;
   const congestion = computeCongestion(circuitJson);
   const ratsnest = computeRatsnest(groupInfo);
+  const schematicQuality = analyzeSchematic(circuitJson, sources);
 
-  const ok = errors.length === 0;
+  /*
+   * Un layout schematico disattivato da schX/schY produce un disegno inservibile
+   * pur compilando senza errori. Reso bloccante: la regola "non fermarti finche'
+   * il compile ha errori" e' l'unica leva che costringe il modello a rifare il
+   * layout invece di consegnare un ammasso di simboli sovrapposti.
+   */
+  const schematicBlocker =
+    schematicQuality.symbolOverlapCount >= 3 && schematicQuality.schCoordFiles.length > 0
+      ? [
+          {
+            type: "schematic_layout_disabled",
+            message:
+              `${schematicQuality.schCoordFiles.join(", ")} set schX/schY on placed ` +
+              `components: this disables the schematic auto layout for the whole group and ` +
+              `is why ${schematicQuality.symbolOverlapCount} symbol pairs overlap. Remove ` +
+              `every schX/schY and give each component a schSectionName instead.`,
+          },
+        ]
+      : [];
+  const reportedErrors = [...schematicBlocker, ...errors];
+
+  const ok = reportedErrors.length === 0;
   const message = ok
     ? `Compile OK: ${components.length} components, ${nets.length} nets, ` +
       `${pcbTraces} routed pcb traces (${sourceTraces} source traces` +
@@ -696,12 +736,22 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
       `${ratsnest.estimatedCrossings ? `, ~${ratsnest.estimatedCrossings} ratsnest crossings` : ""}` +
       `${drcViolations.length ? ` - ${drcViolations.length} DRC violation(s)` : " - DRC clean"}` +
       `${prcViolations.length ? ` - ${prcViolations.length} electrical issue(s)` : ""}` +
-      ` - fab: ${fabClass ?? "NO RULESET SATISFIED (redesign needed)"}.`
-    : `Compile finished with ${errors.length} error(s).`;
+      ` - fab: ${fabClass ?? "NO RULESET SATISFIED (redesign needed)"}` +
+      `${
+        schematicQuality.symbolOverlapCount
+          ? ` - SCHEMATIC: ${schematicQuality.symbolOverlapCount} overlapping symbol pair(s)`
+          : ""
+      }` +
+      `${
+        schematicQuality.sections.length
+          ? ` - schematic in ${schematicQuality.sections.length} sections`
+          : " - schematic NOT sectioned"
+      }.`
+    : `Compile finished with ${reportedErrors.length} error(s).`;
 
   return {
     ok,
-    errors,
+    errors: reportedErrors,
     components,
     nets,
     connections,
@@ -716,6 +766,7 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
     stats,
     congestion,
     ratsnest,
+    schematicQuality,
     routingAttempts: 1,
     router: "default",
     message,

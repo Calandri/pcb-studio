@@ -81,7 +81,9 @@ function buildHandler(viewer: Viewer) {
     server.tool(
       "compile",
       "Compila il progetto: instrada il PCB, esegue il DRC e restituisce errori, " +
-        "connessioni non instradate, congestione e geometria. E' lo strumento centrale.",
+        "connessioni non instradate, congestione e geometria, piu' la qualita' dello " +
+        "schematico (simboli sovrapposti, net label sopra i simboli, incroci, sezioni " +
+        "funzionali). E' lo strumento centrale.",
       { projectId: z.string() },
       async ({ projectId }) => {
         if ((await projectAccess(projectId, viewer)) === "none") {
