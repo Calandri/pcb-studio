@@ -55,7 +55,7 @@ export function Chat({
         <span className={`dot ${dotClass}`} />
         <span className="text-[11px] text-faint">{statusLabel}</span>
       </header>
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-1">
+      <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-1">
         {items.length === 0 && (
           <div className="rise space-y-4 pt-4">
             <div>
@@ -147,21 +147,21 @@ export function Chat({
 function Bubble({ item }: { item: ChatItem }) {
   if (item.kind === "user") {
     return (
-      <div className="ml-8 rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-ink shadow-sm">
+      <div className="ml-8 overflow-hidden rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap text-ink shadow-sm">
         {item.text}
       </div>
     );
   }
   if (item.kind === "assistant") {
     return (
-      <div className="card mr-2 px-4 py-3 text-[13px] text-text">
+      <div className="card mr-2 overflow-hidden px-4 py-3 text-[13px] break-words text-text">
         <Markdown text={item.text} />
       </div>
     );
   }
   if (item.kind === "error") {
     return (
-      <div className="rounded-xl bg-danger-wash px-3.5 py-2.5 text-xs leading-relaxed text-danger">
+      <div className="overflow-hidden rounded-xl bg-danger-wash px-3.5 py-2.5 text-xs leading-relaxed break-words text-danger">
         {item.text}
       </div>
     );
@@ -171,7 +171,7 @@ function Bubble({ item }: { item: ChatItem }) {
   return (
     <div className="flex items-start gap-2 px-1.5">
       <span className={`mt-[7px] h-1.5 w-1.5 flex-none rounded-full ${tone}`} />
-      <p className="min-w-0 text-xs leading-relaxed text-faint">
+      <p className="min-w-0 flex-1 text-xs leading-relaxed break-words text-faint">
         <span className="font-mono font-medium text-muted">{item.name}</span>{" "}
         {item.detail}
       </p>

@@ -10,6 +10,7 @@ import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
 import { Footer, Header, type BoardTab } from "./workspace/Chrome";
 import { LeftRail } from "./workspace/LeftRail";
+import { BomView } from "./workspace/BomView";
 import { RightRail } from "./workspace/RightRail";
 
 const RunFrame = dynamic(
@@ -39,13 +40,13 @@ const CircuitJsonPreview = dynamic(
   },
 );
 
-function useProjectId(): string {
-  if (typeof window === "undefined") return "default";
-  return new URLSearchParams(window.location.search).get("project") ?? "default";
-}
-
-export function Studio({ user }: { user: { email: string; name: string | null } }) {
-  const projectId = useProjectId();
+export function Studio({
+  projectId,
+  user,
+}: {
+  projectId: string;
+  user: { email: string; name: string | null };
+}) {
   const [fsMap, setFsMap] = useState<Record<string, string> | null>(null);
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
@@ -86,6 +87,19 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   const setFlag = useCallback((key: keyof ViewFlags, value: boolean) => {
     setPreset("custom");
     setFlags((f) => ({ ...f, [key]: value }));
+  }, []);
+
+  /**
+   * Accende sulla scheda la vista che rende visibile una verifica: passando
+   * sopra "Distanze minime" si vedono ingombri ed errori, non si deve andare a
+   * cercare il livello giusto a mano.
+   */
+  const showOnBoard = useCallback((key: string) => {
+    const next = VIEW_PRESETS.find((p) => p.key === key);
+    if (!next) return;
+    setTab("pcb");
+    setPreset(next.key);
+    setFlags(next.flags);
   }, []);
 
   /** porta una domanda nel copilota, con il pannello gia' aperto */
@@ -381,7 +395,15 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         actions={<HandoffButton projectId={projectId} variant="overlay" compact />}
       />
 
-      <main className="grid min-h-0 grid-cols-[290px_minmax(0,1fr)_316px]">
+      {/* la scheda non scende mai sotto una larghezza lavorabile: se la
+          finestra e' piccola si scorre, invece di schiacciare il canvas */}
+      <main
+        className={`grid min-h-0 overflow-x-auto ${
+          copilot
+            ? "grid-cols-[258px_minmax(330px,1fr)_286px_346px] 2xl:grid-cols-[290px_minmax(430px,1fr)_316px_400px]"
+            : "grid-cols-[258px_minmax(330px,1fr)_286px] 2xl:grid-cols-[290px_minmax(430px,1fr)_316px]"
+        }`}
+      >
         <LeftRail
           report={report}
           preset={preset}
@@ -393,7 +415,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
           onAskCopilot={() => setCopilot(true)}
         />
 
-        <section className="viewer-shell relative min-w-0 overflow-hidden bg-[radial-gradient(1100px_700px_at_52%_42%,#0D1614_0%,#070A09_72%)]">
+        <section className="viewer-shell @container relative min-w-0 overflow-hidden bg-[radial-gradient(1100px_700px_at_52%_42%,#0D1614_0%,#070A09_72%)]">
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0"
@@ -420,6 +442,8 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                     onLayer: setLayer,
                   }}
                 />
+              ) : tab === "bom" ? (
+                <BomView projectId={projectId} />
               ) : (
                 <CircuitJsonPreview
                   key={tab}
@@ -444,8 +468,10 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
             )}
           </div>
 
-          {/* cosa si sta guardando, sempre leggibile sopra il canvas */}
-          <div className="pointer-events-none absolute bottom-[18px] left-[34px] w-[328px] rounded-[14px] border border-[#1F2C29] bg-[rgba(9,14,13,0.88)] px-3.5 py-[13px] backdrop-blur">
+          {/* cosa si sta guardando, sempre leggibile sopra il canvas (non
+              sulla distinta, dove coprirebbe le righe della tabella) */}
+          {tab !== "bom" && (
+          <div className="pointer-events-none absolute bottom-[18px] left-[34px] w-[328px] max-w-[calc(100%-68px)] rounded-[14px] border border-[#1F2C29] bg-[rgba(9,14,13,0.88)] px-3.5 py-[13px] backdrop-blur">
             <div className="flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-brand" />
               <span className="text-[12px] font-bold text-[#E7EFEC]">
@@ -465,10 +491,11 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                 : TAB_BODIES[tab]}
             </p>
           </div>
+          )}
 
           {/* larghezze reali delle piste: la piu' larga e' la potenza */}
           {tab === "pcb" && traceWidths.length > 0 && (
-            <div className="pointer-events-none absolute right-[18px] bottom-[18px] rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] backdrop-blur">
+            <div className="pointer-events-none absolute right-[18px] bottom-[18px] rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] backdrop-blur @max-[760px]:hidden">
               <div className="font-mono text-[10px] tracking-[0.05em] text-[#5F726C]">
                 LARGHEZZA PISTE
               </div>
@@ -529,7 +556,44 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
           report={report}
           compiledAgo={circuitStale ? "da ricompilare" : "ultima compilazione"}
           onAsk={ask}
+          onShowOnBoard={showOnBoard}
         />
+        {copilot && (
+          <aside className="flex min-h-0 min-w-0 flex-col border-l border-line bg-surface">
+            <header className="flex flex-none items-center gap-2 border-b border-line px-4 py-3">
+              <span className="grid h-6 w-6 place-items-center rounded-md border border-[#2C4C42] bg-brand-wash text-[11px] text-brand">
+                ✦
+              </span>
+              <span className="flex-1 text-[13px] font-semibold">Copilota</span>
+              <button
+                type="button"
+                onClick={() => setCopilot(false)}
+                title="Chiudi il copilota"
+                className="text-faint transition-colors hover:text-text"
+              >
+                <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+                  <path
+                    d="M4 4l8 8M12 4l-8 8"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            </header>
+            <div className="min-h-0 flex-1">
+              <Chat
+                projectId={projectId}
+                items={chat}
+                status={status}
+                input={input}
+                onInput={setInput}
+                onSend={() => void send()}
+                disabled={status !== "idle"}
+              />
+            </div>
+          </aside>
+        )}
       </main>
 
       <Footer report={report} layer={layer} />
@@ -567,42 +631,6 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         </div>
       )}
 
-      {copilot && (
-        <aside className="fixed inset-y-0 right-0 z-40 flex w-[420px] flex-col border-l border-line bg-surface shadow-[0_0_60px_rgba(0,0,0,0.6)]">
-          <header className="flex flex-none items-center gap-2 border-b border-line px-4 py-3">
-            <span className="grid h-6 w-6 place-items-center rounded-md border border-[#2C4C42] bg-brand-wash text-[11px] text-brand">
-              ✦
-            </span>
-            <span className="flex-1 text-[13px] font-semibold">Copilota</span>
-            <button
-              type="button"
-              onClick={() => setCopilot(false)}
-              title="Chiudi il copilota"
-              className="text-faint transition-colors hover:text-text"
-            >
-              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
-                <path
-                  d="M4 4l8 8M12 4l-8 8"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
-          </header>
-          <div className="min-h-0 flex-1">
-            <Chat
-              projectId={projectId}
-              items={chat}
-              status={status}
-              input={input}
-              onInput={setInput}
-              onSend={() => void send()}
-              disabled={status !== "idle"}
-            />
-          </div>
-        </aside>
-      )}
     </div>
   );
 }

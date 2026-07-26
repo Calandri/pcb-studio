@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { estimateCost, type BoardReport, type Severity } from "@/lib/board-report";
 
 const SEV_COLOR: Record<Severity, string> = {
@@ -12,12 +13,17 @@ export function RightRail({
   report,
   compiledAgo,
   onAsk,
+  onShowOnBoard,
 }: {
   report: BoardReport;
   compiledAgo: string;
   onAsk: (prompt: string) => void;
+  /** accende sulla scheda la vista che mostra quella verifica */
+  onShowOnBoard: (preset: string) => void;
 }) {
   const cost = estimateCost(report);
+  const [open, setOpen] = useState<string | null>(null);
+  const [ignored, setIgnored] = useState<string[]>([]);
   const allPartsSourced =
     report.componentCount > 0 && report.partsWithSupplier === report.componentCount;
 
@@ -38,53 +44,84 @@ export function RightRail({
       </section>
 
       <section className="flex flex-col gap-2">
-        <div className="text-[10px] font-bold tracking-[0.11em] text-faint">VERIFICHE</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[10px] font-bold tracking-[0.11em] text-faint">VERIFICHE</div>
+          <div className="text-[10px] text-[#42544F]">passa sopra per vederle sulla scheda</div>
+        </div>
         <div className="flex flex-col gap-1.5">
-          {report.checks.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() =>
-                onAsk(
-                  c.severity === "ok"
-                    ? `Spiegami la verifica "${c.name}" e cosa controlla.`
-                    : `Risolvi il problema "${c.name}": ${c.detail}`,
-                )
-              }
-              className="flex flex-col gap-[5px] rounded-xl border px-3 py-[11px] text-left transition-colors hover:border-[#3A5A50]"
-              style={{
-                background:
-                  c.severity === "err"
-                    ? "#160F0F"
-                    : c.severity === "warn"
-                      ? "#16130C"
-                      : "#0D1614",
-                borderColor:
-                  c.severity === "err"
-                    ? "#3E1F1D"
-                    : c.severity === "warn"
-                      ? "#40331A"
-                      : "#23423A",
-              }}
-            >
-              <span className="flex items-center gap-[9px]">
-                <span
-                  className="h-[7px] w-[7px] flex-none rounded-full"
-                  style={{ background: SEV_COLOR[c.severity] }}
-                />
-                <span className="flex-1 text-[12.5px] font-semibold text-[#DCE7E3]">
-                  {c.name}
-                </span>
-                <span
-                  className="font-mono text-[10px]"
-                  style={{ color: SEV_COLOR[c.severity] }}
+          {report.checks
+            .filter((c) => !ignored.includes(c.id))
+            .map((c) => {
+              const expanded = open === c.id && c.severity !== "ok";
+              return (
+                <div
+                  key={c.id}
+                  onMouseEnter={() => onShowOnBoard(c.preset)}
+                  className="flex flex-col gap-[5px] rounded-xl border px-3 py-[11px] transition-colors hover:border-[#3A5A50]"
+                  style={{
+                    background:
+                      c.severity === "err"
+                        ? "#160F0F"
+                        : c.severity === "warn"
+                          ? "#16130C"
+                          : "#0D1614",
+                    borderColor:
+                      c.severity === "err"
+                        ? "#3E1F1D"
+                        : c.severity === "warn"
+                          ? "#40331A"
+                          : "#23423A",
+                  }}
                 >
-                  {c.count}
-                </span>
-              </span>
-              <span className="pl-4 text-[11px] leading-[1.4] text-faint">{c.detail}</span>
-            </button>
-          ))}
+                  <button
+                    type="button"
+                    onClick={() => setOpen(expanded ? null : c.id)}
+                    className="flex flex-col gap-[5px] text-left"
+                  >
+                    <span className="flex items-center gap-[9px]">
+                      <span
+                        className="h-[7px] w-[7px] flex-none rounded-full"
+                        style={{ background: SEV_COLOR[c.severity] }}
+                      />
+                      <span className="flex-1 text-[12.5px] font-semibold text-[#DCE7E3]">
+                        {c.name}
+                      </span>
+                      <span
+                        className="font-mono text-[10px] whitespace-nowrap"
+                        style={{ color: SEV_COLOR[c.severity] }}
+                      >
+                        {c.count}
+                      </span>
+                    </span>
+                    <span className="pl-4 text-[11px] leading-[1.4] break-words text-faint">
+                      {c.detail}
+                    </span>
+                  </button>
+
+                  {expanded && (
+                    <div className="flex gap-1.5 pt-1 pl-4">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onAsk(`Risolvi il problema "${c.name}": ${c.detail}`)
+                        }
+                        className="rounded-lg border border-[#2C4C42] bg-brand-wash px-2.5 py-1.5 text-[11px] font-semibold text-brand transition-colors hover:bg-[#1D3229]"
+                      >
+                        Correggi in automatico
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIgnored((l) => [...l, c.id])}
+                        title="Nascondi questa verifica fino alla prossima compilazione"
+                        className="rounded-lg border border-line-strong px-2.5 py-1.5 text-[11px] text-muted transition-colors hover:text-text"
+                      >
+                        Ignora
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
         </div>
       </section>
 

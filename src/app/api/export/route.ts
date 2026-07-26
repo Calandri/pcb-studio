@@ -66,6 +66,14 @@ export async function GET(req: Request): Promise<Response> {
         });
         return csvResponse(convertBomRowsToCsv(rows), "bom.csv");
       }
+      // stesse righe della distinta scaricabile, in JSON: la tabella a video
+      // non deve poter divergere dal file che finisce in produzione
+      case "bom-json": {
+        const rows = await convertCircuitJsonToBomRows({
+          circuitJson: circuitJson as unknown as BomCircuitJson,
+        });
+        return Response.json({ rows });
+      }
       case "pnp": {
         const csv = convertCircuitJsonToPickAndPlaceCsv(
           circuitJson as unknown as PnpCircuitJson,

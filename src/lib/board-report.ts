@@ -12,6 +12,8 @@ export interface CheckRow {
   count: string;
   severity: Severity;
   detail: string;
+  /** vista da accendere sulla scheda per vedere di cosa si sta parlando */
+  preset: string;
 }
 
 export interface LayerRow {
@@ -96,6 +98,7 @@ export function buildBoardReport(
     name: string,
     items: Array<{ message: string }>,
     okDetail: string,
+    preset: string,
     severity: Severity = "err",
   ): CheckRow => ({
     id,
@@ -103,14 +106,15 @@ export function buildBoardReport(
     count: items.length === 0 ? "ok" : `${items.length} ${items.length === 1 ? "segnalazione" : "segnalazioni"}`,
     severity: items.length === 0 ? "ok" : severity,
     detail: items.length === 0 ? okDetail : items[0].message.slice(0, 130),
+    preset,
   });
 
   checks.push(
-    row("via", "Fori e anelli delle via", viaRules, "Via entro i minimi di fabbrica.", "warn"),
-    row("clear", "Distanze minime", clearanceRules, "Nessun rame troppo ravvicinato."),
-    row("width", "Larghezza piste", widthRules, "Tutte le piste sopra la larghezza minima."),
-    row("edge", "Margine dal bordo", edgeRules, "Rame a distanza di sicurezza dal bordo."),
-    row("place", "Ingombri dei componenti", overlaps, "Nessuna sovrapposizione."),
+    row("via", "Fori e anelli delle via", viaRules, "Via entro i minimi di fabbrica.", "interference", "warn"),
+    row("clear", "Distanze minime", clearanceRules, "Nessun rame troppo ravvicinato.", "interference"),
+    row("width", "Larghezza piste", widthRules, "Tutte le piste sopra la larghezza minima.", "copper"),
+    row("edge", "Margine dal bordo", edgeRules, "Rame a distanza di sicurezza dal bordo.", "fabrication"),
+    row("place", "Ingombri dei componenti", overlaps, "Nessuna sovrapposizione.", "interference"),
     {
       id: "routing",
       name: "Collegamenti completati",
@@ -120,6 +124,7 @@ export function buildBoardReport(
         unrouted.length === 0
           ? `${traces.length} piste instradate, nessuna connessione aperta.`
           : `Esempio: ${unrouted[0]}`,
+      preset: "connections",
     },
   );
 
