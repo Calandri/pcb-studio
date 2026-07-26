@@ -192,6 +192,15 @@ body {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4) !important;
   transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease !important;
 }
+/*
+ * Barra dei tab di runframe: mostra una sola pillola (il tab e' scelto dal
+ * nostro header) piu' due icone sue. E' rumore sopra il canvas, quindi si
+ * nasconde. Se runframe cambia le classi la barra ricompare: nessun danno.
+ */
+.viewer-shell .rf-flex.rf-items-center.rf-gap-2.rf-p-2.rf-pb-0 {
+  display: none !important;
+}
+
 .viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"]:hover {
   background-color: var(--brand-wash) !important;
   border-color: #2c4c42 !important;

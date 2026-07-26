@@ -76,9 +76,15 @@ export function buildBoardReport(
   const vias = elements.filter((e) => e.type === "pcb_via");
   const pads = elements.filter((e) => e.type === "pcb_smtpad");
   const components = elements.filter((e) => e.type === "source_component");
+  // la chiave puo' esserci col valore vuoto (es. {"JLCPCB Part #": ""}): quel
+  // componente NON e' ordinabile, e contarlo come tale mentiva sulla distinta
   const withSupplier = components.filter((c) => {
     const s = c.supplier_part_numbers as Record<string, unknown> | undefined;
-    return s && Object.keys(s).length > 0;
+    if (!s) return false;
+    return Object.values(s).some((v) => {
+      const code = Array.isArray(v) ? v[0] : v;
+      return Boolean(code) && String(code).trim() !== "";
+    });
   }).length;
 
   const errors = summary?.errors ?? [];

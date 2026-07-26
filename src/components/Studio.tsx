@@ -9,7 +9,7 @@ import { PcbView } from "./PcbView";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
 import { Footer, Header, type BoardTab } from "./workspace/Chrome";
-import { LeftRail } from "./workspace/LeftRail";
+import { LeftRail, type SchematicSummary } from "./workspace/LeftRail";
 import { extractComponents } from "@/lib/inspect";
 import { BomView } from "./workspace/BomView";
 import { PartCard } from "./workspace/PartCard";
@@ -161,6 +161,10 @@ export function Studio({
   );
 
   const parts = useMemo(() => extractComponents(circuitJson), [circuitJson]);
+  const schematicSummary = useMemo(() => {
+    const q = (summary as { schematicQuality?: SchematicSummary } | null)?.schematicQuality;
+    return q ?? null;
+  }, [summary]);
   const part = useMemo(() => parts.find((p) => p.id === partId) ?? null, [parts, partId]);
 
   // larghezze effettivamente usate sul rame: senza questo, guardando il canvas
@@ -407,7 +411,10 @@ export function Studio({
         }`}
       >
         <LeftRail
+          tab={tab}
           report={report}
+          schematic={schematicSummary}
+          parts={parts}
           preset={preset}
           onPreset={applyPreset}
           layer={layer}
@@ -488,10 +495,10 @@ export function Studio({
           </div>
           )}
 
-          {tab === "pcb" && parts.length > 0 && (
+          {(tab === "pcb" || tab === "cad") && parts.length > 0 && (
             <PartPicker parts={parts} selected={partId} onSelect={setPartId} />
           )}
-          {tab === "pcb" && part && (
+          {(tab === "pcb" || tab === "cad") && part && (
             <PartCard part={part} onClose={() => setPartId(null)} onAsk={ask} />
           )}
 
