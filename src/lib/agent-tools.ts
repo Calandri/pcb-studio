@@ -24,6 +24,11 @@ import {
 } from "./project-store";
 import { runSimulation } from "./simulate";
 import { compileProject, summarizeCircuit } from "./compile";
+import {
+  ENCLOSURE_NAME_RE,
+  listEnclosures,
+  saveEnclosure,
+} from "./enclosure-store";
 import { findSections, spliceTraces, unrouteSections } from "./variants";
 import { renderPcbPng, reviewLayout } from "./vision-review";
 
@@ -232,6 +237,35 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       },
       required: ["section", "variant"],
     },
+  },
+  {
+    name: "enclosure_save",
+    description:
+      "Save a 3D enclosure or mechanical module for this project, written in JSCAD. " +
+      "The code defines `main(jscad)` returning a geom3 or an array of geom3 (shells). " +
+      "Millimeters, origin at the board center, z=0 board bottom face, z=1.6 board top. " +
+      "It shows up immediately in the 3D tab and can be exported as STL from there.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "lowercase identifier, e.g. scocca-v1 or supporto-batteria",
+        },
+        code: {
+          type: "string",
+          description: "JSCAD module body defining main(jscad)",
+        },
+      },
+      required: ["name", "code"],
+    },
+  },
+  {
+    name: "enclosure_list",
+    description:
+      "List the project's enclosures and imported 3D modules (name, kind, visibility). " +
+      "Check it before saving so you update an existing enclosure instead of duplicating it.",
+    input_schema: { type: "object", properties: {}, required: [] },
   },
 ];
 
@@ -521,6 +555,54 @@ export async function executeTool(
           message: `Section "${sectionKey}" now uses variant "${label}". ${summary.message}`,
           drcViolations: summary.drcViolations,
           unroutedConnections: summary.unroutedConnections,
+        },
+      };
+    }
+
+    case "enclosure_save": {
+      const encName = String(args.name ?? "").trim();
+      const code = String(args.code ?? "");
+      if (!ENCLOSURE_NAME_RE.test(encName)) {
+        return {
+          result: {
+            error: `Invalid name "${encName}": letters, numbers, spaces, dash and dot, max 63 chars`,
+          },
+        };
+      }
+      if (!/\bmain\s*\(/.test(code)) {
+        return { result: { error: "The code must define main(jscad)" } };
+      }
+      if (code.length > 100_000) {
+        return { result: { error: `Code too large (${code.length} chars, max 100k)` } };
+      }
+      await saveEnclosure(projectId, {
+        name: encName,
+        kind: "jscad",
+        source: code,
+        fileName: null,
+        transform: { x: 0, y: 0, z: 0, rotZ: 0 },
+        visible: true,
+      });
+      return {
+        result: {
+          ok: true,
+          name: encName,
+          chars: code.length,
+          message: `Enclosure "${encName}" saved: it is now visible in the 3D tab.`,
+        },
+      };
+    }
+
+    case "enclosure_list": {
+      const list = await listEnclosures(projectId);
+      return {
+        result: {
+          enclosures: list.map((r) => ({
+            name: r.name,
+            kind: r.kind,
+            visible: r.visible,
+            fileName: r.fileName,
+          })),
         },
       };
     }

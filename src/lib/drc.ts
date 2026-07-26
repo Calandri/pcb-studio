@@ -248,7 +248,14 @@ export function runDrcChecks(
    * diagonale attaccato al pad riduce il rame utile del giunto e lascia angoli
    * acuti dove l'incisione morde di piu'.
    */
-  const ESCAPE_TOL_MM = 0.02;
+  /*
+   * Quanto puo' essere storta un'uscita prima di chiamarla diagonale. Il
+   * criterio e' ANGOLARE e non in millimetri: una pista lunga 2mm che arriva
+   * 0,04mm fuori asse e' storta di un grado — dritta per chiunque la guardi e
+   * per chi la produce. Con una soglia in mm venivano segnalate proprio quelle,
+   * mentre il 45 gradi vero (45 gradi esatti) e' l'unica cosa da prendere.
+   */
+  const ESCAPE_MAX_DEG = 12;
   const padAt = (x: number, y: number): El | null =>
     circuitJson.find((el) => {
       if (el.type !== "pcb_smtpad") return false;
@@ -274,12 +281,14 @@ export function runDrcChecks(
       const x = num(from.x)!;
       const y = num(from.y)!;
       if (!padAt(x, y)) continue;
-      const dx = Math.abs(num(to.x)! - x);
-      const dy = Math.abs(num(to.y)! - y);
-      if (dx <= ESCAPE_TOL_MM || dy <= ESCAPE_TOL_MM) continue; // gia' dritta
+      const dx = num(to.x)! - x;
+      const dy = num(to.y)! - y;
+      if (Math.hypot(dx, dy) < 1e-6) continue;
+      const offAxis = escapeOffAxisDeg(dx, dy);
+      if (offAxis <= ESCAPE_MAX_DEG) continue;
       push(
         "pin_escape",
-        `${el.pcb_trace_id}: esce dal pad in diagonale invece che dritto`,
+        `${el.pcb_trace_id}: esce dal pad a ${Math.round(offAxis)}° fuori asse invece che dritto`,
         { x, y },
       );
     }
@@ -392,6 +401,15 @@ export function runDrcChecks(
     }
   }
   return aggregated;
+}
+
+/**
+ * Di quanti gradi l'uscita e' fuori dall'asse piu' vicino (orizzontale o
+ * verticale). 0 = perfettamente dritta, 45 = diagonale piena.
+ */
+export function escapeOffAxisDeg(dx: number, dy: number): number {
+  const deg = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
+  return Math.min(deg, 90 - deg);
 }
 
 function boxCenter(b: Box): { x: number; y: number } {

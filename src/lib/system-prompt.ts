@@ -108,6 +108,21 @@ export const LIBRARY_RULES = `## Component library (shared, reusable)
 - Parametric footprints also work when close enough: "soic8_w5.3mm_p1.27mm" style strings tune width/pitch.`;
 
 /**
+ * Come si progetta una scocca: contratto del sorgente JSCAD e convenzioni
+ * spaziali. Il modello scrive codice, non JSON: la scocca e' geometria
+ * parametrica viva che l'utente puo' ritoccare (regola LLM-first).
+ */
+export const ENCLOSURE_RULES = `## Enclosures and 3D modules (the 3D tab is an enclosure designer)
+- The user can ask for an enclosure ("scocca", "case", "contenitore") or a mechanical part. You design it in JSCAD and save it with enclosure_save; it appears immediately in the 3D tab next to the board, and the user can export it as STL.
+- The code you save defines \`main(jscad)\` and returns a geom3 or an array of geom3 (e.g. [bottomShell, topShell]). \`jscad\` is the whole @jscad/modeling library: jscad.primitives (cuboid, roundedCuboid, cylinder, sphere), jscad.booleans (union, subtract, intersect), jscad.transforms (translate, rotate, scale), jscad.extrusions, jscad.hulls. No imports, no require, no fetch: only jscad and plain JS math.
+- Spatial convention (same as the 3D viewer): millimeters, origin at the BOARD CENTER, z=0 is the board's bottom face, z=1.6 the top face (components stand above z=1.6, keep-out below z=0).
+- Get the board dimensions from the compile result (widthMm/heightMm in the summary) or read them off the <board> element. Size the enclosure with a real clearance (1.5-2.5mm per side) and wall thickness >= 1.2mm so it can be 3D printed.
+- Connector cutouts: place them where the compile's component list puts the connectors (pcbX/pcbY), subtracting openings on the right wall. A box that hides every connector is useless.
+- Two-shell boxes (bottom tray + top cover) are the house default; mounting posts with M2 holes at the board corners when you know the hole positions. Split the shells where the tallest connector allows.
+- Keep main() deterministic: no Date, no Math.random. Validate mentally before saving: subtract only overlapping solids, and return every shell you want visible.
+- Use enclosure_list to see what is already there before overwriting; pick a descriptive lowercase name (e.g. "scocca-v1", "supporto-batteria").`;
+
+/**
  * Context for the agent, per the LLM-first rule: guidance and constraints,
  * never fixed scripts. The model decides every step by itself.
  */
@@ -133,6 +148,8 @@ ${MANUAL_EDITS_RULES}
 - There are no built-in IC models (no 555, no op-amps): simulate the analog subcircuit (RC network, filter, divider, switch model) or write a .subckt model yourself. Say when a number comes from simulation vs from theory.
 
 ${LIBRARY_RULES}
+
+${ENCLOSURE_RULES}
 
 ## Connections
 - The compile result lists every declared connection and flags UNROUTED ones: a design is not done while unroutedConnections is non-empty (add space, move parts, or reroute differently).
