@@ -5,13 +5,10 @@ import {
   stringifyExcellonDrill,
   stringifyGerberCommandLayers,
 } from "circuit-json-to-gerber";
-import {
-  convertBomRowsToCsv,
-  convertCircuitJsonToBomRows,
-} from "circuit-json-to-bom-csv";
 import { convertCircuitJsonToPickAndPlaceCsv } from "circuit-json-to-pnp-csv";
 import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
+import { bomToCsv, buildBom } from "@/lib/bom";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
@@ -22,7 +19,6 @@ export const maxDuration = 120;
 // Every exporter pins a slightly different circuit-json version (the layer
 // unions differ), so each call site casts to its own expected input type.
 type AnyCircuitJson = Parameters<typeof convertSoupToGerberCommands>[0];
-type BomCircuitJson = Parameters<typeof convertCircuitJsonToBomRows>[0]["circuitJson"];
 type PnpCircuitJson = Parameters<typeof convertCircuitJsonToPickAndPlaceCsv>[0];
 type DrillCircuitJson = Parameters<typeof convertSoupToExcellonDrillCommands>[0]["circuitJson"];
 type SchematicCircuitJson = Parameters<typeof convertCircuitJsonToSchematicSvg>[0];
@@ -61,18 +57,12 @@ export async function GET(req: Request): Promise<Response> {
   try {
     switch (kind) {
       case "bom": {
-        const rows = await convertCircuitJsonToBomRows({
-          circuitJson: circuitJson as unknown as BomCircuitJson,
-        });
-        return csvResponse(convertBomRowsToCsv(rows), "bom.csv");
+        return csvResponse(bomToCsv(buildBom(circuitJson as never, fsMap)), "bom.csv");
       }
       // stesse righe della distinta scaricabile, in JSON: la tabella a video
       // non deve poter divergere dal file che finisce in produzione
       case "bom-json": {
-        const rows = await convertCircuitJsonToBomRows({
-          circuitJson: circuitJson as unknown as BomCircuitJson,
-        });
-        return Response.json({ rows });
+        return Response.json({ rows: buildBom(circuitJson as never, fsMap) });
       }
       case "pnp": {
         const csv = convertCircuitJsonToPickAndPlaceCsv(

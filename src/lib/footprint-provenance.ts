@@ -115,7 +115,8 @@ export function analyzeFootprints(
     pushIssues(result.issues, { name, ftype, lcsc, ...found }, origin);
   }
 
-  result.records = result.records.slice(0, MAX_LIST);
+  // i record non si tagliano: sono una riga per componente e servono interi
+  // alla distinta base, dove un componente senza package non e' ordinabile
   result.issues = result.issues.slice(0, MAX_LIST);
   return result;
 }
