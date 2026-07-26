@@ -3,6 +3,7 @@ import { requireProjectAccess } from "@/lib/acl";
 import { compileProject } from "@/lib/compile";
 import { extractComponents, extractIssues } from "@/lib/inspect";
 import { getProject } from "@/lib/project-store";
+import { SCHEMATIC_RULES } from "@/lib/system-prompt";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -36,6 +37,11 @@ export async function GET(req: Request): Promise<Response> {
     "- L'autorouter viene eseguito alla compilazione: se ci sono sovrapposizioni di componenti viene SALTATO e ogni connessione risulta mancante.",
     "- Rispondimi con il file main.tsx COMPLETO e corretto (niente diff), spiegando in breve le scelte di piazzamento.",
     "",
+    // Senza queste regole un agente esterno riscrive main.tsx da zero e
+    // reintroduce schX/schY, che disattiva il layout automatico dello schematico.
+    "## Regole per lo schematico (vincolanti)",
+    SCHEMATIC_RULES.split("\n").slice(1).join("\n"),
+    "",
     "## Stato dell'ultima compilazione",
     `- esito: ${summary.message}`,
     `- componenti: ${components.length}`,
@@ -55,6 +61,15 @@ export async function GET(req: Request): Promise<Response> {
     lines.push("", "### DRC");
     for (const v of drc.slice(0, 15)) lines.push(`- ${v.message}`);
   }
+  const sq = summary.schematicQuality;
+  lines.push(
+    "",
+    "### Schematico",
+    `- simboli: ${sq.symbols}, coppie sovrapposte: ${sq.symbolOverlapCount}, incroci: ${sq.traceCrossings}`,
+    `- sezioni funzionali: ${sq.sections.length ? sq.sections.join(", ") : "NESSUNA (da sezionare)"}` +
+      `${sq.sectionsWithFrames.length ? ` | con cornice: ${sq.sectionsWithFrames.join(", ")}` : ""}`,
+  );
+  for (const i of sq.issues.slice(0, 8)) lines.push(`- [${i.severity}] ${i.message}`);
   if (issues.length) {
     lines.push("", "### Altri avvisi");
     for (const i of issues.slice(0, 10)) {

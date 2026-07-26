@@ -1,4 +1,41 @@
 /**
+ * Regole di leggibilita' dello schematico, in un unico posto perche' su questo
+ * progetto lavorano TRE agenti: quello interno (SYSTEM_PROMPT), un agente
+ * esterno via MCP (istruzioni del server) e quello del "Completa con Claude"
+ * (briefing di handoff). Se le regole vivessero solo nel prompt interno, gli
+ * altri due continuerebbero a produrre schemi illeggibili.
+ *
+ * Il sezionamento e' una decisione SEMANTICA, quindi la prende il modello che
+ * ha appena progettato il circuito e sa a cosa serve ogni componente: qui ci
+ * sono i vincoli, non uno script da eseguire (regola LLM-first).
+ */
+export const SCHEMATIC_RULES = `## Schematic quality (mandatory: the drawing is half the deliverable)
+- A correct netlist with an unreadable drawing is NOT done. The schematic must read like an engineer drew it: functional blocks, power at the top, signals in the middle, connectors at the edges, few crossings.
+- NEVER write schX or schY on a component. A single schX or schY anywhere inside a group switches that whole group to manual schematic layout: every other component loses its automatic placement and they all pile up on the origin. This is the number one way to destroy a schematic. Coordinates inside a custom SYMBOL primitive (<schematicline>, <schematicbox>, <schematicpath>) are a different thing and stay allowed.
+- Divide the circuit into functional SECTIONS: put schSectionName on EVERY component, e.g. <capacitor name="C1" capacitance="100nF" footprint="0402" schSectionName="decoupling" />. tscircuit packs each section on its own and then tiles the section blocks in rows, and that is what produces a readable sheet.
+- Section by FUNCTION, not by component type: what the part does in this circuit decides the section. The same 100nF is "decoupling" next to an MCU supply pin and "analog" in a filter; a resistor is "reset" on NRST and "leds" in series with an LED. Name a section after the job it performs on this board (power, decoupling, mcu, clock, reset, io, connectors, sensors, leds, usb, analog), never after the footprint or the value. If two parts always work together, they belong in the same section.
+- A component with no schSectionName falls into an unnamed leftover block, so give every one a section.
+- Draw the frames and the titles: add one <schematicsection name="power" displayName="Power input" /> at board level for each section name you used (name must match schSectionName exactly). These insert the dividing lines and the section titles that make the sheet look like a real schematic. displayName is what a human reads, so write it for a human.
+- On the <board>, enable automatic net labels: <board ... schTraceAutoLabelEnabled>. Long tangled wires are then replaced by labels. Combine it with named nets for every rail (GND, P3V3, VBAT): rails belong on labels, not on wires that cross the whole sheet.
+- Do NOT mix sections and groups at the same level. If a parent uses schSectionName on its components, its <group> children are excluded from the packing and get drawn on top of the sections. Per level pick one: flat components with sections, or subcircuit groups.
+- Above roughly 40 symbols, split into <group subcircuit name="power" schAutoLayoutEnabled> blocks joined by named nets, and use schSectionName inside each group.
+- Group tuning when you need it: schTitle="Power" for a title above the block, schPadding for breathing room, schMaxTraceDistance to force a net label past a given wire length.
+- Re-sectioning an existing board is a normal edit: change the schSectionName values, keep the <schematicsection> names in sync, re-compile. Nothing else has to move, and the PCB is unaffected.`;
+
+/**
+ * Come leggere le metriche schematiche restituite dal compile. Condiviso come
+ * SCHEMATIC_RULES: senza questo l'agente vede il campo e non sa cosa farne.
+ */
+export const SCHEMATIC_METRICS = `- The compile returns schematicQuality: it is the ONLY way you can see the drawing, so read it exactly like you read the PCB metrics.
+  - symbolOverlaps: pairs of symbols whose bodies intersect, with coordinates. Non-empty means the schematic is broken. The usual cause is a stray schX/schY or a group mixed with sections. Target 0, this is not negotiable.
+  - labelOverlaps: net labels printed on top of a symbol. Target 0.
+  - traceCrossings: wire crossings. Reduce them by putting connected parts in the same section and by turning long nets into labels.
+  - sections / sectionsWithFrames: the section names found in your sources and the ones that also have a frame. Fewer than two sections on a board with more than eight components means you have not sectioned the schematic yet.
+  - sheet.density and sheet.fitsA4: how full the drawing is and whether it still fits an A4 frame. fitsA4 false means split into groups; density below 0.02 means the parts are flung apart, which is almost always a disabled auto layout.
+  - longestTraces: the wires that span the sheet. Those are the ones to convert into net labels.
+- The schematic is done when symbolOverlaps and labelOverlaps are empty, the sections are meaningful, and traceCrossings has stopped going down.`;
+
+/**
  * Context for the agent, per the LLM-first rule: guidance and constraints,
  * never fixed scripts. The model decides every step by itself.
  */
@@ -18,16 +55,7 @@ export const SYSTEM_PROMPT = `You are PCB Studio's electronics design agent. The
 - Named nets: declare <net name="VCC" /> then connect with to="net.VCC". Use nets for power rails (VCC, GND, 3V3...) instead of chaining pins.
 - Values accept SI units: "10k", "4.7uF", "100nF", "1M".
 
-## Schematic quality (mandatory: the drawing is half the deliverable)
-- A correct netlist with an unreadable drawing is NOT done. The schematic must read like an engineer drew it: functional blocks, power at the top, signals in the middle, connectors at the edges, few crossings.
-- NEVER write schX or schY on a component. A single schX or schY anywhere inside a group switches that whole group to manual schematic layout: every other component loses its automatic placement and they all pile up on the origin. This is the number one way to destroy a schematic. Coordinates inside a custom SYMBOL primitive (<schematicline>, <schematicbox>, <schematicpath>) are a different thing and stay allowed.
-- Divide the circuit into functional SECTIONS: put schSectionName on EVERY component, e.g. <capacitor name="C1" capacitance="100nF" footprint="0402" schSectionName="decoupling" />. tscircuit packs each section on its own and then tiles the section blocks in rows, and that is what produces a readable sheet.
-- Use the sections that apply: "power" (input connector, protection, regulator), "decoupling" (the 100nF that sit next to each supply pin), "mcu", "clock" (crystal + load caps), "reset", "io", "connectors", "sensors", "leds", "usb", "analog". A component with no schSectionName falls into an unnamed leftover block, so give every one a section.
-- Draw the frames and the titles: add one <schematicsection name="power" displayName="Power input" /> at board level for each section name you used (name must match schSectionName exactly). These insert the dividing lines and the section titles that make the sheet look like a real schematic.
-- On the <board>, enable automatic net labels: <board ... schTraceAutoLabelEnabled>. Long tangled wires are then replaced by labels. Combine it with named nets for every rail (GND, P3V3, VBAT): rails belong on labels, not on wires that cross the whole sheet.
-- Do NOT mix sections and groups at the same level. If a parent uses schSectionName on its components, its <group> children are excluded from the packing and get drawn on top of the sections. Per level pick one: flat components with sections, or subcircuit groups.
-- Above roughly 40 symbols, split into <group subcircuit name="power" schAutoLayoutEnabled> blocks joined by named nets, and use schSectionName inside each group.
-- Group tuning when you need it: schTitle="Power" for a title above the block, schPadding for breathing room, schMaxTraceDistance to force a net label past a given wire length.
+${SCHEMATIC_RULES}
 
 ## Real parts (JLCPCB)
 - When the user wants real/orderable components, call search_parts and pick an in-stock part (prefer basicPart/preferred and high stock).
@@ -73,14 +101,7 @@ export const SYSTEM_PROMPT = `You are PCB Studio's electronics design agent. The
   - congestion: board cells (A1..F4) with the highest copper coverage. Spread parts out of high-coverage cells or enlarge the board.
   - ratsnest: totalLengthMm (ideal routed length — lower is better), estimatedCrossings (net segments crossing each other — reduce by moving parts so connected pads are on the same side), longestNets with centroids. When tuning placement, try to reduce crossings and the longest nets.
 - If unrouted persists after your placement fixes, the compile already retried with a harder local router; you can also try autorouterEffortLevel="5x" on the <board> for a final push (slower).
-- The compile also returns schematicQuality: it is the ONLY way you can see the drawing, so read it exactly like you read the PCB metrics.
-  - symbolOverlaps: pairs of symbols whose bodies intersect, with coordinates. Non-empty means the schematic is broken. The usual cause is a stray schX/schY or a group mixed with sections. Target 0, this is not negotiable.
-  - labelOverlaps: net labels printed on top of a symbol. Target 0.
-  - traceCrossings: wire crossings. Reduce them by putting connected parts in the same section and by turning long nets into labels.
-  - sections / sectionsWithFrames: the section names found in your sources and the ones that also have a frame. Fewer than two sections on a board with more than eight components means you have not sectioned the schematic yet.
-  - sheet.density and sheet.fitsA4: how full the drawing is and whether it still fits an A4 frame. fitsA4 false means split into groups; density below 0.02 means the parts are flung apart, which is almost always a disabled auto layout.
-  - longestTraces: the wires that span the sheet. Those are the ones to convert into net labels.
-- The schematic is done when symbolOverlaps and labelOverlaps are empty, the sections are meaningful, and traceCrossings has stopped going down.
+${SCHEMATIC_METRICS}
 
 ## Rules
 - ALWAYS read a file before rewriting it; write_file replaces the whole file.
