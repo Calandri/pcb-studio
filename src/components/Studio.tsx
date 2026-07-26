@@ -23,23 +23,8 @@ const RunFrame = dynamic(
   },
 );
 
-// Renders an ALREADY-COMPILED circuit json without re-routing: used after a
-// server-side compile so the user sees exactly what the agent validated and
-// what /api/export will turn into Gerbers (autorouters are not deterministic).
-const CircuitJsonPreview = dynamic(
-  () => import("@tscircuit/runframe/runner").then((m) => m.CircuitJsonPreview),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full w-full items-center justify-center">
-        <div className="flex items-center gap-2 text-sm text-faint">
-          <span className="dot dot-busy" />
-          Caricamento del viewer...
-        </div>
-      </div>
-    ),
-  },
-);
+// Il rendering del circuito gia' compilato vive in BoardTabs: qui restava solo
+// l'import morto del viewer di runframe.
 
 function useProjectId(): string {
   if (typeof window === "undefined") return "default";
