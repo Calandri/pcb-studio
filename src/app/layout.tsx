@@ -17,8 +17,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PCB Studio — AI PCB Designer",
-  description: "Progetta elettronica reale conversando con un agente AI",
+  title: "PCB Studio — la tua prossima scheda, progettata parlando",
+  description:
+    "Progetta elettronica reale conversando con un agente AI: schematico, sbroglio con le regole del produttore, distinta e scocca 3D. Gratis, con il tuo agente via MCP.",
 };
 
 export default function RootLayout({
