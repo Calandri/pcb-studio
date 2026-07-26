@@ -2,6 +2,40 @@
 
 import { useState } from "react";
 import { estimateCost, type BoardReport, type Severity } from "@/lib/board-report";
+import type { BoardTab } from "./Chrome";
+
+export interface ErcSummary {
+  violations: Array<{ rule: string; severity: "warn" | "fail"; message: string }>;
+  counts: Record<string, number>;
+}
+
+const ERC_ROWS: Array<{ rule: string; label: string; hint: string }> = [
+  {
+    rule: "unconnected_pin",
+    label: "Pin non collegati",
+    hint: "Piedini lasciati per aria: o vanno collegati o dichiarati come non collegati.",
+  },
+  {
+    rule: "single_node_net",
+    label: "Net a un solo nodo",
+    hint: "Un filo che parte da un piedino e non arriva da nessuna parte.",
+  },
+  {
+    rule: "conflicting_sources",
+    label: "Sorgenti in conflitto",
+    hint: "Due alimentazioni sulla stessa net: si guardano in faccia.",
+  },
+  {
+    rule: "duplicate_designator",
+    label: "Sigle duplicate",
+    hint: "Due componenti con la stessa sigla: la distinta diventa ambigua.",
+  },
+  {
+    rule: "do_not_connect",
+    label: "«Non collegare» violati",
+    hint: "Un piedino marcato non-collegare ha un filo attaccato.",
+  },
+];
 
 const SEV_COLOR: Record<Severity, string> = {
   err: "#FF6B5A",
@@ -10,14 +44,18 @@ const SEV_COLOR: Record<Severity, string> = {
 };
 
 export function RightRail({
+  tab,
   report,
+  erc,
   compiledAgo,
   onAsk,
   onShowOnBoard,
   onRecompile,
   recompiling,
 }: {
+  tab: BoardTab;
   report: BoardReport;
+  erc: ErcSummary | null;
   compiledAgo: string;
   onAsk: (prompt: string) => void;
   /** accende sulla scheda la vista che mostra quella verifica */
@@ -71,6 +109,91 @@ export function RightRail({
           <Counter value={report.passed} label="OK" tone="ok" />
         </div>
       </section>
+
+      {tab === "schematic" && (
+        <section className="flex flex-col gap-2">
+          <div className="text-[10px] font-bold tracking-[0.11em] text-faint">
+            REGOLE ELETTRICHE
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {ERC_ROWS.map((row) => {
+              const count = erc?.counts?.[row.rule] ?? 0;
+              const first = erc?.violations?.find((v) => v.rule === row.rule);
+              const tone: Severity = count === 0 ? "ok" : first?.severity === "warn" ? "warn" : "err";
+              return (
+                <button
+                  key={row.rule}
+                  type="button"
+                  onClick={() =>
+                    onAsk(
+                      count === 0
+                        ? `Spiegami la regola elettrica "${row.label}".`
+                        : `Risolvi "${row.label}" nello schema: ${first?.message ?? ""}`,
+                    )
+                  }
+                  className="flex flex-col gap-[5px] rounded-xl border px-3 py-[11px] text-left transition-colors hover:border-[#3A5A50]"
+                  style={{
+                    background: tone === "err" ? "#160F0F" : tone === "warn" ? "#16130C" : "#0D1614",
+                    borderColor: tone === "err" ? "#3E1F1D" : tone === "warn" ? "#40331A" : "#23423A",
+                  }}
+                >
+                  <span className="flex items-center gap-[9px]">
+                    <span
+                      className="h-[7px] w-[7px] flex-none rounded-full"
+                      style={{ background: SEV_COLOR[tone] }}
+                    />
+                    <span className="flex-1 text-[12.5px] font-semibold text-[#DCE7E3]">
+                      {row.label}
+                    </span>
+                    <span
+                      className="font-mono text-[10px] whitespace-nowrap"
+                      style={{ color: SEV_COLOR[tone] }}
+                    >
+                      {count === 0 ? "ok" : count}
+                    </span>
+                  </span>
+                  <span className="pl-4 text-[11px] leading-[1.4] break-words text-faint">
+                    {count === 0 ? row.hint : (first?.message ?? row.hint)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              onAsk(
+                "Annota lo schema: assegna sigle e valori mancanti seguendo la distinta, senza cambiare i collegamenti.",
+              )
+            }
+            className="flex flex-col gap-1 rounded-xl border border-[#2C4C42] bg-brand-wash px-3 py-[11px] text-left transition-colors hover:bg-[#1D3229]"
+          >
+            <span className="text-[12.5px] font-semibold text-brand">Annota con l&apos;IA</span>
+            <span className="text-[11px] leading-[1.4] text-muted">
+              Assegna sigle e valori mancanti seguendo la distinta preferita.
+            </span>
+          </button>
+
+          <div className="mt-1 flex flex-col gap-2 rounded-xl border border-line bg-raised px-3 py-[11px]">
+            <div className="text-[10px] font-bold tracking-[0.11em] text-faint">
+              DALLO SCHEMA ALLA SCHEDA
+            </div>
+            <p className="text-[11px] leading-[1.4] text-muted">
+              Cambiato lo schema, lo sbroglio va rifatto: la scheda che vedi resta
+              quella di prima finché non ricompili.
+            </p>
+            <button
+              type="button"
+              onClick={onRecompile}
+              disabled={recompiling}
+              className="rounded-lg border border-line-strong px-2.5 py-1.5 text-[11px] font-semibold text-[#C7D6D1] transition-colors hover:border-[#3A5A50] disabled:text-faint"
+            >
+              {recompiling ? "Aggiorno..." : "Aggiorna lo sbroglio"}
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">

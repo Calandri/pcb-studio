@@ -3,6 +3,7 @@ import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
 import { runDrcChecks, type DrcViolation } from "./drc";
 import { runPrcChecks, type PrcViolation } from "./prc";
+import { emptyErcReport, runErcChecks, type ErcReport } from "./erc";
 import {
   analyzeFootprints,
   emptyFootprintProvenance,
@@ -14,6 +15,12 @@ import {
   type SchematicQuality,
 } from "./schematic-quality";
 import { DEFAULT_DESIGN_RULES, FAB_RULESETS } from "./design-rules";
+import {
+  applyManualEditsToFsMap,
+  countManualEdits,
+  parseManualEdits,
+  MANUAL_EDITS_PATH,
+} from "./manual-edits";
 import type { FsMap } from "./project-store";
 import {
   assembleCircuit,
@@ -91,6 +98,15 @@ export interface CompileSummary {
    * sources. Same role congestion/ratsnest play for the PCB.
    */
   schematicQuality: SchematicQuality;
+  /** regole elettriche sullo schema: piedini scollegati, net a un nodo, sigle */
+  erc: ErcReport;
+  /**
+   * quanti vincoli geometrici ha messo l'essere umano dall'editor: componenti
+   * fissati sullo schema, componenti fissati sul rame, piste instradate a mano.
+   * L'agente li deve sapere perche' su quei componenti il suo posizionamento
+   * non ha piu' effetto.
+   */
+  manualEdits: { schematic: number; pcb: number; traceHints: number; total: number };
   /**
    * da dove viene la geometria dei pad: verificata dal produttore, scritta
    * esplicitamente, misura standard di un passivo, oppure generica e quindi
@@ -368,6 +384,7 @@ function emptySummary(
     congestion: [],
     ratsnest: { totalLengthMm: 0, estimatedCrossings: 0, longestNets: [] },
     schematicQuality: emptySchematicQuality(),
+    erc: emptyErcReport(),
     footprintProvenance: emptyFootprintProvenance(),
     targets: {
       errors: 1,
@@ -902,6 +919,7 @@ function summarize(
   const ratsnest = computeRatsnest(groupInfo);
   const schematicQuality = analyzeSchematic(circuitJson, sources);
   const footprintProvenance = analyzeFootprints(circuitJson, sources);
+  const erc = runErcChecks(circuitJson);
 
   /*
    * Un layout schematico disattivato da schX/schY produce un disegno inservibile
@@ -986,6 +1004,7 @@ function summarize(
     congestion,
     ratsnest,
     schematicQuality,
+    erc,
     footprintProvenance,
     targets,
     routingAttempts: 1,

@@ -25,6 +25,14 @@ const SHORT_HINTS: Record<string, string> = {
   everything: "Tutti i livelli insieme",
 };
 
+export interface SheetNet {
+  name: string;
+  role: "potenza" | "massa" | "segnale";
+  nodes: number;
+  widthMm: number | null;
+  onPlane: string | null;
+}
+
 /** quel che serve del riepilogo di compilazione per lo schema */
 export interface SchematicSummary {
   symbols: number;
@@ -45,8 +53,10 @@ export interface SchematicSummary {
  */
 export function LeftRail({
   tab,
+  projectId,
   report,
   schematic,
+  nets,
   parts,
   preset,
   onPreset,
@@ -57,8 +67,10 @@ export function LeftRail({
   onAskCopilot,
 }: {
   tab: BoardTab;
+  projectId: string;
   report: BoardReport;
   schematic: SchematicSummary | null;
+  nets: SheetNet[];
   parts: InspectComponent[];
   preset: string;
   onPreset: (p: ViewPreset) => void;
@@ -92,7 +104,9 @@ export function LeftRail({
             onXray={onXray}
           />
         )}
-        {tab === "schematic" && <SchematicSections schematic={schematic} />}
+        {tab === "schematic" && (
+          <SchematicSections schematic={schematic} nets={nets} projectId={projectId} />
+        )}
         {tab === "cad" && <ThreeDSections report={report} parts={parts} />}
         {tab === "bom" && <BomSections report={report} parts={parts} />}
       </div>
@@ -239,19 +253,71 @@ function PcbSections({
 
 // -------------------------------------------------------------- schematico
 
-function SchematicSections({ schematic }: { schematic: SchematicSummary | null }) {
+function SchematicSections({
+  schematic,
+  nets,
+  projectId,
+}: {
+  schematic: SchematicSummary | null;
+  nets: SheetNet[];
+  projectId: string;
+}) {
   if (!schematic) {
     return (
       <p className="text-[11px] leading-[1.5] text-faint">
-        La qualità dello schema si misura alla compilazione: chiedi al copilota di
-        ricompilare per vederla qui.
+        La qualità dello schema si misura alla compilazione: premi «ricompila» per
+        vederla qui.
       </p>
     );
   }
 
   const { sheet } = schematic;
+  const sections = schematic.sections;
+
   return (
     <>
+      <section className="flex flex-col gap-2.5">
+        <SectionHead title="GERARCHIA FOGLI" aside={sections.length ? `${sections.length}` : undefined} />
+        <div className="flex flex-col gap-2 rounded-2xl border border-line bg-gradient-to-b from-[#0E1514] to-[#0A0F0E] px-3 py-3.5">
+          <div className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-text">
+              {projectId}
+            </span>
+            <span className="font-mono text-[10px] text-[#4E625C]">foglio unico</span>
+          </div>
+          <Row label="Dimensioni" value={`${sheet.widthSu} × ${sheet.heightSu}`} />
+          <Row label="Sta in un A4" value={sheet.fitsA4 ? "sì" : "no"} tone={sheet.fitsA4 ? "ok" : "warn"} />
+          <Row label="Riempimento" value={`${Math.round(sheet.density * 100)}%`} />
+        </div>
+        {sections.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {sections.map((name) => {
+              const framed = schematic.sectionsWithFrames.includes(name);
+              return (
+                <div
+                  key={name}
+                  className="flex items-center gap-2 rounded-[9px] border border-line px-3 py-2"
+                >
+                  <span
+                    className="h-[7px] w-[7px] flex-none rounded-[2px]"
+                    style={{ background: framed ? "#3BE8B0" : "#42544F" }}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-text">{name}</span>
+                  {!framed && (
+                    <span className="font-mono text-[9px] text-[#4E625C]">senza cornice</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-[11px] leading-[1.4] text-[#5F726C]">
+            Nessuna sezione dichiarata: chiedi al copilota di dividere lo schema in
+            blocchi funzionali, si legge molto meglio.
+          </p>
+        )}
+      </section>
+
       <section className="flex flex-col gap-2.5">
         <SectionHead title="LEGGIBILITÀ DELLO SCHEMA" />
         <div className="flex flex-col gap-1.5">
@@ -286,52 +352,43 @@ function SchematicSections({ schematic }: { schematic: SchematicSummary | null }
         </div>
       </section>
 
-      <section className="flex flex-col gap-2.5">
-        <SectionHead title="IL FOGLIO" />
-        <div className="flex flex-col gap-2 rounded-2xl border border-line bg-gradient-to-b from-[#0E1514] to-[#0A0F0E] px-3 py-3.5">
-          <Row label="Dimensioni" value={`${sheet.widthSu} × ${sheet.heightSu}`} />
-          <Row label="Riempimento" value={`${Math.round(sheet.density * 100)}%`} />
-          <Row
-            label="Sta in un A4"
-            value={sheet.fitsA4 ? "sì" : "no"}
-            tone={sheet.fitsA4 ? "ok" : "warn"}
-          />
-        </div>
-      </section>
-
-      {schematic.sections.length > 0 && (
+      {nets.length > 0 && (
         <section className="flex flex-col gap-2.5">
-          <SectionHead
-            title="SEZIONI DEL CIRCUITO"
-            aside={`${schematic.sections.length}`}
-          />
+          <SectionHead title="NET DEL FOGLIO" aside={`${nets.length}`} />
           <div className="flex flex-col gap-1">
-            {schematic.sections.map((name) => {
-              const framed = schematic.sectionsWithFrames.includes(name);
-              return (
-                <div
-                  key={name}
-                  className="flex items-center gap-2 rounded-[9px] border border-line px-3 py-2"
-                >
-                  <span
-                    className="h-[7px] w-[7px] flex-none rounded-[2px]"
-                    style={{ background: framed ? "#3BE8B0" : "#42544F" }}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-text">
-                    {name}
-                  </span>
-                  {!framed && (
-                    <span className="font-mono text-[9px] text-[#4E625C]">senza cornice</span>
-                  )}
-                </div>
-              );
-            })}
+            {nets.slice(0, 24).map((net) => (
+              <div
+                key={net.name}
+                className="flex items-baseline gap-2 rounded-[9px] border border-line px-3 py-2"
+              >
+                <span
+                  className="h-[7px] w-[7px] flex-none rounded-[2px]"
+                  style={{ background: NET_COLOR[net.role] }}
+                />
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-text">
+                  {net.name}
+                </span>
+                <span className="font-mono text-[10px] whitespace-nowrap text-[#4E625C]">
+                  {net.onPlane
+                    ? `piano · ${net.onPlane}`
+                    : net.widthMm
+                      ? `${net.role} · ${net.widthMm.toFixed(2).replace(".", ",")} mm`
+                      : `${net.role} · ${net.nodes} nodi`}
+                </span>
+              </div>
+            ))}
           </div>
         </section>
       )}
     </>
   );
 }
+
+const NET_COLOR: Record<SheetNet["role"], string> = {
+  potenza: "#E8B23B",
+  massa: "#3BE8B0",
+  segnale: "#7FB4FF",
+};
 
 // ---------------------------------------------------------------------- 3D
 
