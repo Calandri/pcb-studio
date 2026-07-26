@@ -183,7 +183,11 @@ export interface CompileOptions {
    * 3 = full variant mode with per-section candidate report
    */
   variants?: number;
-  /** giri del ciclo di sbroglio (0 = disattivato, default 3) */
+  /**
+   * Giri del ciclo di sbroglio. Spento per difetto: oggi un giro costa minuti
+   * e su bat-bs non guadagna nulla, perche' strappare una zona non rimpicciolisce
+   * il problema di routing (vedi autoroute.ts). Si accende a mano per provarlo.
+   */
   routeRounds?: number;
   /** fa guardare il disegno a un modello vision e usa cio' che trova */
   routeVision?: boolean;
@@ -349,7 +353,12 @@ export async function compileProject(
    * Prima girava prima della scala di ritenta e con l'autorouter cloud giu' non
    * partiva mai, perche' l'errore di quel tentativo lo escludeva.
    */
-  if (state.best && state.bestScore && state.bestScore.errors === 0) {
+  if (
+    (opts.routeRounds ?? 0) > 0 &&
+    state.best &&
+    state.bestScore &&
+    state.bestScore.errors === 0
+  ) {
     try {
       state.attempts += 1;
       const { circuitJson: looped, report } = await routeBoard(state.best.circuitJson, {

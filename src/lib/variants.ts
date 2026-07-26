@@ -116,7 +116,7 @@ function traceStats(traces: CircuitElement[]): CandidateStats {
   return { traces: traces.length, vias, lengthMm: Math.round(length * 10) / 10 };
 }
 
-function runSolver(
+export function runSolver(
   SolverClass: SolverClass,
   srj: unknown,
   effort: number,

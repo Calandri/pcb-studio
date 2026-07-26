@@ -6,17 +6,8 @@ import {
   type CircuitScore,
 } from "./route-score";
 import { straightenPinEscapes, widenThinTraces } from "./house-rules";
-import {
-  SOLVERS,
-  assembleCircuit,
-  findSections,
-  generateSectionCandidates,
-  spliceTraces,
-  unrouteSections,
-  type CircuitElement,
-  type SectionInfo,
-  type VariantDef,
-} from "./variants";
+import { SOLVERS, type CircuitElement, type VariantDef } from "./variants";
+import { rerouteZone, zonesFromProblems, type ProblemPoint, type Zone } from "./rip-up";
 import { renderPcbPng, reviewLayout, type VisualReview } from "./vision-review";
 
 /**
@@ -41,7 +32,7 @@ import { renderPcbPng, reviewLayout, type VisualReview } from "./vision-review";
 
 export interface RouteRound {
   round: number;
-  /** sezioni rifatte in questo giro */
+  /** zone rifatte in questo giro */
   targets: string[];
   /** perche' erano da rifare */
   reasons: string[];
@@ -53,7 +44,12 @@ export interface RouteReport {
   rounds: RouteRound[];
   initialScore: CircuitScore;
   finalScore: CircuitScore;
-  stoppedBecause: "pulita" | "non migliora piu'" | "giri esauriti" | "niente da rifare";
+  stoppedBecause:
+    | "pulita"
+    | "non migliora piu'"
+    | "giri esauriti"
+    | "niente da rifare"
+    | "tempo scaduto";
   /** cosa ha visto il modello guardando il disegno, se attivo */
   vision?: VisualReview;
 }
@@ -63,8 +59,10 @@ export interface RouteOptions {
   rules?: DesignRules;
   /** usa un modello vision per trovare quello che le regole non vedono */
   useVision?: boolean;
-  /** candidati generati per ogni sezione da rifare (solver/sforzo diversi) */
-  candidatesPerSection?: number;
+  /** quante zone rifare al massimo in un giro */
+  maxZonesPerRound?: number;
+  /** tetto di tempo per l'intero ciclo (default 3 minuti) */
+  budgetMs?: number;
 }
 
 const num = (v: unknown): number | null =>
@@ -83,104 +81,40 @@ const isClean = (s: CircuitScore): boolean =>
   s.errors === 0 && s.unrouted === 0 && s.drc === 0;
 
 /**
- * Riquadro di ogni sezione, dalle posizioni dei suoi componenti: serve a dire
- * a quale sezione appartiene un problema di cui si conoscono le coordinate.
+ * Dove sono i problemi, in coordinate. Un problema senza coordinate non aiuta a
+ * decidere dove intervenire: si tiene solo cio' che si sa localizzare.
  */
-function sectionBoxes(
+function findProblems(
   circuitJson: CircuitElement[],
-  sections: SectionInfo[],
-): Map<string, { minX: number; maxX: number; minY: number; maxY: number }> {
-  const boxes = new Map<string, { minX: number; maxX: number; minY: number; maxY: number }>();
-  for (const el of circuitJson) {
-    if (el.type !== "pcb_component") continue;
-    const sub = String(el.subcircuit_id ?? "");
-    const section = sections.find((s) => s.subcircuitId === sub);
-    if (!section) continue;
-    const center = (el.center as { x?: number; y?: number } | undefined) ?? {};
-    const x = num(center.x);
-    const y = num(center.y);
-    if (x === null || y === null) continue;
-    const w = (num(el.width) ?? 0) / 2;
-    const h = (num(el.height) ?? 0) / 2;
-    const box = boxes.get(section.key) ?? {
-      minX: Infinity,
-      maxX: -Infinity,
-      minY: Infinity,
-      maxY: -Infinity,
-    };
-    box.minX = Math.min(box.minX, x - w);
-    box.maxX = Math.max(box.maxX, x + w);
-    box.minY = Math.min(box.minY, y - h);
-    box.maxY = Math.max(box.maxY, y + h);
-    boxes.set(section.key, box);
-  }
-  return boxes;
-}
-
-/** la sezione il cui riquadro contiene il punto, o la piu' vicina entro 6mm */
-function sectionAt(
-  boxes: Map<string, { minX: number; maxX: number; minY: number; maxY: number }>,
-  x: number,
-  y: number,
-): string | null {
-  let nearest: string | null = null;
-  let nearestD = 6;
-  for (const [key, b] of boxes) {
-    const dx = Math.max(b.minX - x, x - b.maxX, 0);
-    const dy = Math.max(b.minY - y, y - b.maxY, 0);
-    const d = Math.hypot(dx, dy);
-    if (d === 0) return key;
-    if (d < nearestD) {
-      nearestD = d;
-      nearest = key;
-    }
-  }
-  return nearest;
-}
-
-/**
- * Le zone da rifare, con il motivo. Un problema senza coordinate non aiuta a
- * scegliere: si tiene solo cio' che si sa localizzare.
- */
-function findTargets(
-  circuitJson: CircuitElement[],
-  sections: SectionInfo[],
   vision: VisualReview | null,
-): Map<string, Set<string>> {
-  const boxes = sectionBoxes(circuitJson, sections);
-  const targets = new Map<string, Set<string>>();
-  const add = (key: string | null, reason: string) => {
-    if (!key) return;
-    const set = targets.get(key) ?? new Set<string>();
-    set.add(reason);
-    targets.set(key, set);
-  };
+): ProblemPoint[] {
+  const points: ProblemPoint[] = [];
 
   for (const violation of runDrcChecks(circuitJson)) {
     for (const point of violation.points ?? []) {
-      add(sectionAt(boxes, point.x, point.y), violation.rule);
+      points.push({ x: point.x, y: point.y, reason: violation.rule });
     }
   }
 
-  // collegamenti aperti: il pad che resta scoperto dice dove intervenire
-  const openGroups = computeUnroutedGroupKeys(circuitJson);
-  if (openGroups.size > 0) {
+  // collegamenti aperti: i pad scoperti dicono dove manca il rame
+  if (computeUnroutedGroupKeys(circuitJson).size > 0) {
     for (const el of circuitJson) {
       if (el.type !== "pcb_port") continue;
       const x = num(el.x);
       const y = num(el.y);
-      if (x === null || y === null) continue;
-      add(sectionAt(boxes, x, y), "collegamento aperto");
+      if (x !== null && y !== null) {
+        points.push({ x, y, reason: "collegamento aperto" });
+      }
     }
   }
 
   for (const issue of vision?.issues ?? []) {
     if (issue.severity === "info") continue;
     if (typeof issue.x !== "number" || typeof issue.y !== "number") continue;
-    add(sectionAt(boxes, issue.x, issue.y), `vista: ${issue.area}`);
+    points.push({ x: issue.x, y: issue.y, reason: `vista: ${issue.area}` });
   }
 
-  return targets;
+  return points;
 }
 
 /**
@@ -190,7 +124,9 @@ function findTargets(
  * sforzo sale e i due solver si alternano: prima tentativi rapidi, poi lunghi.
  */
 function defsForRound(round: number): VariantDef[] {
-  const efforts = [1, 5, 10, 20, 40];
+  // lo sforzo si ferma a 10: oltre, un giro sulla scheda intera costa minuti e
+  // il ciclo non finisce piu'. Meglio piu' giri corti che uno lunghissimo.
+  const efforts = [1, 5, 10, 5, 10];
   const effort = efforts[Math.min(round - 1, efforts.length - 1)];
   const harder = efforts[Math.min(round, efforts.length - 1)];
   return [
@@ -198,65 +134,6 @@ function defsForRound(round: number): VariantDef[] {
     { solver: "v3", SolverClass: SOLVERS.v3, effort },
     { solver: "v6", SolverClass: SOLVERS.v6, effort: harder },
   ];
-}
-
-/**
- * Rifa' UNA sezione: genera piu' candidati (solver e sforzi diversi), li giudica
- * col DRC come farebbero sulla scheda intera, e restituisce il migliore.
- */
-function reroute(
-  circuitJson: CircuitElement[],
-  section: SectionInfo,
-  rules: DesignRules,
-  candidates: number,
-  defs: VariantDef[],
-): CircuitElement[] | null {
-  const base = unrouteSections(circuitJson, new Set([section.subcircuitId]));
-  const variants = generateSectionCandidates(
-    base,
-    section,
-    candidates,
-    rules,
-    (traces) => {
-      try {
-        return runDrcChecks(spliceTraces(base, section.subcircuitId, traces, "loop")).reduce(
-          (n, v) => n + Math.max(1, v.points?.length ?? 1),
-          0,
-        );
-      } catch {
-        return 0;
-      }
-    },
-    defs,
-  );
-  const best = variants.candidates[variants.picked];
-  if (!best) return null;
-  return assembleCircuit(base, [{ section, candidate: best }]);
-}
-
-/**
- * Quando il progetto non dichiara blocchi funzionali (<group subcircuit>), si
- * lavora sulla scheda intera come fosse una sezione sola: il ciclo diventa meno
- * chirurgico — rifa' tutto invece della zona guasta — ma continua a mettere in
- * gara solver diversi e a tenere solo cio' che migliora. Dividere per sezioni
- * resta il modo giusto, ed e' per questo che sta nello stile di casa.
- */
-function wholeBoardSection(circuitJson: CircuitElement[]): SectionInfo[] {
-  const counts = new Map<string, number>();
-  for (const el of circuitJson) {
-    if (el.type !== "pcb_component") continue;
-    const sub = String(el.subcircuit_id ?? "");
-    if (sub) counts.set(sub, (counts.get(sub) ?? 0) + 1);
-  }
-  let best: string | null = null;
-  let bestN = 0;
-  for (const [sub, n] of counts) {
-    if (n > bestN) {
-      best = sub;
-      bestN = n;
-    }
-  }
-  return best ? [{ key: "scheda intera", name: "scheda intera", subcircuitId: best }] : [];
 }
 
 /**
@@ -269,11 +146,12 @@ export async function routeBoard(
 ): Promise<{ circuitJson: CircuitElement[]; report: RouteReport }> {
   const maxRounds = Math.max(1, Math.min(opts.maxRounds ?? 3, 12));
   const rules = opts.rules ?? DEFAULT_DESIGN_RULES;
-  const candidates = Math.max(1, Math.min(opts.candidatesPerSection ?? 3, 3));
+  const maxZones = Math.max(1, Math.min(opts.maxZonesPerRound ?? 3, 8));
+  // il ciclo ha un tetto di tempo: gira dentro una compilazione, e una
+  // compilazione che non torna e' peggio di una rotta imperfetta
+  const budgetMs = Math.max(20_000, opts.budgetMs ?? 180_000);
+  const startedAt = Date.now();
 
-  const sections = findSections(circuitJson).length
-    ? findSections(circuitJson)
-    : wholeBoardSection(circuitJson);
   let current = circuitJson;
   let score = scoreCircuit(current);
   const report: RouteReport = {
@@ -283,18 +161,12 @@ export async function routeBoard(
     stoppedBecause: "giri esauriti",
   };
 
-  if (sections.length === 0) {
-    report.stoppedBecause = "niente da rifare";
-    return { circuitJson: current, report };
-  }
-
-  // uno sguardo al disegno prima di cominciare: quello che trova entra fra le
-  // zone da rifare insieme alle violazioni di regola
+  // uno sguardo al disegno prima di cominciare: quello che trova entra fra i
+  // problemi da risolvere insieme alle violazioni di regola
   let vision: VisualReview | null = null;
   if (opts.useVision) {
     try {
-      const png = renderPcbPng(current as never);
-      vision = await reviewLayout(png);
+      vision = await reviewLayout(renderPcbPng(current as never));
       report.vision = vision;
     } catch {
       // senza occhio si procede lo stesso: e' un aiuto, non un requisito
@@ -307,9 +179,14 @@ export async function routeBoard(
       report.stoppedBecause = "pulita";
       break;
     }
+    if (Date.now() - startedAt > budgetMs) {
+      report.stoppedBecause = "tempo scaduto";
+      break;
+    }
 
-    const targets = findTargets(current, sections, vision);
-    if (targets.size === 0) {
+    const problems = findProblems(current, vision);
+    const zones = zonesFromProblems(problems).slice(0, maxZones);
+    if (zones.length === 0) {
       report.stoppedBecause = "niente da rifare";
       break;
     }
@@ -317,23 +194,23 @@ export async function routeBoard(
     let improvedThisRound = false;
     const done: string[] = [];
     const reasons = new Set<string>();
+    const defs = defsForRound(round);
 
-    for (const [key, why] of targets) {
-      const section = sections.find((s) => s.key === key);
-      if (!section) continue;
-      for (const reason of why) reasons.add(reason);
+    for (const zone of zones) {
+      if (Date.now() - startedAt > budgetMs) break;
+      for (const reason of zone.reasons) reasons.add(reason);
       try {
-        const attempt = reroute(current, section, rules, candidates, defsForRound(round));
+        const attempt = rerouteZone(current, zone, defs, rules);
         if (!attempt) continue;
-        const attemptScore = scoreCircuit(attempt);
+        const attemptScore = scoreCircuit(attempt.circuitJson);
         if (better(attemptScore, score)) {
-          current = attempt;
+          current = attempt.circuitJson;
           score = attemptScore;
           improvedThisRound = true;
-          done.push(key);
+          done.push(zoneLabel(zone));
         }
       } catch {
-        // una sezione che non si lascia rifare non ferma il giro
+        // una zona che non si lascia rifare non ferma il giro
       }
     }
 
@@ -347,8 +224,7 @@ export async function routeBoard(
 
     if (!improvedThisRound) {
       stale += 1;
-      // ci si arrende solo dopo aver esaurito anche gli sforzi piu' alti:
-      // fermarsi al secondo giro uguale sprecherebbe i tentativi lunghi
+      // ci si arrende solo dopo aver provato anche i tentativi lunghi
       if (stale >= 3 && round >= 5) {
         report.stoppedBecause = "non migliora piu'";
         break;
@@ -363,4 +239,11 @@ export async function routeBoard(
   report.finalScore = scoreCircuit(current);
   if (isClean(report.finalScore)) report.stoppedBecause = "pulita";
   return { circuitJson: current, report };
+}
+
+/** etichetta leggibile di una zona: dove si trova sulla scheda, in mm */
+function zoneLabel(zone: Zone): string {
+  const cx = Math.round((zone.minX + zone.maxX) / 2);
+  const cy = Math.round((zone.minY + zone.maxY) / 2);
+  return `zona (${cx}, ${cy})`;
 }
