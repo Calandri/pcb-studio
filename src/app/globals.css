@@ -193,6 +193,26 @@ body {
   transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease !important;
 }
 /*
+ * Segnalazioni sulla scheda: il viewer disegna un rombo rosso per ogni errore
+ * (un <svg> in mix-blend-mode difference sopra il canvas). Fermo si perde fra
+ * il rame; pulsando lo si trova subito. Se il pacchetto cambia lo stile inline
+ * il rombo torna statico e basta.
+ */
+@keyframes drc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+/* solo l'opacita': il rombo ha gia' un transform di rotazione tutto suo */
+.viewer-shell svg[style*="mix-blend-mode: difference"] > rect {
+  animation: drc-pulse 1.6s ease-in-out infinite;
+}
+
+/*
  * Barra dei tab di runframe: mostra una sola pillola (il tab e' scelto dal
  * nostro header) piu' due icone sue. E' rumore sopra il canvas, quindi si
  * nasconde. Se runframe cambia le classi la barra ricompare: nessun danno.

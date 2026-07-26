@@ -60,6 +60,7 @@ export const HOUSE_STYLE = `## Board defaults (house style, apply unless the use
 - Any board with an MCU or more than ~10 components: layers={4} with power planes as copper pours: <copperpour layer="inner1" connectsTo="net.GND" /> and <copperpour layer="inner2" connectsTo="net.P3V3" /> (match the actual rail net name). Trivial boards (a handful of passives) may stay at 2 layers.
 - WIDE power traces: every trace on power nets (VBAT, P3V3/3V3 rails and derivatives, LDO IN/OUT, battery connector) gets thickness="0.5mm". Signal traces stay at default width.
 - Net names cannot start with a digit: use P3V3, not 3V3.
+- PIN ESCAPE: a trace must leave a pad STRAIGHT (horizontal or vertical, perpendicular to the pad edge) for a short stub, and only then turn 45 degrees. Never attach a diagonal segment directly to a pad: it shrinks the usable copper of the joint and creates acute etch angles. The compile reports \`pin_escape\` violations with coordinates — fix them by nudging placement/rotation so the escape direction is natural, or by routing that net explicitly.
 - State the layer count, pour layers and trace widths you used in your final answer.
 
 ## Real parts (JLCPCB)

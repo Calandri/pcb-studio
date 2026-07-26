@@ -290,7 +290,10 @@ export async function compileProject(
       // e la stessa rotta con le piste sottili portate al minimo di fabbrica:
       // allargare il rame puo' avvicinare net diverse, quindi non si impone —
       // si presenta come alternativa e vince solo se il DRC migliora
-      consider(widenThinTraces(cj), "local_retry");
+      const widened = widenThinTraces(cj);
+      consider(widened, "local_retry");
+      // e con le uscite dai pad raddrizzate (regola di casa)
+      consider(straightenPinEscapes(widened), "local_retry");
     } catch {
       // a failed retry just doesn't improve the best result
     }
@@ -394,7 +397,12 @@ function scoreCircuit(circuitJson: CircuitElement[]): CircuitScore {
   return {
     errors: circuitJson.filter((el) => el.type.endsWith("_error")).length,
     unrouted: computeUnroutedGroupKeys(circuitJson).size,
-    drc: runDrcChecks(circuitJson).length,
+    // si contano le OCCORRENZE, non le famiglie: aggregate, 110 uscite storte
+    // e 1 sola pesano uguale e il confronto fra due rotte non vede la differenza
+    drc: runDrcChecks(circuitJson).reduce(
+      (n, v) => n + Math.max(1, v.points?.length ?? 1),
+      0,
+    ),
     vias: circuitJson.filter((el) => el.type === "pcb_via").length,
     lengthMm: totalWireLengthMm(circuitJson),
   };
@@ -532,6 +540,80 @@ function localRouterDef(effort: number) {
         ),
       ) as never,
   };
+}
+
+
+/**
+ * Copia del circuito in cui ogni pista esce dal pad DRITTA: dove il router ha
+ * attaccato al pad un segmento diagonale, si inserisce un tratto breve
+ * perpendicolare al bordo del pad e solo dopo si riparte verso il punto
+ * successivo. Regola di casa (Niccolo', 2026-07-26): un diagonale attaccato al
+ * pad riduce il rame utile del giunto e lascia angoli acuti all'incisione.
+ *
+ * Come per le piste sottili, il risultato gareggia con l'originale invece di
+ * sostituirlo: spostare rame puo' avvicinare net diverse, e a decidere e' il DRC.
+ */
+function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElement[] {
+  const pads = circuitJson.filter((el) => el.type === "pcb_smtpad");
+  const padAt = (x: number, y: number): CircuitElement | null =>
+    pads.find((el) => {
+      const px = num(el.x);
+      const py = num(el.y);
+      if (px === null || py === null) return false;
+      const w = (num(el.width) ?? (num(el.radius) ?? 0) * 2) / 2;
+      const h = (num(el.height) ?? (num(el.radius) ?? 0) * 2) / 2;
+      return Math.abs(px - x) <= w + 1e-6 && Math.abs(py - y) <= h + 1e-6;
+    }) ?? null;
+
+  const TOL = 0.02;
+  const MAX_STUB = 0.3;
+
+  return circuitJson.map((el) => {
+    if (el.type !== "pcb_trace") return el;
+    const route = (el.route as Array<Record<string, unknown>> | undefined) ?? [];
+    if (route.length < 2) return el;
+
+    const next = [...route];
+    let changed = false;
+
+    // si lavora sui due capi: e' li' che la pista tocca un pad
+    for (const end of ["start", "end"] as const) {
+      const i = end === "start" ? 0 : next.length - 1;
+      const j = end === "start" ? 1 : next.length - 2;
+      const from = next[i];
+      const to = next[j];
+      const x = num(from.x);
+      const y = num(from.y);
+      const tx = num(to.x);
+      const ty = num(to.y);
+      if (x === null || y === null || tx === null || ty === null) continue;
+
+      const dx = tx - x;
+      const dy = ty - y;
+      if (Math.abs(dx) <= TOL || Math.abs(dy) <= TOL) continue; // gia' dritta
+
+      const pad = padAt(x, y);
+      if (!pad) continue;
+
+      // perpendicolare al bordo da cui si esce: sul lato lungo del pad
+      const pw = num(pad.width) ?? 0;
+      const ph = num(pad.height) ?? 0;
+      const horizontal = pw > ph ? true : ph > pw ? false : Math.abs(dx) >= Math.abs(dy);
+      const span = Math.abs(horizontal ? dx : dy);
+      const stub = Math.min(MAX_STUB, span * 0.4);
+      if (stub <= TOL) continue;
+
+      const point = {
+        ...from,
+        x: horizontal ? x + Math.sign(dx) * stub : x,
+        y: horizontal ? y : y + Math.sign(dy) * stub,
+      };
+      next.splice(end === "start" ? 1 : next.length - 1, 0, point);
+      changed = true;
+    }
+
+    return changed ? { ...el, route: next } : el;
+  });
 }
 
 /**

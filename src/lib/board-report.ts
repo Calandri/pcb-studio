@@ -97,6 +97,7 @@ export function buildBoardReport(
   const clearanceRules = drc.filter((v) => /clearance/i.test(v.rule ?? v.message));
   const widthRules = drc.filter((v) => /trace_width/i.test(v.rule ?? v.message));
   const edgeRules = drc.filter((v) => /edge/i.test(v.rule ?? v.message));
+  const escapeRules = drc.filter((v) => /pin_escape/i.test(v.rule ?? v.message));
   const overlaps = errors.filter((e) => /overlap|outside/i.test(e.type ?? e.message));
 
   const row = (
@@ -121,6 +122,14 @@ export function buildBoardReport(
     row("width", "Larghezza piste", widthRules, "Tutte le piste sopra la larghezza minima.", "copper"),
     row("edge", "Margine dal bordo", edgeRules, "Rame a distanza di sicurezza dal bordo.", "fabrication"),
     row("place", "Ingombri dei componenti", overlaps, "Nessuna sovrapposizione.", "interference"),
+    row(
+      "escape",
+      "Uscita dai pin",
+      escapeRules,
+      "Ogni pista esce dal pad dritta, come da regola di casa.",
+      "interference",
+      "warn",
+    ),
     {
       id: "routing",
       name: "Collegamenti completati",

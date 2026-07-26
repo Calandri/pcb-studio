@@ -192,6 +192,36 @@ export function Studio({
     [circuitJson, summary],
   );
 
+  /**
+   * Le segnalazioni del DRC diventano elementi di errore dentro il Circuit
+   * JSON dato al viewer: e' il viewer a disegnarle, nel suo sistema di
+   * coordinate, con il fumetto al passaggio del mouse. Senza questo si sa cosa
+   * non va ma non dove — che sulla scheda e' l'informazione che serve.
+   */
+  const circuitWithIssues = useMemo(() => {
+    if (!circuitJson) return null;
+    const violations =
+      (summary as { drcViolations?: Array<{ rule: string; message: string; points?: Array<{ x: number; y: number }> }> } | null)
+        ?.drcViolations ?? [];
+    const markers: unknown[] = [];
+    for (const v of violations) {
+      for (const [i, point] of (v.points ?? []).entries()) {
+        markers.push({
+          type: "pcb_trace_error",
+          pcb_trace_error_id: `drc_${v.rule}_${i}_${markers.length}`,
+          error_type: "pcb_trace_error",
+          message: v.message,
+          center: point,
+          pcb_trace_id: "",
+          source_trace_id: "",
+          pcb_component_ids: [],
+          pcb_port_ids: [],
+        });
+      }
+    }
+    return markers.length > 0 ? [...circuitJson, ...markers] : circuitJson;
+  }, [circuitJson, summary]);
+
   const parts = useMemo(() => extractComponents(circuitJson), [circuitJson]);
   const schematicSummary = useMemo(() => {
     const q = (summary as { schematicQuality?: SchematicSummary } | null)?.schematicQuality;
@@ -478,7 +508,7 @@ export function Studio({
             {circuitJson && !circuitStale ? (
               tab === "pcb" ? (
                 <PcbView
-                  circuitJson={circuitJson}
+                  circuitJson={circuitWithIssues ?? circuitJson}
                   flags={flags}
                   layer={layer}
                   xray={xray}
