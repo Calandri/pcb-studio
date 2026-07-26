@@ -48,19 +48,6 @@ const CircuitJsonPreview = dynamic(
   },
 );
 
-const EnclosureCanvas = dynamic(
-  () =>
-    import("./workspace/EnclosureCanvas").then((m) => m.EnclosureCanvas),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
-        <span className="dot dot-busy" /> Avvio del designer 3D...
-      </div>
-    ),
-  },
-);
-
 export function Studio({
   projectId,
   user,
@@ -643,17 +630,15 @@ export function Studio({
                   resetKey={editor.viewerKey}
                 />
               ) : (
-                // tab 3D: il designer di scocche (scheda in GLB dal server,
-                // scocche e moduli importati come mesh nella stessa scena)
-                <EnclosureCanvas
-                  projectId={projectId}
-                  boardWidthMm={report.widthMm}
-                  boardHeightMm={report.heightMm}
-                  parts={parts}
-                  meshes={[]}
-                  showEnclosures={showEnclosures}
-                  enclosureOpacity={enclosureOpacity}
-                  explodedMm={explodedMm}
+                /* tab 3D: il designer di scocche e' in lavorazione e il suo
+                   componente non e' ancora nel repo, quindi qui resta la vista
+                   3D di tscircuit finche' non arriva */
+                <CircuitJsonPreview
+                  key={tab}
+                  circuitJson={circuitJson as never}
+                  defaultActiveTab={tab as never}
+                  availableTabs={[tab] as never}
+                  showToggleFullScreen={false}
                 />
               )
             ) : fsMap && circuitChecked ? (
