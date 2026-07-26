@@ -140,6 +140,8 @@ export function Sidebar({
   const [datasheets, setDatasheets] = useState<Datasheet[]>([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [tokens, setTokens] = useState<Array<{ id: string; name: string; prefix: string }>>([]);
+  const [freshToken, setFreshToken] = useState<string | null>(null);
 
   useEffect(() => {
     void fetch("/api/projects")
@@ -160,6 +162,10 @@ export function Sidebar({
         .catch(() => undefined);
     }
     if (section === "team") {
+      void fetch("/api/tokens")
+        .then((r) => r.json())
+        .then((d) => setTokens(d.tokens ?? []))
+        .catch(() => undefined);
       void fetch(`/api/projects/share?projectId=${projectId}`)
         .then((r) => r.json())
         .then((d) => setShares(d.shares ?? []))
@@ -566,6 +572,62 @@ export function Sidebar({
                         </svg>
                       </button>
                     )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section className="space-y-2.5">
+              <SectionLabel>Accesso da agenti esterni (MCP)</SectionLabel>
+              <p className="text-[11px] leading-relaxed text-faint">
+                Un token permette a Claude Code o a un altro agente di progettare
+                sulle tue schede usando gli stessi strumenti dell&apos;app.
+              </p>
+              {freshToken && (
+                <div className="space-y-1.5 rounded-lg bg-brand-wash p-2.5">
+                  <p className="text-[11px] font-semibold text-brand-strong">
+                    Copialo ora: non verrà più mostrato.
+                  </p>
+                  <code className="block break-all rounded bg-surface px-2 py-1.5 font-mono text-[10px] text-text">
+                    {freshToken}
+                  </code>
+                  <Btn size="sm" onClick={() => setFreshToken(null)}>
+                    Ho copiato
+                  </Btn>
+                </div>
+              )}
+              <Btn
+                size="sm"
+                disabled={busy}
+                onClick={async () => {
+                  const d = await post("/api/tokens", { action: "create", name: "Claude Code" });
+                  if (d) {
+                    setFreshToken(d.token);
+                    setTokens(d.tokens ?? []);
+                  }
+                }}
+              >
+                + Genera token
+              </Btn>
+              <ul className="space-y-1">
+                {tokens.map((t) => (
+                  <li key={t.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-sunken">
+                    <span className="min-w-0 flex-1 truncate text-xs text-muted">{t.name}</span>
+                    <Chip>{t.prefix}…</Chip>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title="Revoca"
+                      className="text-faint transition-colors hover:text-danger"
+                      onClick={async () => {
+                        const d = await post("/api/tokens", { action: "revoke", id: t.id });
+                        if (d) setTokens(d.tokens ?? []);
+                      }}
+                    >
+                      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none">
+                        <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    </button>
                   </li>
                 ))}
               </ul>
