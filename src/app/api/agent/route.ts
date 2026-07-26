@@ -23,6 +23,35 @@ export const maxDuration = 800;
 const MAX_STEPS = 40;
 const MAX_RUNS_PER_IP_PER_HOUR = 30;
 
+/*
+ * Tool che non toccano lo stato del progetto. Solo un turno in cui TUTTI i tool
+ * chiesti sono qui dentro viene eseguito in parallelo: un batch che contiene
+ * anche una scrittura resta seriale, altrimenti un write_file e una compile
+ * emessi insieme correrebbero uno contro l'altro.
+ */
+const READ_ONLY_TOOLS = new Set([
+  "list_files",
+  "read_file",
+  "search_parts",
+  "library_list",
+  "library_read",
+  "list_datasheets",
+  "read_datasheet",
+  "simulate",
+  "compile",
+  "review_layout",
+]);
+
+/*
+ * I risultati di compile sono l'oggetto piu' grosso che circola (per una scheda
+ * vera sono decine di migliaia di caratteri: unroutedDetail, ratsnest,
+ * schematicQuality...) e la history viene rimandata INTERA a ogni passo. Dopo
+ * venti compile i primi diciannove sono storia morta che si paga a ogni turno,
+ * quindi si tengono per intero solo gli ultimi.
+ */
+const FULL_COMPILE_RESULTS_KEPT = 2;
+const PRUNABLE_TOOLS = new Set(["compile", "review_layout"]);
+
 const AgentRequestSchema = z.object({
   projectId: z
     .string()
@@ -97,6 +126,7 @@ export async function POST(req: Request): Promise<Response> {
       let stopReason = "unknown";
       let filesChanged = false;
       let lastCompileSummary: unknown = null;
+      const prunable: PrunableRef[] = [];
 
       try {
         await appendChatMessage(projectId, "user", history[history.length - 1].content);
@@ -133,6 +163,14 @@ export async function POST(req: Request): Promise<Response> {
 
           if (toolUses.length === 0 || response.stop_reason !== "tool_use") {
             stopReason = response.stop_reason ?? "end_turn";
+            // un turno tagliato a meta' usciva con lo stesso "done" di uno
+            // finito: l'utente vedeva la risposta interrompersi senza motivo
+            if (stopReason === "max_tokens") {
+              emit("error", {
+                message:
+                  "Risposta troncata: il turno ha esaurito il budget di token. Chiedi all'agente di continuare.",
+              });
+            }
             emit("done", { stop_reason: stopReason });
             break;
           }
@@ -140,8 +178,9 @@ export async function POST(req: Request): Promise<Response> {
           // preserve the full content (incl. thinking blocks) in the history
           messages.push({ role: "assistant", content: response.content });
 
-          const toolResults: Anthropic.ToolResultBlockParam[] = [];
-          for (const toolUse of toolUses) {
+          const runOne = async (
+            toolUse: Anthropic.ToolUseBlock,
+          ): Promise<Anthropic.ToolResultBlockParam> => {
             const args = (toolUse.input ?? {}) as Record<string, unknown>;
             emit("tool_call", { name: toolUse.name, args: summarizeArgs(toolUse.name, args) });
 
@@ -156,13 +195,34 @@ export async function POST(req: Request): Promise<Response> {
               result: toolUse.name === "read_file" ? { truncated: true } : result,
             });
 
-            toolResults.push({
+            // errore dichiarato come tale: annegato nel JSON il modello lo
+            // legge lo stesso, ma perde il segnale esplicito di fallimento
+            const failed =
+              typeof result === "object" && result !== null && "error" in result;
+            return {
               type: "tool_result",
               tool_use_id: toolUse.id,
               content: JSON.stringify(result),
-            });
-          }
+              ...(failed ? { is_error: true } : {}),
+            };
+          };
+
+          const allReadOnly = toolUses.every((t) => READ_ONLY_TOOLS.has(t.name));
+          const toolResults = allReadOnly
+            ? await Promise.all(toolUses.map(runOne))
+            : await toolUses.reduce<Promise<Anthropic.ToolResultBlockParam[]>>(
+                async (acc, toolUse) => [...(await acc), await runOne(toolUse)],
+                Promise.resolve([]),
+              );
+
           messages.push({ role: "user", content: toolResults });
+
+          for (const [i, toolUse] of toolUses.entries()) {
+            if (PRUNABLE_TOOLS.has(toolUse.name)) {
+              prunable.push({ message: messages.length - 1, block: i });
+            }
+          }
+          pruneOldToolResults(messages, prunable);
 
           if (step === MAX_STEPS - 1) {
             stopReason = "step_cap";
@@ -204,6 +264,46 @@ export async function POST(req: Request): Promise<Response> {
       connection: "keep-alive",
     },
   });
+}
+
+interface PrunableRef {
+  /** indice del messaggio user che contiene i tool_result */
+  message: number;
+  /** indice del blocco tool_result dentro quel messaggio */
+  block: number;
+}
+
+/**
+ * Sostituisce il corpo dei risultati compile/review_layout vecchi con una riga
+ * che dice cosa c'era. Il modello mantiene la traccia di aver compilato (e
+ * l'esito sintetico), senza ripagare l'intero summary a ogni passo successivo.
+ */
+function pruneOldToolResults(
+  messages: Anthropic.MessageParam[],
+  prunable: PrunableRef[],
+): void {
+  for (const ref of prunable.slice(0, -FULL_COMPILE_RESULTS_KEPT)) {
+    const message = messages[ref.message];
+    if (!message || !Array.isArray(message.content)) continue;
+    const block = message.content[ref.block];
+    if (!block || block.type !== "tool_result") continue;
+    if (typeof block.content !== "string" || block.content.startsWith("{\"pruned\"")) continue;
+    block.content = JSON.stringify({
+      pruned: true,
+      note: "risultato superato da una compile successiva; richiama compile se ti serve lo stato attuale",
+      message: extractMessage(block.content),
+    });
+  }
+}
+
+/** la sola riga di sintesi vale la pena tenerla: dice com'e' andata */
+function extractMessage(json: string): string {
+  try {
+    const parsed = JSON.parse(json) as { message?: unknown };
+    return typeof parsed.message === "string" ? parsed.message.slice(0, 300) : "";
+  } catch {
+    return "";
+  }
 }
 
 /** compact args for the chat UI chips (never ship whole file contents twice) */

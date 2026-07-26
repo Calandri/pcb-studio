@@ -201,6 +201,24 @@ function buildHandler(viewer: Viewer) {
     );
 
     server.tool(
+      "review_layout",
+      "Renderizza il PCB instradato in un'immagine e ne fa criticare il disegno da un " +
+        "modello di visione: componenti stipati, piste che fanno il giro largo, grappoli " +
+        "di via, quasi-contatti, aree sprecate. I controlli numerici (DRC/PRC) trovano le " +
+        "violazioni di regola, questo trova quello che vede solo l'occhio di un progettista. " +
+        "Chiamalo una volta dopo che il routing e' convergiuto, poi agisci sui problemi " +
+        "spostando i componenti. Richiede una compile precedente.",
+      { projectId: z.string() },
+      async ({ projectId }) => {
+        if ((await projectAccess(projectId, viewer)) === "none") {
+          return denied();
+        }
+        const { result } = await executeTool(projectId, "review_layout", {});
+        return text(result);
+      },
+    );
+
+    server.tool(
       "library_read",
       "Legge il sorgente completo di un componente di libreria. Chiamalo prima di " +
         "modificarne uno o quando devi capire che pin espone.",
