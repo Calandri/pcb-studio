@@ -15,6 +15,9 @@ export default async function Home({
   const raw = (await searchParams).project;
   const projectId = (Array.isArray(raw) ? raw[0] : raw) || "default";
 
+  // niente progetto in URL: il livello sopra i progetti e' l'organizzazione
+  if (!raw) redirect("/org");
+
   return (
     <Studio
       projectId={projectId}

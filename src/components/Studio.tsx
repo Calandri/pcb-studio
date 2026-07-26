@@ -59,7 +59,7 @@ export function Studio({
   const [input, setInput] = useState("");
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [library, setLibrary] = useState<LibraryItem[]>([]);
-  const [section, setSection] = useState<SectionKey>("projects");
+  const [section, setSection] = useState<SectionKey>("inspect");
   const [drawer, setDrawer] = useState(false);
   const [copilot, setCopilot] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -780,13 +780,13 @@ export function Studio({
             <Sidebar
               section={section}
               onSection={(s) => {
-                // gestione = pagine piene: la sidebar resta per il flusso sulla
-                // scheda (ispeziona), le sezioni di gestione navigano alle pagine
+                // livelli: /org sopra i progetti, /team = settings di QUESTO
+                // progetto, library/datasheets = materiali di lavoro full-screen
                 const page =
-                  s === "team"
-                    ? "team"
-                    : s === "projects"
-                      ? "projects"
+                  s === "org"
+                    ? "org"
+                    : s === "team"
+                      ? "team"
                       : s === "library"
                         ? "library"
                         : s === "datasheets"

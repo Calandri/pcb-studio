@@ -5,7 +5,7 @@ import { InspectPanel } from "./InspectPanel";
 import { Btn, Chip, EmptyState, Field, SectionLabel, Select } from "./ui";
 import { LogoMark } from "./Logo";
 
-export type SectionKey = "projects" | "library" | "inspect" | "datasheets" | "team";
+export type SectionKey = "org" | "library" | "inspect" | "datasheets" | "team";
 
 export interface LibraryItem {
   id: number;
@@ -42,13 +42,14 @@ interface Datasheet {
 
 const NAV: Array<{ key: SectionKey; label: string; icon: React.ReactNode }> = [
   {
-    key: "projects",
-    label: "Progetti",
+    key: "org",
+    label: "Organizzazione",
     icon: (
       <path
-        d="M2.8 5.4A1.6 1.6 0 0 1 4.4 3.8h2.9l1.4 1.8h6.9a1.6 1.6 0 0 1 1.6 1.6v6.4a1.6 1.6 0 0 1-1.6 1.6H4.4a1.6 1.6 0 0 1-1.6-1.6V5.4Z"
+        d="M3.8 8.2 10 4l6.2 4.2M5 9.5V16h10V9.5M8 16v-4h4v4"
         stroke="currentColor"
         strokeWidth="1.4"
+        strokeLinecap="round"
         strokeLinejoin="round"
       />
     ),
@@ -202,7 +203,7 @@ export function Sidebar({
   }, []);
 
   const counts: Record<SectionKey, number | undefined> = {
-    projects: projects.length || undefined,
+    org: projects.length || undefined,
     library: library.length || undefined,
     inspect: undefined,
     datasheets: datasheets.length || undefined,
@@ -283,49 +284,6 @@ export function Sidebar({
           <p className="mb-3 rounded-lg bg-accent-wash px-3 py-2 text-xs leading-relaxed text-accent">
             {note}
           </p>
-        )}
-
-        {section === "projects" && (
-          <div className="slide-in space-y-3">
-            <div className="flex items-center justify-between">
-              <SectionLabel>I tuoi progetti</SectionLabel>
-              <Btn
-                size="sm"
-                variant="primary"
-                disabled={busy}
-                onClick={async () => {
-                  const id = prompt("Nome del nuovo progetto:");
-                  if (!id) return;
-                  const d = await post("/api/projects", { id });
-                  if (d) window.location.search = `?project=${d.id}`;
-                }}
-              >
-                Nuovo
-              </Btn>
-            </div>
-            <ul className="space-y-1">
-              {projects.map((p) => {
-                const active = p.id === projectId;
-                return (
-                  <li key={p.id}>
-                    <a
-                      href={`/?project=${p.id}`}
-                      className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 transition-colors ${
-                        active
-                          ? "bg-brand-wash text-brand-strong"
-                          : "text-muted hover:bg-sunken hover:text-text"
-                      }`}
-                    >
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{p.id}</span>
-                      {p.access === "shared" && <Chip>condiviso</Chip>}
-                      {p.visibility === "private" && <Chip>privato</Chip>}
-                    </a>
-                  </li>
-                );
-              })}
-              {projects.length === 0 && <EmptyState title="Nessun progetto" />}
-            </ul>
-          </div>
         )}
 
         {section === "library" && (

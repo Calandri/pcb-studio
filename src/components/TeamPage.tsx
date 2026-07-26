@@ -2,11 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, SettingsShell } from "./SettingsShell";
-import { Btn, Chip, EmptyState, Field, Select } from "./ui";
+import { Btn, Chip, Field, Select } from "./ui";
 
 type Share = { userId: string; email: string; role: string };
-type Member = { userId: string; email: string; role: string };
-type Token = { id: string; name: string; prefix: string };
 type Visibility = "private" | "org" | "link";
 
 const VISIBILITY_OPTIONS: Array<{
@@ -41,6 +39,10 @@ const VISIBILITY_OPTIONS: Array<{
   },
 ];
 
+/**
+ * Settings del SINGOLO progetto: visibilita' e inviti. Membri
+ * dell'organizzazione, progetti e token MCP stanno un livello sopra, in /org.
+ */
 export function TeamPage({
   projectId,
   user,
@@ -50,10 +52,6 @@ export function TeamPage({
 }) {
   const [shares, setShares] = useState<Share[]>([]);
   const [visibility, setVisibility] = useState<Visibility>("private");
-  const [orgs, setOrgs] = useState<Array<{ id: string; name: string }>>([]);
-  const [members, setMembers] = useState<Member[]>([]);
-  const [tokens, setTokens] = useState<Token[]>([]);
-  const [freshToken, setFreshToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -67,51 +65,29 @@ export function TeamPage({
       .catch(() => undefined);
   }, [projectId]);
 
-  useEffect(() => {
-    refreshShares();
-    void fetch("/api/orgs")
-      .then((r) => r.json())
-      .then((d) => {
-        setOrgs(d.organizations ?? []);
-        const first = d.organizations?.[0];
-        if (first) {
-          void fetch(`/api/orgs?orgId=${first.id}`)
-            .then((r) => r.json())
-            .then((m) => setMembers(m.members ?? []))
-            .catch(() => undefined);
-        }
-      })
-      .catch(() => undefined);
-    void fetch("/api/tokens")
-      .then((r) => r.json())
-      .then((d) => setTokens(d.tokens ?? []))
-      .catch(() => undefined);
-  }, [refreshShares]);
+  useEffect(refreshShares, [refreshShares]);
 
-  const post = useCallback(
-    async (url: string, body: Record<string, unknown>) => {
-      setBusy(true);
-      setNote(null);
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const d = await res.json().catch(() => ({}));
-      setBusy(false);
-      if (!res.ok) {
-        setNote(d.error ?? `Errore ${res.status}`);
-        return null;
-      }
-      return d;
-    },
-    [],
-  );
+  const post = useCallback(async (url: string, body: Record<string, unknown>) => {
+    setBusy(true);
+    setNote(null);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) {
+      setNote(d.error ?? `Errore ${res.status}`);
+      return null;
+    }
+    return d;
+  }, []);
 
   return (
     <SettingsShell
-      title="Team e condivisione"
-      subtitle="chi accede al progetto e agli strumenti"
+      title={`Impostazioni di ${projectId}`}
+      subtitle="visibilità e condivisione del progetto"
       projectId={projectId}
       user={user}
     >
@@ -122,236 +98,106 @@ export function TeamPage({
       )}
 
       <div className="grid gap-5 lg:grid-cols-2">
-        <div className="space-y-5">
-          <Card title="Chi può vedere questo progetto">
-            <div className="grid gap-2 sm:grid-cols-3">
-              {VISIBILITY_OPTIONS.map((opt) => {
-                const active = visibility === opt.value;
-                return (
+        <Card title="Chi può vedere questo progetto">
+          <div className="grid gap-2 sm:grid-cols-3">
+            {VISIBILITY_OPTIONS.map((opt) => {
+              const active = visibility === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    const d = await post("/api/projects/share", {
+                      projectId,
+                      visibility: opt.value,
+                    });
+                    if (d) setVisibility(opt.value);
+                  }}
+                  className={`rounded-xl border px-3.5 py-3 text-left transition-all ${
+                    active
+                      ? "border-brand bg-brand-wash/50 ring-2 ring-brand/15"
+                      : "border-line hover:border-brand hover:bg-brand-wash/30"
+                  }`}
+                >
+                  <svg viewBox="0 0 20 20" fill="none" className={`h-5 w-5 ${active ? "text-brand-strong" : "text-faint"}`}>
+                    <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      {opt.icon}
+                    </g>
+                  </svg>
+                  <p className={`mt-2 text-xs font-semibold ${active ? "text-brand-strong" : "text-text"}`}>
+                    {opt.label}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-faint">{opt.hint}</p>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+
+        <Card title="Invita sul progetto" hint="La persona riceve accesso a questo progetto col ruolo scelto.">
+          <form
+            className="flex flex-col gap-2 sm:flex-row"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const form = new FormData(e.currentTarget);
+              e.currentTarget.reset();
+              const d = await post("/api/projects/share", {
+                projectId,
+                email: String(form.get("email") ?? ""),
+                role: String(form.get("role") ?? "viewer"),
+              });
+              if (d?.shares) setShares(d.shares);
+              if (d?.share && !d.share.shared) setNote(d.share.reason);
+            }}
+          >
+            <Field name="email" type="email" required placeholder="Email" className="flex-1" />
+            <Select
+              name="role"
+              options={[
+                { value: "viewer", label: "Può vedere" },
+                { value: "editor", label: "Può modificare" },
+              ]}
+            />
+            <Btn type="submit" variant="primary" disabled={busy}>
+              Invita
+            </Btn>
+          </form>
+          {shares.length > 0 ? (
+            <ul className="mt-4 divide-y divide-line">
+              {shares.map((s) => (
+                <li key={s.userId} className="flex items-center gap-3 py-2.5">
+                  <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-sunken text-[10px] font-semibold text-muted">
+                    {s.email.slice(0, 2).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-muted">{s.email}</span>
+                  <Chip tone={s.role === "editor" ? "brand" : "neutral"}>
+                    {s.role === "editor" ? "modifica" : "vede"}
+                  </Chip>
                   <button
-                    key={opt.value}
                     type="button"
                     disabled={busy}
+                    title="Rimuovi"
+                    className="text-faint transition-colors hover:text-danger"
                     onClick={async () => {
                       const d = await post("/api/projects/share", {
                         projectId,
-                        visibility: opt.value,
+                        removeUserId: s.userId,
                       });
-                      if (d) setVisibility(opt.value);
+                      if (d?.shares) setShares(d.shares);
                     }}
-                    className={`rounded-xl border px-3.5 py-3 text-left transition-all ${
-                      active
-                        ? "border-brand bg-brand-wash/50 ring-2 ring-brand/15"
-                        : "border-line hover:border-brand hover:bg-brand-wash/30"
-                    }`}
                   >
-                    <svg viewBox="0 0 20 20" fill="none" className={`h-5 w-5 ${active ? "text-brand-strong" : "text-faint"}`}>
-                      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                        {opt.icon}
-                      </g>
+                    <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+                      <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                     </svg>
-                    <p className={`mt-2 text-xs font-semibold ${active ? "text-brand-strong" : "text-text"}`}>
-                      {opt.label}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-faint">{opt.hint}</p>
                   </button>
-                );
-              })}
-            </div>
-          </Card>
-
-          <Card title="Invita sul progetto" hint="La persona riceve accesso a questo progetto col ruolo scelto.">
-            <form
-              className="flex flex-col gap-2 sm:flex-row"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const form = new FormData(e.currentTarget);
-                e.currentTarget.reset();
-                const d = await post("/api/projects/share", {
-                  projectId,
-                  email: String(form.get("email") ?? ""),
-                  role: String(form.get("role") ?? "viewer"),
-                });
-                if (d?.shares) setShares(d.shares);
-                if (d?.share && !d.share.shared) setNote(d.share.reason);
-              }}
-            >
-              <Field name="email" type="email" required placeholder="Email" className="flex-1" />
-              <Select
-                name="role"
-                options={[
-                  { value: "viewer", label: "Può vedere" },
-                  { value: "editor", label: "Può modificare" },
-                ]}
-              />
-              <Btn type="submit" variant="primary" disabled={busy}>
-                Invita
-              </Btn>
-            </form>
-            {shares.length > 0 ? (
-              <ul className="mt-4 divide-y divide-line">
-                {shares.map((s) => (
-                  <li key={s.userId} className="flex items-center gap-3 py-2.5">
-                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-sunken text-[10px] font-semibold text-muted">
-                      {s.email.slice(0, 2).toUpperCase()}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-sm text-muted">{s.email}</span>
-                    <Chip tone={s.role === "editor" ? "brand" : "neutral"}>
-                      {s.role === "editor" ? "modifica" : "vede"}
-                    </Chip>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      title="Rimuovi"
-                      className="text-faint transition-colors hover:text-danger"
-                      onClick={async () => {
-                        const d = await post("/api/projects/share", {
-                          projectId,
-                          removeUserId: s.userId,
-                        });
-                        if (d?.shares) setShares(d.shares);
-                      }}
-                    >
-                      <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
-                        <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-4 text-xs text-faint">Nessun invitato: il progetto è solo tuo.</p>
-            )}
-          </Card>
-        </div>
-
-        <div className="space-y-5">
-          <Card
-            title={orgs[0]?.name ?? "Organizzazione"}
-            hint="I membri dell'organizzazione vedono i progetti condivisi con il team."
-          >
-            <form
-              className="flex flex-col gap-2 sm:flex-row"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const form = new FormData(e.currentTarget);
-                e.currentTarget.reset();
-                if (!orgs[0]) return;
-                const d = await post("/api/orgs", {
-                  action: "invite",
-                  orgId: orgs[0].id,
-                  email: String(form.get("email") ?? ""),
-                  role: String(form.get("role") ?? "member"),
-                });
-                if (d?.members) setMembers(d.members);
-                if (d && d.joined === false) setNote("Invito registrato: entrerà al primo accesso.");
-              }}
-            >
-              <Field name="email" type="email" required placeholder="Invita per email" className="flex-1" />
-              <Select
-                name="role"
-                options={[
-                  { value: "member", label: "Membro" },
-                  { value: "admin", label: "Amministratore" },
-                ]}
-              />
-              <Btn type="submit" disabled={busy}>
-                Aggiungi
-              </Btn>
-            </form>
-            {members.length > 0 ? (
-              <ul className="mt-4 divide-y divide-line">
-                {members.map((m) => (
-                  <li key={m.userId} className="flex items-center gap-3 py-2.5">
-                    <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-sunken text-[10px] font-semibold text-muted">
-                      {m.email.slice(0, 2).toUpperCase()}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-sm text-muted">{m.email}</span>
-                    <Chip tone={m.role === "owner" ? "brand" : "neutral"}>{m.role}</Chip>
-                    {m.email !== user.email && orgs[0] && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        title="Rimuovi dal team"
-                        className="text-faint transition-colors hover:text-danger"
-                        onClick={async () => {
-                          const d = await post("/api/orgs", {
-                            action: "remove_member",
-                            orgId: orgs[0].id,
-                            userId: m.userId,
-                          });
-                          if (d?.members) setMembers(d.members);
-                        }}
-                      >
-                        <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
-                          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                        </svg>
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <EmptyState title="Nessun membro ancora" hint="Invita i colleghi per lavorare sulle stesse schede" />
-            )}
-          </Card>
-
-          <Card
-            title="Accesso da agenti esterni (MCP)"
-            hint="Un token permette a Claude Code o a un altro agente di progettare sulle tue schede usando gli stessi strumenti dell'app."
-          >
-            {freshToken && (
-              <div className="mb-4 space-y-2 rounded-xl bg-brand-wash p-3.5">
-                <p className="text-xs font-semibold text-brand-strong">
-                  Copialo ora: non verrà più mostrato.
-                </p>
-                <code className="block break-all rounded-lg bg-surface px-3 py-2 font-mono text-[11px] text-text">
-                  {freshToken}
-                </code>
-                <Btn size="sm" onClick={() => setFreshToken(null)}>
-                  Ho copiato
-                </Btn>
-              </div>
-            )}
-            <Btn
-              size="sm"
-              disabled={busy}
-              onClick={async () => {
-                const d = await post("/api/tokens", { action: "create", name: "Claude Code" });
-                if (d) {
-                  setFreshToken(d.token);
-                  setTokens(d.tokens ?? []);
-                }
-              }}
-            >
-              + Genera token
-            </Btn>
-            {tokens.length > 0 && (
-              <ul className="mt-4 divide-y divide-line">
-                {tokens.map((t) => (
-                  <li key={t.id} className="flex items-center gap-3 py-2.5">
-                    <span className="min-w-0 flex-1 truncate text-sm text-muted">{t.name}</span>
-                    <Chip>{t.prefix}…</Chip>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      title="Revoca"
-                      className="text-faint transition-colors hover:text-danger"
-                      onClick={async () => {
-                        const d = await post("/api/tokens", { action: "revoke", id: t.id });
-                        if (d) setTokens(d.tokens ?? []);
-                      }}
-                    >
-                      <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
-                        <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-4 text-xs text-faint">Nessun invitato: il progetto è solo tuo.</p>
+          )}
+        </Card>
       </div>
     </SettingsShell>
   );
