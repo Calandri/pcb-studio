@@ -305,7 +305,11 @@ export function analyzeSchematic(
     widthSu: round2(widthSu),
     heightSu: round2(heightSu),
     density: sheetArea > 0 ? round3(symbolArea / sheetArea) : 0,
-    fitsA4: widthSu <= A4_MAX_WIDTH_SU && heightSu <= A4_MAX_HEIGHT_SU,
+    // un foglio va bene anche in verticale: controllare solo l'orizzontale
+    // bocciava disegni piu' alti che larghi che in A4 ci stavano benissimo
+    fitsA4:
+      (widthSu <= A4_MAX_WIDTH_SU && heightSu <= A4_MAX_HEIGHT_SU) ||
+      (widthSu <= A4_MAX_HEIGHT_SU && heightSu <= A4_MAX_WIDTH_SU),
   };
 
   result.issues = buildIssues(result, src);
