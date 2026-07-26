@@ -14,12 +14,16 @@ export function RightRail({
   compiledAgo,
   onAsk,
   onShowOnBoard,
+  onRecompile,
+  recompiling,
 }: {
   report: BoardReport;
   compiledAgo: string;
   onAsk: (prompt: string) => void;
   /** accende sulla scheda la vista che mostra quella verifica */
   onShowOnBoard: (preset: string) => void;
+  onRecompile: () => void;
+  recompiling: boolean;
 }) {
   const cost = estimateCost(report);
   const [open, setOpen] = useState<string | null>(null);
@@ -31,10 +35,35 @@ export function RightRail({
     <aside className="flex flex-col gap-[18px] overflow-auto border-l border-line bg-sunken px-3.5 py-4">
       <section className="flex flex-col gap-2.5">
         <div className="flex items-center justify-between">
-          <div className="text-[10px] font-bold tracking-[0.11em] text-faint">
+          <div className="text-[10px] font-bold tracking-[0.11em] whitespace-nowrap text-faint">
             CONTROLLO AUTOMATICO
           </div>
-          <div className="font-mono text-[10px] text-[#42544F]">{compiledAgo}</div>
+          <button
+            type="button"
+            onClick={onRecompile}
+            disabled={recompiling}
+            title="Ricompila e risbroglia la scheda"
+            className="flex min-w-0 items-center gap-1.5 font-mono text-[10px] whitespace-nowrap text-[#42544F] transition-colors hover:text-brand disabled:text-[#42544F]"
+          >
+            {recompiling ? (
+              <>
+                <span className="dot dot-busy" /> ricompilo...
+              </>
+            ) : (
+              <>
+                <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none">
+                  <path
+                    d="M13 8a5 5 0 1 1-1.46-3.54M13 2v3h-3"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span className="truncate">{compiledAgo}</span>
+              </>
+            )}
+          </button>
         </div>
         <div className="flex gap-[7px]">
           <Counter value={report.errors} label="DA CORREGGERE" tone="err" />

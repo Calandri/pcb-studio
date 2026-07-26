@@ -13,7 +13,7 @@ import {
   emptySchematicQuality,
   type SchematicQuality,
 } from "./schematic-quality";
-import { FAB_RULESETS } from "./design-rules";
+import { DEFAULT_DESIGN_RULES, FAB_RULESETS } from "./design-rules";
 import type { FsMap } from "./project-store";
 import {
   assembleCircuit,
@@ -170,8 +170,10 @@ export interface CompileOptions {
  * routing problem (core plans vias at 0.2/0.3mm, below fab minimums): the
  * rules-compliant assembled circuit competes with attempt 0 on the same
  * deterministic score (errors -> unrouted -> DRC -> vias -> length).
- * Legacy retries (local pipeline at escalating effort) apply only when the
- * variant engine is disabled.
+ * If connections are still open after that, the local pipeline re-routes the
+ * whole board at escalating effort (with the same fab minimums): the variant
+ * engine only touches named sections, so a link BETWEEN sections has no other
+ * chance of being closed.
  */
 export async function compileProject(
   fsMap: FsMap,
@@ -266,16 +268,29 @@ export async function compileProject(
     }
   }
 
-  // legacy retries (only when the variant engine is disabled)
+  /*
+   * Ritenta con il router locale a sforzo crescente finche' restano
+   * collegamenti aperti. Prima girava SOLO col motore a varianti disattivato,
+   * ed era un buco: le varianti ri-sbrogliano le singole sezioni e lasciano
+   * intatta la dorsale fra una sezione e l'altra, quindi un collegamento
+   * aperto FRA sezioni (tipico dei pin di un QFP che devono raggiungere pezzi
+   * lontani) non veniva piu' attaccato da nessuno e la scheda restava
+   * incompleta. Costa tempo solo quando la scheda e' gia' incompleta, e
+   * `consider` tiene il risultato solo se migliora il punteggio.
+   */
   for (
     let i = 0;
-    i < retries && variantCount === 0 && state.bestScore && state.bestScore.unrouted > 0;
+    i < retries && state.bestScore && state.bestScore.unrouted > 0;
     i++
   ) {
     try {
       state.attempts += 1;
       const cj = await compileWithLocalRouter(fsMap, efforts[i] ?? 10);
       consider(cj, "local_retry");
+      // e la stessa rotta con le piste sottili portate al minimo di fabbrica:
+      // allargare il rame puo' avvicinare net diverse, quindi non si impone —
+      // si presenta come alternativa e vince solo se il DRC migliora
+      consider(widenThinTraces(cj), "local_retry");
     } catch {
       // a failed retry just doesn't improve the best result
     }
@@ -511,9 +526,67 @@ function localRouterDef(effort: number) {
   return {
     createAutorouter: (simpleRouteJson: unknown) =>
       adaptSolver(
-        new AutoroutingPipelineSolver(simpleRouteJson as never, { effort } as never),
+        new AutoroutingPipelineSolver(
+          withFabRules(simpleRouteJson) as never,
+          { effort } as never,
+        ),
       ) as never,
   };
+}
+
+/**
+ * Copia del circuito con ogni segmento di pista sotto la larghezza minima
+ * portato al minimo di fabbrica. Il solver a volte assottiglia un tratto per
+ * passare in mezzo a due ostacoli: il tratto sottile non e' producibile, ma
+ * allargarlo puo' violare una distanza. Per questo il risultato viene messo in
+ * gara con l'originale invece che sostituirlo.
+ */
+function widenThinTraces(circuitJson: CircuitElement[]): CircuitElement[] {
+  const min = DEFAULT_DESIGN_RULES.minTraceWidthMm;
+  return circuitJson.map((el) => {
+    if (el.type !== "pcb_trace") return el;
+    const route = el.route as Array<Record<string, unknown>> | undefined;
+    if (!route?.some((p) => typeof p.width === "number" && p.width < min)) return el;
+    return {
+      ...el,
+      route: route.map((p) =>
+        typeof p.width === "number" && p.width < min ? { ...p, width: min } : p,
+      ),
+    };
+  });
+}
+
+/**
+ * Il problema di routing che il core passa al solver porta i SUOI minimi
+ * (piste 0.1mm, via 0.2/0.3mm), sotto i minimi di fabbrica: cosi' il router
+ * locale completava lo sbroglio ma con piste e via non producibili. Qui i
+ * minimi vengono riscritti con le regole di progetto prima che il solver
+ * pianifichi, che e' l'unico momento in cui contano — allargarli dopo
+ * significherebbe spostare rame gia' piazzato.
+ */
+function withFabRules(simpleRouteJson: unknown): unknown {
+  if (!simpleRouteJson || typeof simpleRouteJson !== "object") return simpleRouteJson;
+  const r = DEFAULT_DESIGN_RULES;
+  const srj = simpleRouteJson as Record<string, unknown>;
+  const atLeast = (key: string, min: number) => {
+    const current = typeof srj[key] === "number" ? (srj[key] as number) : 0;
+    if (current < min) srj[key] = min;
+  };
+  atLeast("minTraceWidth", r.minTraceWidthMm);
+  atLeast("minViaHoleDiameter", r.minViaHoleMm);
+  atLeast("min_via_hole_diameter", r.minViaHoleMm);
+  atLeast("minViaPadDiameter", r.minViaDiameterMm);
+  atLeast("min_via_pad_diameter", r.minViaDiameterMm);
+  atLeast("minViaDiameter", r.minViaDiameterMm);
+  atLeast("minTraceToPadEdgeClearance", r.minClearanceMm);
+  // ogni connessione puo' dichiarare la propria larghezza: le tracce di
+  // potenza restano larghe, quelle di segnale salgono al minimo di fabbrica
+  for (const conn of (srj.connections as Array<Record<string, unknown>>) ?? []) {
+    if (typeof conn.minTraceWidth === "number" && conn.minTraceWidth < r.minTraceWidthMm) {
+      conn.minTraceWidth = r.minTraceWidthMm;
+    }
+  }
+  return srj;
 }
 
 

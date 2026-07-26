@@ -62,6 +62,10 @@ export function Studio({
   // server-validated routed circuit (truth); stale after any file change
   const [circuitJson, setCircuitJson] = useState<unknown[] | null>(null);
   const [circuitStale, setCircuitStale] = useState(false);
+  // finche' non si sa se esiste una compilazione salvata non si monta il
+  // fallback: altrimenti parte una compilazione nel browser (senza la libreria
+  // condivisa, che vive sul server) che fallisce e sparisce un attimo dopo
+  const [circuitChecked, setCircuitChecked] = useState(false);
   const [summary, setSummary] = useState<Parameters<typeof buildBoardReport>[1]>(null);
   // cosa si sta guardando: tab della scheda, vista scelta, livello, radiografia
   const [tab, setTab] = useState<BoardTab>("pcb");
@@ -72,6 +76,7 @@ export function Studio({
   const [layer, setLayer] = useState("top");
   const [xray, setXray] = useState(0);
   const [partId, setPartId] = useState<string | null>(null);
+  const [recompiling, setRecompiling] = useState(false);
   // per-section routing variants (Fase 3.d), refreshed after compile/pick
   const [variantSections, setVariantSections] = useState<
     Array<{
@@ -116,6 +121,7 @@ export function Studio({
     const d = await fetch(`/api/project?projectId=${projectId}&circuit=1`)
       .then((r) => r.json())
       .catch(() => null);
+    setCircuitChecked(true);
     if (!d?.compile?.circuitJson) return;
     setCircuitJson(d.compile.circuitJson as unknown[]);
     setSummary(d.compile.summary ?? null);
@@ -128,6 +134,32 @@ export function Studio({
       .catch(() => null);
     if (d?.sections) setVariantSections(d.sections);
   }, [projectId]);
+
+  /** ricompila e risbroglia senza passare da un turno di chat */
+  const recompile = useCallback(async () => {
+    setRecompiling(true);
+    try {
+      const res = await fetch("/api/compile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const d = await res.json();
+      if (d.error) {
+        setChat((c) => [...c, { kind: "error", text: String(d.error) }]);
+      }
+      await loadCircuit();
+      await loadVariants();
+    } catch (err) {
+      setChat((c) => [
+        ...c,
+        { kind: "error", text: err instanceof Error ? err.message : String(err) },
+      ]);
+    } finally {
+      setRecompiling(false);
+    }
+  }, [projectId, loadCircuit, loadVariants]);
+
 
   useEffect(() => {
     void loadCircuit();
@@ -455,7 +487,7 @@ export function Studio({
                   showToggleFullScreen={false}
                 />
               )
-            ) : fsMap ? (
+            ) : fsMap && circuitChecked ? (
               <RunFrame
                 fsMap={fsMap}
                 mainComponentPath="main.tsx"
@@ -563,9 +595,11 @@ export function Studio({
 
         <RightRail
           report={report}
-          compiledAgo={circuitStale ? "da ricompilare" : "ultima compilazione"}
+          compiledAgo={circuitStale ? "da ricompilare" : "ricompila"}
           onAsk={ask}
           onShowOnBoard={showOnBoard}
+          onRecompile={() => void recompile()}
+          recompiling={recompiling}
         />
         {copilot && (
           <aside className="flex min-h-0 min-w-0 flex-col border-l border-line bg-surface">

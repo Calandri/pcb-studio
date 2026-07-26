@@ -64,6 +64,55 @@ export function runDrcChecks(
     return sp ? (portGroup.get(sp) ?? null) : null;
   };
 
+  /*
+   * Net di una via dedotta dalla pista che la contiene. Serve perche' le via
+   * prodotte dal router locale non portano `pcb_port_id`: senza questo, una
+   * via piazzata sul pad che deve collegare (via-in-pad, per costruzione sulla
+   * stessa net) risultava a distanza 0 da un pad "di net sconosciuta" e veniva
+   * segnalata come violazione di clearance. Erano falsi positivi che
+   * nascondevano quelli veri.
+   */
+  const groupOfTrace = (el: El): string | null => {
+    const st = String(el.source_trace_id ?? "");
+    if (!st) return null;
+    const source = circuitJson.find(
+      (e) => e.type === "source_trace" && String(e.source_trace_id ?? "") === st,
+    );
+    if (!source) return null;
+    return String(
+      source.subcircuit_connectivity_map_key ?? source.source_trace_id ?? "",
+    ) || null;
+  };
+  const VIA_ON_TRACE_MM = 0.05;
+  const viaGroup = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_trace") continue;
+    const group = groupOfTrace(el);
+    if (!group) continue;
+    for (const p of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
+      const x = num(p.x);
+      const y = num(p.y);
+      if (x === null || y === null) continue;
+      viaGroup.set(`${x.toFixed(3)},${y.toFixed(3)}`, group);
+    }
+  }
+  const groupOfVia = (el: El): string | null => {
+    const own = groupOfPcbPort(el.pcb_port_id);
+    if (own) return own;
+    const x = num(el.x);
+    const y = num(el.y);
+    if (x === null || y === null) return null;
+    // la via cade su un punto di rotta: si accetta un minimo scarto numerico
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const key = `${(x + dx * VIA_ON_TRACE_MM).toFixed(3)},${(y + dy * VIA_ON_TRACE_MM).toFixed(3)}`;
+        const g = viaGroup.get(key);
+        if (g) return g;
+      }
+    }
+    return viaGroup.get(`${x.toFixed(3)},${y.toFixed(3)}`) ?? null;
+  };
+
   // --- 1. larghezza piste
   for (const el of circuitJson) {
     if (el.type !== "pcb_trace") continue;
@@ -121,7 +170,8 @@ export function runDrcChecks(
         maxY: y + d / 2,
         layer: null, // attraversa tutti i layer
         label: String(el.pcb_via_id ?? el.pcb_plated_hole_id ?? el.type),
-        group: groupOfPcbPort(el.pcb_port_id),
+        group:
+          el.type === "pcb_via" ? groupOfVia(el) : groupOfPcbPort(el.pcb_port_id),
       });
     }
   }
