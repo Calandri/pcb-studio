@@ -10,7 +10,7 @@ import {
   recordAgentRun,
   saveRevision,
 } from "@/lib/project-store";
-import { GLM_MAX_TOKENS, GLM_MODEL, GLM_THINKING_BUDGET, glmClient } from "@/lib/glm";
+import { runAgentTurn } from "@/lib/llm";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 
 export const runtime = "nodejs";
@@ -106,7 +106,6 @@ export async function POST(req: Request): Promise<Response> {
     return jsonError("rate limit exceeded, retry later", 429);
   }
 
-  const client = glmClient();
   const messages: Anthropic.MessageParam[] = history.map((t) => ({
     role: t.role,
     content: t.content,
@@ -126,25 +125,25 @@ export async function POST(req: Request): Promise<Response> {
       let stopReason = "unknown";
       let filesChanged = false;
       let lastCompileSummary: unknown = null;
+      let lastProvider = "";
       const prunable: PrunableRef[] = [];
 
       try {
         await appendChatMessage(projectId, "user", history[history.length - 1].content);
         for (let step = 0; step < MAX_STEPS; step++) {
-          const response = await client.messages
-            .stream({
-              model: GLM_MODEL,
-              max_tokens: GLM_MAX_TOKENS,
-              thinking: { type: "enabled", budget_tokens: GLM_THINKING_BUDGET },
-              system: SYSTEM_PROMPT,
-              tools: TOOL_DEFINITIONS,
-              messages,
-            })
-            .finalMessage();
+          const response = await runAgentTurn({
+            system: SYSTEM_PROMPT,
+            tools: TOOL_DEFINITIONS,
+            messages,
+          });
+          if (response.provider !== lastProvider) {
+            lastProvider = response.provider;
+            emit("provider", { provider: response.provider });
+          }
 
           steps += 1;
-          tokensIn += response.usage?.input_tokens ?? 0;
-          tokensOut += response.usage?.output_tokens ?? 0;
+          tokensIn += response.usage.input_tokens;
+          tokensOut += response.usage.output_tokens;
 
           for (const block of response.content) {
             if (block.type === "text" && block.text.trim()) {
@@ -162,7 +161,7 @@ export async function POST(req: Request): Promise<Response> {
           );
 
           if (toolUses.length === 0 || response.stop_reason !== "tool_use") {
-            stopReason = response.stop_reason ?? "end_turn";
+            stopReason = response.stop_reason;
             // un turno tagliato a meta' usciva con lo stesso "done" di uno
             // finito: l'utente vedeva la risposta interrompersi senza motivo
             if (stopReason === "max_tokens") {

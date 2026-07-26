@@ -340,7 +340,14 @@ export function Studio({
           if (!event || !dataLine) continue;
           const data = JSON.parse(dataLine);
 
-          if (event === "assistant_text") {
+          if (event === "provider") {
+            // sapere CHI ha risposto conta: i modelli non si comportano uguale
+            // e uno puo' essere subentrato perche' il primo era fuori uso
+            setChat((c) => [
+              ...c,
+              { kind: "tool", name: "modello", detail: String(data.provider), ok: true },
+            ]);
+          } else if (event === "assistant_text") {
             assistantText += (assistantText ? "\n\n" : "") + data.text;
             setChat((c) => [...c, { kind: "assistant", text: data.text }]);
             setStatus("thinking");

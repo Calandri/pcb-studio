@@ -579,6 +579,11 @@ function withFabRules(simpleRouteJson: unknown): unknown {
   atLeast("min_via_pad_diameter", r.minViaDiameterMm);
   atLeast("minViaDiameter", r.minViaDiameterMm);
   atLeast("minTraceToPadEdgeClearance", r.minClearanceMm);
+  // margine dagli ostacoli: il solver, dove non lo trova, ne assume uno di
+  // 0.2mm in certi punti e ZERO in altri, ed e' li' che nascono le via
+  // appoggiate al pad di un'altra net. Si impone il piu' alto fra i due, mai
+  // uno piu' stretto di quelli che il solver userebbe da solo.
+  atLeast("defaultObstacleMargin", Math.max(r.minClearanceMm, 0.2));
   // ogni connessione puo' dichiarare la propria larghezza: le tracce di
   // potenza restano larghe, quelle di segnale salgono al minimo di fabbrica
   for (const conn of (srj.connections as Array<Record<string, unknown>>) ?? []) {
