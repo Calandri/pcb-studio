@@ -66,7 +66,14 @@ export const HOUSE_STYLE = `## Board defaults (house style, apply unless the use
 - When the user wants real/orderable components, call search_parts and pick an in-stock part (prefer basicPart/preferred and high stock).
 - Reference it in code: <chip name="U1" footprint="soic8" supplierPartNumbers={{ jlcpcb: ["C7593"] }} ... /> (works on every component type).
 - Map the JLC package to a tscircuit footprint: SOIC-8/SOP-8 -> soic8, SOT-23 -> sot23, 0402/0603/0805 -> same name, DIP-8 -> dip8, SOT-223 -> sot223. If no clean footprint mapping exists, say so and use the closest one.
-- Tell the user which part numbers you chose (LCSC code + price) in the final answer.`;
+- Tell the user which part numbers you chose (LCSC code + price) in the final answer.
+
+## Footprint provenance (a wrong footprint passes every other check)
+- The compile returns footprintProvenance: where each component's pad geometry comes from (manufacturer = imported from LCSC, explicit = written out in the project, standard = a real passive size like 0603 on a resistor, generic = plausible but unverified).
+- A component that HAS an LCSC code and still uses a generic footprint string is a DEFECT (lcsc_ignored): the real geometry was one call away. Fix it with import_component_from_lcsc and use the library component.
+- A non-passive using a passive size is a DEFECT too (chip_as_passive): 0805 on a crystal or a push button is a measurement borrowed from a resistor, not that part's package.
+- Connectors and mechanical parts with no LCSC code come back as warnings: their dimensions are unverified, so derive them from the datasheet before production.
+- Take these as seriously as drcViolations. A wrong footprint passes DRC, passes routing and produces a board that cannot be assembled: pads in the wrong place, and sometimes a missing feature the part needs to work at all (a MEMS microphone declared soic8 loses its acoustic port).`;
 
 /**
  * Libreria e componenti custom. Condivise perche' l'agente MCP ha gli stessi

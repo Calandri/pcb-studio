@@ -4,6 +4,11 @@ import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
 import { runDrcChecks, type DrcViolation } from "./drc";
 import { runPrcChecks, type PrcViolation } from "./prc";
 import {
+  analyzeFootprints,
+  emptyFootprintProvenance,
+  type FootprintProvenance,
+} from "./footprint-provenance";
+import {
   analyzeSchematic,
   emptySchematicQuality,
   type SchematicQuality,
@@ -86,6 +91,12 @@ export interface CompileSummary {
    * sources. Same role congestion/ratsnest play for the PCB.
    */
   schematicQuality: SchematicQuality;
+  /**
+   * da dove viene la geometria dei pad: verificata dal produttore, scritta
+   * esplicitamente, misura standard di un passivo, oppure generica e quindi
+   * solo plausibile
+   */
+  footprintProvenance: FootprintProvenance;
   /**
    * convergence checklist (Fase 3.h): every loop target with its count, and
    * allGreen when everything passes (errors 0, unrouted 0, DRC 0, PRC 0,
@@ -339,6 +350,7 @@ function emptySummary(
     congestion: [],
     ratsnest: { totalLengthMm: 0, estimatedCrossings: 0, longestNets: [] },
     schematicQuality: emptySchematicQuality(),
+    footprintProvenance: emptyFootprintProvenance(),
     targets: {
       errors: 1,
       unrouted: 0,
@@ -729,6 +741,7 @@ function summarize(
   const congestion = computeCongestion(circuitJson);
   const ratsnest = computeRatsnest(groupInfo);
   const schematicQuality = analyzeSchematic(circuitJson, sources);
+  const footprintProvenance = analyzeFootprints(circuitJson, sources);
 
   /*
    * Un layout schematico disattivato da schX/schY produce un disegno inservibile
@@ -784,6 +797,11 @@ function summarize(
           : ""
       }` +
       `${
+        footprintProvenance.issues.some((i) => i.severity === "fail")
+          ? ` - ${footprintProvenance.issues.filter((i) => i.severity === "fail").length} FOOTPRINT non verificati`
+          : ""
+      }` +
+      `${
         schematicQuality.sections.length
           ? ` - schematic in ${schematicQuality.sections.length} sections`
           : " - schematic NOT sectioned"
@@ -808,6 +826,7 @@ function summarize(
     congestion,
     ratsnest,
     schematicQuality,
+    footprintProvenance,
     targets,
     routingAttempts: 1,
     router: "default",
