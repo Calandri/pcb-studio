@@ -185,6 +185,54 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
     [projectId],
   );
 
+  const uploadKicad = useCallback(
+    async (files: FileList) => {
+      setUploading(true);
+      try {
+        const form = new FormData();
+        for (const file of Array.from(files)) form.append("file", file);
+        const res = await fetch("/api/import/kicad", { method: "POST", body: form });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+        for (const comp of d.components ?? []) {
+          setChat((c) => [
+            ...c,
+            {
+              kind: "tool",
+              name: "kicad",
+              detail: `footprint ${comp.name} in libreria (v${comp.version})`,
+              ok: true,
+            },
+          ]);
+        }
+        void refreshLibrary();
+        if (d.project) {
+          setChat((c) => [
+            ...c,
+            {
+              kind: "tool",
+              name: "kicad",
+              detail: `progetto ${d.project.id}: ${d.project.components} componenti, ${d.project.traces} connessioni`,
+              ok: true,
+            },
+          ]);
+          // apri il progetto importato
+          const url = new URL(window.location.href);
+          url.searchParams.set("project", d.project.id);
+          window.location.href = url.toString();
+        }
+      } catch (err) {
+        setChat((c) => [
+          ...c,
+          { kind: "error", text: err instanceof Error ? err.message : String(err) },
+        ]);
+      } finally {
+        setUploading(false);
+      }
+    },
+    [refreshLibrary],
+  );
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || status !== "idle") return;
@@ -333,6 +381,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
         library={library}
         uploading={uploading}
         onUploadDatasheet={uploadDatasheet}
+        onImportKicad={uploadKicad}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
         theme={theme}

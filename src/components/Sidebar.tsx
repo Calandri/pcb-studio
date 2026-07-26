@@ -110,6 +110,7 @@ export function Sidebar({
   library,
   uploading,
   onUploadDatasheet,
+  onImportKicad,
   collapsed,
   onToggleCollapsed,
   theme,
@@ -125,6 +126,7 @@ export function Sidebar({
   library: LibraryItem[];
   uploading: boolean;
   onUploadDatasheet: (file: File) => void;
+  onImportKicad: (files: FileList) => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   theme: Theme;
@@ -398,6 +400,35 @@ export function Sidebar({
                   const file = e.target.files?.[0];
                   e.target.value = "";
                   if (file) onUploadDatasheet(file);
+                }}
+              />
+            </label>
+            <label className="flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-dashed border-line-strong px-4 py-6 text-center transition-colors hover:border-brand hover:bg-brand-wash/40">
+              <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5 text-faint">
+                <path
+                  d="M4 4h12v12H4zM7 4v12M4 8h3M4 12h3M13 8h3M13 12h3"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <span className="text-xs font-medium text-muted">
+                {uploading ? "Caricamento..." : "Importa da KiCad"}
+              </span>
+              <span className="text-[11px] text-faint">
+                .kicad_mod in libreria, .kicad_pcb come nuovo progetto
+              </span>
+              <input
+                type="file"
+                accept=".kicad_mod,.kicad_pcb,.kicad_sch"
+                multiple
+                className="hidden"
+                disabled={uploading}
+                onChange={(e) => {
+                  const list = e.target.files;
+                  e.target.value = "";
+                  if (list?.length) onImportKicad(list);
                 }}
               />
             </label>

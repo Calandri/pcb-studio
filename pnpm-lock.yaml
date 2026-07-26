@@ -133,6 +133,12 @@ importers:
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
+      kicad-component-converter:
+        specifier: ^0.1.41
+        version: 0.1.41
+      kicad-to-circuit-json:
+        specifier: ^0.0.116
+        version: 0.0.116(typescript@5.9.3)
       ky:
         specifier: ^1.7.5
         version: 1.14.3
@@ -3726,6 +3732,11 @@ packages:
 
   kicad-to-circuit-json@0.0.113:
     resolution: {integrity: sha512-C3st/sJvqUG+jvtV5m95akOQ4BkqG/4G6TAR6qdLIUF71NLCB9FGJ1Ry0L0v3vjx2SDlthHOvXwy3VGzVVftHg==}
+    peerDependencies:
+      typescript: ^5
+
+  kicad-to-circuit-json@0.0.116:
+    resolution: {integrity: sha512-CpK0hivvgeXhsOOVD4brxUrXxAD639y2LPKLPq82fxCt1AB7wRCWQ2Fa52bUmtv9ITElgN5pVn2tGAmPmunmvQ==}
     peerDependencies:
       typescript: ^5
 
@@ -8896,6 +8907,10 @@ snapshots:
   kicad-component-converter@0.1.41: {}
 
   kicad-to-circuit-json@0.0.113(typescript@5.9.3):
+    dependencies:
+      typescript: 5.9.3
+
+  kicad-to-circuit-json@0.0.116(typescript@5.9.3):
     dependencies:
       typescript: 5.9.3
 

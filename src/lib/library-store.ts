@@ -5,7 +5,7 @@ export interface LibraryComponent {
   name: string;
   description: string;
   code: string;
-  source: "lcsc" | "datasheet" | "llm" | "manual";
+  source: "lcsc" | "datasheet" | "llm" | "manual" | "kicad";
   sourceRef: string | null;
   version: number;
 }
