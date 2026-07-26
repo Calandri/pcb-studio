@@ -31,7 +31,7 @@ export const LAYER_LABELS: Array<{
   {
     key: "is_showing_solder_mask",
     label: "Solder mask",
-    hint: "La vernice verde che copre il rame lasciando scoperti solo i pad da saldare.",
+    hint: "La vernice verde che copre il rame lasciando scoperti solo i pad: accendendola le piste spariscono sotto, come sulla scheda vera.",
   },
   {
     key: "is_showing_copper_pours",
@@ -103,10 +103,21 @@ export interface ViewPreset {
 
 export const VIEW_PRESETS: ViewPreset[] = [
   {
+    key: "overview",
+    label: "Panoramica",
+    description:
+      "Piste, piani di rame e sigle dei componenti: la vista di lavoro, quella che risponde alla domanda «com'è fatta la mia scheda».",
+    flags: {
+      ...NONE,
+      is_showing_copper_pours: true,
+      is_showing_silkscreen: true,
+    },
+  },
+  {
     key: "assembly",
     label: "Montaggio",
     description:
-      "Come si presenta la scheda finita: serigrafia e solder mask, per controllare sigle e orientamenti prima del pick & place.",
+      "La scheda come esce dalla fabbrica: la vernice verde copre il rame (quindi le piste non si vedono, esattamente come dal vero) e restano scoperti pad e serigrafia.",
     flags: { ...NONE, is_showing_silkscreen: true, is_showing_solder_mask: true },
   },
   {

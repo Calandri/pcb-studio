@@ -25,9 +25,9 @@ const PcbViewer = dynamic(
  * che e' istantaneo e mantiene il codice semplice.
  */
 export function PcbView({ circuitJson }: { circuitJson: unknown[] }) {
-  const [preset, setPreset] = useState<string>("assembly");
+  const [preset, setPreset] = useState<string>("overview");
   const [flags, setFlags] = useState<ViewFlags>(
-    () => VIEW_PRESETS.find((p) => p.key === "assembly")!.flags,
+    () => VIEW_PRESETS.find((p) => p.key === "overview")!.flags,
   );
   const [layer, setLayer] = useState("top");
 
