@@ -73,3 +73,109 @@ export const FAB_RULESETS: FabRuleset[] = [
     },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Regole PER PROGETTO
+//
+// Fino a qui le regole erano una costante: ogni scheda veniva controllata con i
+// minimi JLCPCB standard, anche quando il fornitore era un altro. Il DRC e il
+// router accettavano gia' un parametro `rules`, ma nessuno gliene passava di
+// diverse. Qui le regole diventano un file del progetto, come manual-edits.json:
+// vivono con la scheda, entrano nell'hash dei file (quindi ricompilano la cache
+// quando cambiano) e valgono sia per il controllo sia per lo sbroglio.
+// ---------------------------------------------------------------------------
+
+export const DESIGN_RULES_PATH = "design-rules.json";
+
+export interface ProjectRules {
+  /** chiave di un ruleset noto, oppure "custom" */
+  preset: string;
+  rules: DesignRules;
+  label: string;
+  isCustom: boolean;
+}
+
+const LIMITS: Record<keyof DesignRules, { min: number; max: number }> = {
+  minTraceWidthMm: { min: 0.05, max: 2 },
+  minClearanceMm: { min: 0.05, max: 2 },
+  minBoardEdgeClearanceMm: { min: 0.1, max: 5 },
+  minViaHoleMm: { min: 0.1, max: 2 },
+  minViaDiameterMm: { min: 0.2, max: 3 },
+};
+
+/**
+ * Un valore fuori scala non e' una preferenza, e' un errore di battitura che
+ * produrrebbe una scheda invendibile o un DRC che non segnala piu' niente:
+ * si riporta dentro i limiti invece di fidarsi.
+ */
+function clampRules(input: Partial<DesignRules> | undefined): DesignRules {
+  const out = { ...DEFAULT_DESIGN_RULES };
+  if (!input) return out;
+  for (const key of Object.keys(LIMITS) as Array<keyof DesignRules>) {
+    const v = input[key];
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    const { min, max } = LIMITS[key];
+    out[key] = Math.min(max, Math.max(min, v));
+  }
+  return out;
+}
+
+/** legge le regole di un progetto dalla sua mappa file */
+export function resolveDesignRules(fsMap: Record<string, string>): ProjectRules {
+  const fallback: ProjectRules = {
+    preset: FAB_RULESETS[0].key,
+    rules: FAB_RULESETS[0].rules,
+    label: FAB_RULESETS[0].label,
+    isCustom: false,
+  };
+  const raw = fsMap[DESIGN_RULES_PATH];
+  if (!raw) return fallback;
+
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+  if (typeof data !== "object" || data === null) return fallback;
+  const obj = data as { preset?: unknown; rules?: unknown };
+
+  const preset = typeof obj.preset === "string" ? obj.preset : "";
+  const known = FAB_RULESETS.find((r) => r.key === preset);
+  if (known) {
+    return { preset: known.key, rules: known.rules, label: known.label, isCustom: false };
+  }
+  if (preset === "custom") {
+    return {
+      preset: "custom",
+      rules: clampRules(obj.rules as Partial<DesignRules>),
+      label: "Regole personalizzate",
+      isCustom: true,
+    };
+  }
+  return fallback;
+}
+
+export function serializeDesignRules(projectRules: ProjectRules): string {
+  const body = projectRules.isCustom
+    ? { preset: "custom", rules: projectRules.rules }
+    : { preset: projectRules.preset };
+  return `${JSON.stringify(body, null, 2)}\n`;
+}
+
+/** costruisce le regole da salvare a partire da quello che ha scelto l'utente */
+export function buildProjectRules(
+  preset: string,
+  custom?: Partial<DesignRules>,
+): ProjectRules {
+  const known = FAB_RULESETS.find((r) => r.key === preset);
+  if (known) {
+    return { preset: known.key, rules: known.rules, label: known.label, isCustom: false };
+  }
+  return {
+    preset: "custom",
+    rules: clampRules(custom),
+    label: "Regole personalizzate",
+    isCustom: true,
+  };
+}

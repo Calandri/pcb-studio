@@ -14,7 +14,12 @@ import {
   emptySchematicQuality,
   type SchematicQuality,
 } from "./schematic-quality";
-import { DEFAULT_DESIGN_RULES, FAB_RULESETS } from "./design-rules";
+import {
+  DEFAULT_DESIGN_RULES,
+  FAB_RULESETS,
+  resolveDesignRules,
+  type DesignRules,
+} from "./design-rules";
 import { routeBoard, type RouteReport } from "./autoroute";
 import {
   computeUnroutedGroupKeys,
@@ -114,6 +119,8 @@ export interface CompileSummary {
    * non ha piu' effetto.
    */
   manualEdits: { schematic: number; pcb: number; traceHints: number; total: number };
+  /** regole di fabbricazione scelte per QUESTO progetto (design-rules.json) */
+  designRules: { preset: string; label: string; isCustom: boolean; rules: DesignRules };
   /**
    * da dove viene la geometria dei pad: verificata dal produttore, scritta
    * esplicitamente, misura standard di un passivo, oppure generica e quindi
@@ -184,9 +191,9 @@ export interface CompileOptions {
    */
   variants?: number;
   /**
-   * Giri del ciclo di sbroglio. Spento per difetto: oggi un giro costa minuti
-   * e su bat-bs non guadagna nulla, perche' strappare una zona non rimpicciolisce
-   * il problema di routing (vedi autoroute.ts). Si accende a mano per provarlo.
+   * Giri del ciclo di sbroglio (0 = spento). Da accendere per difetto appena il
+   * lavoro in corso sulle regole per progetto e' committato: col problema
+   * ritagliato sulla zona sono 28 secondi per dieci violazioni in meno.
    */
   routeRounds?: number;
   /** fa guardare il disegno a un modello vision e usa cio' che trova */
@@ -221,6 +228,14 @@ export async function compileProject(
    */
   const fsMap = applyManualEditsToFsMap(projectFsMap);
   const manualEdits = countManualEdits(parseManualEdits(projectFsMap[MANUAL_EDITS_PATH]));
+  /*
+   * Regole di fabbricazione del progetto. Finora erano una costante uguale per
+   * tutti: il DRC e il router accettavano gia' un parametro, ma nessuno gliene
+   * passava di diverse, quindi chi ordinava da un altro fornitore veniva
+   * misurato con i minimi sbagliati. Si risolvono qui, una volta, e valgono
+   * per lo sbroglio e per il controllo.
+   */
+  const projectRules = resolveDesignRules(projectFsMap);
   const retries = Math.max(0, Math.min(opts.retries ?? 2, 3));
   const variantCount = Math.max(0, Math.min(opts.variants ?? 1, 4));
   const efforts = [2, 5, 10];
@@ -291,12 +306,13 @@ export async function compileProject(
           new Set(sections.map((s) => s.subcircuitId)),
         );
         const sectionVariants = sections.map((section) =>
-          generateSectionCandidates(base, section, variantCount, undefined, (traces) => {
+          generateSectionCandidates(base, section, variantCount, projectRules.rules, (traces) => {
             // violations this candidate would introduce if spliced alone
             // (upsized JLCPCB vias can clash with pads the solver planned around)
             try {
               return runDrcChecks(
                 spliceTraces(base, section.subcircuitId, traces, "eval"),
+                projectRules.rules,
               ).length;
             } catch {
               return 0;
@@ -328,6 +344,28 @@ export async function compileProject(
    * incompleta. Costa tempo solo quando la scheda e' gia' incompleta, e
    * `consider` tiene il risultato solo se migliora il punteggio.
    */
+  /*
+   * Passata locale CON LE REGOLE DEL PROGETTO.
+   *
+   * Serve perche' il tentativo 0 sbroglia con il router dichiarato sulla
+   * <board>, che i nostri minimi non li conosce: pianifica via da 0,2mm anche
+   * quando il fornitore non scende sotto 0,6. Finora quella passata partiva
+   * solo se restavano collegamenti aperti, quindi su una scheda gia' completa
+   * le regole di progetto restavano un referto e non toccavano il rame.
+   *
+   * Si paga solo quando c'e' qualcosa da guadagnare (DRC diverso da zero) e
+   * `consider` la tiene solo se migliora davvero il punteggio: se il router
+   * originale aveva fatto meglio, resta il suo.
+   */
+  if (state.bestScore && state.bestScore.errors === 0 && state.bestScore.drc > 0) {
+    try {
+      state.attempts += 1;
+      consider(await compileWithLocalRouter(fsMap, 5, projectRules.rules), "local_retry");
+    } catch {
+      // se fallisce resta il risultato del router della board
+    }
+  }
+
   for (
     let i = 0;
     i < retries && state.bestScore && state.bestScore.unrouted > 0;
@@ -335,7 +373,7 @@ export async function compileProject(
   ) {
     try {
       state.attempts += 1;
-      const cj = await compileWithLocalRouter(fsMap, efforts[i] ?? 10);
+      const cj = await compileWithLocalRouter(fsMap, efforts[i] ?? 10, projectRules.rules);
       consider(cj, "local_retry");
       // e la stessa rotta con le piste sottili portate al minimo di fabbrica:
       // allargare il rame puo' avvicinare net diverse, quindi non si impone —
@@ -392,7 +430,11 @@ export async function compileProject(
    * net, il DRC lo dice subito dopo: il problema si vede, non si nasconde
    * scartando la correzione.
    */
-  const circuitJson = straightenPinEscapes(widenThinTraces(state.best.circuitJson));
+  // si allarga al minimo del FORNITORE SCELTO, non a quello di default:
+  // con un fornitore grossolano portare a 0,127 lascerebbe piste non producibili
+  const circuitJson = straightenPinEscapes(
+    widenThinTraces(state.best.circuitJson, projectRules.rules.minTraceWidthMm),
+  );
   // si analizzano le sorgenti VERE, non quelle con le prop iniettate: altrimenti
   // ogni componente fissato a mano verrebbe segnalato come schX/schY di troppo
   // e l'agente inseguirebbe un difetto che non esiste
@@ -464,6 +506,12 @@ function emptySummary(
     schematicQuality: emptySchematicQuality(),
     erc: emptyErcReport(),
     manualEdits: { schematic: 0, pcb: 0, traceHints: 0, total: 0 },
+    designRules: {
+      preset: FAB_RULESETS[0].key,
+      label: FAB_RULESETS[0].label,
+      isCustom: false,
+      rules: DEFAULT_DESIGN_RULES,
+    },
     footprintProvenance: emptyFootprintProvenance(),
     targets: {
       errors: 1,
@@ -488,12 +536,13 @@ function emptySummary(
 async function compileWithLocalRouter(
   fsMap: FsMap,
   effort: number,
+  rules: DesignRules = DEFAULT_DESIGN_RULES,
 ): Promise<CircuitElement[]> {
   const platform = getPlatformConfig({
     autorouterMap: {
-      auto: localRouterDef(effort),
-      "auto-local": localRouterDef(effort),
-      "auto-cloud": localRouterDef(effort),
+      auto: localRouterDef(effort, rules),
+      "auto-local": localRouterDef(effort, rules),
+      "auto-cloud": localRouterDef(effort, rules),
     },
   });
   const runner = new CircuitRunner();
@@ -507,12 +556,12 @@ async function compileWithLocalRouter(
   }
 }
 
-function localRouterDef(effort: number) {
+function localRouterDef(effort: number, rules: DesignRules = DEFAULT_DESIGN_RULES) {
   return {
     createAutorouter: (simpleRouteJson: unknown) =>
       adaptSolver(
         new AutoroutingPipelineSolver(
-          withFabRules(simpleRouteJson) as never,
+          withFabRules(simpleRouteJson, rules) as never,
           { effort } as never,
         ),
       ) as never,
@@ -528,9 +577,9 @@ function localRouterDef(effort: number) {
  * pianifichi, che e' l'unico momento in cui contano — allargarli dopo
  * significherebbe spostare rame gia' piazzato.
  */
-function withFabRules(simpleRouteJson: unknown): unknown {
+function withFabRules(simpleRouteJson: unknown, rules: DesignRules): unknown {
   if (!simpleRouteJson || typeof simpleRouteJson !== "object") return simpleRouteJson;
-  const r = DEFAULT_DESIGN_RULES;
+  const r = rules;
   const srj = simpleRouteJson as Record<string, unknown>;
   const atLeast = (key: string, min: number) => {
     const current = typeof srj[key] === "number" ? (srj[key] as number) : 0;
@@ -763,12 +812,16 @@ function summarize(
     traceLengthByLayerMm,
   };
 
-  const drcViolations = runDrcChecks(circuitJson);
+  // le regole del progetto valgono anche per il controllo, non solo per il
+  // router: altrimenti si sbroglierebbe con un minimo e si misurerebbe con un altro
+  const projectRules = resolveDesignRules(sources);
+  const drcViolations = runDrcChecks(circuitJson, projectRules.rules);
   const prcViolations = runPrcChecks(circuitJson);
-  // multi-ruleset: the main DRC already covers the first (cheapest) ruleset
+  // multi-ruleset: il DRC principale copre gia' il ruleset SCELTO dal progetto,
+  // che non e' piu' per forza il primo dell'elenco
   const fabClasses = FAB_RULESETS.map((rs) => {
     const violations =
-      rs.rules === FAB_RULESETS[0].rules
+      rs.key === projectRules.preset
         ? drcViolations.length
         : runDrcChecks(circuitJson, rs.rules).length;
     return {
@@ -873,6 +926,12 @@ function summarize(
     // il conteggio vero lo scrive compileProject, che ha in mano il file delle
     // modifiche manuali; qui si riassume un circuito gia' compilato
     manualEdits: { schematic: 0, pcb: 0, traceHints: 0, total: 0 },
+    designRules: {
+      preset: projectRules.preset,
+      label: projectRules.label,
+      isCustom: projectRules.isCustom,
+      rules: projectRules.rules,
+    },
     footprintProvenance,
     targets,
     routingAttempts: 1,

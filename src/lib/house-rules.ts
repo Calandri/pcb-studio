@@ -98,8 +98,11 @@ export function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElem
  * allargarlo puo' violare una distanza. Per questo il risultato viene messo in
  * gara con l'originale invece che sostituirlo.
  */
-export function widenThinTraces(circuitJson: CircuitElement[]): CircuitElement[] {
-  const min = DEFAULT_DESIGN_RULES.minTraceWidthMm;
+export function widenThinTraces(
+  circuitJson: CircuitElement[],
+  minTraceWidthMm: number = DEFAULT_DESIGN_RULES.minTraceWidthMm,
+): CircuitElement[] {
+  const min = minTraceWidthMm;
   return circuitJson.map((el) => {
     if (el.type !== "pcb_trace") return el;
     const route = el.route as Array<Record<string, unknown>> | undefined;

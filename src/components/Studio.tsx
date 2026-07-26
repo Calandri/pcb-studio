@@ -8,6 +8,7 @@ import { HandoffButton } from "./HandoffButton";
 import { PcbView } from "./PcbView";
 import { BoardCanvas } from "./board/BoardCanvas";
 import { SchematicView } from "./SchematicView";
+import { DesignRulesDialog } from "./workspace/DesignRulesDialog";
 import { EditorBar } from "./workspace/EditorBar";
 import { useManualEditor } from "./workspace/useManualEditor";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
@@ -99,6 +100,7 @@ export function Studio({
    */
   const [viewNote, setViewNote] = useState(false);
   const [recompiling, setRecompiling] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
   // per-section routing variants (Fase 3.d), refreshed after compile/pick
   const [variantSections, setVariantSections] = useState<
     Array<{
@@ -329,6 +331,10 @@ export function Studio({
     }
     return out;
   }, [summary]);
+
+  /** ruleset con cui questa scheda e' stata sbrogliata e controllata */
+  const activeRules =
+    (summary as { designRules?: { label?: string } } | null)?.designRules?.label ?? null;
 
   const parts = useMemo(() => extractComponents(circuitJson), [circuitJson]);
   const sheetNets = useMemo(
@@ -789,9 +795,29 @@ export function Studio({
 
           {/* larghezze reali delle piste: la piu' larga e' la potenza */}
           {tab === "pcb" && !part && traceWidths.length > 0 && (
-            <div className="pointer-events-none absolute right-[18px] bottom-[18px] rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] backdrop-blur @max-[760px]:hidden">
-              <div className="font-mono text-[10px] tracking-[0.05em] text-[#5F726C]">
-                LARGHEZZA PISTE
+            <div className="absolute right-[18px] bottom-[18px] rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] backdrop-blur @max-[760px]:hidden">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] tracking-[0.05em] text-[#5F726C]">
+                  LARGHEZZA PISTE
+                </span>
+                <span className="flex-1" />
+                {/* le larghezze sono un referto, i minimi che le vincolano no:
+                    da qui si aprono e si cambiano */}
+                <button
+                  type="button"
+                  onClick={() => setRulesOpen(true)}
+                  title={`Regole di fabbricazione${activeRules ? `: ${activeRules}` : ""}`}
+                  className="-my-1 -mr-1 grid h-6 w-6 place-items-center rounded-[6px] text-[#5F726C] transition-colors hover:text-brand"
+                >
+                  <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none">
+                    <path
+                      d="M11.2 2.8l2 2L6 12H4v-2l7.2-7.2z"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
               </div>
               <div className="mt-1.5 font-mono text-[13px] text-[#E7EFEC]">
                 {traceWidths.map((w, i) => (
@@ -808,6 +834,11 @@ export function Studio({
                   </span>
                 ))}
               </div>
+              {activeRules && (
+                <div className="mt-1 font-mono text-[10px] text-[#5F726C]">
+                  minimi: {activeRules}
+                </div>
+              )}
             </div>
           )}
 
@@ -895,6 +926,14 @@ export function Studio({
           </aside>
         )}
       </main>
+
+      {rulesOpen && (
+        <DesignRulesDialog
+          projectId={projectId}
+          onClose={() => setRulesOpen(false)}
+          onSaved={() => void recompile()}
+        />
+      )}
 
       <Footer report={report} layer={layer} />
 
