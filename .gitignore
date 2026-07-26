@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# scratch di verifica locale (copia usa-e-getta di src/lib)
+.verify/
+verify-board.mjs
