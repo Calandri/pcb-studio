@@ -172,26 +172,17 @@ body {
 }
 
 /*
- * Barra strumenti del PCB viewer (@tscircuit/pcb-viewer).
- * I suoi pulsanti sono <div> senza classi con stile INLINE (grigio, spigoli a
- * 2px, sans-serif di sistema): l'unico modo di rivestirli senza forkare il
- * pacchetto e' agganciarli dallo stile inline e vincere con !important.
- * Se un aggiornamento del pacchetto cambia quegli stili, questi selettori
- * smettono semplicemente di applicarsi: la barra torna com'era, niente si rompe.
+ * Barra strumenti interna del PCB viewer (layer / errors / Edit Traces / Move
+ * Components / Rats Nest / Bounds / View). Si nasconde: gli stessi comandi
+ * stanno nella nostra barra dell'editor, e sovrapposte erano illeggibili.
+ * I suoi pulsanti sono <div> senza classi con stile INLINE, quindi si agganciano
+ * dallo stile stesso; se il pacchetto cambia quegli stili la barra ricompare e
+ * basta, niente si rompe.
  */
 .viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"] {
-  font-family: var(--font-plex-sans), system-ui, sans-serif !important;
-  font-size: 11.5px !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.01em !important;
-  padding: 6px 11px !important;
-  border-radius: 8px !important;
-  background-color: rgba(11, 17, 16, 0.9) !important;
-  border: 1px solid var(--line-strong) !important;
-  color: #b9cac5 !important;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4) !important;
-  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease !important;
+  display: none !important;
 }
+
 /*
  * Segnalazioni sulla scheda: il viewer disegna un rombo rosso per ogni errore
  * (un <svg> in mix-blend-mode difference sopra il canvas). Fermo si perde fra
@@ -221,9 +212,4 @@ body {
   display: none !important;
 }
 
-.viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"]:hover {
-  background-color: var(--brand-wash) !important;
-  border-color: #2c4c42 !important;
-  color: var(--brand) !important;
-  transform: translateY(-1px) !important;
-}
+

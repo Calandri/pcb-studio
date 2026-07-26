@@ -37,9 +37,19 @@ export async function GET(req: Request): Promise<Response> {
   // if the compile cache matches the current sources, use it instead of
   // recompiling (autorouters are not deterministic — a fresh compile could
   // route differently from what the user saw and what was DRC-checked).
+  /*
+   * La distinta guarda i COMPONENTI, non le piste: se c'e' una compilazione
+   * salvata la si usa anche quando i file sono cambiati dopo. Prima ogni
+   * apertura della distinta faceva ripartire una compilazione completa con lo
+   * sbroglio — minuti di attesa per una tabella che era gia' li'.
+   * Gerber e pick&place invece dipendono dal rame instradato: quelli la
+   * compilazione la rifanno davvero.
+   */
+  const wantsComponentsOnly = kind === "bom" || kind === "bom-json";
+
   let circuitJson: AnyCircuitJson;
   const cache = await getCompileCache(projectId).catch(() => null);
-  if (cache && cache.filesHash === filesHash(fsMap)) {
+  if (cache && (wantsComponentsOnly || cache.filesHash === filesHash(fsMap))) {
     circuitJson = cache.circuitJson as AnyCircuitJson;
   } else {
     try {
