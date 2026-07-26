@@ -2,11 +2,15 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildBoardReport, type BoardReport } from "@/lib/board-report";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
-import { BoardTabs } from "./BoardTabs";
 import { HandoffButton } from "./HandoffButton";
+import { PcbView } from "./PcbView";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
-import { useTheme } from "./ThemeToggle";
+import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
+import { Footer, Header, type BoardTab } from "./workspace/Chrome";
+import { LeftRail } from "./workspace/LeftRail";
+import { RightRail } from "./workspace/RightRail";
 
 const RunFrame = dynamic(
   () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
@@ -23,8 +27,17 @@ const RunFrame = dynamic(
   },
 );
 
-// Il rendering del circuito gia' compilato vive in BoardTabs: qui restava solo
-// l'import morto del viewer di runframe.
+const CircuitJsonPreview = dynamic(
+  () => import("@tscircuit/runframe/runner").then((m) => m.CircuitJsonPreview),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
+        <span className="dot dot-busy" /> Caricamento vista...
+      </div>
+    ),
+  },
+);
 
 function useProjectId(): string {
   if (typeof window === "undefined") return "default";
@@ -39,12 +52,21 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [section, setSection] = useState<SectionKey>("projects");
-  const [collapsed, setCollapsed] = useState(false);
-  const [theme, setTheme] = useTheme();
+  const [drawer, setDrawer] = useState(false);
+  const [copilot, setCopilot] = useState(false);
   const [uploading, setUploading] = useState(false);
   // server-validated routed circuit (truth); stale after any file change
   const [circuitJson, setCircuitJson] = useState<unknown[] | null>(null);
   const [circuitStale, setCircuitStale] = useState(false);
+  const [summary, setSummary] = useState<Parameters<typeof buildBoardReport>[1]>(null);
+  // cosa si sta guardando: tab della scheda, vista scelta, livello, radiografia
+  const [tab, setTab] = useState<BoardTab>("pcb");
+  const [preset, setPreset] = useState("overview");
+  const [flags, setFlags] = useState<ViewFlags>(
+    () => VIEW_PRESETS.find((p) => p.key === "overview")!.flags,
+  );
+  const [layer, setLayer] = useState("top");
+  const [xray, setXray] = useState(0);
   // per-section routing variants (Fase 3.d), refreshed after compile/pick
   const [variantSections, setVariantSections] = useState<
     Array<{
@@ -55,39 +77,47 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
   >([]);
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
 
-  useEffect(() => {
-    try {
-      setCollapsed(localStorage.getItem("pcb-studio-sidebar") === "collapsed");
-    } catch {
-      // storage non disponibile: menu esteso di default
-    }
+  const applyPreset = useCallback((p: ViewPreset) => {
+    setPreset(p.key);
+    setFlags(p.flags);
+    setTab("pcb");
   }, []);
 
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((c) => {
-      const next = !c;
-      try {
-        localStorage.setItem("pcb-studio-sidebar", next ? "collapsed" : "expanded");
-      } catch {
-        // preferenza valida solo per questa sessione
-      }
-      return next;
-    });
+  const setFlag = useCallback((key: keyof ViewFlags, value: boolean) => {
+    setPreset("custom");
+    setFlags((f) => ({ ...f, [key]: value }));
   }, []);
 
-  useEffect(() => {
-    // ATTENZIONE: ?circuit=1 e' un endpoint separato che risponde SOLO col
-    // circuito compilato (niente file ne' messaggi): vanno chiesti in due
-    // chiamate distinte, non unite in una.
-    fetch(`/api/project?projectId=${projectId}&circuit=1`)
+  /** porta una domanda nel copilota, con il pannello gia' aperto */
+  const ask = useCallback((prompt: string) => {
+    setInput(prompt);
+    setCopilot(true);
+  }, []);
+
+  /**
+   * Ricarica il circuito validato dal server (quello da cui nascono anche gli
+   * export). ATTENZIONE: ?circuit=1 e' un endpoint separato che risponde SOLO
+   * col circuito compilato, niente file ne' messaggi: va chiesto a parte.
+   */
+  const loadCircuit = useCallback(async () => {
+    const d = await fetch(`/api/project?projectId=${projectId}&circuit=1`)
       .then((r) => r.json())
-      .then((d) => {
-        if (d.compile?.circuitJson) {
-          setCircuitJson(d.compile.circuitJson as unknown[]);
-          setCircuitStale(Boolean(d.compile.stale));
-        }
-      })
-      .catch(() => undefined);
+      .catch(() => null);
+    if (!d?.compile?.circuitJson) return;
+    setCircuitJson(d.compile.circuitJson as unknown[]);
+    setSummary(d.compile.summary ?? null);
+    setCircuitStale(Boolean(d.compile.stale));
+  }, [projectId]);
+
+  const loadVariants = useCallback(async () => {
+    const d = await fetch(`/api/variants?projectId=${projectId}`)
+      .then((r) => r.json())
+      .catch(() => null);
+    if (d?.sections) setVariantSections(d.sections);
+  }, [projectId]);
+
+  useEffect(() => {
+    void loadCircuit();
 
     fetch(`/api/project?projectId=${projectId}`)
       .then((r) => r.json())
@@ -110,7 +140,12 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
       .catch(() =>
         setChat((c) => [...c, { kind: "error", text: "Impossibile caricare il progetto" }]),
       );
-  }, [projectId]);
+  }, [projectId, loadCircuit]);
+
+  const report = useMemo<BoardReport>(
+    () => buildBoardReport(circuitJson, summary),
+    [circuitJson, summary],
+  );
 
   // larghezze effettivamente usate sul rame: senza questo, guardando il canvas
   // non si capisce quale pista e' di potenza e quale di segnale
@@ -291,35 +326,13 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
               // render the server-validated routing (same circuit json the
               // export endpoints will use), not a fresh browser re-route
               if (data.result?.ok) {
-                fetch(`/api/project?projectId=${projectId}&circuit=1`)
-                  .then((r) => r.json())
-                  .then((d) => {
-                    if (d.compile?.circuitJson) {
-                      setCircuitJson(d.compile.circuitJson as unknown[]);
-                      setCircuitStale(false);
-                    }
-                  })
-                  .catch(() => {});
-                fetch(`/api/variants?projectId=${projectId}`)
-                  .then((r) => r.json())
-                  .then((d) => setVariantSections(d.sections ?? []))
-                  .catch(() => {});
+                void loadCircuit();
+                void loadVariants();
               }
             }
             if (data.name === "pick_variant" && data.result?.ok) {
-              fetch(`/api/project?projectId=${projectId}&circuit=1`)
-                .then((r) => r.json())
-                .then((d) => {
-                  if (d.compile?.circuitJson) {
-                    setCircuitJson(d.compile.circuitJson as unknown[]);
-                    setCircuitStale(false);
-                  }
-                })
-                .catch(() => {});
-              fetch(`/api/variants?projectId=${projectId}`)
-                .then((r) => r.json())
-                .then((d) => setVariantSections(d.sections ?? []))
-                .catch(() => {});
+              void loadCircuit();
+              void loadVariants();
             }
           } else if (event === "file_changed") {
             setFsMap((m) => ({ ...(m ?? {}), [data.path]: data.content }));
@@ -351,162 +364,274 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
       if (assistantText) historyRef.current.push({ role: "assistant", content: assistantText });
       setStatus("idle");
     }
-  }, [input, status, projectId, refreshLibrary]);
+  }, [input, status, projectId, refreshLibrary, loadCircuit, loadVariants]);
+
+  const activePreset =
+    VIEW_PRESETS.find((p) => p.key === preset) ?? null;
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-canvas">
-      <Sidebar
-        section={section}
-        onSection={(next) => {
-          setSection(next);
-          // a menu ridotto un'icona non aprirebbe nulla: la si espande
-          if (collapsed) toggleCollapsed();
-        }}
+    <div className="grid h-dvh grid-rows-[64px_minmax(0,1fr)_60px] overflow-hidden bg-canvas text-text">
+      <Header
         projectId={projectId}
-        user={user}
-        library={library}
-        uploading={uploading}
-        onUploadDatasheet={uploadDatasheet}
-        onImportKicad={uploadKicad}
-        collapsed={collapsed}
-        onToggleCollapsed={toggleCollapsed}
-        theme={theme}
-        onTheme={setTheme}
-        circuitJson={circuitJson}
-        circuitStale={circuitStale}
-        onAsk={(prompt) => {
-          setInput(prompt);
-          setCollapsed(false);
-        }}
+        report={report}
+        tab={tab}
+        onTab={setTab}
+        busy={status !== "idle"}
+        onOpenProjects={() => setDrawer(true)}
+        actions={<HandoffButton projectId={projectId} variant="overlay" compact />}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1">
-          <Chat
-            projectId={projectId}
-            items={chat}
-            status={status}
-            input={input}
-            onInput={setInput}
-            onSend={() => void send()}
-            disabled={status !== "idle"}
+      <main className="grid min-h-0 grid-cols-[290px_minmax(0,1fr)_316px]">
+        <LeftRail
+          report={report}
+          preset={preset}
+          onPreset={applyPreset}
+          layer={layer}
+          onLayer={setLayer}
+          xray={xray}
+          onXray={setXray}
+          onAskCopilot={() => setCopilot(true)}
+        />
+
+        <section className="viewer-shell relative min-w-0 overflow-hidden bg-[radial-gradient(1100px_700px_at_52%_42%,#0D1614_0%,#070A09_72%)]">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0"
+            style={{
+              backgroundImage:
+                "linear-gradient(to right,rgba(59,232,176,0.055) 1px,transparent 1px),linear-gradient(to bottom,rgba(59,232,176,0.055) 1px,transparent 1px)",
+              backgroundSize: "28px 28px",
+            }}
           />
-          <main className="relative min-w-0 flex-1 py-3 pr-3 pl-0">
-            <div className="viewer-shell card relative h-full overflow-hidden">
-              {/* i download vivono nella barra del viewer: cosi' il canvas
-                  guadagna tutta l'altezza della finestra */}
-              <div className="pointer-events-none absolute right-3 top-2 z-10 flex items-center gap-1.5">
-                {(
-                  [
-                    ["schematic", "Schema"],
-                    ["gerber", "Gerber"],
-                    ["bom", "Distinta"],
-                    ["pnp", "Pick & place"],
-                  ] as const
-                ).map(([kind, label]) => (
-                  <a
-                    key={kind}
-                    href={`/api/export?projectId=${projectId}&kind=${kind}`}
-                    download
-                    style={{
-                      // colori espliciti: questi bottoni stanno SOPRA il canvas
-                      // del viewer, che ha un fondo suo e non segue il tema
-                      background: "rgba(28, 34, 43, 0.92)",
-                      border: "1px solid rgba(255,255,255,0.14)",
-                      color: "#e8edf2",
-                    }}
-                    className="pointer-events-auto rounded-lg px-3 py-1.5 text-[11px] font-semibold shadow-sm transition-transform hover:-translate-y-px"
-                  >
-                    {label}
-                  </a>
-                ))}
-                <HandoffButton projectId={projectId} variant="overlay" compact />
-                {traceWidths.length > 0 && (
-                  <span
-                    style={{
-                      background: "rgba(28, 34, 43, 0.92)",
-                      border: "1px solid rgba(255,255,255,0.14)",
-                      color: "#9aa8b6",
-                    }}
-                    className="pointer-events-auto ml-1 rounded-lg px-3 py-1.5 font-mono text-[11px] shadow-sm"
-                    title="Larghezze delle piste presenti sulla scheda (la piu' larga e' la potenza)"
-                  >
-                    piste{" "}
-                    {traceWidths.map((w, i) => (
-                      <span
-                        key={w}
-                        style={{ color: i === traceWidths.length - 1 && traceWidths.length > 1 ? "#eba75a" : "#e8edf2" }}
-                      >
-                        {w}
-                        {i < traceWidths.length - 1 ? " · " : " mm"}
-                      </span>
-                    ))}
-                  </span>
-                )}
-              </div>
-              {variantSections.length > 0 && (
-                <div className="absolute bottom-2.5 left-3 right-3 z-10 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[#d3d8e2] bg-white/95 px-3 py-1.5 shadow-sm">
-                  {variantSections.map((sec) => (
-                    <div key={sec.section} className="flex items-center gap-1.5">
-                      <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-[#667085]">
-                        {sec.section}
-                      </span>
-                      {sec.candidates.map((cand) => {
-                        const active = cand.label === sec.picked;
-                        return (
-                          <button
-                            key={cand.label}
-                            type="button"
-                            title={`${cand.vias} via · ${cand.lengthMm}mm · ${cand.drc} violazioni DRC`}
-                            onClick={() =>
-                              setInput(`usa la variante ${cand.label} per la sezione ${sec.section}`)
-                            }
-                            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
-                              active
-                                ? "border-[#0f9d76] bg-[#e8f7f2] text-[#0b7d5e]"
-                                : "border-[#d3d8e2] text-[#475467] hover:border-[#0f9d76] hover:text-[#0b7d5e]"
-                            }`}
-                          >
-                            {cand.label}
-                            {cand.drc > 0 ? ` ⚠${cand.drc}` : ""}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {circuitJson && !circuitStale ? (
-                // BoardTabs apre sullo schematico anche dopo il compile (prima
-                // si atterrava sul PCB): e' il motivo per cui gli schemi
-                // illeggibili sono passati inosservati a lungo
-                <BoardTabs
+
+          <div className="absolute inset-0">
+            {circuitJson && !circuitStale ? (
+              tab === "pcb" ? (
+                <PcbView
                   circuitJson={circuitJson}
-                  fallback={
-                    <div className="flex h-full items-center justify-center text-sm text-faint">
-                      Caricamento del progetto...
-                    </div>
-                  }
-                />
-              ) : fsMap ? (
-                <RunFrame
-                  fsMap={fsMap}
-                  mainComponentPath="main.tsx"
-                  showRunButton={false}
-                  availableTabs={["schematic", "pcb", "cad", "bom"]}
-                  defaultActiveTab="schematic"
+                  xray={xray}
+                  hideControls
+                  control={{
+                    preset,
+                    flags,
+                    layer,
+                    onPreset: applyPreset,
+                    onFlag: setFlag,
+                    onLayer: setLayer,
+                  }}
                 />
               ) : (
-                <div className="flex h-full items-center justify-center text-sm text-faint">
-                  Caricamento del progetto...
-                </div>
-              )}
+                <CircuitJsonPreview
+                  key={tab}
+                  circuitJson={circuitJson as never}
+                  defaultActiveTab={tab as never}
+                  availableTabs={[tab] as never}
+                  showToggleFullScreen={false}
+                />
+              )
+            ) : fsMap ? (
+              <RunFrame
+                fsMap={fsMap}
+                mainComponentPath="main.tsx"
+                showRunButton={false}
+                availableTabs={["schematic", "pcb", "cad", "bom"]}
+                defaultActiveTab={tab}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
+                <span className="dot dot-busy" /> Caricamento del progetto...
+              </div>
+            )}
+          </div>
+
+          {/* cosa si sta guardando, sempre leggibile sopra il canvas */}
+          <div className="pointer-events-none absolute bottom-[18px] left-[34px] w-[328px] rounded-[14px] border border-[#1F2C29] bg-[rgba(9,14,13,0.88)] px-3.5 py-[13px] backdrop-blur">
+            <div className="flex items-center gap-2">
+              <span className="h-1.5 w-1.5 rounded-full bg-brand" />
+              <span className="text-[12px] font-bold text-[#E7EFEC]">
+                {tab === "pcb"
+                  ? (activePreset?.label ?? "Livelli scelti a mano")
+                  : TAB_TITLES[tab]}
+              </span>
+              <span className="flex-1" />
+              <span className="font-mono text-[10px] text-[#4E625C]">
+                {tab === "pcb" ? layerCaption(layer) : TAB_CAPTIONS[tab]}
+              </span>
             </div>
-          </main>
+            <p className="mt-1.5 text-[12px] leading-[1.5] text-[#8A9C96]">
+              {tab === "pcb"
+                ? (activePreset?.description ??
+                  "Hai acceso e spento i livelli a mano: scegli una vista qui a sinistra per tornare a una configurazione nota.")
+                : TAB_BODIES[tab]}
+            </p>
+          </div>
+
+          {/* larghezze reali delle piste: la piu' larga e' la potenza */}
+          {tab === "pcb" && traceWidths.length > 0 && (
+            <div className="pointer-events-none absolute right-[18px] bottom-[18px] rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] backdrop-blur">
+              <div className="font-mono text-[10px] tracking-[0.05em] text-[#5F726C]">
+                LARGHEZZA PISTE
+              </div>
+              <div className="mt-1.5 font-mono text-[13px] text-[#E7EFEC]">
+                {traceWidths.map((w, i) => (
+                  <span
+                    key={w}
+                    className={
+                      i === traceWidths.length - 1 && traceWidths.length > 1
+                        ? "text-copper"
+                        : undefined
+                    }
+                  >
+                    {w}
+                    {i < traceWidths.length - 1 ? " · " : " mm"}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* varianti di sbroglio per sezione: si scelgono chiedendole all'agente */}
+          {tab === "pcb" && variantSections.length > 0 && (
+            <div className="absolute inset-x-[34px] top-[18px] flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[12px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3.5 py-2 backdrop-blur">
+              {variantSections.map((sec) => (
+                <div key={sec.section} className="flex items-center gap-1.5">
+                  <span className="font-mono text-[10px] font-semibold tracking-[0.05em] text-[#5F726C]">
+                    {sec.section}
+                  </span>
+                  {sec.candidates.map((cand) => {
+                    const active = cand.label === sec.picked;
+                    return (
+                      <button
+                        key={cand.label}
+                        type="button"
+                        title={`${cand.vias} via · ${cand.lengthMm}mm · ${cand.drc} violazioni`}
+                        onClick={() =>
+                          ask(`usa la variante ${cand.label} per la sezione ${sec.section}`)
+                        }
+                        className={`rounded-[7px] border px-2 py-1 font-mono text-[10px] transition-colors ${
+                          active
+                            ? "border-[#2C4C42] bg-brand-wash text-brand"
+                            : "border-line text-muted hover:border-[#3A5A50] hover:text-text"
+                        }`}
+                      >
+                        {cand.label}
+                        {cand.drc > 0 ? ` ⚠${cand.drc}` : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <RightRail
+          report={report}
+          compiledAgo={circuitStale ? "da ricompilare" : "ultima compilazione"}
+          onAsk={ask}
+        />
+      </main>
+
+      <Footer report={report} layer={layer} />
+
+      {/* progetti, libreria, datasheet, condivisione: fuori dal flusso di lavoro
+          sulla scheda, si aprono dal nome del progetto in alto a sinistra */}
+      {drawer && (
+        <div className="fixed inset-0 z-40 flex">
+          <div className="flex h-full">
+            <Sidebar
+              section={section}
+              onSection={setSection}
+              projectId={projectId}
+              user={user}
+              library={library}
+              uploading={uploading}
+              onUploadDatasheet={uploadDatasheet}
+              onImportKicad={uploadKicad}
+              collapsed={false}
+              onToggleCollapsed={() => setDrawer(false)}
+              circuitJson={circuitJson}
+              circuitStale={circuitStale}
+              onAsk={(prompt) => {
+                setDrawer(false);
+                ask(prompt);
+              }}
+            />
+          </div>
+          <button
+            type="button"
+            aria-label="Chiudi il pannello"
+            onClick={() => setDrawer(false)}
+            className="flex-1 bg-[rgba(4,7,6,0.6)] backdrop-blur-[2px]"
+          />
         </div>
-      </div>
+      )}
+
+      {copilot && (
+        <aside className="fixed inset-y-0 right-0 z-40 flex w-[420px] flex-col border-l border-line bg-surface shadow-[0_0_60px_rgba(0,0,0,0.6)]">
+          <header className="flex flex-none items-center gap-2 border-b border-line px-4 py-3">
+            <span className="grid h-6 w-6 place-items-center rounded-md border border-[#2C4C42] bg-brand-wash text-[11px] text-brand">
+              ✦
+            </span>
+            <span className="flex-1 text-[13px] font-semibold">Copilota</span>
+            <button
+              type="button"
+              onClick={() => setCopilot(false)}
+              title="Chiudi il copilota"
+              className="text-faint transition-colors hover:text-text"
+            >
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+                <path
+                  d="M4 4l8 8M12 4l-8 8"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </header>
+          <div className="min-h-0 flex-1">
+            <Chat
+              projectId={projectId}
+              items={chat}
+              status={status}
+              input={input}
+              onInput={setInput}
+              onSend={() => void send()}
+              disabled={status !== "idle"}
+            />
+          </div>
+        </aside>
+      )}
     </div>
   );
+}
+
+const TAB_TITLES: Record<BoardTab, string> = {
+  schematic: "Schematico",
+  pcb: "Sbroglio",
+  cad: "Vista 3D",
+  bom: "Distinta base",
+};
+
+const TAB_CAPTIONS: Record<BoardTab, string> = {
+  schematic: "schema elettrico",
+  pcb: "",
+  cad: "vista 3D",
+  bom: "distinta base",
+};
+
+const TAB_BODIES: Record<BoardTab, string> = {
+  schematic: "Il disegno elettrico: chi è collegato a chi, senza tenere conto di dove stanno i pezzi sulla scheda.",
+  pcb: "",
+  cad: "La scheda come sarà una volta montata, con gli ingombri veri dei componenti.",
+  bom: "L'elenco dei componenti da comprare, con codice fornitore e quantità.",
+};
+
+function layerCaption(layer: string): string {
+  if (layer === "top") return "lato componenti";
+  if (layer === "bottom") return "lato saldature";
+  return layer === "inner1" ? "piano interno 1" : "piano interno 2";
 }
 
 function toolLabel(name: string): string {

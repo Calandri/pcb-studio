@@ -27,7 +27,7 @@ export function Btn({
   } as const;
   const variants = {
     primary:
-      "bg-brand text-white shadow-sm hover:bg-brand-strong active:translate-y-px",
+      "bg-brand text-ink shadow-sm hover:bg-brand-strong active:translate-y-px",
     ghost:
       "border border-line bg-surface text-muted hover:border-line-strong hover:text-text hover:bg-sunken",
     quiet: "text-muted hover:bg-sunken hover:text-text",

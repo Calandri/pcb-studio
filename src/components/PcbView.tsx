@@ -19,27 +19,57 @@ const PcbViewer = dynamic(
   },
 );
 
+interface Controlled {
+  preset: string;
+  flags: ViewFlags;
+  layer: string;
+  onPreset: (p: ViewPreset) => void;
+  onFlag: (key: keyof ViewFlags, value: boolean) => void;
+  onLayer: (layer: string) => void;
+}
+
 /**
  * Vista PCB con i controlli dei livelli. Il viewer non espone metodi per
  * cambiare stato dopo il montaggio: si rimonta con una key derivata dai flag,
  * che e' istantaneo e mantiene il codice semplice.
+ *
+ * Puo' governarsi da sola oppure ricevere lo stato dall'esterno (workspace),
+ * dove livelli e viste si scelgono dalla colonna di sinistra.
  */
-export function PcbView({ circuitJson }: { circuitJson: unknown[] }) {
-  const [preset, setPreset] = useState<string>("overview");
-  const [flags, setFlags] = useState<ViewFlags>(
+export function PcbView({
+  circuitJson,
+  control,
+  xray = 0,
+  hideControls = false,
+}: {
+  circuitJson: unknown[];
+  control?: Controlled;
+  /** 0-100: schiarisce la vista per far emergere il rame degli strati sotto */
+  xray?: number;
+  hideControls?: boolean;
+}) {
+  const [ownPreset, setOwnPreset] = useState<string>("overview");
+  const [ownFlags, setOwnFlags] = useState<ViewFlags>(
     () => VIEW_PRESETS.find((p) => p.key === "overview")!.flags,
   );
-  const [layer, setLayer] = useState("top");
+  const [ownLayer, setOwnLayer] = useState("top");
 
-  const applyPreset = useCallback((p: ViewPreset) => {
-    setPreset(p.key);
-    setFlags(p.flags);
+  const applyOwnPreset = useCallback((p: ViewPreset) => {
+    setOwnPreset(p.key);
+    setOwnFlags(p.flags);
   }, []);
 
-  const setFlag = useCallback((key: keyof ViewFlags, value: boolean) => {
-    setPreset("custom");
-    setFlags((f) => ({ ...f, [key]: value }));
+  const setOwnFlag = useCallback((key: keyof ViewFlags, value: boolean) => {
+    setOwnPreset("custom");
+    setOwnFlags((f) => ({ ...f, [key]: value }));
   }, []);
+
+  const preset = control?.preset ?? ownPreset;
+  const flags = control?.flags ?? ownFlags;
+  const layer = control?.layer ?? ownLayer;
+  const onPreset = control?.onPreset ?? applyOwnPreset;
+  const onFlag = control?.onFlag ?? setOwnFlag;
+  const onLayer = control?.onLayer ?? setOwnLayer;
 
   const viewerKey = useMemo(
     () => `${layer}-${Object.values(flags).map((v) => (v ? 1 : 0)).join("")}`,
@@ -48,22 +78,33 @@ export function PcbView({ circuitJson }: { circuitJson: unknown[] }) {
 
   return (
     <div className="relative h-full">
-      <div className="absolute bottom-3 left-3 z-10 flex gap-2">
-        <ViewControls
-          preset={preset}
-          flags={flags}
-          layer={layer}
-          onPreset={applyPreset}
-          onFlag={setFlag}
-          onLayer={setLayer}
+      {!hideControls && (
+        <div className="absolute bottom-3 left-3 z-10 flex gap-2">
+          <ViewControls
+            preset={preset}
+            flags={flags}
+            layer={layer}
+            onPreset={onPreset}
+            onFlag={onFlag}
+            onLayer={onLayer}
+          />
+        </div>
+      )}
+      <div
+        className="h-full"
+        style={
+          xray > 0
+            ? { filter: `brightness(${1 + xray / 90}) contrast(${1 + xray / 400})` }
+            : undefined
+        }
+      >
+        <PcbViewer
+          key={viewerKey}
+          circuitJson={circuitJson as never}
+          initialState={{ ...flags, selected_layer: layer } as never}
+          clickToInteractEnabled={false}
         />
       </div>
-      <PcbViewer
-        key={viewerKey}
-        circuitJson={circuitJson as never}
-        initialState={{ ...flags, selected_layer: layer } as never}
-        clickToInteractEnabled={false}
-      />
     </div>
   );
 }

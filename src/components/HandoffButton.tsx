@@ -49,7 +49,7 @@ export function HandoffButton({
     "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-all disabled:opacity-60";
   const skins = {
     solid:
-      "bg-brand text-white shadow-sm hover:bg-brand-strong hover:-translate-y-px",
+      "bg-brand text-ink shadow-sm hover:bg-brand-strong hover:-translate-y-px",
     overlay: "shadow-sm hover:-translate-y-px",
   } as const;
 

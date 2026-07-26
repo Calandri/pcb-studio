@@ -14,7 +14,7 @@ export default async function LoginPage({
     <div className="flex h-dvh items-center justify-center bg-canvas px-6">
       <div className="rise w-full max-w-[380px]">
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand text-white shadow-sm">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand text-ink shadow-sm">
             <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5">
               <path
                 d="M3 10h3.2l1.6-4 2.4 8 1.8-4H17"
@@ -75,7 +75,7 @@ export default async function LoginPage({
               />
               <button
                 type="submit"
-                className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-strong"
+                className="w-full rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-ink shadow-sm transition-colors hover:bg-brand-strong"
               >
                 Inviami il link di accesso
               </button>

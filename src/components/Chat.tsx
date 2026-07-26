@@ -50,11 +50,8 @@ export function Chat({
         : "Sto ragionando";
 
   return (
-    <section className="flex w-[390px] flex-none flex-col">
-      <header className="flex items-center gap-2 px-4 pt-4 pb-2">
-        <h1 className="min-w-0 flex-1 truncate text-[15px] font-bold tracking-tight text-text">
-          {projectId}
-        </h1>
+    <section className="flex h-full w-full flex-col">
+      <header className="flex items-center gap-2 px-4 pt-3 pb-1">
         <span className={`dot ${dotClass}`} />
         <span className="text-[11px] text-faint">{statusLabel}</span>
       </header>
@@ -125,7 +122,7 @@ export function Chat({
             type="submit"
             disabled={disabled || !input.trim()}
             title="Invia"
-            className="flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-brand text-white transition-colors hover:bg-brand-strong disabled:bg-sunken disabled:text-faint"
+            className="flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-brand text-ink transition-colors hover:bg-brand-strong disabled:bg-sunken disabled:text-faint"
           >
             <svg viewBox="0 0 16 16" fill="none" className="h-4 w-4">
               <path
@@ -150,7 +147,7 @@ export function Chat({
 function Bubble({ item }: { item: ChatItem }) {
   if (item.kind === "user") {
     return (
-      <div className="ml-8 rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-white shadow-sm">
+      <div className="ml-8 rounded-2xl rounded-br-md bg-brand px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap text-ink shadow-sm">
         {item.text}
       </div>
     );

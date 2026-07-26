@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { InspectPanel } from "./InspectPanel";
-import { ThemeToggle, type Theme } from "./ThemeToggle";
 import { Btn, Chip, EmptyState, Field, SectionLabel, Select } from "./ui";
 
 export type SectionKey = "projects" | "library" | "inspect" | "datasheets" | "team";
@@ -113,8 +112,6 @@ export function Sidebar({
   onImportKicad,
   collapsed,
   onToggleCollapsed,
-  theme,
-  onTheme,
   circuitJson,
   circuitStale,
   onAsk,
@@ -129,8 +126,6 @@ export function Sidebar({
   onImportKicad: (files: FileList) => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  theme: Theme;
-  onTheme: (t: Theme) => void;
   circuitJson: unknown[] | null;
   circuitStale: boolean;
   onAsk: (prompt: string) => void;
@@ -216,7 +211,7 @@ export function Sidebar({
   return (
     <aside
       className={`flex flex-none flex-col border-r border-line bg-surface transition-[width] duration-200 ${
-        collapsed ? "w-[60px]" : "w-[264px]"
+        collapsed ? "w-[60px]" : "w-[292px]"
       }`}
     >
       <div className={`flex items-center py-4 ${collapsed ? "flex-col gap-2 px-2" : "gap-2.5 px-4"}`}>
@@ -224,7 +219,7 @@ export function Sidebar({
           type="button"
           onClick={onToggleCollapsed}
           title={collapsed ? "Espandi il menu" : "Riduci il menu"}
-          className="group relative flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-brand text-white transition-transform hover:scale-105"
+          className="group relative flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-brand text-ink transition-transform hover:scale-105"
         >
           <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 group-hover:opacity-0">
             <path
@@ -683,7 +678,6 @@ export function Sidebar({
             {user.email}
           </span>
         )}
-        <ThemeToggle theme={theme} onChange={onTheme} compact={collapsed} />
         <a
           href="/api/auth/signout"
           title="Esci"

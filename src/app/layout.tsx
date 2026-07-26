@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
-import { JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
+import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 
-// Plus Jakarta Sans: geometrica e cordiale, adatta a un prodotto che deve
-// risultare accessibile anche a chi non fa l'elettronico di mestiere.
-const jakarta = Plus_Jakarta_Sans({
-  variable: "--font-jakarta",
+// IBM Plex, come nel mockup: il testo resta leggibile in corpo piccolo e il
+// monospaziato regge bene le cifre delle misure.
+const plexSans = IBM_Plex_Sans({
+  variable: "--font-plex-sans",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
 });
 
-const jbMono = JetBrains_Mono({
-  variable: "--font-jbmono",
+const plexMono = IBM_Plex_Mono({
+  variable: "--font-plex-mono",
   subsets: ["latin"],
-  weight: ["400", "500"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -29,17 +29,9 @@ export default function RootLayout({
   return (
     <html
       lang="it"
-      className={`${jakarta.variable} ${jbMono.variable} h-full antialiased`}
+      className={`${plexSans.variable} ${plexMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
-      <head>
-        {/* prima del render: evita il lampo bianco entrando col tema scuro */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("pcb-studio-theme");if(!t){t=window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}if(t==="dark"){document.documentElement.classList.add("dark")}}catch(e){}})()`,
-          }}
-        />
-      </head>
       <body className="min-h-full bg-canvas text-text">{children}</body>
     </html>
   );

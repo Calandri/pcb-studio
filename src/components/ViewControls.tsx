@@ -115,7 +115,7 @@ export function ViewControls({
                     onClick={() => onLayer(l.key)}
                     className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors ${
                       layer === l.key
-                        ? "bg-brand text-white"
+                        ? "bg-brand text-ink"
                         : "bg-sunken text-muted hover:text-text"
                     }`}
                   >

@@ -1,32 +1,52 @@
-/* source(../..) = only scan src/ for class candidates: the default heuristic
-   walks into node_modules and chokes on tscircuit's minified bundles */
-@import "tailwindcss" source("../../src");
+/*
+ * Tailwind importato in tre pezzi invece che con un @import unico, per un
+ * motivo preciso: al mount, runframe inietta un preflight Tailwind v3 SENZA
+ * cascade layer, che contiene `*, ::after, ::before { border: 0 solid }`.
+ * Le regole fuori layer battono qualunque @layer, quindi quel reset cancellava
+ * i bordi di tutta l'app (pannelli, schede, pillole dei tab) appena si apriva
+ * il viewer. Tenendo le utility FUORI dal layer utilities, vincono per
+ * specificita' (classe > selettore universale) e i bordi restano.
+ *
+ * source(../../src) = si scansiona solo src/ per trovare le classi: l'euristica
+ * predefinita entra in node_modules e si strozza sui bundle minificati di
+ * tscircuit.
+ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" source("../../src");
 
 /*
- * PCB Studio: interfaccia chiara, ariosa, con aree nettamente separate.
- * Il canvas di tscircuit e' chiaro: l'app gli sta intorno senza stonare.
+ * PCB Studio: workspace scuro, il canvas della scheda al centro e tutto il
+ * resto (cosa guardo, cosa non va, quanto costa) intorno, sempre leggibile.
  */
 :root {
-  --canvas: #f4f6f8;
-  --surface: #ffffff;
-  --surface-sunken: #f9fafb;
-  --line: #e6e9ef;
-  --line-strong: #d3d8e2;
+  /* palette del mockup "PCB design workspace" */
+  --canvas: #070A09;
+  --surface: #0C1211;
+  --surface-sunken: #0A0F0E;
+  --panel-raised: #0E1615;
+  --line: #1B2523;
+  --line-strong: #22302C;
 
-  --text: #101828;
-  --text-muted: #5a6478;
-  --text-faint: #9aa3b5;
+  --text: #E7EFEC;
+  --text-muted: #8A9C96;
+  --text-faint: #6E827C;
 
-  --brand: #0f9d76;
-  --brand-strong: #0b7d5e;
-  --brand-wash: #e8f7f2;
-  --accent: #e08b32;
-  --accent-wash: #fdf3e7;
-  --danger: #d94a4a;
-  --danger-wash: #fdeeee;
+  --brand: #3BE8B0;
+  /* testo sopra il verde di marca: il verde e' chiaro, il bianco non si legge */
+  --ink: #06110D;
+  --brand-strong: #2C9C77;
+  --brand-wash: #17241F;
+  --accent: #E8B23B;
+  --accent-wash: #16130C;
+  --danger: #FF6B5A;
+  --danger-wash: #160F0F;
+  --copper: #D9932F;
+  --copper-light: #F2C078;
+  --blue: #7FB4FF;
 
-  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
-  --shadow-float: 0 12px 32px -12px rgba(16, 24, 40, 0.18);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 12px 30px rgba(0, 0, 0, 0.6);
 }
 
 @theme inline {
@@ -39,53 +59,26 @@
   --color-muted: var(--text-muted);
   --color-faint: var(--text-faint);
   --color-brand: var(--brand);
+  --color-ink: var(--ink);
   --color-brand-strong: var(--brand-strong);
   --color-brand-wash: var(--brand-wash);
   --color-accent: var(--accent);
   --color-accent-wash: var(--accent-wash);
   --color-danger: var(--danger);
   --color-danger-wash: var(--danger-wash);
-  --font-sans: var(--font-jakarta);
-  --font-mono: var(--font-jbmono);
-}
-
-
-/* Tema scuro: stesse forme, superfici invertite. Attivato dalla classe .dark
-   su <html>, impostata prima del render per evitare il lampo bianco. */
-.dark {
-  --canvas: #0b0f14;
-  --surface: #141a21;
-  --surface-sunken: #1b222b;
-  --line: #253039;
-  --line-strong: #35424e;
-
-  --text: #e8edf2;
-  --text-muted: #9aa8b6;
-  --text-faint: #6b7a89;
-
-  --brand: #2dd4a7;
-  --brand-strong: #17b98d;
-  --brand-wash: rgba(45, 212, 167, 0.12);
-  --accent: #eba75a;
-  --accent-wash: rgba(235, 167, 90, 0.14);
-  --danger: #f2777a;
-  --danger-wash: rgba(242, 119, 122, 0.14);
-
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
-  --shadow-float: 0 12px 32px -12px rgba(0, 0, 0, 0.7);
-}
-
-/* Il canvas di tscircuit non ha un tema scuro: in dark lo si stacca dal fondo
-   con una cornice, invece di lasciarlo galleggiare. */
-.dark .viewer-shell {
-  background: #eef1f4;
+  --color-copper: var(--copper);
+  --color-copper-light: var(--copper-light);
+  --color-blue: var(--blue);
+  --color-raised: var(--panel-raised);
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
 }
 
 html,
 body {
   background: var(--canvas);
   color: var(--text);
-  font-family: var(--font-jakarta), system-ui, sans-serif;
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -187,20 +180,21 @@ body {
  * smettono semplicemente di applicarsi: la barra torna com'era, niente si rompe.
  */
 .viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"] {
-  font-family: var(--font-jakarta), system-ui, sans-serif !important;
+  font-family: var(--font-plex-sans), system-ui, sans-serif !important;
   font-size: 11.5px !important;
   font-weight: 600 !important;
   letter-spacing: 0.01em !important;
   padding: 6px 11px !important;
   border-radius: 8px !important;
-  background-color: rgba(28, 34, 43, 0.92) !important;
-  border: 1px solid rgba(255, 255, 255, 0.14) !important;
-  color: #e8edf2 !important;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
+  background-color: rgba(11, 17, 16, 0.9) !important;
+  border: 1px solid var(--line-strong) !important;
+  color: #b9cac5 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4) !important;
   transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease !important;
 }
 .viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"]:hover {
-  background-color: rgba(45, 212, 167, 0.16) !important;
-  border-color: rgba(45, 212, 167, 0.55) !important;
+  background-color: var(--brand-wash) !important;
+  border-color: #2c4c42 !important;
+  color: var(--brand) !important;
   transform: translateY(-1px) !important;
 }
