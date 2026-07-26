@@ -18,68 +18,6 @@ export interface ViewFlags {
   is_showing_group_anchor_offsets: boolean;
 }
 
-export const LAYER_LABELS: Array<{
-  key: keyof ViewFlags;
-  label: string;
-  hint: string;
-}> = [
-  {
-    key: "is_showing_silkscreen",
-    label: "Serigrafia",
-    hint: "Le scritte bianche stampate sulla scheda: sigle dei componenti e simboli di montaggio.",
-  },
-  {
-    key: "is_showing_solder_mask",
-    label: "Solder mask",
-    hint: "La vernice verde che copre il rame lasciando scoperti solo i pad: accendendola le piste spariscono sotto, come sulla scheda vera.",
-  },
-  {
-    key: "is_showing_copper_pours",
-    label: "Piani di rame",
-    hint: "Le grandi aree di rame di massa e alimentazione sui layer interni.",
-  },
-  {
-    key: "is_showing_courtyards",
-    label: "Ingombri",
-    hint: "Lo spazio che ogni componente richiede attorno a sé: se due si toccano, non ci stanno.",
-  },
-  {
-    key: "is_showing_drc_errors",
-    label: "Errori di produzione",
-    hint: "Violazioni delle regole del fabbricante: piste troppo vicine, fori troppo piccoli.",
-  },
-  {
-    key: "is_showing_rats_nest",
-    label: "Collegamenti da fare",
-    hint: "Linee dritte fra i pad che devono essere collegati ma non hanno ancora una pista.",
-  },
-  {
-    key: "is_showing_multiple_traces_length",
-    label: "Lunghezza piste",
-    hint: "Quanto è lunga ogni pista: conta per i segnali veloci e per la caduta di tensione.",
-  },
-  {
-    key: "is_showing_fabrication_notes",
-    label: "Note di fabbricazione",
-    hint: "Quote e indicazioni per chi produce la scheda.",
-  },
-  {
-    key: "is_showing_autorouting",
-    label: "Animazione routing",
-    hint: "Mostra come l'autorouter ha costruito i percorsi.",
-  },
-  {
-    key: "is_showing_pcb_groups",
-    label: "Gruppi",
-    hint: "Raggruppamenti logici dei componenti (sottocircuiti).",
-  },
-  {
-    key: "is_showing_group_anchor_offsets",
-    label: "Ancoraggi gruppi",
-    hint: "Punti di riferimento usati per posizionare i gruppi.",
-  },
-];
-
 const NONE: ViewFlags = {
   is_showing_drc_errors: false,
   is_showing_rats_nest: false,
@@ -181,10 +119,3 @@ export const VIEW_PRESETS: ViewPreset[] = [
     },
   },
 ];
-
-export const BOARD_LAYERS = [
-  { key: "top", label: "Top" },
-  { key: "inner1", label: "Inner 1" },
-  { key: "inner2", label: "Inner 2" },
-  { key: "bottom", label: "Bottom" },
-] as const;

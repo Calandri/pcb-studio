@@ -88,11 +88,6 @@ export function Studio({
     setTab("pcb");
   }, []);
 
-  const setFlag = useCallback((key: keyof ViewFlags, value: boolean) => {
-    setPreset("custom");
-    setFlags((f) => ({ ...f, [key]: value }));
-  }, []);
-
   /**
    * Accende sulla scheda la vista che rende visibile una verifica: passando
    * sopra "Distanze minime" si vedono ingombri ed errori, non si deve andare a
@@ -438,16 +433,9 @@ export function Studio({
               tab === "pcb" ? (
                 <PcbView
                   circuitJson={circuitJson}
+                  flags={flags}
+                  layer={layer}
                   xray={xray}
-                  hideControls
-                  control={{
-                    preset,
-                    flags,
-                    layer,
-                    onPreset: applyPreset,
-                    onFlag: setFlag,
-                    onLayer: setLayer,
-                  }}
                 />
               ) : tab === "bom" ? (
                 <BomView projectId={projectId} />
