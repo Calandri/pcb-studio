@@ -76,6 +76,12 @@ export function Studio({
   const [layer, setLayer] = useState("top");
   const [xray, setXray] = useState(0);
   const [partId, setPartId] = useState<string | null>(null);
+  /**
+   * Il cartellino che spiega la vista serve la prima volta e poi copre la
+   * scheda: si chiude con la X e non torna piu'. Parte chiuso e si apre dopo il
+   * mount (leggere localStorage durante il render rompe l'hydration).
+   */
+  const [viewNote, setViewNote] = useState(false);
   const [recompiling, setRecompiling] = useState(false);
   // per-section routing variants (Fase 3.d), refreshed after compile/pick
   const [variantSections, setVariantSections] = useState<
@@ -86,6 +92,23 @@ export function Studio({
     }>
   >([]);
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
+
+  useEffect(() => {
+    try {
+      setViewNote(localStorage.getItem("pcb-studio-view-note") !== "off");
+    } catch {
+      setViewNote(true);
+    }
+  }, []);
+
+  const dismissViewNote = useCallback(() => {
+    setViewNote(false);
+    try {
+      localStorage.setItem("pcb-studio-view-note", "off");
+    } catch {
+      // senza storage la scelta vale solo per questa sessione
+    }
+  }, []);
 
   const applyPreset = useCallback((p: ViewPreset) => {
     setPreset(p.key);
@@ -541,7 +564,7 @@ export function Studio({
 
           {/* cosa si sta guardando, sempre leggibile sopra il canvas (non
               sulla distinta, dove coprirebbe le righe della tabella) */}
-          {tab !== "bom" && (
+          {tab !== "bom" && viewNote && (
           <div className="pointer-events-none absolute bottom-[18px] left-[34px] w-[328px] max-w-[calc(100%-68px)] rounded-[14px] border border-[#1F2C29] bg-[rgba(9,14,13,0.88)] px-3.5 py-[13px] backdrop-blur">
             <div className="flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-brand" />
@@ -554,6 +577,21 @@ export function Studio({
               <span className="font-mono text-[10px] text-[#4E625C]">
                 {tab === "pcb" ? layerCaption(layer) : TAB_CAPTIONS[tab]}
               </span>
+              <button
+                type="button"
+                onClick={dismissViewNote}
+                title="Non mostrare piu'"
+                className="pointer-events-auto -mr-1 text-faint transition-colors hover:text-text"
+              >
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none">
+                  <path
+                    d="M4 4l8 8M12 4l-8 8"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
             </div>
             <p className="mt-1.5 text-[12px] leading-[1.5] text-[#8A9C96]">
               {tab === "pcb"
