@@ -191,9 +191,9 @@ export interface CompileOptions {
    */
   variants?: number;
   /**
-   * Giri del ciclo di sbroglio (0 = spento). Da accendere per difetto appena il
-   * lavoro in corso sulle regole per progetto e' committato: col problema
-   * ritagliato sulla zona sono 28 secondi per dieci violazioni in meno.
+   * Giri del ciclo di sbroglio (0 = spento). Acceso per difetto: col problema
+   * ritagliato sulla zona costa 28 secondi e su bat-bs toglie dieci violazioni,
+   * che valgono l'attesa dentro una compilazione che ne dura gia' sessanta.
    */
   routeRounds?: number;
   /** fa guardare il disegno a un modello vision e usa cio' che trova */
@@ -392,7 +392,7 @@ export async function compileProject(
    * partiva mai, perche' l'errore di quel tentativo lo escludeva.
    */
   if (
-    (opts.routeRounds ?? 0) > 0 &&
+    (opts.routeRounds ?? 3) > 0 &&
     state.best &&
     state.bestScore &&
     state.bestScore.errors === 0
