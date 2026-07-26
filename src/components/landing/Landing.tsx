@@ -230,20 +230,20 @@ export function Landing() {
     <div className="min-h-dvh bg-canvas text-text">
       {/* nav */}
       <header className="sticky top-0 z-30 border-b border-line bg-[rgba(7,10,9,0.85)] backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-5">
-          <span className="grid h-[30px] w-[30px] place-items-center rounded-lg border border-[#2B4B41] bg-gradient-to-br from-[#123027] to-[#0E1A17]">
+        <div className="mx-auto flex h-16 max-w-6xl items-center gap-2.5 px-4 sm:gap-3 sm:px-5">
+          <span className="grid h-[30px] w-[30px] flex-none place-items-center rounded-lg border border-[#2B4B41] bg-gradient-to-br from-[#123027] to-[#0E1A17]">
             <span className="h-3 w-3 rounded-[2px] border-[1.5px] border-brand" />
           </span>
-          <span className="text-[15px] font-semibold tracking-[-0.01em]">PCB Studio</span>
-          <span className="text-[11px] text-faint">di 3Bee</span>
+          <span className="text-[15px] font-semibold tracking-[-0.01em] whitespace-nowrap">PCB Studio</span>
+          <span className="hidden text-[11px] text-faint sm:inline">di 3Bee</span>
           <div className="flex-1" />
-          <div className="flex gap-0.5 rounded-[9px] border border-line bg-[#0F1716] p-[3px] font-mono text-[11px]">
+          <div className="flex flex-none gap-0.5 rounded-[9px] border border-line bg-[#0F1716] p-[3px] font-mono text-[11px]">
             {(["it", "en"] as const).map((l) => (
               <button
                 key={l}
                 type="button"
                 onClick={() => setLang(l)}
-                className={`rounded-[6px] px-2.5 py-1 uppercase transition-colors ${
+                className={`rounded-[6px] px-3 py-1.5 uppercase transition-colors ${
                   lang === l ? "bg-brand-wash font-semibold text-brand" : "text-[#7D8F8A] hover:text-text"
                 }`}
               >
@@ -253,13 +253,13 @@ export function Landing() {
           </div>
           <a
             href="/login"
-            className="rounded-[10px] border border-line-strong bg-[#141C1A] px-4 py-2 text-[13px] font-medium text-[#C7D6D1] transition-colors hover:border-[#3A5A50]"
+            className="hidden flex-none rounded-[10px] border border-line-strong bg-[#141C1A] px-4 py-2 text-[13px] font-medium whitespace-nowrap text-[#C7D6D1] transition-colors hover:border-[#3A5A50] sm:inline-block"
           >
             {t.nav.login}
           </a>
           <a
             href="/login"
-            className="rounded-[10px] bg-brand px-4 py-2 text-[13px] font-semibold text-[#06110D] transition-opacity hover:opacity-90"
+            className="flex-none rounded-[10px] bg-brand px-3.5 py-2 text-[12.5px] font-semibold whitespace-nowrap text-[#06110D] transition-opacity hover:opacity-90 sm:px-4 sm:text-[13px]"
           >
             {t.nav.cta}
           </a>
@@ -359,8 +359,8 @@ export function Landing() {
           <p className="mx-auto mt-4 max-w-2xl text-center text-[14.5px] leading-[1.65] text-muted">
             {t.mcp.sub}
           </p>
-          <div className="mt-8 overflow-x-auto rounded-xl border border-[#1F2C29] bg-[#0A0F0E] px-5 py-4">
-            <code className="font-mono text-[12.5px] leading-[1.7] whitespace-pre text-[#3BE8B0]">
+          <div className="mt-8 overflow-x-auto rounded-xl border border-[#1F2C29] bg-[#0A0F0E] px-4 py-3.5 sm:px-5 sm:py-4">
+            <code className="font-mono text-[11px] leading-[1.7] whitespace-pre text-[#3BE8B0] sm:text-[12.5px]">
               {t.mcp.cmd}
             </code>
           </div>
@@ -415,7 +415,7 @@ export function Landing() {
           </span>
           <span>{t.footer}</span>
           <span className="flex-1" />
-          <a href="/login" className="transition-colors hover:text-text">{t.nav.login}</a>
+          <a href="/login" className="px-1 py-2 transition-colors hover:text-text">{t.nav.login}</a>
         </div>
       </footer>
     </div>
