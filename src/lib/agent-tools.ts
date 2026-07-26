@@ -395,10 +395,25 @@ export async function executeTool(
 
     case "compile": {
       const compileFsMap = await withLibrary(fsMap);
+      // read the previous summary BEFORE overwriting the cache: the delta is
+      // what tells the model whether the loop is converging or oscillating
+      const previous = await getCompileCache(projectId).catch(() => null);
       const { summary, circuitJson, variants } = await compileProject(compileFsMap, {
         retries: typeof args.retries === "number" ? args.retries : undefined,
         variants: typeof args.variants === "number" ? args.variants : undefined,
       });
+      const prevTargets = (previous?.summary as { targets?: Record<string, unknown> } | undefined)
+        ?.targets;
+      if (prevTargets) {
+        (summary as unknown as Record<string, unknown>).deltaVsPrevious = {
+          errors: [prevTargets.errors, summary.targets.errors],
+          unrouted: [prevTargets.unrouted, summary.targets.unrouted],
+          drcViolations: [prevTargets.drcViolations, summary.targets.drcViolations],
+          prcViolations: [prevTargets.prcViolations, summary.targets.prcViolations],
+          schematicOverlaps: [prevTargets.schematicOverlaps, summary.targets.schematicOverlaps],
+          note: "format [previous, now] — going down means converging, flat/oscillating means change strategy, don't repeat the same edit",
+        };
+      }
       // persist the routed truth BEFORE the tool_result goes out: the FE
       // fetches ?circuit=1 as soon as it receives it, and on serverless a
       // fire-and-forget write could be frozen after the response

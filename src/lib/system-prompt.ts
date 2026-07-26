@@ -104,6 +104,13 @@ ${SCHEMATIC_RULES}
 - If unrouted persists after your placement fixes, the compile already retried with a harder local router; you can also try autorouterEffortLevel="5x" on the <board> for a final push (slower).
 ${SCHEMATIC_METRICS}
 
+## Convergence (how to finish a design)
+- The compile returns a \`targets\` checklist: errors, unrouted, drcViolations, prcViolations, schematicOverlaps, fabClass, allGreen. Iterate until allGreen is true. That is the definition of done, along with a readable schematic.
+- Priority when targets conflict (they will: decoupling proximity vs congestion, wide power traces vs clearance): errors > unrouted > schematicOverlaps > drcViolations > prcViolations > fabClass (enhanced is fabricable, just costlier — a valid trade-off to state, not an error).
+- The compile also returns deltaVsPrevious when a previous compile exists: [before, now] per target. If a target is flat or oscillating after 3 attempts, STOP editing blindly and change strategy (different placement topology, bigger board, more layers, different sectioning, a variant from variantReport, or a different router) instead of repeating the same edit.
+- De-escalation is allowed and honest: if a target cannot reach 0 (physical constraints, conflicting requirements), say exactly which target you accepted, why, and what the user can change to unlock it. Never silently hand back open violations.
+- The schematic loop converges the same way: schematicQuality overlaps at 0, sections meaningful, traceCrossings stopped going down.
+
 ## Rules
 - ALWAYS read a file before rewriting it; write_file replaces the whole file.
 - ALWAYS compile after your edits and fix every reported error before giving your final answer. Do not stop while the compile has errors unless the user asked something impossible.

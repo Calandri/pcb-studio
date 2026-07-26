@@ -86,6 +86,21 @@ export interface CompileSummary {
    * sources. Same role congestion/ratsnest play for the PCB.
    */
   schematicQuality: SchematicQuality;
+  /**
+   * convergence checklist (Fase 3.h): every loop target with its count, and
+   * allGreen when everything passes (errors 0, unrouted 0, DRC 0, PRC 0,
+   * schematic overlaps 0, at least one fab ruleset satisfied). The agent
+   * iterates until allGreen or explains the trade-off it accepted.
+   */
+  targets: {
+    errors: number;
+    unrouted: number;
+    drcViolations: number;
+    prcViolations: number;
+    schematicOverlaps: number;
+    fabClass: string | null;
+    allGreen: boolean;
+  };
   routingAttempts: number;
   router: "default" | "local_retry" | "variants";
   /** per-section variant report (Fase 3.d), present when variants were generated */
@@ -324,6 +339,15 @@ function emptySummary(
     congestion: [],
     ratsnest: { totalLengthMm: 0, estimatedCrossings: 0, longestNets: [] },
     schematicQuality: emptySchematicQuality(),
+    targets: {
+      errors: 1,
+      unrouted: 0,
+      drcViolations: 0,
+      prcViolations: 0,
+      schematicOverlaps: 0,
+      fabClass: null,
+      allGreen: false,
+    },
     routingAttempts: 1,
     router: "default",
     message,
@@ -728,6 +752,23 @@ function summarize(
   const reportedErrors = [...schematicBlocker, ...errors];
 
   const ok = reportedErrors.length === 0;
+  // convergence checklist: the agent's loop targets in one place (Fase 3.h)
+  const targets = {
+    errors: reportedErrors.length,
+    unrouted: unroutedConnections.length,
+    drcViolations: drcViolations.length,
+    prcViolations: prcViolations.length,
+    schematicOverlaps:
+      schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount,
+    fabClass,
+    allGreen:
+      reportedErrors.length === 0 &&
+      unroutedConnections.length === 0 &&
+      drcViolations.length === 0 &&
+      prcViolations.length === 0 &&
+      schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount === 0 &&
+      fabClass !== null,
+  };
   const message = ok
     ? `Compile OK: ${components.length} components, ${nets.length} nets, ` +
       `${pcbTraces} routed pcb traces (${sourceTraces} source traces` +
@@ -767,6 +808,7 @@ function summarize(
     congestion,
     ratsnest,
     schematicQuality,
+    targets,
     routingAttempts: 1,
     router: "default",
     message,
