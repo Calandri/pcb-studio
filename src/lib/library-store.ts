@@ -8,11 +8,31 @@ export interface LibraryComponent {
   source: "lcsc" | "datasheet" | "llm" | "manual" | "kicad";
   sourceRef: string | null;
   version: number;
+  /** link al datasheet (online, o rimando al PDF caricato) */
+  datasheetUrl: string | null;
+  /** note libere sull'uso nello schematico */
+  schematicNotes: string;
+  /** note libere su footprint/layout */
+  layoutNotes: string;
 }
 
 function db() {
   const url = process.env.DATABASE_URL;
   return url ? neon(url) : null;
+}
+
+/** colonne aggiunte dopo la prima tabella: migrazione lazy, una sola volta per lambda */
+let libraryColumnsPromise: Promise<void> | null = null;
+async function ensureLibraryColumns(sql: NonNullable<ReturnType<typeof db>>): Promise<void> {
+  libraryColumnsPromise ??= sql`ALTER TABLE library_components ADD COLUMN IF NOT EXISTS datasheet_url text`
+    .then(() => sql`ALTER TABLE library_components ADD COLUMN IF NOT EXISTS schematic_notes text`)
+    .then(() => sql`ALTER TABLE library_components ADD COLUMN IF NOT EXISTS layout_notes text`)
+    .then(() => undefined)
+    .catch((err) => {
+      libraryColumnsPromise = null;
+      throw err;
+    });
+  await libraryColumnsPromise;
 }
 
 /** Nome file/identificatore sicuro: e' anche il nome del modulo importabile. */
@@ -24,7 +44,8 @@ export async function listLibraryComponents(): Promise<
   const sql = db();
   if (!sql) return [];
   const rows = (await sql`
-    SELECT DISTINCT ON (name) id, name, description, source, source_ref, version
+    SELECT DISTINCT ON (name) id, name, description, source, source_ref, version,
+           datasheet_url, schematic_notes, layout_notes
     FROM library_components ORDER BY name, version DESC, id DESC
   `) as Array<Record<string, unknown>>;
   return rows.map((r) => ({
@@ -34,6 +55,9 @@ export async function listLibraryComponents(): Promise<
     source: r.source as LibraryComponent["source"],
     sourceRef: r.source_ref ? String(r.source_ref) : null,
     version: Number(r.version),
+    datasheetUrl: r.datasheet_url ? String(r.datasheet_url) : null,
+    schematicNotes: String(r.schematic_notes ?? ""),
+    layoutNotes: String(r.layout_notes ?? ""),
   }));
 }
 
@@ -42,8 +66,10 @@ export async function getLibraryComponent(
 ): Promise<LibraryComponent | null> {
   const sql = db();
   if (!sql) return null;
+  await ensureLibraryColumns(sql);
   const rows = (await sql`
-    SELECT id, name, description, code, source, source_ref, version
+    SELECT id, name, description, code, source, source_ref, version,
+           datasheet_url, schematic_notes, layout_notes
     FROM library_components WHERE name = ${name}
     ORDER BY version DESC, id DESC LIMIT 1
   `) as Array<Record<string, unknown>>;
@@ -57,7 +83,34 @@ export async function getLibraryComponent(
     source: r.source as LibraryComponent["source"],
     sourceRef: r.source_ref ? String(r.source_ref) : null,
     version: Number(r.version),
+    datasheetUrl: r.datasheet_url ? String(r.datasheet_url) : null,
+    schematicNotes: String(r.schematic_notes ?? ""),
+    layoutNotes: String(r.layout_notes ?? ""),
   };
+}
+
+/** aggiorna i metadati della scheda componente (non il codice: quello e' versionato) */
+export async function updateLibraryComponent(
+  name: string,
+  fields: {
+    description?: string;
+    datasheetUrl?: string | null;
+    schematicNotes?: string;
+    layoutNotes?: string;
+  },
+): Promise<void> {
+  const sql = db();
+  if (!sql) throw new Error("database not configured");
+  await ensureLibraryColumns(sql);
+  await sql`
+    UPDATE library_components SET
+      description = COALESCE(${fields.description ?? null}, description),
+      datasheet_url = COALESCE(${fields.datasheetUrl ?? null}, datasheet_url),
+      schematic_notes = COALESCE(${fields.schematicNotes ?? null}, schematic_notes),
+      layout_notes = COALESCE(${fields.layoutNotes ?? null}, layout_notes),
+      updated_at = now()
+    WHERE name = ${name} AND org_id IS NULL
+  `;
 }
 
 /** Tutti i componenti come fsMap `lib/<Name>.tsx`, da montare nel progetto. */

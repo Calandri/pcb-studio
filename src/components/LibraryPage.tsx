@@ -71,7 +71,12 @@ export function LibraryPage({
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {library.map((c) => (
-              <div key={c.id} className="card p-4" title={c.description}>
+              <a
+                key={c.id}
+                href={`/library/${encodeURIComponent(c.name)}?project=${projectId}`}
+                className="card block p-4 transition-all hover:-translate-y-0.5 hover:border-line-strong"
+                title={c.description}
+              >
                 <p className="truncate font-mono text-sm font-semibold text-text">{c.name}</p>
                 {c.description && (
                   <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-faint">
@@ -82,7 +87,7 @@ export function LibraryPage({
                   <Chip tone="brand">v{c.version}</Chip>
                   <Chip>{SOURCE_LABELS[c.source] ?? c.source}</Chip>
                 </div>
-              </div>
+              </a>
             ))}
           </div>
         )}
