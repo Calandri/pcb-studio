@@ -9,6 +9,12 @@ type Member = { userId: string; email: string; role: string };
 type Token = { id: string; name: string; prefix: string };
 type LibraryItem = { id: number; name: string; description: string; source: string; version: number };
 type Datasheet = { id: number; title: string; pages?: number };
+type MaskedKey = { provider: "glm" | "gemini"; hint: string; scope: "user" | "org"; orgId: string | null };
+
+const PROVIDER_LABELS: Record<MaskedKey["provider"], string> = {
+  glm: "GLM (Z.ai)",
+  gemini: "Gemini (Google)",
+};
 
 const SOURCE_LABELS: Record<string, string> = {
   lcsc: "LCSC",
@@ -36,8 +42,24 @@ export function OrgPage({
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [datasheets, setDatasheets] = useState<Datasheet[]>([]);
   const [freshToken, setFreshToken] = useState<string | null>(null);
+  const [keys, setKeys] = useState<{ user: MaskedKey[]; org: MaskedKey[] }>({ user: [], org: [] });
+  const [orgRoles, setOrgRoles] = useState<Array<{ id: string; name: string; role: string }>>([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+
+  const reloadKeys = useCallback(() => {
+    void fetch("/api/keys")
+      .then((r) => r.json())
+      .then((d) => {
+        setKeys(d.keys ?? { user: [], org: [] });
+        setOrgRoles(d.orgs ?? []);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    reloadKeys();
+  }, [reloadKeys]);
 
   useEffect(() => {
     void fetch("/api/projects")
@@ -369,6 +391,100 @@ export function OrgPage({
               ))}
             </ul>
           )}
+        </Card>
+
+        <Card
+          title="Chiavi AI del copilota"
+          hint="Il copilota si paga con le vostre chiavi: le personali hanno la precedenza su quelle dell'organizzazione, che restano come ripiego. Senza chiavi si usano quelle del server."
+        >
+          {keys.user.length + keys.org.length > 0 && (
+            <ul className="mb-4 divide-y divide-line">
+              {[...keys.user, ...keys.org].map((k) => (
+                <li key={`${k.scope}-${k.provider}-${k.orgId ?? ""}`} className="flex items-center gap-3 py-2.5">
+                  <span className="min-w-0 flex-1 truncate text-sm text-muted">
+                    {PROVIDER_LABELS[k.provider]}
+                    <span className="ml-2 font-mono text-xs text-faint">••••{k.hint}</span>
+                  </span>
+                  <Chip tone={k.scope === "user" ? "brand" : "accent"}>
+                    {k.scope === "user" ? "mia" : "organizzazione"}
+                  </Chip>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    title="Elimina la chiave"
+                    className="text-faint transition-colors hover:text-danger"
+                    onClick={async () => {
+                      const params = new URLSearchParams({
+                        provider: k.provider,
+                        scope: k.scope,
+                        ...(k.orgId ? { orgId: k.orgId } : {}),
+                      });
+                      const res = await fetch(`/api/keys?${params}`, { method: "DELETE" });
+                      if (res.ok) reloadKeys();
+                      else setNote("Eliminazione non riuscita");
+                    }}
+                  >
+                    <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+                      <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="flex flex-col gap-2"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const formEl = e.currentTarget;
+              const form = new FormData(formEl);
+              const scope = String(form.get("scope") ?? "user");
+              const d = await post("/api/keys", {
+                provider: String(form.get("provider") ?? "glm"),
+                scope,
+                orgId: orgs[0]?.id,
+                key: String(form.get("key") ?? ""),
+              });
+              if (d) {
+                formEl.reset();
+                reloadKeys();
+              }
+            }}
+          >
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Select
+                name="provider"
+                options={[
+                  { value: "glm", label: "GLM (Z.ai)" },
+                  { value: "gemini", label: "Gemini (Google)" },
+                ]}
+              />
+              <Select
+                name="scope"
+                options={[
+                  { value: "user", label: "Chiave mia" },
+                  ...(orgRoles.some((o) => o.role === "owner" || o.role === "admin")
+                    ? [{ value: "org", label: "Chiave organizzazione" }]
+                    : []),
+                ]}
+              />
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Field
+                name="key"
+                type="password"
+                required
+                placeholder="Incolla la chiave API"
+                className="flex-1"
+              />
+              <Btn type="submit" disabled={busy}>
+                Salva
+              </Btn>
+            </div>
+            <p className="text-[11px] leading-relaxed text-faint">
+              La chiave viene cifrata prima di essere salvata e non viene mai mostrata intera.
+            </p>
+          </form>
         </Card>
       </div>
     </SettingsShell>

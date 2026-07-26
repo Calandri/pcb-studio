@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { executeTool, TOOL_DEFINITIONS } from "@/lib/agent-tools";
 import { claimProject, currentViewer, projectAccess } from "@/lib/acl";
+import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
 import {
   appendChatMessage,
@@ -99,6 +100,12 @@ export async function POST(req: Request): Promise<Response> {
   }
   const orgs = await listUserOrganizations(viewer.userId).catch(() => []);
   await claimProject(projectId, viewer, orgs[0]?.id ?? null).catch(() => {});
+  // BYOK: il turno si paga con le chiavi dell'utente o della sua
+  // organizzazione, se ci sono; altrimenti con quelle del server
+  const agentKeys = await getAgentKeys(
+    viewer.userId,
+    orgs.map((o) => o.id),
+  ).catch(() => ({}));
 
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
@@ -131,11 +138,14 @@ export async function POST(req: Request): Promise<Response> {
       try {
         await appendChatMessage(projectId, "user", history[history.length - 1].content);
         for (let step = 0; step < MAX_STEPS; step++) {
-          const response = await runAgentTurn({
-            system: SYSTEM_PROMPT,
-            tools: TOOL_DEFINITIONS,
-            messages,
-          });
+          const response = await runAgentTurn(
+            {
+              system: SYSTEM_PROMPT,
+              tools: TOOL_DEFINITIONS,
+              messages,
+            },
+            { keys: agentKeys },
+          );
           if (response.provider !== lastProvider) {
             lastProvider = response.provider;
             emit("provider", { provider: response.provider });

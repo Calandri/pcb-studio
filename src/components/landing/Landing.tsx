@@ -97,7 +97,7 @@ const COPY = {
     },
     pricing: {
       title: "Gratis. Sul serio.",
-      body: "Niente abbonamento e niente copilot a consumo: l'intelligenza la porti tu. Colleghi il tuo agente via MCP oggi — il supporto per la tua API key direttamente in app è in arrivo.",
+      body: "Niente abbonamento e niente copilot a consumo: l'intelligenza la porti tu. Colleghi il tuo agente via MCP, oppure imposti la tua API key (tua o dell'organizzazione) nella pagina del team.",
       card1: {
         title: "Con il tuo agente (MCP)",
         body: "Claude Code, Cursor o qualsiasi client MCP: progetti dal tuo ambiente, con i tuoi modelli e i tuoi limiti.",
@@ -105,8 +105,8 @@ const COPY = {
       },
       card2: {
         title: "Con la tua API key",
-        body: "Il copilota integrato nello Studio con la tua chiave: stesso agente, senza passare dal tuo IDE.",
-        tag: "In arrivo",
+        body: "Il copilota integrato nello Studio con la tua chiave GLM o Gemini, cifrata e salvata nel tuo profilo o in quello dell'organizzazione.",
+        tag: "Disponibile ora",
       },
     },
     final: {
@@ -201,7 +201,7 @@ const COPY = {
     },
     pricing: {
       title: "Free. Really.",
-      body: "No subscription and no metered copilot: you bring the intelligence. Connect your agent via MCP today — support for your own API key inside the app is coming.",
+      body: "No subscription and no metered copilot: you bring the intelligence. Connect your agent via MCP, or set your own API key (yours or your organisation's) in the team page.",
       card1: {
         title: "With your agent (MCP)",
         body: "Claude Code, Cursor or any MCP client: design from your environment, with your models and your limits.",
@@ -209,8 +209,8 @@ const COPY = {
       },
       card2: {
         title: "With your API key",
-        body: "The copilot built into the Studio, running on your key: same agent, no IDE required.",
-        tag: "Coming soon",
+        body: "The copilot built into the Studio, running on your GLM or Gemini key — encrypted and stored on your profile or your organisation's.",
+        tag: "Available now",
       },
     },
     final: {

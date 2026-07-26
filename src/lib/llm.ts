@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { GLM_MAX_TOKENS, GLM_MODEL, GLM_THINKING_BUDGET, glmClient } from "./glm";
+import type { AgentKeyEntry, AgentKeyMap } from "./llm-keys";
 
 /**
  * Un turno dell'agente, indipendente da chi lo esegue.
@@ -45,30 +46,39 @@ type Provider = {
   run: (req: TurnRequest) => Promise<Omit<TurnResult, "provider">>;
 };
 
-const glmProvider: Provider = {
-  name: `glm (${GLM_MODEL})`,
-  configured: () => Boolean(process.env.GLM_API_KEY),
-  run: async ({ system, tools, messages }) => {
-    const response = await glmClient()
-      .messages.stream({
-        model: GLM_MODEL,
-        max_tokens: GLM_MAX_TOKENS,
-        thinking: { type: "enabled", budget_tokens: GLM_THINKING_BUDGET },
-        system,
-        tools,
-        messages,
-      })
-      .finalMessage();
-    return {
-      content: response.content,
-      stop_reason: response.stop_reason ?? "end_turn",
-      usage: {
-        input_tokens: response.usage?.input_tokens ?? 0,
-        output_tokens: response.usage?.output_tokens ?? 0,
-      },
-    };
-  },
-};
+/** nel nome compare di chi e' la chiave: in chat si vede chi paga il turno */
+function keySuffix(override?: AgentKeyEntry): string {
+  return override ? (override.scope === "user" ? " · chiave tua" : " · chiave org") : "";
+}
+
+function makeGlmProvider(override?: AgentKeyEntry): Provider {
+  return {
+    name: `glm (${GLM_MODEL})${keySuffix(override)}`,
+    configured: () => Boolean(override?.key ?? process.env.GLM_API_KEY),
+    run: async ({ system, tools, messages }) => {
+      const response = await glmClient(override?.key)
+        .messages.stream({
+          model: GLM_MODEL,
+          max_tokens: GLM_MAX_TOKENS,
+          thinking: { type: "enabled", budget_tokens: GLM_THINKING_BUDGET },
+          system,
+          tools,
+          messages,
+        })
+        .finalMessage();
+      return {
+        content: response.content,
+        stop_reason: response.stop_reason ?? "end_turn",
+        usage: {
+          input_tokens: response.usage?.input_tokens ?? 0,
+          output_tokens: response.usage?.output_tokens ?? 0,
+        },
+      };
+    },
+  };
+}
+
+const glmProvider: Provider = makeGlmProvider();
 
 // ------------------------------------------------------------------ gemini
 
@@ -199,13 +209,14 @@ interface GeminiResponse {
   error?: { message?: string; code?: number };
 }
 
-const geminiProvider: Provider = {
-  name: `gemini (${GEMINI_AGENT_MODEL})`,
-  configured: () =>
-    Boolean(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY),
-  run: async ({ system, tools, messages }) => {
-    const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
-    if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
+function makeGeminiProvider(override?: AgentKeyEntry): Provider {
+  const envKey = () => process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+  return {
+    name: `gemini (${GEMINI_AGENT_MODEL})${keySuffix(override)}`,
+    configured: () => Boolean(override?.key ?? envKey()),
+    run: async ({ system, tools, messages }) => {
+      const apiKey = override?.key ?? envKey();
+      if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
 
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_AGENT_MODEL}:generateContent`,
@@ -269,31 +280,56 @@ const geminiProvider: Provider = {
       },
     };
   },
+  };
+}
+
+const geminiProvider: Provider = makeGeminiProvider();
+
+const PROVIDER_FACTORIES: Record<
+  string,
+  (override?: AgentKeyEntry) => Provider
+> = {
+  glm: makeGlmProvider,
+  gemini: makeGeminiProvider,
 };
 
-const PROVIDERS: Record<string, Provider> = {
-  glm: glmProvider,
-  gemini: geminiProvider,
-};
-
-/** ordine di preferenza, sovrascrivibile con AGENT_MODELS="gemini,glm" */
-function providerChain(): Provider[] {
+/**
+ * Ordine di preferenza, sovrascrivibile con AGENT_MODELS="gemini,glm". Con
+ * chiavi BYOK (utente/org) i provider con la chiave propria vanno per primi;
+ * le chiavi del server (env) restano come ripiego in coda.
+ */
+function providerChain(keys?: AgentKeyMap): Provider[] {
   const order = (process.env.AGENT_MODELS ?? "glm,gemini")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  const chain = order.map((key) => PROVIDERS[key]).filter(Boolean);
-  return chain.length > 0 ? chain : [glmProvider];
+  const chain: Provider[] = [];
+  for (const key of order) {
+    const factory = PROVIDER_FACTORIES[key];
+    if (!factory) continue;
+    if (keys?.[key as keyof AgentKeyMap]) {
+      chain.push(factory(keys[key as keyof AgentKeyMap]));
+    }
+  }
+  for (const key of order) {
+    const factory = PROVIDER_FACTORIES[key];
+    if (!factory) continue;
+    chain.push(factory());
+  }
+  return chain.length > 0 ? chain : [glmProvider, geminiProvider];
 }
 
 /**
  * Esegue un turno col primo modello disponibile. Se quello scelto e' fuori uso
  * (quota finita, piano scaduto, sovraccarico) si passa al successivo invece di
  * far fallire il turno: il prodotto non deve fermarsi perche' e' scaduto un
- * abbonamento.
+ * abbonamento. `opts.keys` porta le chiavi BYOK dell'utente/organizzazione.
  */
-export async function runAgentTurn(req: TurnRequest): Promise<TurnResult> {
-  const chain = providerChain();
+export async function runAgentTurn(
+  req: TurnRequest,
+  opts?: { keys?: AgentKeyMap },
+): Promise<TurnResult> {
+  const chain = providerChain(opts?.keys);
   const problems: string[] = [];
 
   for (const provider of chain) {
