@@ -10,7 +10,7 @@ import { Btn, Chip, EmptyState, Field, Select } from "./ui";
 type SectionId = "super" | "users" | "sheets" | "projects" | "parts";
 
 const SECTIONS: Array<{ id: SectionId; name: string; cta: string }> = [
-  { id: "super", name: "Super admin", cta: "Nuovo progetto" },
+  { id: "super", name: "Super admin", cta: "Nuova organizzazione" },
   { id: "users", name: "Utenti", cta: "Invita utente" },
   { id: "sheets", name: "Gestione datasheet", cta: "Carica datasheet" },
   { id: "projects", name: "Gestione progetti", cta: "Nuovo progetto" },
@@ -70,6 +70,8 @@ export function OrgConsole({
   const [onlyUnverified, setOnlyUnverified] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // organizzazione attiva nella console: i dati (progetti, membri) seguono lei
+  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
 
   const post = useCallback(async (url: string, body: Record<string, unknown>) => {
     setBusy(true);
@@ -88,26 +90,49 @@ export function OrgConsole({
     return d;
   }, []);
 
+  const refreshOrgs = useCallback(async () => {
+    const d = await fetch("/api/orgs")
+      .then((r) => r.json())
+      .catch(() => null);
+    const list = d?.organizations ?? [];
+    setOrgs(list);
+    setSelectedOrgId((cur) => cur ?? list[0]?.id ?? null);
+    return list as Array<{ id: string; name: string }>;
+  }, []);
+
   useEffect(() => {
     void fetch("/api/projects")
       .then((r) => r.json())
-      .then((d) => {
-        setProjects(d.projects ?? []);
-        setOrgs(d.organizations ?? []);
-        const first = d.organizations?.[0];
-        if (first) {
-          void fetch(`/api/orgs?orgId=${first.id}`)
-            .then((r) => r.json())
-            .then((m) => setMembers(m.members ?? []))
-            .catch(() => undefined);
-        }
-      })
+      .then((d) => setProjects(d.projects ?? []))
       .catch(() => undefined);
+    void refreshOrgs();
     void fetch("/api/tokens")
       .then((r) => r.json())
       .then((d) => setTokens(d.tokens ?? []))
       .catch(() => undefined);
-  }, []);
+  }, [refreshOrgs]);
+
+  // i membri seguono l'organizzazione selezionata
+  useEffect(() => {
+    if (!selectedOrgId) return;
+    setMembers([]);
+    void fetch(`/api/orgs?orgId=${selectedOrgId}`)
+      .then((r) => r.json())
+      .then((m) => setMembers(m.members ?? []))
+      .catch(() => undefined);
+  }, [selectedOrgId]);
+
+  /** creazione self-service dell'organizzazione aziendale (storia chiusa) */
+  const createOrg = useCallback(async () => {
+    const name = prompt("Nome della nuova organizzazione (es. la tua azienda):");
+    if (!name || name.trim().length < 2) return;
+    const d = await post("/api/orgs", { action: "create_org", name: name.trim() });
+    if (d?.organization?.id) {
+      await refreshOrgs();
+      setSelectedOrgId(d.organization.id);
+      setNote(`Organizzazione "${d.organization.name}" creata: sei il proprietario. Invita i colleghi da Utenti.`);
+    }
+  }, [post, refreshOrgs]);
 
   useEffect(() => {
     void fetch(`/api/project?projectId=${projectId}`)
@@ -120,11 +145,20 @@ export function OrgConsole({
       .catch(() => undefined);
   }, [projectId]);
 
+  // i progetti visibili seguono l'org selezionata (quelli senza org assegnata
+  // contano come personali: prima org dell'utente)
+  const visibleProjects = projects.filter(
+    (p) =>
+      (p.orgId ?? null) === selectedOrgId ||
+      (!p.orgId && selectedOrgId === orgs[0]?.id) ||
+      !selectedOrgId,
+  );
+
   const counts: Record<SectionId, string> = {
     super: String(orgs.length || 1),
     users: String(members.length),
     sheets: String(datasheets.length),
-    projects: String(projects.length),
+    projects: String(visibleProjects.length),
     parts: String(library.length),
   };
 
@@ -158,21 +192,22 @@ export function OrgConsole({
 
   const inviteUser = useCallback(() => {
     const email = prompt("Email da invitare nell'organizzazione:");
-    if (!email || !orgs[0]) return;
-    void post("/api/orgs", { action: "invite", orgId: orgs[0].id, email, role: "member" }).then(
+    if (!email || !selectedOrgId) return;
+    void post("/api/orgs", { action: "invite", orgId: selectedOrgId, email, role: "member" }).then(
       (d) => {
         if (d?.members) setMembers(d.members);
         if (d && d.joined === false) setNote("Invito registrato: entrerà al primo accesso.");
       },
     );
-  }, [post, orgs]);
+  }, [post, selectedOrgId]);
 
   const ctaAction = useCallback(() => {
-    if (section === "super" || section === "projects") void newProject();
+    if (section === "super") void createOrg();
+    else if (section === "projects") void newProject();
     else if (section === "users") inviteUser();
     else if (section === "sheets") window.location.href = `/datasheets?project=${projectId}`;
     else if (section === "parts") window.location.href = `/?project=${projectId}`;
-  }, [section, newProject, inviteUser, projectId]);
+  }, [section, createOrg, newProject, inviteUser, projectId]);
 
   return (
     <div className="grid min-h-dvh grid-cols-[236px_minmax(0,1fr)] bg-canvas text-text">
@@ -243,6 +278,20 @@ export function OrgConsole({
             <p className="text-xs text-faint">{sectionMeta.sub}</p>
           </div>
           <div className="flex-1" />
+          {orgs.length > 1 && (
+            <select
+              value={selectedOrgId ?? ""}
+              onChange={(e) => setSelectedOrgId(e.target.value)}
+              title="Organizzazione attiva"
+              className="cursor-pointer rounded-[9px] border border-line bg-sunken px-2.5 py-2 text-xs text-muted outline-none transition-colors focus:border-brand"
+            >
+              {orgs.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          )}
           {section === "parts" && (
             <div className="flex min-w-[210px] items-center gap-2 rounded-[9px] border border-line bg-sunken px-3 py-2 text-xs text-faint">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -268,7 +317,7 @@ export function OrgConsole({
           )}
 
           {section === "super" && (
-            <SuperSection orgs={orgs} projects={projects} members={members} datasheets={datasheets} library={library} onGoProjects={() => setSection("projects")} />
+            <SuperSection orgs={orgs} projects={visibleProjects} members={members} datasheets={datasheets} library={library} onGoProjects={() => setSection("projects")} />
           )}
 
           {section === "users" && (
@@ -280,8 +329,8 @@ export function OrgConsole({
               busy={busy}
               currentEmail={user.email}
               onRemove={(userId) =>
-                orgs[0] &&
-                void post("/api/orgs", { action: "remove_member", orgId: orgs[0].id, userId }).then(
+                selectedOrgId &&
+                void post("/api/orgs", { action: "remove_member", orgId: selectedOrgId, userId }).then(
                   (d) => d?.members && setMembers(d.members),
                 )
               }
@@ -303,7 +352,7 @@ export function OrgConsole({
 
           {section === "sheets" && <SheetsSection datasheets={datasheets} projectId={projectId} />}
 
-          {section === "projects" && <ProjectsSection projects={projects} />}
+          {section === "projects" && <ProjectsSection projects={visibleProjects} />}
 
           {section === "parts" && (
             <PartsSection
