@@ -40,6 +40,18 @@ export function Chat({
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [items, status]);
 
+  // La textarea nasce a una riga e non cresceva: dalla seconda in poi il testo
+  // veniva tagliato a meta' e non si rileggeva quello che si stava scrivendo.
+  // L'altezza si azzera prima di rileggere scrollHeight, altrimenti cancellando
+  // testo resterebbe alta.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
+
   const dotClass =
     status === "idle" ? "dot-idle" : status === "tool" ? "dot-live" : "dot-busy";
   const statusLabel =
@@ -106,6 +118,7 @@ export function Chat({
       >
         <div className="card flex items-end gap-2 p-2 transition-shadow focus-within:border-brand focus-within:shadow-md">
           <textarea
+            ref={inputRef}
             value={input}
             rows={1}
             onChange={(e) => onInput(e.target.value)}
@@ -116,7 +129,7 @@ export function Chat({
               }
             }}
             placeholder="Descrivi il circuito..."
-            className="max-h-40 min-h-[36px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-text outline-none placeholder:text-faint"
+            className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm leading-relaxed text-text outline-none placeholder:text-faint"
           />
           <button
             type="submit"
