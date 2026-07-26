@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
+import { BoardTabs } from "./BoardTabs";
 import { HandoffButton } from "./HandoffButton";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { useTheme } from "./ThemeToggle";
@@ -409,7 +410,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
             <div className="viewer-shell card relative h-full overflow-hidden">
               {/* i download vivono nella barra del viewer: cosi' il canvas
                   guadagna tutta l'altezza della finestra */}
-              <div className="pointer-events-none absolute left-[108px] top-2.5 z-10 flex items-center gap-1.5">
+              <div className="pointer-events-none absolute right-3 top-2 z-10 flex items-center gap-1.5">
                 {(
                   [
                     ["schematic", "Schema"],
@@ -459,7 +460,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                 )}
               </div>
               {variantSections.length > 0 && (
-                <div className="absolute bottom-2.5 left-[108px] right-3 z-10 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[#d3d8e2] bg-white/95 px-3 py-1.5 shadow-sm">
+                <div className="absolute bottom-2.5 left-3 right-3 z-10 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[#d3d8e2] bg-white/95 px-3 py-1.5 shadow-sm">
                   {variantSections.map((sec) => (
                     <div key={sec.section} className="flex items-center gap-1.5">
                       <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-[#667085]">
@@ -491,13 +492,16 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                 </div>
               )}
               {circuitJson && !circuitStale ? (
-                <CircuitJsonPreview
-                  circuitJson={circuitJson as never}
-                  availableTabs={["schematic", "pcb", "cad", "bom"]}
-                  // schematico anche dopo il compile (prima si atterrava sul
-                  // PCB): e' il motivo per cui gli schemi illeggibili sono
-                  // passati inosservati a lungo, nessuno li guardava
-                  defaultActiveTab="schematic"
+                // BoardTabs apre sullo schematico anche dopo il compile (prima
+                // si atterrava sul PCB): e' il motivo per cui gli schemi
+                // illeggibili sono passati inosservati a lungo
+                <BoardTabs
+                  circuitJson={circuitJson}
+                  fallback={
+                    <div className="flex h-full items-center justify-center text-sm text-faint">
+                      Caricamento del progetto...
+                    </div>
+                  }
                 />
               ) : fsMap ? (
                 <RunFrame

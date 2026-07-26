@@ -1,0 +1,179 @@
+/**
+ * Viste della scheda, in stile "livelli di una mappa": una configurazione per
+ * ogni compito reale, invece di una lista di caselle da comporre a mano.
+ * I flag corrispondono allo stato interno di @tscircuit/pcb-viewer.
+ */
+
+export interface ViewFlags {
+  is_showing_drc_errors: boolean;
+  is_showing_rats_nest: boolean;
+  is_showing_copper_pours: boolean;
+  is_showing_courtyards: boolean;
+  is_showing_solder_mask: boolean;
+  is_showing_silkscreen: boolean;
+  is_showing_fabrication_notes: boolean;
+  is_showing_multiple_traces_length: boolean;
+  is_showing_autorouting: boolean;
+  is_showing_pcb_groups: boolean;
+  is_showing_group_anchor_offsets: boolean;
+}
+
+export const LAYER_LABELS: Array<{
+  key: keyof ViewFlags;
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: "is_showing_silkscreen",
+    label: "Serigrafia",
+    hint: "Le scritte bianche stampate sulla scheda: sigle dei componenti e simboli di montaggio.",
+  },
+  {
+    key: "is_showing_solder_mask",
+    label: "Solder mask",
+    hint: "La vernice verde che copre il rame lasciando scoperti solo i pad da saldare.",
+  },
+  {
+    key: "is_showing_copper_pours",
+    label: "Piani di rame",
+    hint: "Le grandi aree di rame di massa e alimentazione sui layer interni.",
+  },
+  {
+    key: "is_showing_courtyards",
+    label: "Ingombri",
+    hint: "Lo spazio che ogni componente richiede attorno a sé: se due si toccano, non ci stanno.",
+  },
+  {
+    key: "is_showing_drc_errors",
+    label: "Errori di produzione",
+    hint: "Violazioni delle regole del fabbricante: piste troppo vicine, fori troppo piccoli.",
+  },
+  {
+    key: "is_showing_rats_nest",
+    label: "Collegamenti da fare",
+    hint: "Linee dritte fra i pad che devono essere collegati ma non hanno ancora una pista.",
+  },
+  {
+    key: "is_showing_multiple_traces_length",
+    label: "Lunghezza piste",
+    hint: "Quanto è lunga ogni pista: conta per i segnali veloci e per la caduta di tensione.",
+  },
+  {
+    key: "is_showing_fabrication_notes",
+    label: "Note di fabbricazione",
+    hint: "Quote e indicazioni per chi produce la scheda.",
+  },
+  {
+    key: "is_showing_autorouting",
+    label: "Animazione routing",
+    hint: "Mostra come l'autorouter ha costruito i percorsi.",
+  },
+  {
+    key: "is_showing_pcb_groups",
+    label: "Gruppi",
+    hint: "Raggruppamenti logici dei componenti (sottocircuiti).",
+  },
+  {
+    key: "is_showing_group_anchor_offsets",
+    label: "Ancoraggi gruppi",
+    hint: "Punti di riferimento usati per posizionare i gruppi.",
+  },
+];
+
+const NONE: ViewFlags = {
+  is_showing_drc_errors: false,
+  is_showing_rats_nest: false,
+  is_showing_copper_pours: false,
+  is_showing_courtyards: false,
+  is_showing_solder_mask: false,
+  is_showing_silkscreen: false,
+  is_showing_fabrication_notes: false,
+  is_showing_multiple_traces_length: false,
+  is_showing_autorouting: false,
+  is_showing_pcb_groups: false,
+  is_showing_group_anchor_offsets: false,
+};
+
+export interface ViewPreset {
+  key: string;
+  label: string;
+  description: string;
+  flags: ViewFlags;
+}
+
+export const VIEW_PRESETS: ViewPreset[] = [
+  {
+    key: "assembly",
+    label: "Montaggio",
+    description:
+      "Come si presenta la scheda finita: serigrafia e solder mask, per controllare sigle e orientamenti prima del pick & place.",
+    flags: { ...NONE, is_showing_silkscreen: true, is_showing_solder_mask: true },
+  },
+  {
+    key: "copper",
+    label: "Rame e percorsi",
+    description:
+      "Solo il rame: piste, piani di massa e alimentazione. Serve a giudicare il routing senza distrazioni.",
+    flags: { ...NONE, is_showing_copper_pours: true },
+  },
+  {
+    key: "interference",
+    label: "Interferenze",
+    description:
+      "Ingombri dei componenti ed errori di produzione: è la vista per capire perché due pezzi non ci stanno o perché l'autorouter si blocca.",
+    flags: {
+      ...NONE,
+      is_showing_courtyards: true,
+      is_showing_drc_errors: true,
+      is_showing_solder_mask: true,
+    },
+  },
+  {
+    key: "connections",
+    label: "Collegamenti mancanti",
+    description:
+      "Mostra come linee dritte i collegamenti che devono ancora diventare piste, con la lunghezza di quelle già fatte.",
+    flags: {
+      ...NONE,
+      is_showing_rats_nest: true,
+      is_showing_multiple_traces_length: true,
+    },
+  },
+  {
+    key: "fabrication",
+    label: "Produzione",
+    description:
+      "Quello che vede il fabbricante: serigrafia, mask, note e quote di fabbricazione.",
+    flags: {
+      ...NONE,
+      is_showing_silkscreen: true,
+      is_showing_solder_mask: true,
+      is_showing_fabrication_notes: true,
+    },
+  },
+  {
+    key: "everything",
+    label: "Tutto",
+    description: "Tutti i livelli accesi insieme: utile per un colpo d'occhio finale.",
+    flags: {
+      is_showing_drc_errors: true,
+      is_showing_rats_nest: true,
+      is_showing_copper_pours: true,
+      is_showing_courtyards: true,
+      is_showing_solder_mask: true,
+      is_showing_silkscreen: true,
+      is_showing_fabrication_notes: true,
+      is_showing_multiple_traces_length: false,
+      is_showing_autorouting: false,
+      is_showing_pcb_groups: true,
+      is_showing_group_anchor_offsets: false,
+    },
+  },
+];
+
+export const BOARD_LAYERS = [
+  { key: "top", label: "Top" },
+  { key: "inner1", label: "Inner 1" },
+  { key: "inner2", label: "Inner 2" },
+  { key: "bottom", label: "Bottom" },
+] as const;
