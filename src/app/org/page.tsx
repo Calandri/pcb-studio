@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
-import { OrgPage } from "@/components/OrgPage";
+import { OrgConsole } from "@/components/OrgConsole";
 
 export default async function Org({
   searchParams,
@@ -12,8 +12,8 @@ export default async function Org({
   const raw = (await searchParams).project;
   const projectId = (Array.isArray(raw) ? raw[0] : raw) || "default";
   return (
-    <OrgPage
-      currentProjectId={projectId}
+    <OrgConsole
+      projectId={projectId}
       user={{ email: session.user.email ?? "", name: session.user.name ?? null }}
     />
   );

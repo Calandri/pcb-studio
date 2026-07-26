@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { claimProject, currentViewer, listAccessibleProjects } from "@/lib/acl";
+import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { listUserOrganizations } from "@/lib/org-store";
-import { getProject } from "@/lib/project-store";
+import { getCheckStatusByProject, getProject } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 
@@ -19,7 +20,17 @@ export async function GET(): Promise<Response> {
     listAccessibleProjects(viewer),
     listUserOrganizations(viewer.userId),
   ]);
-  return Response.json({ projects, organizations, user: viewer });
+  // stato controlli per la colonna "Controlli" della console organizzazione
+  const checks: Record<string, import("@/lib/project-store").ProjectCheckStatus> =
+    await getCheckStatusByProject(
+      projects.map((p) => p.id),
+      CHECKS_ENGINE_VERSION,
+    ).catch(() => ({}));
+  return Response.json({
+    projects: projects.map((p) => ({ ...p, checks: checks[p.id] ?? null })),
+    organizations,
+    user: viewer,
+  });
 }
 
 export async function POST(req: Request): Promise<Response> {
