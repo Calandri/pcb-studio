@@ -279,7 +279,23 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
           const vy = num(via.y);
           if (vx === null || vy === null) return false;
           if (Math.hypot(vx - px, vy - py) > RETURN_VIA_MAX_MM) return false;
-          return netNameOfPad(via, maps) === net;
+          let viaNet = netNameOfPad(via, maps);
+          if (!viaNet) {
+            // core vias have no pcb_port_id: infer the net from the nearest pad
+            let bestD = 0.5;
+            for (const el of circuitJson) {
+              if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
+              const x2 = num(el.x);
+              const y2 = num(el.y);
+              if (x2 === null || y2 === null) continue;
+              const d = Math.hypot(x2 - vx, y2 - vy);
+              if (d < bestD) {
+                bestD = d;
+                viaNet = netNameOfPad(el, maps);
+              }
+            }
+          }
+          return viaNet === net;
         });
         if (!near) {
           push({
