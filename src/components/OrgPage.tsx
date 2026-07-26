@@ -7,12 +7,20 @@ import { Btn, Chip, EmptyState, Field, Select } from "./ui";
 type Project = { id: string; access?: string; visibility?: string; updated_at?: string };
 type Member = { userId: string; email: string; role: string };
 type Token = { id: string; name: string; prefix: string };
+type LibraryItem = { id: number; name: string; description: string; source: string; version: number };
+type Datasheet = { id: number; title: string; pages?: number };
+
+const SOURCE_LABELS: Record<string, string> = {
+  lcsc: "LCSC",
+  datasheet: "datasheet",
+  llm: "agente",
+  manual: "manuale",
+  kicad: "KiCad",
+};
 
 /**
  * Dashboard dell'organizzazione (livello SOPRA i progetti):
- * membri, tutti i progetti accessibili, token MCP.
- * I progetti si aprono nello Studio; le settings del singolo progetto
- * (visibilita'/inviti) stanno dentro al progetto stesso.
+ * progetti, libreria condivisa, datasheet del progetto corrente, membri, token MCP.
  */
 export function OrgPage({
   currentProjectId,
@@ -25,6 +33,8 @@ export function OrgPage({
   const [members, setMembers] = useState<Member[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [datasheets, setDatasheets] = useState<Datasheet[]>([]);
   const [freshToken, setFreshToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -53,6 +63,17 @@ export function OrgPage({
       .catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    void fetch(`/api/project?projectId=${currentProjectId}`)
+      .then((r) => r.json())
+      .then((d) => setLibrary(d.library ?? []))
+      .catch(() => undefined);
+    void fetch(`/api/datasheet?projectId=${currentProjectId}`)
+      .then((r) => r.json())
+      .then((d) => setDatasheets(d.datasheets ?? []))
+      .catch(() => undefined);
+  }, [currentProjectId]);
+
   const post = useCallback(async (url: string, body: Record<string, unknown>) => {
     setBusy(true);
     setNote(null);
@@ -70,9 +91,11 @@ export function OrgPage({
     return d;
   }, []);
 
+  const orgName = orgs[0]?.name ?? "Organizzazione";
+
   return (
     <SettingsShell
-      title={orgs[0]?.name ?? "Organizzazione"}
+      title={orgName}
       subtitle="membri, progetti e accessi"
       projectId={currentProjectId}
       user={user}
@@ -83,12 +106,20 @@ export function OrgPage({
         </p>
       )}
 
-      {/* progetti: il livello sopra — ogni card apre lo studio, la rotella le settings */}
-      <div className="mb-5 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-text">Progetti</h2>
+      {/* hero dell'organizzazione */}
+      <div className="card mb-6 flex flex-wrap items-center gap-5 p-5">
+        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-wash text-lg font-bold text-brand-strong">
+          {orgName.slice(0, 2).toUpperCase()}
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-lg font-bold tracking-tight text-text">{orgName}</h2>
+          <p className="mt-0.5 text-xs text-faint">
+            {projects.length} progett{projects.length === 1 ? "o" : "i"} · {members.length} membr
+            {members.length === 1 ? "o" : "i"} · {library.length} componenti in libreria
+          </p>
+        </div>
         <Btn
           variant="primary"
-          size="sm"
           disabled={busy}
           onClick={async () => {
             const id = prompt("Nome del nuovo progetto:");
@@ -101,6 +132,8 @@ export function OrgPage({
         </Btn>
       </div>
 
+      {/* progetti */}
+      <h2 className="section-label mb-3">Progetti</h2>
       {projects.length === 0 ? (
         <EmptyState title="Nessun progetto" hint="Crea il primo, oppure importa una scheda KiCad" />
       ) : (
@@ -108,7 +141,12 @@ export function OrgPage({
           {projects.map((p) => {
             const active = p.id === currentProjectId;
             return (
-              <div key={p.id} className={`card group relative p-4 transition-all hover:-translate-y-0.5 ${active ? "ring-2 ring-brand/40" : ""}`}>
+              <div
+                key={p.id}
+                className={`card group relative p-4 transition-all hover:-translate-y-0.5 hover:border-line-strong ${
+                  active ? "ring-2 ring-brand/40" : ""
+                }`}
+              >
                 <a href={`/?project=${p.id}`} className="block">
                   <div className="flex items-start justify-between gap-2 pr-8">
                     <p className="min-w-0 flex-1 truncate text-sm font-semibold text-text group-hover:text-brand-strong">
@@ -129,11 +167,7 @@ export function OrgPage({
                   className="absolute right-3 top-3 rounded-lg p-1.5 text-faint transition-colors hover:bg-sunken hover:text-text"
                 >
                   <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4">
-                    <path
-                      d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"
-                      stroke="currentColor"
-                      strokeWidth="1.4"
-                    />
+                    <path d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" stroke="currentColor" strokeWidth="1.4" />
                     <path
                       d="M16.5 10a6.6 6.6 0 0 0-.1-1.1l1.6-1.2-1.5-2.6-1.9.8c-.5-.4-1.1-.8-1.7-1L12.5 2h-3L8.7 4.9c-.6.2-1.2.6-1.7 1l-1.9-.8-1.5 2.6L5.2 8.9a6.6 6.6 0 0 0 0 2.2l-1.6 1.2 1.5 2.6 1.9-.8c.5.4 1.1.8 1.7 1l.4 2.9h3l.4-2.9c.6-.2 1.2-.6 1.7-1l1.9.8 1.5-2.6-1.6-1.2c.1-.3.1-.7.1-1.1Z"
                       stroke="currentColor"
@@ -148,11 +182,75 @@ export function OrgPage({
         </div>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      {/* libreria + datasheet del progetto corrente */}
+      <div className="mb-8 grid gap-5 lg:grid-cols-2">
         <Card
-          title="Membri"
-          hint="I membri dell'organizzazione vedono i progetti condivisi con il team."
+          title="Libreria componenti"
+          hint="Footprint riusabili condivisi da tutti i progetti dell'organizzazione."
         >
+          {library.length === 0 ? (
+            <EmptyState
+              title="Libreria vuota"
+              hint="Esempio in chat: «importa il componente LCSC C7593»"
+            />
+          ) : (
+            <ul className="grid gap-2 sm:grid-cols-2">
+              {library.slice(0, 8).map((c) => (
+                <li key={c.id} className="rounded-lg border border-line px-3 py-2.5" title={c.description}>
+                  <p className="truncate font-mono text-xs font-semibold text-text">{c.name}</p>
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <Chip tone="brand">v{c.version}</Chip>
+                    <Chip>{SOURCE_LABELS[c.source] ?? c.source}</Chip>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-4">
+            <a href={`/library?project=${currentProjectId}`} className="text-xs font-medium text-brand-strong hover:underline">
+              Apri la libreria completa →
+            </a>
+          </div>
+        </Card>
+
+        <Card
+          title={`Datasheet di ${currentProjectId}`}
+          hint="PDF sorgente per ricavare componenti con geometria reale."
+        >
+          {datasheets.length === 0 ? (
+            <EmptyState title="Nessun datasheet" hint="Caricali dalla pagina Datasheet" />
+          ) : (
+            <ul className="space-y-2">
+              {datasheets.slice(0, 6).map((d) => (
+                <li key={d.id} className="flex items-center gap-3 rounded-lg border border-line px-3 py-2">
+                  <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4 flex-none text-faint">
+                    <path
+                      d="M5 3h7l3 3v11H5V3Zm7 0v3h3"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <p className="min-w-0 flex-1 truncate text-xs text-text" title={d.title}>
+                    {d.title}
+                  </p>
+                  {d.pages && <Chip>{d.pages} p.</Chip>}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-4">
+            <a href={`/datasheets?project=${currentProjectId}`} className="text-xs font-medium text-brand-strong hover:underline">
+              Gestisci datasheet e import KiCad →
+            </a>
+          </div>
+        </Card>
+      </div>
+
+      {/* membri + agenti */}
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Card title="Membri" hint="I membri dell'organizzazione vedono i progetti condivisi con il team.">
           <form
             className="flex flex-col gap-2 sm:flex-row"
             onSubmit={async (e) => {
