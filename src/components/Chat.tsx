@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { HandoffButton } from "./HandoffButton";
 import { Markdown } from "./Markdown";
 
 export type ChatItem =
@@ -137,9 +138,10 @@ export function Chat({
             </svg>
           </button>
         </div>
-        <p className="mt-2 text-center text-[11px] text-faint">
-          Invio per mandare · Shift+Invio per andare a capo
-        </p>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className="text-[11px] text-faint">Invio per mandare</span>
+          <HandoffButton projectId={projectId} variant="solid" />
+        </div>
       </form>
     </section>
   );

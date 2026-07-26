@@ -7,6 +7,7 @@ import {
   extractIssues,
   type InspectComponent,
 } from "@/lib/inspect";
+import { HandoffButton } from "./HandoffButton";
 import { Btn, Chip, EmptyState, SectionLabel } from "./ui";
 
 type Tab = "issues" | "parts" | "measure";
@@ -20,10 +21,12 @@ const TABS: Array<{ key: Tab; label: string }> = [
 export function InspectPanel({
   circuitJson,
   stale,
+  projectId,
   onAsk,
 }: {
   circuitJson: unknown[] | null;
   stale: boolean;
+  projectId: string;
   /** manda una richiesta all'agente: e' lui a modificare la scheda */
   onAsk: (prompt: string) => void;
 }) {
@@ -101,6 +104,9 @@ export function InspectPanel({
             <EmptyState title="Nessun problema" hint="La scheda compila pulita." />
           ) : (
             <>
+              <div className="flex justify-center">
+                <HandoffButton projectId={projectId} />
+              </div>
               <Btn
                 size="sm"
                 variant="primary"

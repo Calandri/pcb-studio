@@ -367,7 +367,7 @@ export function Sidebar({
         )}
 
         {section === "inspect" && (
-          <InspectPanel circuitJson={circuitJson} stale={circuitStale} onAsk={onAsk} />
+          <InspectPanel circuitJson={circuitJson} stale={circuitStale} projectId={projectId} onAsk={onAsk} />
         )}
 
         {section === "datasheets" && (

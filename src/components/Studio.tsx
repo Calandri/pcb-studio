@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
+import { HandoffButton } from "./HandoffButton";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { useTheme } from "./ThemeToggle";
 
@@ -356,6 +357,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                     {label}
                   </a>
                 ))}
+                <HandoffButton projectId={projectId} variant="overlay" compact />
                 {traceWidths.length > 0 && (
                   <span
                     style={{
