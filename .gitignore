@@ -43,3 +43,6 @@ next-env.d.ts
 # scratch di verifica locale (copia usa-e-getta di src/lib)
 .verify/
 verify-board.mjs
+
+# scratch di verifica, non fa parte del progetto
+.scratch/

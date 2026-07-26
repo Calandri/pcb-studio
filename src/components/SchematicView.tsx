@@ -1,52 +1,45 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import type { EditEvent } from "@/lib/manual-edits";
+import { useMemo } from "react";
+import { SchematicCanvas } from "./schematic/SchematicCanvas";
+import type { EditEvent, ManualEdits } from "@/lib/manual-edits";
 
 /**
- * Vista schematica editabile. Si usa il viewer dedicato invece di
- * CircuitJsonPreview perche' e' l'unico che espone il trascinamento dei
- * simboli: la preview generica disegna e basta.
+ * Vista schematica. E' il nostro canvas, non quello di tscircuit: serviva
+ * poterci trascinare i simboli e accendere una net al passaggio del mouse, e
+ * quel viewer non lo permette.
  */
-const SchematicViewer = dynamic(
-  () => import("@tscircuit/schematic-viewer").then((m) => m.SchematicViewer),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center text-sm text-faint">
-        <span className="dot dot-busy mr-2" /> Caricamento schematico...
-      </div>
-    ),
-  },
-);
-
 export function SchematicView({
   circuitJson,
-  editing,
-  editEvents,
+  projectId,
+  mode,
+  saved,
   onEditEvent,
-  viewerKey,
+  resetKey,
+  onSelect,
 }: {
   circuitJson: unknown[];
-  editing: boolean;
-  editEvents: EditEvent[];
+  projectId: string;
+  mode: "view" | "move" | "route";
+  saved: ManualEdits;
   onEditEvent: (event: EditEvent) => void;
-  viewerKey: number;
+  resetKey: number;
+  onSelect?: (name: string | null) => void;
 }) {
+  const pinnedNames = useMemo(
+    () => new Set(saved.schematic_placements.map((p) => p.selector)),
+    [saved],
+  );
+
   return (
-    <div className="h-full w-full">
-      <SchematicViewer
-        // il viewer accumula lo stato dei trascinamenti al suo interno:
-        // annullare una modifica significa rimontarlo con l'elenco ridotto
-        key={`${viewerKey}-${editing ? "edit" : "view"}`}
-        circuitJson={circuitJson as never}
-        editingEnabled={editing}
-        defaultEditMode={editing}
-        editEvents={editEvents as never}
-        onEditEvent={onEditEvent as never}
-        clickToInteractEnabled={false}
-        containerStyle={{ width: "100%", height: "100%" }}
-      />
-    </div>
+    <SchematicCanvas
+      circuitJson={circuitJson}
+      projectId={projectId}
+      mode={mode}
+      pinnedNames={pinnedNames}
+      onEditEvent={onEditEvent}
+      resetKey={resetKey}
+      onSelect={onSelect}
+    />
   );
 }

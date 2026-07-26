@@ -636,18 +636,24 @@ export function Studio({
               ) : tab === "schematic" ? (
                 <SchematicView
                   circuitJson={circuitJson}
-                  editing={editor.mode !== "view"}
-                  editEvents={editor.pending}
+                  projectId={projectId}
+                  mode={editor.mode}
+                  saved={editor.saved}
                   onEditEvent={editor.pushPending}
-                  viewerKey={editor.viewerKey}
+                  resetKey={editor.viewerKey}
                 />
               ) : (
-                <CircuitJsonPreview
-                  key={tab}
-                  circuitJson={circuitJson as never}
-                  defaultActiveTab={tab as never}
-                  availableTabs={[tab] as never}
-                  showToggleFullScreen={false}
+                // tab 3D: il designer di scocche (scheda in GLB dal server,
+                // scocche e moduli importati come mesh nella stessa scena)
+                <EnclosureCanvas
+                  projectId={projectId}
+                  boardWidthMm={report.widthMm}
+                  boardHeightMm={report.heightMm}
+                  parts={parts}
+                  meshes={[]}
+                  showEnclosures={showEnclosures}
+                  enclosureOpacity={enclosureOpacity}
+                  explodedMm={explodedMm}
                 />
               )
             ) : fsMap && circuitChecked ? (
