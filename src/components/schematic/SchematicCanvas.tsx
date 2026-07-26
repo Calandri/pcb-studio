@@ -433,6 +433,57 @@ export function SchematicCanvas({
             ))}
           </g>
 
+          {/* piedini: SEMPRE visibili (prima solo in link mode). Senza gli
+              attacchi la cornice del simbolo sembra scollegata dai fili. */}
+          <g pointerEvents="none">
+            {model.nodes.flatMap((node) =>
+              node.ports.map((port) => (
+                <circle
+                  key={`${node.id}:${port.selector}`}
+                  cx={port.x}
+                  cy={port.y}
+                  r={1.8 * px}
+                  fill={port.power ? COLORS.power : COLORS.wire}
+                  stroke={COLORS.sheet}
+                  strokeWidth={0.6 * px}
+                  opacity={dim(port.net)}
+                />
+              )),
+            )}
+          </g>
+
+          {/* etichette di net: i rail non attraversano il foglio, si nominano.
+              Se l'etichetta e' lontana dal suo piedino (auto-label), un
+              tratteggio la ricollega: altrimenti non si capisce dove attacca. */}
+          <g pointerEvents="none" fill="none">
+            {model.netLabels.map((l, i) => {
+              if (!l.net) return null;
+              let best: { x: number; y: number } | null = null;
+              let bestD = Infinity;
+              for (const node of model.nodes) {
+                for (const port of node.ports) {
+                  if (port.net !== l.net) continue;
+                  const d = Math.hypot(port.x - l.x, port.y - l.y);
+                  if (d < bestD) {
+                    bestD = d;
+                    best = { x: port.x, y: port.y };
+                  }
+                }
+              }
+              if (!best || bestD < 0.45) return null;
+              return (
+                <path
+                  key={i}
+                  d={`M${best.x} ${best.y}L${l.x} ${l.y}`}
+                  stroke={l.power ? COLORS.power : COLORS.faint}
+                  strokeWidth={1 * px}
+                  strokeDasharray={`${2.5 * px} ${2 * px}`}
+                  opacity={dim(l.net)}
+                />
+              );
+            })}
+          </g>
+
           {/* collegamenti tirati e non ancora applicati: tratteggiati, perche'
               il filo vero lo disegnera' il compilatore dopo il ri-sbroglio */}
           <g fill="none" pointerEvents="none">
