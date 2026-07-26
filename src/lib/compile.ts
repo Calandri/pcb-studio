@@ -3,6 +3,7 @@ import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
 import { runDrcChecks, type DrcViolation } from "./drc";
 import { runPrcChecks, type PrcViolation } from "./prc";
+import { FAB_RULESETS } from "./design-rules";
 import type { FsMap } from "./project-store";
 import {
   assembleCircuit,
@@ -52,6 +53,13 @@ export interface CompileSummary {
   drcViolations: DrcViolation[];
   /** electrical checks (Fase 3.e): decoupling, pour islands, return vias, power widths */
   prcViolations: PrcViolation[];
+  /**
+   * multi-ruleset fab report (Fase 3.f): violations per manufacturer ruleset,
+   * cheapest first. fabClass = cheapest ruleset with zero violations (null =
+   * redesign needed). Enhanced/HDI looms allow smaller features at higher cost.
+   */
+  fabClasses: Array<{ key: string; label: string; costTier: number; violations: number; ok: boolean }>;
+  fabClass: string | null;
   sourceTraces: number;
   pcbTraces: number;
   stats: {
@@ -294,6 +302,8 @@ function emptySummary(
     unroutedDetail: [],
     drcViolations: [],
     prcViolations: [],
+    fabClasses: [],
+    fabClass: null,
     sourceTraces: 0,
     pcbTraces: 0,
     stats: { vias: 0, totalTraceLengthMm: 0, traceLengthByLayerMm: {} },
@@ -621,6 +631,21 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
 
   const drcViolations = runDrcChecks(circuitJson);
   const prcViolations = runPrcChecks(circuitJson);
+  // multi-ruleset: the main DRC already covers the first (cheapest) ruleset
+  const fabClasses = FAB_RULESETS.map((rs) => {
+    const violations =
+      rs.rules === FAB_RULESETS[0].rules
+        ? drcViolations.length
+        : runDrcChecks(circuitJson, rs.rules).length;
+    return {
+      key: rs.key,
+      label: rs.label,
+      costTier: rs.costTier,
+      violations,
+      ok: violations === 0,
+    };
+  }).sort((a, b) => a.costTier - b.costTier);
+  const fabClass = fabClasses.find((f) => f.ok)?.label ?? null;
   const congestion = computeCongestion(circuitJson);
   const ratsnest = computeRatsnest(groupInfo);
 
@@ -632,7 +657,8 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
       `, ${stats.vias} vias, ${round1(totalTraceLengthMm)}mm routed` +
       `${ratsnest.estimatedCrossings ? `, ~${ratsnest.estimatedCrossings} ratsnest crossings` : ""}` +
       `${drcViolations.length ? ` - ${drcViolations.length} DRC violation(s)` : " - DRC clean"}` +
-      `${prcViolations.length ? ` - ${prcViolations.length} electrical issue(s)` : ""}.`
+      `${prcViolations.length ? ` - ${prcViolations.length} electrical issue(s)` : ""}` +
+      ` - fab: ${fabClass ?? "NO RULESET SATISFIED (redesign needed)"}.`
     : `Compile finished with ${errors.length} error(s).`;
 
   return {
@@ -645,6 +671,8 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
     unroutedDetail,
     drcViolations,
     prcViolations,
+    fabClasses,
+    fabClass,
     sourceTraces,
     pcbTraces,
     stats,
