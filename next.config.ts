@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   },
   // il bundling server di turbopack rompe la module evaluation di eval/core:
   // vanno caricati nativamente da node_modules a runtime
-  serverExternalPackages: ["@tscircuit/eval", "@tscircuit/core"],
+  serverExternalPackages: ["@tscircuit/eval", "@tscircuit/core", "@resvg/resvg-js"],
 };
 
 export default nextConfig;
