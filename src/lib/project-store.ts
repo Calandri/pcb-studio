@@ -19,11 +19,20 @@ export function filesHash(fsMap: FsMap): string {
   return hash.digest("hex").slice(0, 32);
 }
 
+// Il template e' l'esempio di stile implicito di ogni progetto nuovo: ogni
+// componente ha la sua sezione funzionale e ogni sezione la sua cornice, cosi'
+// il modello parte da uno schematico gia' leggibile invece che da una scheda
+// piatta da cui imparerebbe l'abitudine sbagliata.
 const DEMO_MAIN = `export default () => (
-  <board width="34mm" height="24mm" autorouter="auto_cloud">
+  <board width="34mm" height="24mm" autorouter="auto_cloud" schTraceAutoLabelEnabled>
+    <schematicsection name="timer" displayName="Timer 555" />
+    <schematicsection name="timing" displayName="Rete RC di temporizzazione" />
+    <schematicsection name="output" displayName="Uscita LED" />
+
     <chip
       name="U1"
       footprint="soic8"
+      schSectionName="timer"
       pcbX={0}
       pcbY={0}
       pinLabels={{
@@ -37,11 +46,11 @@ const DEMO_MAIN = `export default () => (
         pin8: "VCC",
       }}
     />
-    <resistor name="R1" resistance="10k" footprint="0402" pcbX={-10} pcbY={6} />
-    <resistor name="R2" resistance="47k" footprint="0402" pcbX={-10} pcbY={0} />
-    <resistor name="R3" resistance="220" footprint="0402" pcbX={10} pcbY={6} />
-    <capacitor name="C1" capacitance="10uF" footprint="0603" pcbX={-10} pcbY={-6} />
-    <led name="D1" footprint="0603" pcbX={10} pcbY={-6} />
+    <resistor name="R1" resistance="10k" footprint="0402" schSectionName="timing" pcbX={-10} pcbY={6} />
+    <resistor name="R2" resistance="47k" footprint="0402" schSectionName="timing" pcbX={-10} pcbY={0} />
+    <resistor name="R3" resistance="220" footprint="0402" schSectionName="output" pcbX={10} pcbY={6} />
+    <capacitor name="C1" capacitance="10uF" footprint="0603" schSectionName="timing" pcbX={-10} pcbY={-6} />
+    <led name="D1" footprint="0603" schSectionName="output" pcbX={10} pcbY={-6} />
     <net name="VCC" />
     <net name="GND" />
 

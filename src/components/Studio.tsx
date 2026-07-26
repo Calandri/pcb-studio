@@ -412,6 +412,7 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
               <div className="pointer-events-none absolute left-[108px] top-2.5 z-10 flex items-center gap-1.5">
                 {(
                   [
+                    ["schematic", "Schema"],
                     ["gerber", "Gerber"],
                     ["bom", "Distinta"],
                     ["pnp", "Pick & place"],
@@ -493,7 +494,10 @@ export function Studio({ user }: { user: { email: string; name: string | null } 
                 <CircuitJsonPreview
                   circuitJson={circuitJson as never}
                   availableTabs={["schematic", "pcb", "cad", "bom"]}
-                  defaultActiveTab="pcb"
+                  // schematico anche dopo il compile (prima si atterrava sul
+                  // PCB): e' il motivo per cui gli schemi illeggibili sono
+                  // passati inosservati a lungo, nessuno li guardava
+                  defaultActiveTab="schematic"
                 />
               ) : fsMap ? (
                 <RunFrame

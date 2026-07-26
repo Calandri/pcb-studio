@@ -10,6 +10,7 @@ import {
   convertCircuitJsonToBomRows,
 } from "circuit-json-to-bom-csv";
 import { convertCircuitJsonToPickAndPlaceCsv } from "circuit-json-to-pnp-csv";
+import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
@@ -24,6 +25,7 @@ type AnyCircuitJson = Parameters<typeof convertSoupToGerberCommands>[0];
 type BomCircuitJson = Parameters<typeof convertCircuitJsonToBomRows>[0]["circuitJson"];
 type PnpCircuitJson = Parameters<typeof convertCircuitJsonToPickAndPlaceCsv>[0];
 type DrillCircuitJson = Parameters<typeof convertSoupToExcellonDrillCommands>[0]["circuitJson"];
+type SchematicCircuitJson = Parameters<typeof convertCircuitJsonToSchematicSvg>[0];
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -96,8 +98,24 @@ export async function GET(req: Request): Promise<Response> {
           },
         });
       }
+      case "schematic": {
+        // stesso disegno che l'utente vede nel viewer e che l'agente ha
+        // validato: viene dalla stessa cache di compile degli altri export
+        const svg = convertCircuitJsonToSchematicSvg(
+          circuitJson as unknown as SchematicCircuitJson,
+        );
+        return new Response(svg, {
+          headers: {
+            "content-type": "image/svg+xml; charset=utf-8",
+            "content-disposition": `attachment; filename="${projectId}-schematic.svg"`,
+          },
+        });
+      }
       default:
-        return Response.json({ error: "kind must be gerber | bom | pnp" }, { status: 400 });
+        return Response.json(
+          { error: "kind must be gerber | bom | pnp | schematic" },
+          { status: 400 },
+        );
     }
   } catch (err) {
     return Response.json(
