@@ -19,16 +19,16 @@ import { runSolver, spliceTraces, type CircuitElement, type VariantDef } from ".
  * su bat-bs: scheda intera 9 connessioni da fare, dopo lo strappo di una zona
  * 20, con 384 ostacoli ancora in piedi.
  *
- * LIMITE NOTO, misurato: strappare una zona riduce le CONNESSIONI da rifare ma
- * NON il problema. Il costruttore costruisce sempre il problema della scheda
- * intera — stessi 384 ostacoli, stessi confini — quindi un giro per zona costa
- * quasi quanto rifare tutto, e tre zone per tre solver diventano nove sbrogli
- * completi. Su bat-bs: 357 secondi, due giri, zero guadagno.
+ * Il costruttore pero' il problema lo fa sempre grande quanto la scheda: stessi
+ * confini, stessi 384 ostacoli. Cosi' uno sbroglio "locale" costava quasi
+ * quanto rifare tutto (misurato: 357 secondi per due giri, zero guadagno). Per
+ * questo il problema viene RITAGLIATO sulla zona prima di darlo al solver:
+ * confini al rettangolo, ostacoli solo quelli che lo toccano, connessioni solo
+ * quelle che ci stanno dentro tutte intere.
  *
- * La strada per renderlo utile e' ritagliare il problema sulla zona: `bounds`
- * al rettangolo e ostacoli filtrati a quelli che lo toccano. Richiede pero' di
- * strappare solo le piste INTERAMENTE dentro la zona, altrimenti restano
- * connessioni con un capo fuori dal ritaglio.
+ * Da qui la regola dello strappo: si tolgono solo le piste INTERAMENTE
+ * contenute nella zona. Una pista che entra ed esce avrebbe un capo fuori dal
+ * ritaglio, e il router non saprebbe piu' dove attaccarlo.
  */
 
 export interface Zone {
@@ -57,8 +57,9 @@ const num = (v: unknown): number | null =>
  */
 export function zonesFromProblems(
   points: ProblemPoint[],
-  gap = 6,
-  margin = 2.5,
+  gap = 2.5,
+  margin = 2,
+  maxSide = 16,
 ): Zone[] {
   const zones: Zone[] = [];
   for (const p of points) {
@@ -69,7 +70,14 @@ export function zonesFromProblems(
         p.y >= z.minY - gap &&
         p.y <= z.maxY + gap,
     );
-    if (near) {
+    // una zona non puo' crescere oltre maxSide: se ingrandendola si sfonda il
+    // limite si apre una zona nuova, altrimenti tutti i problemi si fondono in
+    // un unico rettangolo grande quanto la scheda e il ritaglio non serve piu'
+    const wouldFit =
+      near &&
+      Math.max(near.maxX, p.x + margin) - Math.min(near.minX, p.x - margin) <= maxSide &&
+      Math.max(near.maxY, p.y + margin) - Math.min(near.minY, p.y - margin) <= maxSide;
+    if (near && wouldFit) {
       near.minX = Math.min(near.minX, p.x - margin);
       near.maxX = Math.max(near.maxX, p.x + margin);
       near.minY = Math.min(near.minY, p.y - margin);
@@ -90,22 +98,80 @@ export function zonesFromProblems(
   return zones.sort((a, b) => b.problems - a.problems);
 }
 
-/** il circuito senza le piste e le via che passano dentro la zona */
-export function ripZone(circuitJson: CircuitElement[], zone: Zone): CircuitElement[] {
-  const inside = (x: number | null, y: number | null): boolean =>
-    x !== null &&
-    y !== null &&
-    x >= zone.minX &&
-    x <= zone.maxX &&
-    y >= zone.minY &&
-    y <= zone.maxY;
+const inZone = (zone: Zone, x: number | null, y: number | null): boolean =>
+  x !== null &&
+  y !== null &&
+  x >= zone.minX &&
+  x <= zone.maxX &&
+  y >= zone.minY &&
+  y <= zone.maxY;
 
+/**
+ * Il circuito senza le piste che stanno TUTTE dentro la zona (e senza le loro
+ * via). Le piste che entrano ed escono restano dove sono: strapparle
+ * lascerebbe un capo fuori dal ritaglio, e il router non saprebbe dove
+ * riattaccarlo.
+ */
+export function ripZone(circuitJson: CircuitElement[], zone: Zone): CircuitElement[] {
   return circuitJson.filter((el) => {
-    if (el.type === "pcb_via") return !inside(num(el.x), num(el.y));
+    if (el.type === "pcb_via") return !inZone(zone, num(el.x), num(el.y));
     if (el.type !== "pcb_trace") return true;
     const route = (el.route as Array<Record<string, unknown>> | undefined) ?? [];
-    return !route.some((p) => inside(num(p.x), num(p.y)));
+    if (route.length === 0) return true;
+    return !route.every((p) => inZone(zone, num(p.x), num(p.y)));
   });
+}
+
+interface RouteProblem {
+  bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  obstacles: Array<{
+    center: { x: number; y: number };
+    width: number;
+    height: number;
+  }>;
+  connections: Array<{ pointsToConnect: Array<{ x: number; y: number }> }>;
+  [key: string]: unknown;
+}
+
+/**
+ * Il problema ritagliato sulla zona: e' questo a far scendere il costo da
+ * minuti a secondi. Si tengono gli ostacoli che TOCCANO il rettangolo (non solo
+ * quelli dentro: il rame sul bordo va evitato lo stesso) e le connessioni che
+ * ci stanno dentro per intero.
+ */
+export function cropToZone(problem: RouteProblem, zone: Zone, margin = 1.5): RouteProblem {
+  const box = {
+    minX: zone.minX - margin,
+    maxX: zone.maxX + margin,
+    minY: zone.minY - margin,
+    maxY: zone.maxY + margin,
+  };
+  const touches = (o: { center: { x: number; y: number }; width: number; height: number }) =>
+    o.center.x + o.width / 2 >= box.minX &&
+    o.center.x - o.width / 2 <= box.maxX &&
+    o.center.y + o.height / 2 >= box.minY &&
+    o.center.y - o.height / 2 <= box.maxY;
+
+  const inside = (p: { x: number; y: number }) =>
+    p.x >= box.minX && p.x <= box.maxX && p.y >= box.minY && p.y <= box.maxY;
+
+  /*
+   * Le connessioni si POTANO, non si scartano. Una rete come GND tocca decine
+   * di piazzole sparse su tutta la scheda: pretendere che ci stiano tutte nel
+   * rettangolo voleva dire buttare via ogni connessione e non avere piu' nulla
+   * da instradare. Si tengono i punti dentro il ritaglio; al resto della rete ci
+   * pensa il rame che non e' stato strappato.
+   */
+  const connections = problem.connections
+    .map((c) => ({ ...c, pointsToConnect: (c.pointsToConnect ?? []).filter(inside) }))
+    .filter((c) => c.pointsToConnect.length >= 2);
+
+  return {
+    ...problem,
+    bounds: box,
+    obstacles: problem.obstacles.filter(touches),
+    connections,
+  };
 }
 
 /**
@@ -122,21 +188,23 @@ export function rerouteZone(
   const base = ripZone(circuitJson, zone);
   if (base.length === circuitJson.length) return null; // niente da strappare
 
-  let srj: { connections: unknown[] };
+  let srj: RouteProblem;
   try {
     const built = getSimpleRouteJsonFromCircuitJson({
       circuitJson: base as never,
+      /*
+       * Al problema ritagliato si passa SOLO la larghezza minima delle piste.
+       * Imporre anche le misure delle via (0,3 e 0,6mm) rendeva la ricerca
+       * cosi' stretta che il solver esauriva i suoi 200.000 passi senza
+       * concludere: "Cannot get output before solving is complete", e tutto il
+       * lavoro finiva nel cestino. Non serve imporle qui: le via vengono scritte
+       * alla misura di fabbrica quando si ricuce il risultato, e se a quella
+       * misura non ci stanno e' il DRC a dirlo e il candidato perde.
+       */
       minTraceWidth: rules.minTraceWidthMm,
-      minViaHoleDiameter: rules.minViaHoleMm,
-      minViaPadDiameter: rules.minViaDiameterMm,
-      minPadEdgeToPadEdgeClearance: rules.minClearanceMm,
-      minTraceToPadEdgeClearance: rules.minClearanceMm,
-      minViaEdgeToPadEdgeClearance: rules.minClearanceMm,
-      minViaHoleEdgeToViaHoleEdgeClearance: rules.minClearanceMm,
-      minPlatedHoleDrillEdgeToDrillEdgeClearance: rules.minClearanceMm,
-      minBoardEdgeClearance: rules.minBoardEdgeClearanceMm,
-    } as never) as { simpleRouteJson: { connections: unknown[] } };
-    srj = built.simpleRouteJson;
+    } as never) as { simpleRouteJson: RouteProblem };
+    // il ritaglio e' la differenza fra minuti e secondi
+    srj = cropToZone(built.simpleRouteJson, zone);
   } catch {
     return null;
   }
