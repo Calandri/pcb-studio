@@ -112,7 +112,13 @@ function displayValue(src: El): string | null {
   );
 }
 
-const POWER_HINT = /^(gnd|agnd|dgnd|vss|vcc|vdd|vbat|v\+|\+?\d?v\d|p\d v?\d|p\d+v\d+)/i;
+/*
+ * Nomi che denunciano un rail: o iniziano come un'alimentazione (GND, VCC,
+ * VBAT...) o contengono una tensione (MIC_3V3, P3V3_SD, VDD_1V8). Il secondo
+ * caso serve perche' i rail derivati prendono il nome dal carico, non dalla
+ * tensione: senza questo MIC_3V3 verrebbe disegnato come un segnale qualsiasi.
+ */
+const POWER_HINT = /^(gnd|agnd|dgnd|vss|vcc|vdd|vbat|v\+|\+?\d?v\d|p\d ?v?\d)|(^|_)\+?\d+v\d*($|_)/i;
 
 /**
  * Trasformazione dal sistema del simbolo a quello del foglio.
@@ -224,10 +230,18 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
     });
   }
   const netOf = (key: unknown) => (typeof key === "string" ? netByKey.get(key) : undefined);
+  /*
+   * Una net e' di alimentazione se lo dichiara la sorgente OPPURE se lo dice il
+   * nome. Il flag da solo non basta: tscircuit marca is_power solo quando la
+   * net e' dichiarata come sorgente di tensione, quindi un rail chiamato P3V3
+   * uscito da un LDO resta "segnale" e si disegnerebbe grigio come un GPIO.
+   * Sul foglio l'alimentazione si deve riconoscere a colpo d'occhio.
+   */
   const isPower = (key: unknown, fallbackText?: string | null): boolean => {
     const net = netOf(key);
-    if (net) return net.power || net.ground;
-    return fallbackText ? POWER_HINT.test(fallbackText) : false;
+    if (net?.power || net?.ground) return true;
+    const name = net?.name ?? fallbackText;
+    return name ? POWER_HINT.test(name) : false;
   };
 
   // testi che tscircuit attacca ai componenti di libreria: nome e sigla
@@ -406,8 +420,11 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
         size: 0.3,
         tone: "name",
       });
+      // La sigla divide la riga col nome: si scrive solo se ci sta accanto,
+      // altrimenti le due scritte si accavallano ("U3SPH0641LU4H_1") ed e' il
+      // nome, quello che serve sempre, a diventare illeggibile.
       const subtitle = part ?? value;
-      if (subtitle) {
+      if (subtitle && textWidth(name, 0.3) + textWidth(subtitle, 0.2) + 0.2 <= width) {
         labels.push({
           x: box.x + width,
           y: box.y - 0.14,
