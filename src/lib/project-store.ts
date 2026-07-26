@@ -88,6 +88,19 @@ function memChats(): Map<string, ChatMessage[]> {
   return (globalStore.__pcbStudioChats ??= new Map());
 }
 
+/**
+ * Un identificativo di progetto valido: lettere, cifre, trattini. Serve perche'
+ * la lettura CREA il progetto se non esiste (e' cosi' che si apre un progetto
+ * nuovo scrivendo un nome nell'URL): senza controllo, un indirizzo sbagliato
+ * come ?project=- lascia in giro un progetto fantasma senza proprietario, che
+ * poi compare nell'elenco di tutti.
+ */
+const PROJECT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,59}$/i;
+
+export function isValidProjectId(id: string): boolean {
+  return PROJECT_ID_RE.test(id);
+}
+
 export async function getProject(projectId: string): Promise<FsMap> {
   const sql = db();
   if (!sql) {
@@ -101,6 +114,9 @@ export async function getProject(projectId: string): Promise<FsMap> {
   `) as Array<{ path: string; content: string }>;
 
   if (rows.length === 0) {
+    // un identificativo malformato non crea nulla: si mostra il progetto di
+    // esempio e basta, cosi' l'elenco resta pulito
+    if (!isValidProjectId(projectId)) return { "main.tsx": DEMO_MAIN };
     await sql`
       INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
     `;
@@ -129,6 +145,9 @@ export async function writeProjectFile(
     return;
   }
 
+  if (!isValidProjectId(projectId)) {
+    throw new Error(`Identificativo di progetto non valido: "${projectId}"`);
+  }
   await sql`
     INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
   `;
