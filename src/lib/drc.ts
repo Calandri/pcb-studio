@@ -36,10 +36,11 @@ function boxDistance(a: Box, b: Box): number {
 }
 
 /**
- * DRC deterministico su Circuit JSON (bbox-based, conservativo):
- * larghezze piste, dimensioni via, distanza dal bordo, clearance pad-pad tra
- * net diverse. La clearance pista-pista resta delegata all'autorouter
- * (traceClearance): qui si verificano gli elementi statici.
+ * DRC deterministico su Circuit JSON: larghezze piste, dimensioni via,
+ * distanza dal bordo, clearance pad-pad / traccia-pad / traccia-traccia tra
+ * net diverse, uscita dai pin dritta. Le clearance di traccia misurano la
+ * distanza vera segmento-segmento meno le semi-larghezze (mai piu' delegate
+ * alla sola correttezza dell'autorouter).
  */
 export function runDrcChecks(
   circuitJson: El[],
@@ -284,6 +285,90 @@ export function runDrcChecks(
     }
   }
 
+  /*
+   * --- 6. clearance traccia-pad tra net diverse (Niccolo' 2026-07-26)
+   * Fino a qui era "delegata all'autorouter": se il router sbagliava, niente
+   * lo fermava — una pista sopra un pad di un'altra net passava inosservata.
+   * Ora si misura la distanza vera segmento-bbox del pad, meno la meta'
+   * larghezza della pista. Stessa net: ok per costruzione (e' la connessione
+   * voluta). Tracce senza net nota (spliced): saltate, niente falsi positivi.
+   */
+  interface WireSeg {
+    ax: number;
+    ay: number;
+    bx: number;
+    by: number;
+    layer: string | null;
+    halfW: number;
+    group: string | null;
+    label: string;
+  }
+  const segs: WireSeg[] = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_trace") continue;
+    const group = groupOfTrace(el);
+    const route = (el.route as Array<Record<string, unknown>> | undefined) ?? [];
+    for (let i = 1; i < route.length; i++) {
+      const a = route[i - 1];
+      const b = route[i];
+      if (a.route_type !== "wire" || b.route_type !== "wire") continue;
+      const ax = num(a.x);
+      const ay = num(a.y);
+      const bx = num(b.x);
+      const by = num(b.y);
+      if (ax === null || ay === null || bx === null || by === null) continue;
+      const layer = b.layer ? String(b.layer) : a.layer ? String(a.layer) : null;
+      segs.push({
+        ax,
+        ay,
+        bx,
+        by,
+        layer,
+        halfW: (num(b.width) ?? num(a.width) ?? rules.minTraceWidthMm) / 2,
+        group,
+        label: String(el.pcb_trace_id ?? "trace"),
+      });
+    }
+  }
+
+  for (const seg of segs) {
+    if (!seg.group) continue;
+    for (const pad of boxes) {
+      if (pad.group === null || pad.group === seg.group) continue;
+      if (pad.layer && seg.layer && pad.layer !== seg.layer) continue;
+      const d = segToBoxDistance(seg, pad) - seg.halfW;
+      if (d < rules.minClearanceMm - 1e-6) {
+        push(
+          "trace_pad_clearance",
+          `${seg.label} over ${pad.label}: ${Math.max(0, d).toFixed(3)}mm < min ${rules.minClearanceMm}mm`,
+          midpoint(boxCenter(pad), {
+            x: (seg.ax + seg.bx) / 2,
+            y: (seg.ay + seg.by) / 2,
+          }),
+        );
+      }
+    }
+  }
+
+  // --- 7. clearance traccia-traccia tra net diverse, stesso layer
+  for (let i = 0; i < segs.length; i++) {
+    const a = segs[i];
+    if (!a.group) continue;
+    for (let j = i + 1; j < segs.length; j++) {
+      const b = segs[j];
+      if (!b.group || a.group === b.group) continue;
+      if (a.layer && b.layer && a.layer !== b.layer) continue;
+      const d = segSegDistance(a, b) - a.halfW - b.halfW;
+      if (d < rules.minClearanceMm - 1e-6) {
+        push(
+          "trace_trace_clearance",
+          `${a.label} <-> ${b.label}: ${Math.max(0, d).toFixed(3)}mm < min ${rules.minClearanceMm}mm (${a.layer ?? "?"})`,
+          { x: (a.ax + a.bx) / 2, y: (a.ay + a.by) / 2 },
+        );
+      }
+    }
+  }
+
   // Le stesse violazioni si ripetono decine di volte (una per via, per pad...):
   // aggregarle per regola tiene il feedback all'LLM leggibile e corto.
   const byRule = new Map<string, DrcViolation[]>();
@@ -318,4 +403,97 @@ function midpoint(
   b: { x: number; y: number },
 ): { x: number; y: number } {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+/** distanza punto-segmento */
+function pointSegDistance(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-12) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** distanza segmento-bbox (0 se il segmento entra nel box) */
+function segToBoxDistance(
+  seg: { ax: number; ay: number; bx: number; by: number },
+  box: Box,
+): number {
+  // un estremo dentro il box, o il segmento incrocia un bordo: distanza 0
+  const inside = (x: number, y: number) =>
+    x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY;
+  if (inside(seg.ax, seg.ay) || inside(seg.bx, seg.by)) return 0;
+  const corners = [
+    [box.minX, box.minY],
+    [box.maxX, box.minY],
+    [box.maxX, box.maxY],
+    [box.minX, box.maxY],
+  ] as const;
+  let best = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const [cx1, cy1] = corners[i];
+    const [cx2, cy2] = corners[(i + 1) % 4];
+    if (segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, cx1, cy1, cx2, cy2) === 0) {
+      return 0;
+    }
+    best = Math.min(
+      best,
+      pointSegDistance(cx1, cy1, seg.ax, seg.ay, seg.bx, seg.by),
+      pointSegDistance(cx2, cy2, seg.ax, seg.ay, seg.bx, seg.by),
+    );
+  }
+  return best;
+}
+
+/** distanza tra due segmenti (0 se si incrociano) */
+function segSegDistanceRaw(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number,
+  dx: number,
+  dy: number,
+): number {
+  const d1 = crossSign(ax, ay, bx, by, cx, cy);
+  const d2 = crossSign(ax, ay, bx, by, dx, dy);
+  const d3 = crossSign(cx, cy, dx, dy, ax, ay);
+  const d4 = crossSign(cx, cy, dx, dy, bx, by);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+    return 0;
+  }
+  return Math.min(
+    pointSegDistance(ax, ay, cx, cy, dx, dy),
+    pointSegDistance(bx, by, cx, cy, dx, dy),
+    pointSegDistance(cx, cy, ax, ay, bx, by),
+    pointSegDistance(dx, dy, ax, ay, bx, by),
+  );
+}
+
+function crossSign(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  px: number,
+  py: number,
+): number {
+  return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+function segSegDistance(
+  a: { ax: number; ay: number; bx: number; by: number },
+  b: { ax: number; ay: number; bx: number; by: number },
+): number {
+  return segSegDistanceRaw(a.ax, a.ay, a.bx, a.by, b.ax, b.ay, b.bx, b.by);
 }
