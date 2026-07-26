@@ -10,7 +10,10 @@ import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
 import { Footer, Header, type BoardTab } from "./workspace/Chrome";
 import { LeftRail } from "./workspace/LeftRail";
+import { extractComponents } from "@/lib/inspect";
 import { BomView } from "./workspace/BomView";
+import { PartCard } from "./workspace/PartCard";
+import { PartPicker } from "./workspace/PartPicker";
 import { RightRail } from "./workspace/RightRail";
 
 const RunFrame = dynamic(
@@ -68,6 +71,7 @@ export function Studio({
   );
   const [layer, setLayer] = useState("top");
   const [xray, setXray] = useState(0);
+  const [partId, setPartId] = useState<string | null>(null);
   // per-section routing variants (Fase 3.d), refreshed after compile/pick
   const [variantSections, setVariantSections] = useState<
     Array<{
@@ -160,6 +164,9 @@ export function Studio({
     () => buildBoardReport(circuitJson, summary),
     [circuitJson, summary],
   );
+
+  const parts = useMemo(() => extractComponents(circuitJson), [circuitJson]);
+  const part = useMemo(() => parts.find((p) => p.id === partId) ?? null, [parts, partId]);
 
   // larghezze effettivamente usate sul rame: senza questo, guardando il canvas
   // non si capisce quale pista e' di potenza e quale di segnale
@@ -493,8 +500,15 @@ export function Studio({
           </div>
           )}
 
+          {tab === "pcb" && parts.length > 0 && (
+            <PartPicker parts={parts} selected={partId} onSelect={setPartId} />
+          )}
+          {tab === "pcb" && part && (
+            <PartCard part={part} onClose={() => setPartId(null)} onAsk={ask} />
+          )}
+
           {/* larghezze reali delle piste: la piu' larga e' la potenza */}
-          {tab === "pcb" && traceWidths.length > 0 && (
+          {tab === "pcb" && !part && traceWidths.length > 0 && (
             <div className="pointer-events-none absolute right-[18px] bottom-[18px] rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] backdrop-blur @max-[760px]:hidden">
               <div className="font-mono text-[10px] tracking-[0.05em] text-[#5F726C]">
                 LARGHEZZA PISTE

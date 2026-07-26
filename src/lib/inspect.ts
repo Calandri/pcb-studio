@@ -23,6 +23,16 @@ export interface InspectComponent {
   y: number | null;
   layer: string | null;
   nets: string[];
+  /** numero di piedini del componente */
+  pins: number;
+  /** codice del fornitore, es. LCSC C14663 */
+  supplier: string | null;
+  /** scheda tecnica del componente, quando il fornitore la espone */
+  datasheetUrl: string | null;
+  ftype: string | null;
+  /** ingombro reale sulla scheda, in mm */
+  widthMm: number | null;
+  heightMm: number | null;
 }
 
 type El = Record<string, unknown>;
@@ -103,15 +113,44 @@ export function extractComponents(circuitJson: unknown[] | null): InspectCompone
     out.push({
       id: String(el.pcb_component_id ?? compId),
       name: String(source?.name ?? "?"),
-      footprint: el.footprinter_string ? String(el.footprinter_string) : null,
+      // il contenitore sta su pcb_component o, per i chip, sul source
+      footprint: String(el.footprinter_string ?? source?.footprinter_string ?? "") || null,
       value: source?.display_value ? String(source.display_value) : null,
       x: num(center.x),
       y: num(center.y),
       layer: el.layer ? String(el.layer) : null,
       nets: [...nets].sort(),
+      pins: (portsByComponent.get(compId) ?? []).length,
+      supplier: supplierCode(source),
+      datasheetUrl: datasheetUrl(supplierCode(source)),
+      ftype: source?.ftype ? String(source.ftype).replace(/^simple_/, "") : null,
+      widthMm: num(el.width),
+      heightMm: num(el.height),
     });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+
+/** primo codice fornitore dichiarato sul componente (di norma LCSC) */
+function supplierCode(source: El | undefined): string | null {
+  const map = source?.supplier_part_numbers as Record<string, unknown> | undefined;
+  if (!map) return null;
+  for (const value of Object.values(map)) {
+    const code = Array.isArray(value) ? value[0] : value;
+    if (code) return String(code);
+  }
+  return null;
+}
+
+/**
+ * LCSC pubblica la scheda tecnica sulla pagina del componente: si linka quella
+ * invece del PDF, che cambia URL a ogni revisione.
+ */
+function datasheetUrl(supplier: string | null): string | null {
+  if (!supplier) return null;
+  return /^C\d+$/i.test(supplier)
+    ? `https://www.lcsc.com/product-detail/${supplier}.html`
+    : null;
 }
 
 /** distanza centro-centro in mm fra due componenti */
