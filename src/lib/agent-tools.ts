@@ -25,6 +25,7 @@ import {
 import { runSimulation } from "./simulate";
 import { compileProject, summarizeCircuit } from "./compile";
 import { findSections, spliceTraces, unrouteSections } from "./variants";
+import { renderPcbPng, reviewLayout } from "./vision-review";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
 const MAX_FILE_CHARS = 200_000;
@@ -204,6 +205,16 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       },
       required: [],
     },
+  },
+  {
+    name: "review_layout",
+    description:
+      "Render the currently routed PCB to an image and get a vision model's critique " +
+      "(cramped components, detouring traces, via clusters, near-misses, unused areas). " +
+      "Numeric checks (DRC/PRC) catch rule violations; this catches what only an " +
+      "engineer's eye sees. Use it once after the routing converges, then act on the " +
+      "issues with placement edits. Requires a previous compile (uses the cached circuit).",
+    input_schema: { type: "object", properties: {}, required: [] },
   },
   {
     name: "pick_variant",
@@ -438,8 +449,23 @@ export async function executeTool(
       return { result: summary };
     }
 
-    case "pick_variant": {
-      const sectionKey = String(args.section ?? "");
+    case "review_layout": {
+      const cache = await getCompileCache(projectId);
+      if (!cache) {
+        return { result: { error: "No compiled circuit yet — run compile first" } };
+      }
+      try {
+        const png = renderPcbPng(cache.circuitJson as never);
+        const review = await reviewLayout(png);
+        return { result: review };
+      } catch (err) {
+        return {
+          result: { error: `review_layout failed: ${err instanceof Error ? err.message : String(err)}` },
+        };
+      }
+    }
+
+    case "pick_variant": {      const sectionKey = String(args.section ?? "");
       const label = String(args.variant ?? "");
       const stored = await getRouteVariants(projectId);
       const section = stored.sections.find((s) => s.sectionKey === sectionKey);

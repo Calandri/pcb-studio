@@ -129,6 +129,7 @@ ${SCHEMATIC_METRICS}
 - The compile also returns deltaVsPrevious when a previous compile exists: [before, now] per target. If a target is flat or oscillating after 3 attempts, STOP editing blindly and change strategy (different placement topology, bigger board, more layers, different sectioning, a variant from variantReport, or a different router) instead of repeating the same edit.
 - De-escalation is allowed and honest: if a target cannot reach 0 (physical constraints, conflicting requirements), say exactly which target you accepted, why, and what the user can change to unlock it. Never silently hand back open violations.
 - The schematic loop converges the same way: schematicQuality overlaps at 0, sections meaningful, traceCrossings stopped going down.
+- After the targets are green, do ONE visual pass with review_layout: the vision model sees what the numbers miss (detouring traces, cramped areas, ugly housekeeping). Act on its warnings with placement edits, then compile again. If it fails (no provider configured), skip it — it is a bonus check, not a target.
 
 ## Rules
 - ALWAYS read a file before rewriting it; write_file replaces the whole file.

@@ -61,6 +61,9 @@ importers:
       '@radix-ui/react-tooltip':
         specifier: ^1.2.8
         version: 1.2.16(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@resvg/resvg-js':
+        specifier: ^2.6.2
+        version: 2.6.2
       '@tscircuit/3d-viewer':
         specifier: ^0.0.578
         version: 0.0.578(@tscircuit/alphabet@0.0.23(typescript@5.9.3))(@tscircuit/circuit-json-util@0.0.101(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(@tscircuit/core@0.0.1512(2kcxtle6yfurffoh6xgxjraibm))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)(zod@3.25.76)
