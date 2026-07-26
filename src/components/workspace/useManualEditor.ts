@@ -8,7 +8,17 @@ import {
   type ManualEdits,
 } from "@/lib/manual-edits";
 
-export type EditMode = "view" | "move" | "route";
+export type EditMode = "view" | "move" | "route" | "link";
+
+/** collegamento tirato a mano e non ancora scritto in main.tsx */
+export interface PendingLink {
+  from: string;
+  to: string;
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+}
 
 /**
  * Stato dell'editor manuale.
@@ -33,6 +43,15 @@ export function useManualEditor({
 }) {
   const [mode, setMode] = useState<EditMode>("view");
   const [pending, setPending] = useState<EditEvent[]>([]);
+  /*
+   * I collegamenti stanno a parte dagli spostamenti perche' finiscono in un
+   * altro posto: uno spostamento e' geometria e va in manual-edits.json, un
+   * collegamento e' progetto elettrico e va scritto in main.tsx come <trace>.
+   * Se un collegamento vivesse fuori dalle sorgenti l'agente non saprebbe che
+   * esiste.
+   */
+  const [links, setLinks] = useState<PendingLink[]>([]);
+  const [unlinks, setUnlinks] = useState<string[]>([]);
   const [saved, setSaved] = useState<ManualEdits>(emptyManualEdits());
   const [past, setPast] = useState<ManualEdits[]>([]);
   const [future, setFuture] = useState<ManualEdits[]>([]);
@@ -58,6 +77,23 @@ export function useManualEditor({
   /** la vista PCB e' controllata: passa sempre l'elenco completo */
   const replacePending = useCallback((events: EditEvent[]) => {
     setPending(events.filter((e) => !e.in_progress));
+  }, []);
+
+  const addLink = useCallback((link: PendingLink) => {
+    setLinks((l) =>
+      // stesso collegamento tirato due volte: conta una volta sola, in qualsiasi verso
+      l.some(
+        (x) =>
+          (x.from === link.from && x.to === link.to) ||
+          (x.from === link.to && x.to === link.from),
+      )
+        ? l
+        : [...l, link],
+    );
+  }, []);
+
+  const addUnlink = useCallback((declared: string) => {
+    setUnlinks((u) => (u.includes(declared) ? u : [...u, declared]));
   }, []);
 
   /** la vista schematica emette un evento alla volta, a trascinamento finito */
@@ -91,20 +127,74 @@ export function useManualEditor({
     [projectId, onApplied],
   );
 
-  /** scrive le modifiche in sospeso e ricompila */
+  /** scrive un collegamento (o lo toglie) dentro main.tsx */
+  const postConnection = useCallback(
+    async (body: Record<string, unknown>): Promise<string | null> => {
+      const res = await fetch("/api/schematic/connect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, ...body }),
+      });
+      const d = await res.json().catch(() => ({}));
+      return res.ok ? null : (d.error ?? `HTTP ${res.status}`);
+    },
+    [projectId],
+  );
+
+  const dirty = pending.length + links.length + unlinks.length;
+
+  /**
+   * Scrive tutto e ricompila una volta sola. I collegamenti vanno per primi:
+   * cambiano il circuito, e ha senso che il ri-sbroglio parta dal circuito
+   * definitivo invece che da quello di mezzo.
+   */
   const apply = useCallback(async () => {
-    if (pending.length === 0 || busy) return;
+    if (dirty === 0 || busy) return;
+    setBusy(true);
+    setError(null);
+    const problems: string[] = [];
+    try {
+      for (const declared of unlinks) {
+        const err = await postConnection({ declared });
+        if (err) problems.push(err);
+      }
+      for (const link of links) {
+        const err = await postConnection({ from: link.from, to: link.to });
+        if (err) problems.push(`${link.from} → ${link.to}: ${err}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+    if (problems.length > 0) setError(problems[0]);
+    setLinks([]);
+    setUnlinks([]);
+
     const before = saved;
-    const next = await post({ events: pending });
-    if (!next) return;
-    setPast((p) => [...p, before].slice(-40));
-    setFuture([]);
-    setPending([]);
+    if (pending.length > 0) {
+      const next = await post({ events: pending });
+      if (!next) return;
+      setPast((p) => [...p, before].slice(-40));
+      setFuture([]);
+      setPending([]);
+    } else {
+      // nessuno spostamento da salvare, ma il circuito e' cambiato: si ricompila
+      await onApplied();
+    }
     setViewerKey((k) => k + 1);
-  }, [pending, busy, saved, post]);
+  }, [dirty, busy, pending, links, unlinks, saved, post, postConnection, onApplied]);
 
   const undo = useCallback(async () => {
     if (busy) return;
+    // si disfa nell'ordine inverso a come si e' fatto: prima i collegamenti,
+    // che sono l'ultima cosa che si tira, poi gli spostamenti
+    if (unlinks.length > 0) {
+      setUnlinks((u) => u.slice(0, -1));
+      return;
+    }
+    if (links.length > 0) {
+      setLinks((l) => l.slice(0, -1));
+      return;
+    }
     if (pending.length > 0) {
       setPending((p) => p.slice(0, -1));
       setViewerKey((k) => k + 1);
@@ -118,7 +208,7 @@ export function useManualEditor({
     setPast((p) => p.slice(0, -1));
     setFuture((f) => [current, ...f].slice(0, 40));
     setViewerKey((k) => k + 1);
-  }, [busy, pending, past, saved, post]);
+  }, [busy, pending, links, unlinks, past, saved, post]);
 
   const redo = useCallback(async () => {
     if (busy) return;
@@ -135,6 +225,8 @@ export function useManualEditor({
   /** butta via cio' che non e' stato ancora scritto */
   const discard = useCallback(() => {
     setPending([]);
+    setLinks([]);
+    setUnlinks([]);
     setViewerKey((k) => k + 1);
   }, []);
 
@@ -164,7 +256,12 @@ export function useManualEditor({
     busy,
     error,
     viewerKey,
-    canUndo: pending.length > 0 || past.length > 0,
+    links,
+    unlinks,
+    dirty,
+    addLink,
+    addUnlink,
+    canUndo: dirty > 0 || past.length > 0,
     canRedo: future.length > 0,
     replacePending,
     pushPending,

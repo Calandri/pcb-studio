@@ -19,7 +19,8 @@ export function EditorBar({
   /** sullo schematico si sposta e basta: le piste sono un fatto del rame */
   scope: "schematic" | "pcb";
 }) {
-  const { mode, setMode, pending, counts, busy, canUndo, canRedo, error } = editor;
+  const { mode, setMode, counts, busy, canUndo, canRedo, error, dirty, links, unlinks } =
+    editor;
 
   // scorciatoie da tastiera: senza queste "annulla" non e' annulla
   useEffect(() => {
@@ -44,6 +45,9 @@ export function EditorBar({
         return;
       }
       if (e.key.toLowerCase() === "m" && !meta) setMode(mode === "move" ? "view" : "move");
+      if (e.key.toLowerCase() === "c" && !meta && scope === "schematic") {
+        setMode(mode === "link" ? "view" : "link");
+      }
       if (e.key.toLowerCase() === "r" && !meta && scope === "pcb") {
         setMode(mode === "route" ? "view" : "route");
       }
@@ -51,8 +55,6 @@ export function EditorBar({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [editor, mode, setMode, scope]);
-
-  const dirty = pending.length;
 
   return (
     <div className="pointer-events-auto absolute left-1/2 top-[18px] z-20 flex -translate-x-1/2 flex-col items-center gap-1.5">
@@ -73,6 +75,14 @@ export function EditorBar({
           }
           label="Sposta"
         />
+        {scope === "schematic" && (
+          <Segment
+            active={mode === "link"}
+            onClick={() => setMode("link")}
+            title="Clicca due piedini per collegarli, clicca un filo per toglierlo (C)"
+            label="Collega"
+          />
+        )}
         {scope === "pcb" && (
           <Segment
             active={mode === "route"}
@@ -148,7 +158,16 @@ export function EditorBar({
                 <span className="text-[11px] text-brand">
                   {mode === "move"
                     ? "Trascina un componente per spostarlo"
-                    : "Clicca un pad, poi clicca dove far passare la pista"}
+                    : mode === "link"
+                      ? "Clicca due piedini per collegarli"
+                      : "Clicca un pad, poi clicca dove far passare la pista"}
+                </span>
+              )}
+              {(links.length > 0 || unlinks.length > 0) && (
+                <span className="font-mono text-[10px] text-[#5F726C]">
+                  {links.length > 0 ? `+${links.length} collegamenti` : ""}
+                  {links.length > 0 && unlinks.length > 0 ? " · " : ""}
+                  {unlinks.length > 0 ? `-${unlinks.length} tolti` : ""}
                 </span>
               )}
               {counts.total > 0 && (

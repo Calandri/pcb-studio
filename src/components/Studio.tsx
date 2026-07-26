@@ -628,17 +628,22 @@ export function Studio({
                   saved={editor.saved}
                   onEditEvent={editor.pushPending}
                   resetKey={editor.viewerKey}
+                  pendingLinks={editor.links}
+                  onLink={editor.addLink}
+                  onUnlink={editor.addUnlink}
                 />
               ) : (
-                /* tab 3D: il designer di scocche e' in lavorazione e il suo
-                   componente non e' ancora nel repo, quindi qui resta la vista
-                   3D di tscircuit finche' non arriva */
-                <CircuitJsonPreview
-                  key={tab}
-                  circuitJson={circuitJson as never}
-                  defaultActiveTab={tab as never}
-                  availableTabs={[tab] as never}
-                  showToggleFullScreen={false}
+                // tab 3D: il designer di scocche (scheda in GLB dal server,
+                // scocche e moduli importati come mesh nella stessa scena)
+                <EnclosureCanvas
+                  projectId={projectId}
+                  boardWidthMm={report.widthMm}
+                  boardHeightMm={report.heightMm}
+                  parts={parts}
+                  meshes={enclosures.meshes}
+                  showEnclosures={showEnclosures}
+                  enclosureOpacity={enclosureOpacity}
+                  explodedMm={explodedMm}
                 />
               )
             ) : fsMap && circuitChecked ? (

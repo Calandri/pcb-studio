@@ -46,23 +46,37 @@ export function SchematicCanvas({
   onEditEvent,
   resetKey = 0,
   onSelect,
+  pendingLinks = [],
+  onLink,
+  onUnlink,
 }: {
   circuitJson: unknown[] | null;
   projectId: string;
-  /** view = si guarda e basta, move = si trascinano i simboli */
-  mode: "view" | "move" | "route";
+  /** view = si guarda, move = si trascinano i simboli, link = si collegano i piedini */
+  mode: "view" | "move" | "route" | "link";
   /** componenti gia' fissati a mano: si vedono, altrimenti non si sa cosa e' bloccato */
   pinnedNames: Set<string>;
   onEditEvent: (event: EditEvent) => void;
   /** cambia per annullare: azzera i trascinamenti non ancora salvati */
   resetKey?: number;
   onSelect?: (name: string | null) => void;
+  /** collegamenti tirati e non ancora applicati, disegnati tratteggiati */
+  pendingLinks?: Array<{ from: string; to: string; ax: number; ay: number; bx: number; by: number }>;
+  onLink?: (link: { from: string; to: string; ax: number; ay: number; bx: number; by: number }) => void;
+  onUnlink?: (declared: string) => void;
 }) {
   const model = useMemo(() => buildSchematicModel(circuitJson), [circuitJson]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [view, setView] = useState({ x: 0, y: 0, k: 30 });
-  const [hoverNet, setHoverNet] = useState<string | null>(null);
+  /*
+   * Net accese al passaggio del mouse. E' un insieme e non una sola net perche'
+   * si evidenzia anche passando su un COMPONENTE, che di net ne tocca tante:
+   * "cosa e' collegato a cosa" si risponde accendendo tutto quello che tocca
+   * il pezzo che stai guardando, non un filo alla volta.
+   */
+  const [hoverNets, setHoverNets] = useState<Set<string> | null>(null);
+  const [hoverName, setHoverName] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** spostamenti applicati in anteprima, per id di componente schematico */
   const [offsets, setOffsets] = useState<Record<string, { dx: number; dy: number }>>({});
@@ -76,6 +90,10 @@ export function SchematicCanvas({
   } | null>(null);
   const [panning, setPanning] = useState(false);
   const [dragging, setDragging] = useState(false);
+  /** primo piedino gia' scelto: il secondo clic chiude il collegamento */
+  const [linkFrom, setLinkFrom] = useState<{ selector: string; x: number; y: number } | null>(null);
+  /** posizione del mouse in unita' di disegno, per l'elastico del collegamento */
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
 
   // Annullare o ricompilare azzera i trascinamenti in anteprima. Si aggiusta
   // durante il render invece che in un effetto: cosi' non si vede per un
@@ -96,6 +114,13 @@ export function SchematicCanvas({
     ro.observe(node);
     return () => ro.disconnect();
   }, []);
+
+  // il gestore del movimento non deve cambiare identita' a ogni clic: la
+  // posizione di partenza del collegamento passa da una ref
+  const linkFromRef = useRef<typeof linkFrom>(null);
+  useEffect(() => {
+    linkFromRef.current = linkFrom;
+  }, [linkFrom]);
 
   const sheet = useMemo(() => sheetFrame(model), [model]);
 
@@ -157,6 +182,48 @@ export function SchematicCanvas({
   }, []);
 
   const movable = mode === "move";
+  const linking = mode === "link";
+
+  // uscire dalla modalita' o cambiare disegno lascia a meta' un collegamento:
+  // il primo piedino scelto va dimenticato, altrimenti il clic successivo
+  // chiuderebbe un filo che l'utente non ricorda di aver iniziato
+  const [lastMode, setLastMode] = useState(mode);
+  if (lastMode !== mode) {
+    setLastMode(mode);
+    setLinkFrom(null);
+  }
+
+  const clickPort = useCallback(
+    (port: { selector: string; x: number; y: number }) => {
+      if (!linking) return;
+      if (!linkFrom) {
+        setLinkFrom(port);
+        return;
+      }
+      if (linkFrom.selector === port.selector) {
+        setLinkFrom(null);
+        return;
+      }
+      onLink?.({
+        from: linkFrom.selector,
+        to: port.selector,
+        ax: linkFrom.x,
+        ay: linkFrom.y,
+        bx: port.x,
+        by: port.y,
+      });
+      setLinkFrom(null);
+    },
+    [linking, linkFrom, onLink],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLinkFrom(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const startDrag = useCallback(
     (e: React.PointerEvent, node: SchNode) => {
@@ -202,7 +269,9 @@ export function SchematicCanvas({
       if (pan.current) {
         const p = pan.current;
         setView((v) => ({ ...v, x: p.vx + (e.clientX - p.x), y: p.vy + (e.clientY - p.y) }));
+        return;
       }
+      if (linkFromRef.current) setCursor(toWorld(e.clientX, e.clientY));
     },
     [toWorld, snap, offsets],
   );
@@ -242,7 +311,9 @@ export function SchematicCanvas({
   }
 
   const px = 1 / view.k; // un pixel in unita' di disegno: tratti sempre nitidi
-  const dim = (net: string | null) => (hoverNet && net !== hoverNet ? 0.18 : 1);
+  const dim = (net: string | null) =>
+    hoverNets && (!net || !hoverNets.has(net)) ? 0.12 : 1;
+  const lit = (net: string | null) => Boolean(hoverNets && net && hoverNets.has(net));
 
   return (
     <div
@@ -251,8 +322,10 @@ export function SchematicCanvas({
       onWheel={onWheel}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
-        setSelected(new Set());
-        onSelect?.(null);
+        if (!linking) {
+          setSelected(new Set());
+          onSelect?.(null);
+        }
         setPanning(true);
         pan.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
       }}
@@ -323,13 +396,26 @@ export function SchematicCanvas({
               <path
                 key={w.id}
                 d={w.d}
-                stroke={w.power ? COLORS.power : COLORS.wire}
-                strokeWidth={(w.power ? 1.7 : 1.4) * px}
+                stroke={w.power ? COLORS.power : lit(w.net) ? COLORS.selected : COLORS.wire}
+                strokeWidth={(lit(w.net) ? 2.6 : w.power ? 1.7 : 1.4) * px}
                 opacity={dim(w.net)}
-                onPointerEnter={() => setHoverNet(w.net)}
-                onPointerLeave={() => setHoverNet(null)}
-                style={{ cursor: "crosshair" }}
-              />
+                onPointerEnter={() => {
+                  setHoverNets(w.net ? new Set([w.net]) : null);
+                  setHoverName(w.net);
+                }}
+                onPointerLeave={() => {
+                  setHoverNets(null);
+                  setHoverName(null);
+                }}
+                onClick={(e) => {
+                  if (!linking || !w.declaredAs) return;
+                  e.stopPropagation();
+                  onUnlink?.(w.declaredAs);
+                }}
+                style={{ cursor: linking && w.declaredAs ? "not-allowed" : "crosshair" }}
+              >
+                {linking && w.declaredAs && <title>{`Togli: ${w.declaredAs}`}</title>}
+              </path>
             ))}
           </g>
           <g pointerEvents="none">
@@ -338,11 +424,35 @@ export function SchematicCanvas({
                 key={i}
                 cx={j.x}
                 cy={j.y}
-                r={2.6 * px}
+                // il nodo fra piu' fili e' piu' grosso dell'attacco a un
+                // piedino: sono due cose diverse e si devono distinguere
+                r={(j.isNode ? 3 : 2.2) * px}
                 fill={j.power ? COLORS.power : COLORS.wire}
                 opacity={dim(j.net)}
               />
             ))}
+          </g>
+
+          {/* collegamenti tirati e non ancora applicati: tratteggiati, perche'
+              il filo vero lo disegnera' il compilatore dopo il ri-sbroglio */}
+          <g fill="none" pointerEvents="none">
+            {pendingLinks.map((l, i) => (
+              <path
+                key={i}
+                d={`M${l.ax} ${l.ay}L${l.bx} ${l.by}`}
+                stroke={COLORS.selected}
+                strokeWidth={1.8 * px}
+                strokeDasharray={`${6 * px} ${4 * px}`}
+              />
+            ))}
+            {linkFrom && cursor && (
+              <path
+                d={`M${linkFrom.x} ${linkFrom.y}L${cursor.x} ${cursor.y}`}
+                stroke={COLORS.selected}
+                strokeWidth={1.6 * px}
+                strokeDasharray={`${5 * px} ${4 * px}`}
+              />
+            )}
           </g>
 
           {/* etichette di net: i rail non attraversano il foglio, si nominano */}
@@ -369,9 +479,24 @@ export function SchematicCanvas({
             return (
               <g
                 key={node.id}
+                opacity={
+                  hoverNets && !node.ports.some((p) => lit(p.net)) && hoverName !== node.name
+                    ? 0.25
+                    : 1
+                }
                 transform={off ? `translate(${off.dx} ${off.dy})` : undefined}
                 onPointerDown={(e) => startDrag(e, node)}
-                onPointerEnter={() => setHoverNet(null)}
+                onPointerEnter={() => {
+                  const nets = node.ports
+                    .map((p) => p.net)
+                    .filter((n): n is string => Boolean(n));
+                  setHoverNets(nets.length > 0 ? new Set(nets) : null);
+                  setHoverName(node.name);
+                }}
+                onPointerLeave={() => {
+                  setHoverNets(null);
+                  setHoverName(null);
+                }}
                 style={{ cursor: movable ? "move" : "pointer" }}
               >
                 {/* area di presa: senza questa si prende solo il tratto sottile */}
@@ -420,6 +545,32 @@ export function SchematicCanvas({
                     {l.text}
                   </text>
                 ))}
+                {linking &&
+                  node.ports.map((port) => {
+                    const active = linkFrom?.selector === port.selector;
+                    return (
+                      <circle
+                        key={port.selector}
+                        cx={port.x}
+                        cy={port.y}
+                        r={(active ? 6 : 4) * px}
+                        fill={active ? COLORS.selected : COLORS.sheet}
+                        stroke={
+                          active ? COLORS.selected : port.connected ? COLORS.wire : COLORS.power
+                        }
+                        strokeWidth={1.6 * px}
+                        style={{ cursor: "crosshair" }}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          clickPort({ selector: port.selector, x: port.x, y: port.y });
+                        }}
+                      >
+                        <title>
+                          {`${port.selector}${port.net ? ` · ${port.net}` : " · scollegato"}`}
+                        </title>
+                      </circle>
+                    );
+                  })}
                 {pinned && (
                   <circle
                     cx={node.bbox.maxX + 0.14}
@@ -448,15 +599,36 @@ export function SchematicCanvas({
         </g>
       </svg>
 
-      {hoverNet && (
-        <div className="pointer-events-none absolute left-4 top-4 rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.92)] px-3 py-1.5 font-mono text-[11px] text-brand backdrop-blur">
-          {hoverNet}
+      {hoverName && (
+        <div className="pointer-events-none absolute left-4 top-4 rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.92)] px-3 py-1.5 backdrop-blur">
+          <span className="font-mono text-[11px] text-brand">{hoverName}</span>
+          {hoverNets && hoverNets.size > 1 && (
+            <span className="ml-2 font-mono text-[10px] text-[#5F726C]">
+              {[...hoverNets].slice(0, 6).join(" · ")}
+              {hoverNets.size > 6 ? ` +${hoverNets.size - 6}` : ""}
+            </span>
+          )}
         </div>
       )}
       {movable && (
         <div className="pointer-events-none absolute bottom-4 left-4 rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3 py-1.5 text-[11px] text-muted backdrop-blur">
           Griglia {snap ? `${GRID} attiva` : "libera"} · Alt per il movimento libero · Shift per
           selezionare piu&apos; simboli
+        </div>
+      )}
+      {linking && (
+        <div className="pointer-events-none absolute bottom-4 left-4 rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3 py-1.5 text-[11px] text-muted backdrop-blur">
+          {linkFrom ? (
+            <>
+              Da <span className="font-mono text-brand">{linkFrom.selector}</span> · clicca il
+              secondo piedino, Esc per lasciar perdere
+            </>
+          ) : (
+            <>
+              Clicca due piedini per collegarli · i cerchi <span className="text-brand">verdi</span>{" "}
+              sono piedini ancora scollegati · clicca un filo per toglierlo
+            </>
+          )}
         </div>
       )}
     </div>

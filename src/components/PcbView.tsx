@@ -41,7 +41,7 @@ export function PcbView({
   /** 0-100: schiarisce la vista per far emergere il rame degli strati sotto */
   xray?: number;
   /** view = sola lettura, move = sposta componenti, route = disegna piste */
-  mode?: "view" | "move" | "route";
+  mode?: "view" | "move" | "route" | "link";
   /** modifiche non ancora salvate, ridisegnate dal viewer (vista controllata) */
   editEvents?: EditEvent[];
   onEditEvents?: (events: EditEvent[]) => void;

@@ -34,6 +34,19 @@ export interface SchLabel {
   vertical?: boolean;
 }
 
+export interface SchPort {
+  x: number;
+  y: number;
+  net: string | null;
+  power: boolean;
+  /** sigla del piedino, se il componente ne ha una (VCC, SDA, anode...) */
+  label: string | null;
+  /** selettore tscircuit, es. ".R1 > .pin1": e' cio' che si scrive in un trace */
+  selector: string;
+  /** true se al piedino arriva gia' un filo */
+  connected: boolean;
+}
+
 export interface SchNode {
   id: string;
   name: string;
@@ -48,7 +61,7 @@ export interface SchNode {
   /** solo per kind=symbol */
   paths: Array<{ d: string; filled: boolean }>;
   labels: SchLabel[];
-  ports: Array<{ x: number; y: number; net: string | null; power: boolean }>;
+  ports: SchPort[];
   section: string | null;
   bbox: { minX: number; minY: number; maxX: number; maxY: number };
 }
@@ -59,11 +72,15 @@ export interface SchWire {
   net: string | null;
   /** alimentazione o massa: si disegna in verde, come sul mockup */
   power: boolean;
+  /** collegamento dichiarato che ha prodotto il filo, es. ".J1 > .VBAT to .D1 > .cathode" */
+  declaredAs: string | null;
 }
 
 export interface SchJunction extends Pt {
   net: string | null;
   power: boolean;
+  /** true = nodo fra piu' fili, false = attacco a un piedino */
+  isNode: boolean;
 }
 
 export interface SchNetLabelDrawn extends Pt {
@@ -291,14 +308,25 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
       const sourcePortId = str(p.source_port_id);
       const key = sourcePortId ? netByPort.get(sourcePortId) : undefined;
       const net = key ? (netOf(key)?.name ?? null) : null;
+      const pin = String(p.pin_number ?? "");
+      /*
+       * Il selettore che finira' dentro un <trace>. Si preferisce la sigla al
+       * numero (.U1 > .VCC invece di .U1 > .pin8) perche' resta valido se il
+       * componente viene sostituito con un altro package: i numeri cambiano,
+       * i nomi dei piedini no.
+       */
+      const label = str(p.display_pin_label);
+      const selector = `.${name} > .${label ?? `pin${pin}`}`;
       return {
         x: num(c?.x),
         y: -num(c?.y),
-        pin: String(p.pin_number ?? ""),
-        label: str(p.display_pin_label),
+        pin,
+        label,
         side: String(p.side_of_component ?? ""),
         net,
         power: isPower(key, net),
+        selector,
+        connected: p.is_connected === true || Boolean(key),
       };
     });
 
@@ -375,7 +403,9 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
             y: pos.y,
             text,
             anchor,
-            size: prim.text === "{REF}" ? 0.24 : 0.2,
+            // un passivo e' largo mezza unita': una sigla a 0,24 sarebbe piu'
+            // lunga del simbolo e finirebbe sopra i fili accanto
+            size: prim.text === "{REF}" ? 0.17 : 0.15,
             tone: prim.text === "{REF}" ? "name" : "value",
           });
         }
@@ -388,16 +418,16 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
           y: center.y - height / 2 - 0.22,
           text: name,
           anchor: "middle",
-          size: 0.24,
+          size: 0.17,
           tone: "name",
         });
         if (value) {
           labels.push({
             x: center.x,
-            y: center.y + height / 2 + 0.38,
+            y: center.y + height / 2 + 0.34,
             text: value,
             anchor: "middle",
-            size: 0.2,
+            size: 0.15,
             tone: "value",
           });
         }
@@ -417,20 +447,20 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
         y: box.y - 0.14,
         text: name,
         anchor: "start",
-        size: 0.3,
+        size: 0.24,
         tone: "name",
       });
       // La sigla divide la riga col nome: si scrive solo se ci sta accanto,
       // altrimenti le due scritte si accavallano ("U3SPH0641LU4H_1") ed e' il
       // nome, quello che serve sempre, a diventare illeggibile.
       const subtitle = part ?? value;
-      if (subtitle && textWidth(name, 0.3) + textWidth(subtitle, 0.2) + 0.2 <= width) {
+      if (subtitle && textWidth(name, 0.24) + textWidth(subtitle, 0.17) + 0.2 <= width) {
         labels.push({
           x: box.x + width,
           y: box.y - 0.14,
           text: subtitle,
           anchor: "end",
-          size: 0.2,
+          size: 0.17,
           tone: "value",
         });
       }
@@ -485,7 +515,15 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
       box,
       paths,
       labels,
-      ports: sheetPorts.map((p) => ({ x: p.x, y: p.y, net: p.net, power: p.power })),
+      ports: sheetPorts.map((p) => ({
+        x: p.x,
+        y: p.y,
+        net: p.net,
+        power: p.power,
+        label: p.label,
+        selector: p.selector,
+        connected: p.connected,
+      })),
       section,
       bbox: {
         minX: Math.min(...xs),
@@ -494,6 +532,16 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
         maxY: Math.max(...ys),
       },
     });
+  }
+
+  // nome del collegamento dichiarato, per poterlo togliere dal codice quando
+  // l'utente clicca il filo: il filo disegnato non sa da quale <trace> nasce,
+  // lo sa il source_trace
+  const declaredByTraceId = new Map<string, string>();
+  for (const t of byType(circuitJson, "source_trace")) {
+    const id = str(t.source_trace_id);
+    const name = str(t.display_name);
+    if (id && name) declaredByTraceId.set(id, name);
   }
 
   const wires: SchWire[] = [];
@@ -518,9 +566,31 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
       d: segments.join(""),
       net,
       power,
+      declaredAs: declaredByTraceId.get(String(trace.source_trace_id ?? "")) ?? null,
     });
     for (const j of (Array.isArray(trace.junctions) ? trace.junctions : []) as Pt[]) {
-      junctions.push({ x: num(j.x), y: -num(j.y), net, power });
+      junctions.push({ x: num(j.x), y: -num(j.y), net, power, isNode: true });
+    }
+  }
+
+  /*
+   * Pallino su ogni piedino collegato. E' l'informazione che mancava: un filo
+   * che ARRIVA su un piedino e un filo che gli passa VICINO si disegnano
+   * uguali, e senza il pallino non si distinguono. Si mette solo dove un
+   * segmento finisce davvero sul piedino, altrimenti si punteggerebbe tutto.
+   */
+  const wireEnds = new Set<string>();
+  for (const trace of byType(circuitJson, "schematic_trace")) {
+    for (const edge of (Array.isArray(trace.edges) ? trace.edges : []) as El[]) {
+      for (const pt of [edge.from, edge.to] as Array<Pt | undefined>) {
+        if (pt) wireEnds.add(`${r(num(pt.x))},${r(-num(pt.y))}`);
+      }
+    }
+  }
+  for (const node of nodes) {
+    for (const port of node.ports) {
+      if (!wireEnds.has(`${r(port.x)},${r(port.y)}`)) continue;
+      junctions.push({ x: port.x, y: port.y, net: port.net, power: port.power, isNode: false });
     }
   }
 
@@ -557,6 +627,44 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
       return { x: num(pos?.x), y: -num(pos?.y), text: String(e.text) };
     });
 
+  /*
+   * Ultima passata sul foglio intero: le scritte dei componenti e quelle delle
+   * net sono state calcolate da due strade diverse e non si sono mai viste fra
+   * loro, quindi si accavallano. Qui si guardano tutte insieme.
+   */
+  const RANK = { name: 0, netLabel: 1, value: 2, pin: 3 };
+  const texts: PlacedText[] = [];
+  for (const node of nodes) {
+    for (const label of node.labels) {
+      // le sigle dentro una scatola sono gia' incolonnate dal suo layout:
+      // spostarle le farebbe uscire dal riquadro
+      if (label.tone === "pin" && node.box) continue;
+      texts.push({
+        x: anchorCenter(label.x, label.text, label.size, label.anchor),
+        y: label.y,
+        w: textWidth(label.text, label.size),
+        h: label.size,
+        rank: RANK[label.tone],
+        move: (dy) => {
+          label.y += dy;
+        },
+      });
+    }
+  }
+  for (const label of netLabels) {
+    texts.push({
+      x: anchorCenter(label.x, label.text, 0.2, label.anchor),
+      y: label.y,
+      w: textWidth(label.text, 0.2),
+      h: 0.2,
+      rank: RANK.netLabel,
+      move: (dy) => {
+        label.y += dy;
+      },
+    });
+  }
+  deconflict(texts);
+
   const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
   const grow = (x: number, y: number) => {
     bounds.minX = Math.min(bounds.minX, x);
@@ -592,5 +700,61 @@ export function buildSchematicModel(circuitJson: unknown[] | null): SchematicMod
 
 const r = (v: number): number => Math.round(v * 1000) / 1000;
 
+
+/**
+ * Scritte che non si accavallano.
+ *
+ * Il layout di tscircuit posiziona sigle ed etichette senza sapere che altro
+ * c'e' intorno, quindi su una sezione fitta il nome di una resistenza finisce
+ * sopra l'etichetta della net accanto e non si legge piu' niente. Qui si
+ * spostano in verticale quelle meno importanti finche' trovano posto.
+ *
+ * L'ordine di importanza e' quello che serve a capire il circuito: il nome del
+ * componente vince su tutto (senza quello non si sa di cosa si parla), poi
+ * l'etichetta di net (dice dove va il filo), poi il valore, per ultime le
+ * sigle dei piedini. Chi non trova posto in poche prove resta dov'e': meglio
+ * una sovrapposizione che una scritta spedita lontano dal suo componente.
+ */
+interface PlacedText {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rank: number;
+  move: (dy: number) => void;
+}
+
+function deconflict(items: PlacedText[]): void {
+  const sorted = [...items].sort((a, b) => a.rank - b.rank);
+  const placed: PlacedText[] = [];
+  const hits = (a: PlacedText, b: PlacedText) =>
+    Math.abs(a.x - b.x) * 2 < a.w + b.w && Math.abs(a.y - b.y) * 2 < a.h + b.h;
+
+  for (const item of sorted) {
+    let dy = 0;
+    for (let attempt = 0; attempt < 7; attempt++) {
+      const probe = { ...item, y: item.y + dy };
+      if (!placed.some((other) => hits(probe, other))) break;
+      // si alterna sopra e sotto, allontanandosi: la scritta resta vicina al
+      // suo componente invece di scivolare sempre nella stessa direzione
+      const step = Math.ceil((attempt + 1) / 2) * item.h * 1.05;
+      dy = attempt % 2 === 0 ? -step : step;
+    }
+    if (dy !== 0) item.move(dy);
+    placed.push({ ...item, y: item.y + dy });
+  }
+}
+
 /** larghezza approssimata di un testo monospaziato, in unita' di disegno */
 const textWidth = (text: string, size: number): number => text.length * size * 0.6;
+
+/** centro orizzontale di una scritta, che l'ancora sia a sinistra, al centro o a destra */
+const anchorCenter = (
+  x: number,
+  text: string,
+  size: number,
+  anchor: "start" | "middle" | "end",
+): number => {
+  const w = textWidth(text, size);
+  return anchor === "start" ? x + w / 2 : anchor === "end" ? x - w / 2 : x;
+};
