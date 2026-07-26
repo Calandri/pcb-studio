@@ -128,7 +128,19 @@ function runSolver(
   return solver.getOutputSimpleRouteJson().traces ?? [];
 }
 
-const VARIANT_DEFS: Array<{ solver: "v6" | "v3"; SolverClass: SolverClass; effort: number }> = [
+export interface VariantDef {
+  solver: "v6" | "v3";
+  SolverClass: SolverClass;
+  effort: number;
+}
+
+/** i due solver disponibili, per costruire liste di candidati su misura */
+export const SOLVERS = {
+  v6: AutoroutingPipelineSolver as unknown as SolverClass,
+  v3: AutoroutingPipelineSolver3_HgPortPointPathing as unknown as SolverClass,
+};
+
+const VARIANT_DEFS: VariantDef[] = [
   { solver: "v6", SolverClass: AutoroutingPipelineSolver as unknown as SolverClass, effort: 1 },
   { solver: "v6", SolverClass: AutoroutingPipelineSolver as unknown as SolverClass, effort: 5 },
   {
@@ -150,6 +162,8 @@ export function generateSectionCandidates(
   count = 3,
   rules: DesignRules = DEFAULT_DESIGN_RULES,
   drcEvaluator?: (traces: CircuitElement[]) => number,
+  /** lista di candidati su misura: serve a far provare cose DIVERSE a ogni giro */
+  defs: VariantDef[] = VARIANT_DEFS,
 ): SectionVariants {
   const { simpleRouteJson } = getSimpleRouteJsonFromCircuitJson({
     circuitJson: base as never,
@@ -167,7 +181,7 @@ export function generateSectionCandidates(
 
   const connections = simpleRouteJson.connections.length;
   const candidates: RouteCandidate[] = [];
-  for (const def of VARIANT_DEFS.slice(0, Math.max(1, count))) {
+  for (const def of defs.slice(0, Math.max(1, count))) {
     try {
       const traces = runSolver(def.SolverClass, simpleRouteJson, def.effort);
       candidates.push({

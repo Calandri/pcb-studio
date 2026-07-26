@@ -7,6 +7,7 @@ import {
 } from "./route-score";
 import { straightenPinEscapes, widenThinTraces } from "./house-rules";
 import {
+  SOLVERS,
   assembleCircuit,
   findSections,
   generateSectionCandidates,
@@ -14,6 +15,7 @@ import {
   unrouteSections,
   type CircuitElement,
   type SectionInfo,
+  type VariantDef,
 } from "./variants";
 import { renderPcbPng, reviewLayout, type VisualReview } from "./vision-review";
 
@@ -182,6 +184,23 @@ function findTargets(
 }
 
 /**
+ * I candidati da provare al giro N. Ogni giro deve tentare qualcosa di DIVERSO,
+ * altrimenti ripete identico (i solver sono deterministici) e il ciclo si
+ * spegne al secondo giro qualunque sia il numero di giri concesso. Qui lo
+ * sforzo sale e i due solver si alternano: prima tentativi rapidi, poi lunghi.
+ */
+function defsForRound(round: number): VariantDef[] {
+  const efforts = [1, 5, 10, 20, 40];
+  const effort = efforts[Math.min(round - 1, efforts.length - 1)];
+  const harder = efforts[Math.min(round, efforts.length - 1)];
+  return [
+    { solver: "v6", SolverClass: SOLVERS.v6, effort },
+    { solver: "v3", SolverClass: SOLVERS.v3, effort },
+    { solver: "v6", SolverClass: SOLVERS.v6, effort: harder },
+  ];
+}
+
+/**
  * Rifa' UNA sezione: genera piu' candidati (solver e sforzi diversi), li giudica
  * col DRC come farebbero sulla scheda intera, e restituisce il migliore.
  */
@@ -190,18 +209,26 @@ function reroute(
   section: SectionInfo,
   rules: DesignRules,
   candidates: number,
+  defs: VariantDef[],
 ): CircuitElement[] | null {
   const base = unrouteSections(circuitJson, new Set([section.subcircuitId]));
-  const variants = generateSectionCandidates(base, section, candidates, rules, (traces) => {
-    try {
-      return runDrcChecks(spliceTraces(base, section.subcircuitId, traces, "loop")).reduce(
-        (n, v) => n + Math.max(1, v.points?.length ?? 1),
-        0,
-      );
-    } catch {
-      return 0;
-    }
-  });
+  const variants = generateSectionCandidates(
+    base,
+    section,
+    candidates,
+    rules,
+    (traces) => {
+      try {
+        return runDrcChecks(spliceTraces(base, section.subcircuitId, traces, "loop")).reduce(
+          (n, v) => n + Math.max(1, v.points?.length ?? 1),
+          0,
+        );
+      } catch {
+        return 0;
+      }
+    },
+    defs,
+  );
   const best = variants.candidates[variants.picked];
   if (!best) return null;
   return assembleCircuit(base, [{ section, candidate: best }]);
@@ -240,7 +267,7 @@ export async function routeBoard(
   circuitJson: CircuitElement[],
   opts: RouteOptions = {},
 ): Promise<{ circuitJson: CircuitElement[]; report: RouteReport }> {
-  const maxRounds = Math.max(1, Math.min(opts.maxRounds ?? 3, 6));
+  const maxRounds = Math.max(1, Math.min(opts.maxRounds ?? 3, 12));
   const rules = opts.rules ?? DEFAULT_DESIGN_RULES;
   const candidates = Math.max(1, Math.min(opts.candidatesPerSection ?? 3, 3));
 
@@ -296,7 +323,7 @@ export async function routeBoard(
       if (!section) continue;
       for (const reason of why) reasons.add(reason);
       try {
-        const attempt = reroute(current, section, rules, candidates);
+        const attempt = reroute(current, section, rules, candidates, defsForRound(round));
         if (!attempt) continue;
         const attemptScore = scoreCircuit(attempt);
         if (better(attemptScore, score)) {
@@ -320,7 +347,9 @@ export async function routeBoard(
 
     if (!improvedThisRound) {
       stale += 1;
-      if (stale >= 2) {
+      // ci si arrende solo dopo aver esaurito anche gli sforzi piu' alti:
+      // fermarsi al secondo giro uguale sprecherebbe i tentativi lunghi
+      if (stale >= 3 && round >= 5) {
         report.stoppedBecause = "non migliora piu'";
         break;
       }
