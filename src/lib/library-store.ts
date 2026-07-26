@@ -24,8 +24,8 @@ export async function listLibraryComponents(): Promise<
   const sql = db();
   if (!sql) return [];
   const rows = (await sql`
-    SELECT id, name, description, source, source_ref, version
-    FROM library_components ORDER BY name
+    SELECT DISTINCT ON (name) id, name, description, source, source_ref, version
+    FROM library_components ORDER BY name, version DESC, id DESC
   `) as Array<Record<string, unknown>>;
   return rows.map((r) => ({
     id: Number(r.id),
@@ -44,7 +44,8 @@ export async function getLibraryComponent(
   if (!sql) return null;
   const rows = (await sql`
     SELECT id, name, description, code, source, source_ref, version
-    FROM library_components WHERE name = ${name} LIMIT 1
+    FROM library_components WHERE name = ${name}
+    ORDER BY version DESC, id DESC LIMIT 1
   `) as Array<Record<string, unknown>>;
   if (rows.length === 0) return null;
   const r = rows[0];
@@ -63,10 +64,13 @@ export async function getLibraryComponent(
 export async function getLibraryFsMap(): Promise<Record<string, string>> {
   const sql = db();
   if (!sql) return {};
-  const rows = (await sql`SELECT name, code FROM library_components`) as Array<{
-    name: string;
-    code: string;
-  }>;
+  // DISTINCT ON: con righe duplicate per lo stesso nome, Object.fromEntries
+  // teneva quella che capitava per ultima, quindi il progetto compilava contro
+  // una versione arbitraria del componente
+  const rows = (await sql`
+    SELECT DISTINCT ON (name) name, code FROM library_components
+    ORDER BY name, version DESC, id DESC
+  `) as Array<{ name: string; code: string }>;
   return Object.fromEntries(rows.map((r) => [`lib/${r.name}.tsx`, r.code]));
 }
 
@@ -84,19 +88,35 @@ export async function saveLibraryComponent(input: {
   const sql = db();
   if (!sql) throw new Error("database not configured");
 
-  const rows = (await sql`
-    INSERT INTO library_components (name, description, code, source, source_ref)
-    VALUES (${input.name}, ${input.description}, ${input.code}, ${input.source},
-            ${input.sourceRef ?? null})
-    ON CONFLICT (org_id, name) DO UPDATE SET
-      description = EXCLUDED.description,
-      code = EXCLUDED.code,
-      source = EXCLUDED.source,
-      source_ref = EXCLUDED.source_ref,
-      version = library_components.version + 1,
+  /*
+   * L'upsert su ON CONFLICT (org_id, name) non scattava mai: org_id e' NULL
+   * per i componenti personali, e in Postgres NULL non collide con NULL, quindi
+   * l'indice unico non vedeva il conflitto. Ogni salvataggio inseriva una riga
+   * nuova con version 1 e la lettura restituiva la piu' vecchia: modificare un
+   * componente di libreria era impossibile, e il salvataggio rispondeva "ok".
+   * Update esplicito prima, insert solo se non c'era niente da aggiornare.
+   */
+  const updated = (await sql`
+    UPDATE library_components SET
+      description = ${input.description},
+      code = ${input.code},
+      source = ${input.source},
+      source_ref = ${input.sourceRef ?? null},
+      version = version + 1,
       updated_at = now()
+    WHERE name = ${input.name} AND org_id IS NULL
     RETURNING id, version
   `) as Array<{ id: number; version: number }>;
+
+  const rows =
+    updated.length > 0
+      ? updated
+      : ((await sql`
+          INSERT INTO library_components (name, description, code, source, source_ref)
+          VALUES (${input.name}, ${input.description}, ${input.code}, ${input.source},
+                  ${input.sourceRef ?? null})
+          RETURNING id, version
+        `) as Array<{ id: number; version: number }>);
 
   const { id, version } = rows[0];
   await sql`
