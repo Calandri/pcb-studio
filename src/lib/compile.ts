@@ -2,6 +2,7 @@ import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
 import { runDrcChecks, type DrcViolation } from "./drc";
+import { runPrcChecks, type PrcViolation } from "./prc";
 import type { FsMap } from "./project-store";
 import {
   assembleCircuit,
@@ -49,6 +50,8 @@ export interface CompileSummary {
   unroutedDetail: UnroutedDetail[];
   /** deterministic design-rule violations (JLCPCB defaults) */
   drcViolations: DrcViolation[];
+  /** electrical checks (Fase 3.e): decoupling, pour islands, return vias, power widths */
+  prcViolations: PrcViolation[];
   sourceTraces: number;
   pcbTraces: number;
   stats: {
@@ -290,6 +293,7 @@ function emptySummary(
     unroutedConnections: [],
     unroutedDetail: [],
     drcViolations: [],
+    prcViolations: [],
     sourceTraces: 0,
     pcbTraces: 0,
     stats: { vias: 0, totalTraceLengthMm: 0, traceLengthByLayerMm: {} },
@@ -616,6 +620,7 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
   };
 
   const drcViolations = runDrcChecks(circuitJson);
+  const prcViolations = runPrcChecks(circuitJson);
   const congestion = computeCongestion(circuitJson);
   const ratsnest = computeRatsnest(groupInfo);
 
@@ -626,7 +631,8 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
       `${unroutedConnections.length ? `, ${unroutedConnections.length} UNROUTED` : ""})` +
       `, ${stats.vias} vias, ${round1(totalTraceLengthMm)}mm routed` +
       `${ratsnest.estimatedCrossings ? `, ~${ratsnest.estimatedCrossings} ratsnest crossings` : ""}` +
-      `${drcViolations.length ? ` - ${drcViolations.length} DRC violation(s)` : " - DRC clean"}.`
+      `${drcViolations.length ? ` - ${drcViolations.length} DRC violation(s)` : " - DRC clean"}` +
+      `${prcViolations.length ? ` - ${prcViolations.length} electrical issue(s)` : ""}.`
     : `Compile finished with ${errors.length} error(s).`;
 
   return {
@@ -638,6 +644,7 @@ function summarize(circuitJson: CircuitElement[]): CompileSummary {
     unroutedConnections,
     unroutedDetail,
     drcViolations,
+    prcViolations,
     sourceTraces,
     pcbTraces,
     stats,
