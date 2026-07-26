@@ -459,11 +459,49 @@ async function compileWithLocalRouter(
 function localRouterDef(effort: number) {
   return {
     createAutorouter: (simpleRouteJson: unknown) =>
-      // AutorouterInstance is structurally compatible with BaseSolver's
-      // event API used by core (on/start); the types are not exported cleanly.
-      new AutoroutingPipelineSolver(simpleRouteJson as never, {
-        effort,
-      } as never) as never,
+      adaptSolver(
+        new AutoroutingPipelineSolver(simpleRouteJson as never, { effort } as never),
+      ) as never,
+  };
+}
+
+
+/**
+ * Il core di tscircuit pilota l'autorouter con un'API a EVENTI
+ * (`.on("complete"|"error"|"progress")` + `.start()`), mentre
+ * AutoroutingPipelineSolver espone `solve()` in modo sincrono: senza adattatore
+ * il core chiama `.on` su un oggetto che non ce l'ha e il routing salta
+ * ("activeAutorouter.on is not a function"), lasciando le connessioni aperte.
+ */
+interface SolverLike {
+  solve: () => void;
+  getOutputSimplifiedPcbTraces: () => unknown[];
+}
+
+function adaptSolver(solver: SolverLike) {
+  const handlers = new Map<string, (event: unknown) => void>();
+  let stopped = false;
+  return {
+    on(event: string, cb: (event: unknown) => void) {
+      handlers.set(event, cb);
+    },
+    start() {
+      // asincrono: gli handler vengono registrati dopo la creazione
+      queueMicrotask(() => {
+        if (stopped) return;
+        try {
+          solver.solve();
+          if (stopped) return;
+          handlers.get("complete")?.({ traces: solver.getOutputSimplifiedPcbTraces() });
+        } catch (error) {
+          handlers.get("error")?.({ error });
+        }
+      });
+    },
+    /** il core lo chiama a fine fase per liberare il router */
+    stop() {
+      stopped = true;
+    },
   };
 }
 
