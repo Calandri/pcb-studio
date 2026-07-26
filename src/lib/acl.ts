@@ -185,3 +185,13 @@ export async function setProjectVisibility(
   const sql = db();
   await sql`UPDATE projects SET visibility = ${visibility} WHERE id = ${projectId}`;
 }
+
+export async function getProjectVisibility(
+  projectId: string,
+): Promise<"private" | "org" | "link"> {
+  const sql = db();
+  const [row] = (await sql`SELECT visibility FROM projects WHERE id = ${projectId}`) as Array<{
+    visibility: string;
+  }>;
+  return (row?.visibility as "private" | "org" | "link") ?? "private";
+}

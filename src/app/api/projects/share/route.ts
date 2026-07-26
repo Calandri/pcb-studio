@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  getProjectVisibility,
   listProjectShares,
   requireProjectAccess,
   setProjectVisibility,
@@ -21,7 +22,10 @@ export async function GET(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "";
   const { ok } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
-  return Response.json({ shares: await listProjectShares(projectId) });
+  return Response.json({
+    shares: await listProjectShares(projectId),
+    visibility: await getProjectVisibility(projectId),
+  });
 }
 
 /** Condivisione con un utente, rimozione, o cambio visibilita': serve accesso in modifica. */

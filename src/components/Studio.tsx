@@ -655,7 +655,22 @@ export function Studio({
           <div className="flex h-full">
             <Sidebar
               section={section}
-              onSection={setSection}
+              onSection={(s) => {
+                // gestione = pagine piene: la sidebar resta per il flusso sulla
+                // scheda (ispeziona), le sezioni di gestione navigano alle pagine
+                const page =
+                  s === "team"
+                    ? "team"
+                    : s === "projects"
+                      ? "projects"
+                      : s === "library"
+                        ? "library"
+                        : s === "datasheets"
+                          ? "datasheets"
+                          : null;
+                if (page) window.location.href = `/${page}?project=${projectId}`;
+                else setSection(s);
+              }}
               projectId={projectId}
               user={user}
               library={library}
