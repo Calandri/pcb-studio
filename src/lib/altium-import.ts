@@ -10,6 +10,7 @@ import {
 import { buildProjectRules, DESIGN_RULES_PATH, serializeDesignRules } from "./design-rules";
 import type { Layer, ManualRoute, ManualRoutePoint } from "./manual-routes";
 import { modelli3dNativi } from "./altium-3d";
+import { schematicaNativa, type FoglioAltium } from "./altium-schematic";
 import {
   contornoNativo,
   footprintDaNativo,
@@ -709,6 +710,13 @@ export async function importAltiumProject(
   const perDesignator = new Map<string, string>();
   /** the native model of the BOARD: the only one that carries layers and nets */
   let scheda: Record<string, unknown> | null = null;
+  /**
+   * The schematic sheets, in the order the project lists them: they carry no
+   * geometry the board does not already have, but they know how the circuit was
+   * DRAWN — which block each part belongs to and which side of its symbol each
+   * pin comes out of. See altium-schematic.ts.
+   */
+  const disegni: FoglioAltium[] = [];
   /*
    * THE BOARD IS READ FIRST, whatever order the files were uploaded in.
    *
@@ -729,6 +737,7 @@ export async function importAltiumProject(
     if (!scheda && pcbNat && Array.isArray(pcbNat.tracks) && pcbNat.tracks.length > 0) {
       scheda = pcbNat;
     }
+    if (native.schematic) disegni.push({ path: file.path, native });
     for (const [nome, dati] of identityFromNative(native)) {
       const prima = identita.get(nome) ?? {};
       // the first file that says something wins: the PCB comes first and knows
@@ -871,6 +880,20 @@ export async function importAltiumProject(
     }
   }
 
+  /*
+   * The drawing, read against the components that actually made it onto the
+   * board: a sheet placed twice gives its parts a suffix (MIC_1, MIC_2) and only
+   * the board knows which copies exist, so the names come from here and never
+   * from the sheets.
+   */
+  const nomiSullaScheda = conRete
+    .filter((el) => el.type === "source_component")
+    .map((el) => String(el.name ?? "").trim())
+    .filter(Boolean);
+  const schematica = disegni.length
+    ? schematicaNativa(disegni, nomiSullaScheda)
+    : undefined;
+
   const { fsMap, components, traces } = circuitJsonToProjectFiles(conRete, {
     // the ORDERED names: the board is identical whatever order they were
     // uploaded in, and the header must say so too
@@ -879,6 +902,7 @@ export async function importAltiumProject(
     strati: nativo?.strati,
     piani: nativo?.piani.map((p) => ({ faccia: p.faccia, net: p.net })),
     corpi3d: corpi3d.size ? corpi3d : undefined,
+    schematica,
   });
   const routes = nativo ? nativo.routes : copperAsRoutes(conRete, opts.traceWidthMm ?? 0.25);
   /*
@@ -931,6 +955,10 @@ export async function importAltiumProject(
       con_codice_produttore: [...identita.values()].filter((v) => v.mpn).length,
       con_datasheet: [...identita.values()].filter((v) => v.datasheetUrl).length,
       file: files.length,
+      sezioni_schematico: schematica?.sezioni.length,
+      simboli_dal_file: schematica
+        ? [...schematica.perComponente.values()].filter((v) => v.lati).length
+        : undefined,
       ...(nativo?.stats ?? {}),
       corpi_3d: corpi3d.size,
       modelli_3d: tridi?.modelli.length,

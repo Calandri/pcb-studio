@@ -11,6 +11,8 @@
  * rebuilt inline from the pcb elements: the imported board keeps the pad
  * geometry it had, without guessing which library part it resembled.
  */
+import { disposizionePin, type LatiDelSimbolo } from "./altium-schematic";
+
 interface El {
   type: string;
   [key: string]: unknown;
@@ -324,6 +326,18 @@ export function circuitJsonToProjectFiles(
     >;
     /** the poured planes: layer plus the net they carry */
     piani?: Array<{ faccia: string; net: string }>;
+    /**
+     * HOW THE CIRCUIT WAS DRAWN, when the source CAD says so.
+     *
+     * The section each component belongs to (the sheet it was drawn on) and the
+     * sides of its symbol. Without it tscircuit lays the schematic out from
+     * nothing and produces one crowded sheet; with it the drawing comes back in
+     * the blocks its designer worked in. See altium-schematic.ts.
+     */
+    schematica?: {
+      perComponente: Map<string, { sezione?: string; lati?: LatiDelSimbolo }>;
+      sezioni: Array<{ nome: string; titolo: string }>;
+    };
   },
 ): ProjectFromCircuitJson {
   const pcbComponentBySource = new Map<string, El>();
@@ -469,8 +483,31 @@ export function circuitJsonToProjectFiles(
     const descr = [id?.produttore, id?.descrizione].filter(Boolean).join(" - ");
     const descrProp = descr ? ` description="${esc(descr).slice(0, 200)}"` : "";
 
+    /*
+     * WHERE THE PART SITS ON THE DRAWING, and how its symbol is built.
+     *
+     * Not coordinates: a section name. Pinning schX/schY turns tscircuit's
+     * schematic layout off, and a board whose symbols are laid out by hand at
+     * the source CAD's scale comes back sparse and full of wires running the
+     * width of the sheet (measured on BAT_BS: 24 crossings over 71x57 su against
+     * 7 over 56x33). The section says WHICH BLOCK the part belongs to and lets
+     * the layout do its job inside it, which is the same thing the sheets of the
+     * original schematic were.
+     */
+    const disegno = opts.schematica?.perComponente.get(name);
+    const sezioneProp = disegno?.sezione ? ` schSectionName="${disegno.sezione}"` : "";
+    /*
+     * The sides of the symbol. tscircuit halves the pins left and right in pin
+     * order, which on a 64 pin part is a column of sixty-four labels; the file
+     * knows the designer put the resets on one side and the memory bus on the
+     * other. Only for the parts that have a symbol worth reproducing — a two pin
+     * capacitor is better off with its own.
+     */
+    const disposizione = disposizionePin(disegno?.lati);
+    const pinProp = disposizione ? ` schPinArrangement={${disposizione}}` : "";
+
     componentLines.push(
-      `    <${tag} name="${name}"${valueProp}${mpnProp}${descrProp}${pos}${cad}${footprint}${labels} />`,
+      `    <${tag} name="${name}"${valueProp}${mpnProp}${descrProp}${pos}${sezioneProp}${pinProp}${cad}${footprint}${labels} />`,
     );
   }
 
@@ -556,11 +593,23 @@ export function circuitJsonToProjectFiles(
   );
   const strati = opts.strati && opts.strati > 2 ? ` layers={${opts.strati}}` : "";
 
+  /*
+   * The frames and the titles of the blocks. `schSectionName` alone packs the
+   * parts together but draws nothing around them: these are the lines and the
+   * names that make a sheet look like a schematic instead of eight clusters that
+   * happen to be near each other. The name must match the components' section
+   * exactly, so both come from the same list.
+   */
+  const sectionLines = (opts.schematica?.sezioni ?? []).map(
+    (s) =>
+      `    <schematicsection name="${s.nome}" displayName="${s.titolo.replace(/"/g, "&quot;")}" />`,
+  );
+
   const mainTsx = `// ${opts.origine}
 // ${componentLines.length} componenti, ${traceLines.length} connessioni
 export default () => (
   <board width="${r3(opts.larghezzaMm ?? bw)}mm" height="${r3(opts.altezzaMm ?? bh)}mm"${strati} autorouter="auto_cloud">
-${componentLines.join("\n")}
+${componentLines.join("\n")}${sectionLines.length ? `\n${sectionLines.join("\n")}` : ""}
 ${netLines.join("\n")}
 ${traceLines.join("\n")}${
     pourLines.length + silkLines.length > 0 ? `\n${[...pourLines, ...silkLines].join("\n")}` : ""
