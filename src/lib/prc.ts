@@ -10,6 +10,8 @@
  * loop (LLM-first: the model decides what to fix).
  */
 
+import { eMassa, ePotenza } from "./net-roles";
+
 export interface PrcViolation {
   rule: "decoupling_distance" | "pour_island" | "return_via_connector" | "power_trace_width";
   severity: "warn" | "fail";
@@ -22,8 +24,13 @@ const DECOUPLING_MAX_MM = 3;
 const RETURN_VIA_MAX_MM = 2;
 const POWER_TRACE_MIN_WIDTH_MM = 0.4;
 
-const GND_NET_RE = /^(gnd|agnd|dgnd|pgnd|gnda|gndd|vss|vssa|0v)$/i;
-const POWER_NET_RE = /^(vcc|vdd|vbat\+?|vin|vout|vrail|vbus|p3v3|p5v|\+?p?\d+v\d*)$/i;
+/*
+ * Ground and supplies are recognised by the shared classifier, not by a regex
+ * of our own: the two anchored patterns that lived here demanded a bare name,
+ * so on a board whose ground net is called `GND_2` and whose rails are
+ * `P3V3_MCU` and `VBAT_2` — which is every imported board — none of the checks
+ * below ever ran, and the report came back clean without having looked.
+ */
 
 interface El {
   type: string;
@@ -162,8 +169,8 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
     if (pads.length !== 2) continue;
     const netA = netNameOfPad(pads[0], maps);
     const netB = netNameOfPad(pads[1], maps);
-    const powerNet = [netA, netB].find((n) => n && POWER_NET_RE.test(n));
-    const gndNet = [netA, netB].find((n) => n && GND_NET_RE.test(n));
+    const powerNet = [netA, netB].find((n) => n && ePotenza(n));
+    const gndNet = [netA, netB].find((n) => n && eMassa(n));
     if (!powerNet || !gndNet) continue; // not a decoupling cap
     const powerPad = netNameOfPad(pads[0], maps) === powerNet ? pads[0] : pads[1];
     const px = num(powerPad.x);
@@ -270,7 +277,7 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
       if (ftype !== "simple_pinheader" && !/^J\d/.test(name)) continue;
       for (const pad of padsOfComponent(circuitJson, String(comp.source_component_id), maps)) {
         const net = netNameOfPad(pad, maps);
-        if (!net || !GND_NET_RE.test(net)) continue;
+        if (!net || !eMassa(net)) continue;
         const px = num(pad.x);
         const py = num(pad.y);
         if (px === null || py === null) continue;
@@ -334,7 +341,7 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
         }
       }
     }
-    if (!net || !POWER_NET_RE.test(net)) continue;
+    if (!net || !ePotenza(net)) continue;
     const route = (el.route as Array<Record<string, unknown>> | undefined) ?? [];
     const widths = route
       .filter((p) => p.route_type === "wire")

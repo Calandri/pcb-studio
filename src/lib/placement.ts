@@ -53,6 +53,8 @@ import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
  * memory, and inject the final positions into the code just once.
  */
 
+import { ePotenza } from "./net-roles";
+
 export interface PlacementViolation {
   a: string;
   b: string;
@@ -1907,7 +1909,12 @@ interface PowerPad {
   taken: number;
 }
 
-const POWER_NET = /^(v|p\d|3v3|5v|vbat|vcc|vdd|vin|vout|vbus|vsys)/i;
+/*
+ * A supply, by name. It used to be "anything starting with a v", which called
+ * a video line a power rail; it is now the same classifier the electrical
+ * checks use, so a board has the same rails wherever you look at it from.
+ */
+const POWER_NET = { test: (n: string) => ePotenza(n) };
 
 
 /**

@@ -19,6 +19,8 @@ export type ErcRule =
   | "duplicate_designator"
   | "do_not_connect";
 
+import { ruoloDiRete } from "./net-roles";
+
 export interface ErcViolation {
   rule: ErcRule;
   severity: "warn" | "fail";
@@ -60,11 +62,13 @@ export function emptyErcReport(): ErcReport {
   };
 }
 
-function netRole(name: string): "potenza" | "massa" | "segnale" {
-  if (/^(gnd|agnd|dgnd|vss)\b/i.test(name)) return "massa";
-  if (/^(v|p\d|3v3|5v|vbat|vcc|vdd|vin|vout|vbus)/i.test(name)) return "potenza";
-  return "segnale";
-}
+/*
+ * The role of a net is read by the shared classifier: the pattern that lived
+ * here wanted `GND` followed by a word boundary, and an underscore is not one,
+ * so `GND_2` — the name an imported board's ground ends up with — came out as a
+ * signal. See net-roles.ts.
+ */
+const netRole = ruoloDiRete;
 
 export function runErcChecks(circuitJson: El[]): ErcReport {
   const report = emptyErcReport();
