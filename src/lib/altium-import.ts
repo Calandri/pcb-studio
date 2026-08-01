@@ -530,14 +530,41 @@ function identityFromNative(native: Record<string, unknown>): Map<string, Compon
         const v = String(url ?? "").trim();
         if (/^https?:\/\//i.test(v)) return v;
       }
-      return cerca("datasheet", "datasheeturl");
+      // "Datasheet Link" e' un parametro come un altro: su questa scheda punta a
+      // Mouser ed era l'unico indirizzo che alcuni componenti avessero
+      return cerca("datasheet", "datasheeturl", "datasheetlink", "datasheetpdf");
     })();
 
-    const descrizione = String(c.description ?? "").trim() || cerca("description");
+    /*
+     * "No Description Available" e' il modo in cui una libreria dice che non c'e'
+     * una descrizione: metterla in distinta e' peggio che lasciare vuoto.
+     */
+    const grezza = String(c.description ?? "").trim();
+    const descrizione =
+      grezza && !/^no description available$/i.test(grezza) ? grezza : cerca("description");
+
+    /*
+     * IL CODICE DEL PRODUTTORE, quando non c'e' fra i parametri.
+     *
+     * Altium tiene in `source` il nome della parte di libreria, e nelle librerie
+     * fatte bene quel nome E' il codice: il microcontrollore e i due microfoni
+     * di questa scheda non hanno nessun parametro col codice, ma hanno
+     * source = "STM32U595RJT6Q" e "SPH0641LU4H".
+     *
+     * Solo per i componenti che vanno in distinta, e solo se somiglia a un
+     * codice: "TEST POINT SMD" e "FIDUCIAL" sono nomi di libreria, non codici.
+     */
+    const daSource = (() => {
+      const v = String(c.source ?? "").trim();
+      const genere = String(((c.componentKind ?? {}) as Record<string, unknown>).name ?? "");
+      if (!v || /no-bom/.test(genere)) return undefined;
+      if (/\s/.test(v)) return undefined;
+      return /[0-9]/.test(v) && /[A-Za-z]/.test(v) ? v : undefined;
+    })();
     const identita: ComponentIdentity = {
-      mpn: cerca("partnumber", "manufacturerpartnumber", "mpn"),
+      mpn: cerca("partnumber", "manufacturerpartnumber", "mpn") ?? daSource,
       valore: valorePulito(cerca("capacitance", "resistance", "inductance", "value"), descrizione),
-      produttore: cerca("manufacturer", "mfr", "supplier1"),
+      produttore: cerca("manufacturer", "mfr", "mfrname", "manufacturername", "supplier1"),
       descrizione,
       datasheetUrl: datasheet,
     };

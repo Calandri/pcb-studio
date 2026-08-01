@@ -42,13 +42,35 @@ async function datasheetDaLcsc(mpn: string): Promise<string | null> {
   try {
     const ricerca = new URL("https://jlcsearch.tscircuit.com/api/search");
     ricerca.searchParams.set("q", mpn);
-    ricerca.searchParams.set("limit", "1");
+    /*
+     * Piu' di un risultato, e si sceglie: cercando "ABS07-120-32.768KHZ-T" il
+     * primo risultato e' "ABS07-32.768KHZ-T", che e' un altro quarzo, e quello
+     * giusto e' il secondo. Prendere il primo e basta significava scartare la
+     * parte che c'era.
+     */
+    ricerca.searchParams.set("limit", "8");
     const res = await fetch(ricerca, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
     const dati = (await res.json()) as { components?: Array<{ lcsc?: number; mfr?: string }> };
-    const primo = dati.components?.[0];
-    // the code must be the SAME part, not something that looks like it
-    if (!primo?.lcsc || String(primo.mfr ?? "").toUpperCase() !== mpn.toUpperCase()) return null;
+    /*
+     * Deve essere la STESSA parte, non una che le somiglia. Uguale a meno della
+     * punteggiatura, oppure lo stesso codice con un suffisso di al massimo due
+     * caratteri (il microfono e' "SPH0641LU4H" e su LCSC "SPH0641LU4H-1"): oltre
+     * quella soglia si rischia di attaccare al progetto il datasheet di un altro
+     * componente, che e' peggio di non averlo.
+     */
+    const pulisci = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const cercato = pulisci(mpn);
+    const primo = (dati.components ?? []).find((c) => {
+      if (!c?.lcsc) return false;
+      const suo = pulisci(String(c.mfr ?? ""));
+      if (!suo) return false;
+      if (suo === cercato) return true;
+      const lungo = suo.length > cercato.length ? suo : cercato;
+      const corto = suo.length > cercato.length ? cercato : suo;
+      return lungo.startsWith(corto) && lungo.length - corto.length <= 2;
+    });
+    if (!primo?.lcsc) return null;
 
     const pagina = await fetch(`https://www.lcsc.com/product-detail/C${primo.lcsc}.html`, {
       signal: AbortSignal.timeout(15_000),
@@ -93,15 +115,21 @@ export async function importDatasheetsForIdentities({
   massimo?: number;
   onProgress?: (fatti: number, totale: number, mpn: string) => void;
 }): Promise<DatasheetImportResult> {
-  /** one entry per PART, not per component */
+  /**
+   * Una voce per PARTE, non per componente.
+   *
+   * Anche le parti SENZA link nel file: prima venivano saltate, e per quelle il
+   * ripiego su LCSC non partiva nemmeno. Sono le due che contano di piu' su
+   * questa scheda, il microcontrollore e il microfono, che il codice ce l'hanno
+   * e il link no.
+   */
   const perMpn = new Map<string, { url: string; titolo: string }>();
   for (const [designator, id] of identita) {
-    if (!id.datasheetUrl) continue;
     const mpn = (id.mpn ?? "").trim();
     if (!mpn) continue;
     if (perMpn.has(mpn)) continue;
     perMpn.set(mpn, {
-      url: id.datasheetUrl,
+      url: id.datasheetUrl ?? "",
       titolo: [mpn, id.produttore, id.descrizione].filter(Boolean).join(" - ").slice(0, 200) ||
         designator,
     });
@@ -126,6 +154,7 @@ export async function importDatasheetsForIdentities({
     try {
       let pdf: Awaited<ReturnType<typeof fetchDatasheetFromUrl>>;
       try {
+        if (!url) throw new Error("nessun link nel file");
         pdf = await fetchDatasheetFromUrl(url);
       } catch (primoErrore) {
         // the link in the file is dead: the part is looked up by code

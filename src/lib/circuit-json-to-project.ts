@@ -430,7 +430,26 @@ export function circuitJsonToProjectFiles(
         : /^[\d.,]+\s*[pnuµm]?h$/i.test((value ?? "").trim())
           ? "inductor"
           : null;
-    const wantedTag = FTYPE_ELEMENT[ftype] ?? daValore ?? "chip";
+    /*
+     * IL TIPO DI PARTE DAL DESIGNATOR, quando il CAD non lo dice.
+     *
+     * Altium marca tutto `simple_chip`, e un diodo scritto come chip perde il suo
+     * simbolo sullo schematico e fa dire a tscircuit "il prefisso D e' di un
+     * diodo". Il designator lo sa: e' la convenzione piu' vecchia che c'e'.
+     *
+     * Solo i tipi che non richiedono proprieta' che il file non ha: un
+     * <crystal> vuole frequenza E capacita' di carico, un <fuse> la corrente, e
+     * senza quelle il componente non si costruisce affatto — perdere la parte e'
+     * peggio che chiamarla chip.
+     */
+    const daDesignator = /^LED\d*$/i.test(name)
+      ? "led"
+      : /^D\d/i.test(name)
+        ? "diode"
+        : /^(J|CN|CON)\d/i.test(name)
+          ? "connector"
+          : null;
+    const wantedTag = FTYPE_ELEMENT[ftype] ?? daValore ?? daDesignator ?? "chip";
     const requiredProp = VALUE_PROPS[wantedTag];
     const tag = requiredProp && !value ? "chip" : wantedTag;
     /*
