@@ -1228,6 +1228,15 @@ function costruisciDaNativo(
    */
   const perGenere = new Map<string, number>();
   for (const riga of inventario(pcb, strati)) {
+    /*
+     * Vias and pads are NOT documentation, whatever layer they are filed under.
+     * Altium keeps them on Multi-Layer, which reads as a mechanical layer, and
+     * counting them here produced the line "666 mechanical primitives not
+     * imported": 640 of those were the vias, which are imported and are on the
+     * board, and 14 the through-hole pads. The line was false about 654 of its
+     * 666 and it was the first thing anybody read.
+     */
+    if (riga.tipo === "via" || riga.tipo === "pad") continue;
     perGenere.set(riga.genere, (perGenere.get(riga.genere) ?? 0) + riga.quante);
   }
   for (const [genere, quante] of perGenere) {
@@ -1257,6 +1266,32 @@ function costruisciDaNativo(
     const area = minori.reduce((a, p) => a + p.copertura, 0);
     warnings.push(
       `${minori.length} isole di rame minori non importate (${(area * 100).toFixed(1)}% della scheda in tutto)`,
+    );
+  }
+  /*
+   * WHAT IT COSTS, in pads and not in square millimetres. Copper left out is not
+   * a percentage: it is the pads that were held together by it and now are not,
+   * and that is the line whoever imports needs in order to know whether the
+   * board they are looking at behaves like the one that was made.
+   */
+  const appesi = parziali.reduce((a, p) => a + p.pad, 0);
+  if (appesi > 0) {
+    const perRete = new Map<string, number>();
+    for (const p of parziali) {
+      if (p.pad > 0) perRete.set(p.net, (perRete.get(p.net) ?? 0) + p.pad);
+    }
+    const elenco = [...perRete]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([net, n]) => `${net} (${n})`)
+      .join(", ");
+    warnings.push(
+      `${appesi} pad restano senza il rame che li teneva insieme, su ${perRete.size} reti: ${elenco}`,
+    );
+  }
+  if (rame.ponti.length > 0) {
+    warnings.push(
+      `${rame.ponti.length} net tie: sulla scheda uniscono due reti con un ponte di rame, nel progetto le reti restano distinte (${rame.ponti.map((p) => `${p.da}/${p.a}`).join(", ")})`,
     );
   }
   if (rame.senzaRete > 0) {

@@ -599,8 +599,16 @@ export function circuitJsonToProjectFiles(
      * <copperpour>: the outline is a prop, and it is what makes a split plane
      * representable at all.
      */
+    /*
+     * `boardEdgeMargin={0}` is not decoration: without it the solver keeps its
+     * own 0.2mm back from the shape it is given, and an outline read off a file
+     * comes out 0.2mm smaller all the way round. Measured on this board's power
+     * layer: 563.01mm2 drawn, 468.23mm2 poured, 94.78mm2 missing — 17% of the
+     * layer, lost to a default. The margin exists to keep copper off the edge of
+     * the BOARD; here the edge is already where the CAD put it.
+     */
     const contorno = p.contorno?.length
-      ? ` outline={[${p.contorno.map((q) => `{x:${r3(q.x)},y:${r3(q.y)}}`).join(",")}]}`
+      ? ` boardEdgeMargin={0} outline={[${p.contorno.map((q) => `{x:${r3(q.x)},y:${r3(q.y)}}`).join(",")}]}`
       : "";
     return `    <copperpour layer="${p.faccia}" connectsTo="net.${nomeDiRete(p.net)}"${contorno} />`;
   });

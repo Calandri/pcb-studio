@@ -226,6 +226,15 @@ export interface RameNativo {
   senzaRete: number;
   /** zero length slivers: not copper, leftovers of edits */
   scartate: number;
+  /** filled rectangles of copper: on this board they are the net tie bridges */
+  riempimenti: number;
+  /**
+   * The bridges, named: a net tie is a component whose two pads are on two
+   * different nets and are joined by a slab of copper. The board shorts them,
+   * the schematic keeps them apart on purpose, and whoever imports has to be
+   * told which is which.
+   */
+  ponti: Array<{ da: string; a: string }>;
 }
 
 /**
@@ -249,7 +258,16 @@ export function rameNativo(
 ): RameNativo {
   /** every route below carries this: it is copper that arrives, not copper we drew */
   const nomi = nomiDelleReti(pcb);
-  const out: RameNativo = { routes: [], tracce: 0, archi: 0, via: 0, senzaRete: 0, scartate: 0 };
+  const out: RameNativo = {
+    routes: [],
+    tracce: 0,
+    archi: 0,
+    via: 0,
+    senzaRete: 0,
+    scartate: 0,
+    riempimenti: 0,
+    ponti: [],
+  };
   const importato = true as const;
 
   const rete = (el: Record<string, unknown>): string | null => {
@@ -413,6 +431,84 @@ export function rameNativo(
       importato,
     });
     out.via++;
+  }
+
+  /*
+   * THE FILLED RECTANGLES, which on this board are the net ties.
+   *
+   * `fills` is a slab of copper with no net written on it, and nobody was
+   * reading it. Four of them here, 0.762 x 0.254mm each, one per net tie: the
+   * silkscreen beside them says "Net tie 10 mil" and each one sits astride the
+   * two pads of an NT, which is how the board shorts two nets that the schematic
+   * keeps apart. Without them the imported board is missing the only copper that
+   * makes those four pairs one node.
+   *
+   * The net is taken from the pads the slab lands on, because the fill does not
+   * carry one; when it lands on two different nets, that is a bridge and it is
+   * reported as such.
+   */
+  /** the nets of each component's pads: a fill belongs to a component, and so do they */
+  const retiDelComponente = new Map<number, string[]>();
+  for (const p of arr(pcb.pads)) {
+    const i = num(p.componentIndex);
+    const n = rete(p);
+    if (i === null || !n) continue;
+    const lista = retiDelComponente.get(i) ?? [];
+    if (!lista.includes(n)) lista.push(n);
+    retiDelComponente.set(i, lista);
+  }
+
+  for (const f of arr(pcb.fills)) {
+    const s = strati.get(num(f.layerId) ?? -1);
+    if (s?.genere !== "rame" || !s.faccia) continue;
+    const x1 = num(f.x1);
+    const y1 = num(f.y1);
+    const x2 = num(f.x2);
+    const y2 = num(f.y2);
+    if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
+    const larghezza = Math.abs(x2 - x1);
+    const altezza = Math.abs(y2 - y1);
+    if (larghezza === 0 || altezza === 0) continue;
+
+    /*
+     * The slab drawn as a run of copper: along its long side, as wide as its
+     * short one. That is the same piece of copper, said the way the rest of the
+     * board is said.
+     */
+    const orizzontale = larghezza >= altezza;
+    const spessore = Math.min(larghezza, altezza) * MIL;
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    const capoA = orizzontale
+      ? t(Math.min(x1, x2) + Math.min(larghezza, altezza) / 2, cy)
+      : t(cx, Math.min(y1, y2) + Math.min(larghezza, altezza) / 2);
+    const capoB = orizzontale
+      ? t(Math.max(x1, x2) - Math.min(larghezza, altezza) / 2, cy)
+      : t(cx, Math.max(y1, y2) - Math.min(larghezza, altezza) / 2);
+
+    /*
+     * The nets it joins: the ones of the pads of the component the fill belongs
+     * to. One net and the slab is just copper; two and it is a bridge, which is
+     * what a net tie is.
+     */
+    const reti = retiDelComponente.get(num(f.componentIndex) ?? -1) ?? [];
+    const net = rete(f) ?? reti[0] ?? null;
+    if (!net) {
+      out.senzaRete++;
+      continue;
+    }
+    if (reti.length > 1) out.ponti.push({ da: reti[0], a: reti[1] });
+    out.routes.push({
+      connection: `net.${net}`,
+      net,
+      points: [
+        { x: r3(capoA.x), y: r3(capoA.y), layer: s.faccia },
+        { x: r3(capoB.x), y: r3(capoB.y), layer: s.faccia },
+      ],
+      width: r4(spessore),
+      importato,
+    });
+    out.riempimenti++;
   }
 
   return out;
@@ -693,11 +789,24 @@ export function pianiNativi(
   areaBoardMm2: number,
 ): {
   piani: PianoImportato[];
-  parziali: Array<{ strato: string; net: string; copertura: number; motivo: string }>;
+  parziali: Array<{
+    strato: string;
+    net: string;
+    copertura: number;
+    motivo: string;
+    /** pads of that net sitting on this copper: what stays electrically loose */
+    pad: number;
+  }>;
 } {
   const nomi = nomiDelleReti(pcb);
   const piani: PianoImportato[] = [];
-  const parziali: Array<{ strato: string; net: string; copertura: number; motivo: string }> = [];
+  const parziali: Array<{
+    strato: string;
+    net: string;
+    copertura: number;
+    motivo: string;
+    pad: number;
+  }> = [];
 
   interface Candidata {
     strato: Strato;
@@ -706,6 +815,30 @@ export function pianiNativi(
     punti: Array<{ x: number; y: number }>;
   }
   const candidate: Candidata[] = [];
+
+  /*
+   * A POUR IS A POLYGON, AND A POLYGON IS MANY REGIONS.
+   *
+   * Altium splits one poured polygon into as many filled regions as it takes to
+   * go around the obstacles: the ground of one face here is thirteen pieces of
+   * the same object, and `polygonIndex` says so. Reading them one by one asks
+   * each piece to prove its own net, and a piece holding two pads cannot — nine
+   * of those thirteen have fewer than five vias in them. So the votes are pooled
+   * BY POLYGON: the pieces of one pour decide together which net they carry,
+   * which is the truth of the thing.
+   */
+  interface Voti {
+    conta: Map<string, number>;
+    /** votes from pads, which sit on the face and are the strongest evidence */
+    daPad: Map<string, number>;
+  }
+  const perPoligono = new Map<string, Voti>();
+  const regioni: Array<{
+    strato: Strato;
+    punti: Array<{ x: number; y: number }>;
+    copertura: number;
+    chiave: string;
+  }> = [];
 
   for (const r of arr(pcb.regions)) {
     const s = strati.get(num(r.layerId) ?? -1);
@@ -726,10 +859,7 @@ export function pianiNativi(
 
     /*
      * The holes: a pour is drawn with the openings for everything that must not
-     * touch it, and the vias of the OTHER nets pass through them. Counting them
-     * as if they were inside is what made the biggest piece of this board's power
-     * plane unreadable — 3V3_MCU, 8% of the board, thrown out as "cannot tell
-     * which net it is" because a dozen foreign vias crossed its cutouts.
+     * touch it, and the vias of the OTHER nets pass through them.
      */
     const buchi = arr(r.holes)
       .map((h) =>
@@ -739,41 +869,59 @@ export function pianiNativi(
       )
       .filter((h) => h.length >= 3);
 
-    /** which net the pour serves: the one whose vias and pads sit in its copper */
-    const conta = new Map<string, number>();
-    const vota = (x: number | null, y: number | null, i: number | null) => {
+    const idPoligono = num(r.polygonIndex);
+    const chiave = `${s.faccia}|${idPoligono ?? `r${regioni.length}`}`;
+    const voti = perPoligono.get(chiave) ?? { conta: new Map(), daPad: new Map() };
+    const vota = (x: number | null, y: number | null, i: number | null, pad: boolean) => {
       if (x === null || y === null || i === null) return;
       if (!dentroPoligono(x, y, punti)) return;
       if (buchi.some((h) => dentroPoligono(x, y, h))) return;
       const nome = nomi.get(i);
-      if (nome) conta.set(nome, (conta.get(nome) ?? 0) + 1);
+      if (!nome) return;
+      voti.conta.set(nome, (voti.conta.get(nome) ?? 0) + 1);
+      if (pad) voti.daPad.set(nome, (voti.daPad.get(nome) ?? 0) + 1);
     };
-    for (const v of arr(pcb.vias)) vota(num(v.x), num(v.y), num(v.netIndex));
-    for (const p of arr(pcb.pads)) vota(num(p.x), num(p.y), num(p.netIndex));
+    for (const v of arr(pcb.vias)) vota(num(v.x), num(v.y), num(v.netIndex), false);
+    for (const p of arr(pcb.pads)) vota(num(p.x), num(p.y), num(p.netIndex), true);
+    perPoligono.set(chiave, voti);
+    regioni.push({ strato: s, punti, copertura, chiave });
+  }
+
+  for (const reg of regioni) {
+    const voti = perPoligono.get(reg.chiave)!;
     /*
-     * The winner has to beat the runner-up by a factor of two, not to hold a
-     * share of the total: a plane is crossed by the vias and the pads of
-     * everything else, each isolated by its own clearance, and they are noise
+     * The winner has to beat the runner-up by a factor of two, and to have
+     * something solid behind it: a plane is crossed by the vias and the pads of
+     * everything else, each isolated by its own clearance, and that noise is
      * spread over many nets. This board's largest power region holds 34 votes
-     * for 3V3_MCU and 9 for ground, the rest ones and twos: a 60% share failed
-     * it at 56% and threw away 8% of the board's copper, while against the
-     * runner-up it wins by four to one.
+     * for 3V3_MCU and 9 for ground, the rest ones and twos.
+     *
+     * The floor keeps a single passing via from claiming a piece of copper: one
+     * vote is enough only when it comes from a PAD, which sits on the face and
+     * is soldered to it.
      */
-    const classifica = [...conta].sort((a, b) => b[1] - a[1]);
+    const classifica = [...voti.conta].sort((a, b) => b[1] - a[1]);
     const [vincitore, quante] = classifica[0] ?? [null, 0];
     const secondo = classifica[1]?.[1] ?? 0;
-    if (!vincitore || quante === 0 || quante < 2 * secondo) {
-      if (copertura > 0.001) {
+    const solido = quante >= 3 || (vincitore !== null && (voti.daPad.get(vincitore) ?? 0) >= 1);
+    if (!vincitore || !solido || quante < 2 * secondo) {
+      if (reg.copertura > 0.001) {
         parziali.push({
-          strato: s.nome,
+          strato: reg.strato.nome,
           net: vincitore ?? "(sconosciuta)",
-          copertura: r3(copertura),
+          copertura: r3(reg.copertura),
           motivo: "non si capisce a quale rete appartiene",
+          pad: voti.daPad.get(vincitore ?? "") ?? 0,
         });
       }
       continue;
     }
-    candidate.push({ strato: s, net: vincitore, copertura, punti });
+    candidate.push({
+      strato: reg.strato,
+      net: vincitore,
+      copertura: reg.copertura,
+      punti: reg.punti,
+    });
   }
 
   /*
@@ -793,19 +941,43 @@ export function pianiNativi(
     const allagata = facciaAllagata.get(faccia);
     const chiave = `${faccia}|${c.net}`;
     if (allagata === c.net) {
-      // the flood itself, once
-      if (!gia.has(chiave)) {
+      /*
+       * The flood, once, and described by its LARGEST piece: a poured plane
+       * arrives as a heap of regions — thirteen of them here for the ground of
+       * one face — and taking the first one met says the ground plane covers a
+       * tenth of a percent of the board, which is the number the person
+       * importing reads.
+       */
+      const prima = piani.find((p) => p.faccia === faccia && p.net === c.net && !p.contorno);
+      if (!prima) {
         gia.add(chiave);
         piani.push({ faccia, net: c.net, copertura: r3(c.copertura) });
+      } else if (c.copertura > prima.copertura) {
+        prima.copertura = r3(c.copertura);
       }
       continue;
     }
     if (allagata) {
+      /*
+       * How many pads of that net sit on this piece of copper: it is the number
+       * that says what leaving it out COSTS. An area in square millimetres does
+       * not tell anybody that eleven pads of a supply rail have nothing holding
+       * them together any more.
+       */
+      let pad = 0;
+      for (const p of arr(pcb.pads)) {
+        const x = num(p.x);
+        const y = num(p.y);
+        const i = num(p.netIndex);
+        if (x === null || y === null || i === null || nomi.get(i) !== c.net) continue;
+        if (dentroPoligono(x, y, c.punti)) pad++;
+      }
       parziali.push({
         strato: c.strato.nome,
         net: c.net,
         copertura: r3(c.copertura),
         motivo: `su questa faccia c'e' gia' il piano pieno di ${allagata}, che la coprirebbe`,
+        pad,
       });
       continue;
     }
