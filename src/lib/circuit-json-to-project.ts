@@ -324,8 +324,12 @@ export function circuitJsonToProjectFiles(
         altezzaMm?: number;
       }
     >;
-    /** the poured planes: layer plus the net they carry */
-    piani?: Array<{ faccia: string; net: string }>;
+    /**
+     * The poured planes: layer, the net they carry, and the outline the source
+     * CAD drew when the pour is not a flood over the whole face. A split power
+     * plane is four pours on one layer, one per rail, each with its own shape.
+     */
+    piani?: Array<{ faccia: string; net: string; contorno?: Array<{ x: number; y: number }> }>;
     /**
      * HOW THE CIRCUIT WAS DRAWN, when the source CAD says so.
      *
@@ -588,9 +592,18 @@ export function circuitJsonToProjectFiles(
    * same thing the app builds on its own boards, so from here on the imported
    * board is treated like any other.
    */
-  const pourLines = (opts.piani ?? []).map(
-    (p) => `    <copperpour layer="${p.faccia}" connectsTo="net.${nomeDiRete(p.net)}" />`,
-  );
+  const pourLines = (opts.piani ?? []).map((p) => {
+    /*
+     * With an outline the pour fills exactly the shape the file drew; without
+     * one it floods the face, which is what a ground plane does. Both are
+     * <copperpour>: the outline is a prop, and it is what makes a split plane
+     * representable at all.
+     */
+    const contorno = p.contorno?.length
+      ? ` outline={[${p.contorno.map((q) => `{x:${r3(q.x)},y:${r3(q.y)}}`).join(",")}]}`
+      : "";
+    return `    <copperpour layer="${p.faccia}" connectsTo="net.${nomeDiRete(p.net)}"${contorno} />`;
+  });
   const strati = opts.strati && opts.strati > 2 ? ` layers={${opts.strati}}` : "";
 
   /*

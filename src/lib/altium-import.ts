@@ -900,7 +900,7 @@ export async function importAltiumProject(
     origine: `Importato da Altium (${ordinati.map((f) => f.path).join(", ")})`,
     identita,
     strati: nativo?.strati,
-    piani: nativo?.piani.map((p) => ({ faccia: p.faccia, net: p.net })),
+    piani: nativo?.piani.map((p) => ({ faccia: p.faccia, net: p.net, contorno: p.contorno })),
     corpi3d: corpi3d.size ? corpi3d : undefined,
     schematica,
   });
@@ -1246,14 +1246,18 @@ function costruisciDaNativo(
    * them one by one would bury the line that counts — this board's PWR layer is
    * a plane split in four, and that is a thing the person importing must know.
    */
-  const grandi = parziali.filter((p) => p.copertura >= 0.1);
+  const grandi = parziali.filter((p) => p.copertura >= 0.01);
   for (const p of grandi) {
     warnings.push(
-      `piano parziale su ${p.strato} (rete ${p.net}, ${Math.round(p.copertura * 100)}% della scheda): un piano diviso non si puo' scrivere come <copperpour>, resta fuori`,
+      `rame non importato su ${p.strato} (rete ${p.net}, ${(p.copertura * 100).toFixed(1)}% della scheda): ${p.motivo}`,
     );
   }
   if (parziali.length > grandi.length) {
-    warnings.push(`${parziali.length - grandi.length} isole di rame minori non importate`);
+    const minori = parziali.filter((p) => p.copertura < 0.01);
+    const area = minori.reduce((a, p) => a + p.copertura, 0);
+    warnings.push(
+      `${minori.length} isole di rame minori non importate (${(area * 100).toFixed(1)}% della scheda in tutto)`,
+    );
   }
   if (rame.senzaRete > 0) {
     warnings.push(`${rame.senzaRete} primitive di rame senza rete: non importate`);

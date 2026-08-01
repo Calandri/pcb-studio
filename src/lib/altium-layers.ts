@@ -644,31 +644,68 @@ export interface PianoImportato {
   net: string;
   /** fraction of the board the pour covers, to say why it was taken */
   copertura: number;
+  /**
+   * The outline the file drew, in board millimetres, when the pour is NOT a
+   * flood over the whole face. A split power plane is exactly this: four pieces
+   * on one layer, one per rail, each with its own shape.
+   */
+  contorno?: Array<{ x: number; y: number }>;
+}
+
+/** area of a closed polygon, by the shoelace formula */
+function areaPoligono(punti: Array<{ x: number; y: number }>): number {
+  let somma = 0;
+  for (let i = 0; i < punti.length; i++) {
+    const a = punti[i];
+    const b = punti[(i + 1) % punti.length];
+    somma += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(somma / 2);
 }
 
 /**
- * The PLANES: the poured copper that carries the returns.
+ * The PLANES: the poured copper that carries the returns and the rails.
  *
  * Altium keeps a pour as a heap of filled regions with no net written on them,
- * so the net is read the way the board reads it — from what the pour connects:
- * the vias that fall inside it. On BAT_BS the pour that covers the whole board on
- * three layers has 523 GND vias inside it and a couple of dozen of anything else,
- * which is not a doubtful case.
+ * so the net is read the way the board reads it: from what falls inside — the
+ * vias AND the pads. Vias alone were not enough. Thirty-two of this board's
+ * fifty-five copper regions have fewer than five vias in them (they are the
+ * islands that hold a couple of pads up) and were dropped without a word, two
+ * hundred square millimetres of copper.
  *
- * Only pours that cover essentially the WHOLE board come in, because that is all
- * `<copperpour>` can say: it fills a layer with one net. A SPLIT plane — this
- * board's PWR layer is four pieces, VBAT / 3V3_MCU / 3V3_MIC and one more — has
- * no honest translation, so it is not invented: it is reported and left out.
+ * WHAT BECOMES A POUR. Whatever the file drew, with its own outline: a
+ * `<copperpour>` takes one, and the belief written here before — that a split
+ * plane could not be represented — was wrong, and it cost this board its entire
+ * PWR layer (563mm2 over four rails: VBAT, 3V3_MCU, 3V3_MIC and one more).
+ * Verified on @tscircuit/core: two pours on the same layer, different nets and
+ * different outlines, compile and come back as two breps with the right nets.
+ *
+ * The one thing that is NOT taken is a region on a face where another net is
+ * already poured as a FLOOD. The flood fills everything it is not told about —
+ * it carves its clearances around pads and traces, never around another pour —
+ * so an island grafted under it would be a short. Those are counted and named,
+ * not silently dropped.
  */
 export function pianiNativi(
   pcb: Record<string, unknown>,
   strati: Map<number, Strato>,
   t: Trasforma,
   areaBoardMm2: number,
-): { piani: PianoImportato[]; parziali: Array<{ strato: string; net: string; copertura: number }> } {
+): {
+  piani: PianoImportato[];
+  parziali: Array<{ strato: string; net: string; copertura: number; motivo: string }>;
+} {
   const nomi = nomiDelleReti(pcb);
-  const piani = new Map<string, PianoImportato>();
-  const parziali: Array<{ strato: string; net: string; copertura: number }> = [];
+  const piani: PianoImportato[] = [];
+  const parziali: Array<{ strato: string; net: string; copertura: number; motivo: string }> = [];
+
+  interface Candidata {
+    strato: Strato;
+    net: string;
+    copertura: number;
+    punti: Array<{ x: number; y: number }>;
+  }
+  const candidate: Candidata[] = [];
 
   for (const r of arr(pcb.regions)) {
     const s = strati.get(num(r.layerId) ?? -1);
@@ -678,50 +715,113 @@ export function pianiNativi(
       .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null);
     if (punti.length < 3) continue;
 
-    const xs = punti.map((p) => p.x);
-    const ys = punti.map((p) => p.y);
+    /*
+     * How much of the board it covers, by AREA and not by bounding box. The box
+     * of a plane that hugs the outline of an L shaped board says 46% where the
+     * copper is 6%, and that number both decided what came in and was printed
+     * for whoever was reading.
+     */
     const copertura =
-      areaBoardMm2 > 0
-        ? ((Math.max(...xs) - Math.min(...xs)) *
-            (Math.max(...ys) - Math.min(...ys)) *
-            MIL *
-            MIL) /
-          areaBoardMm2
-        : 0;
+      areaBoardMm2 > 0 ? (areaPoligono(punti) * MIL * MIL) / areaBoardMm2 : 0;
 
-    /** which net the pour serves: the one whose vias sit in it */
+    /*
+     * The holes: a pour is drawn with the openings for everything that must not
+     * touch it, and the vias of the OTHER nets pass through them. Counting them
+     * as if they were inside is what made the biggest piece of this board's power
+     * plane unreadable — 3V3_MCU, 8% of the board, thrown out as "cannot tell
+     * which net it is" because a dozen foreign vias crossed its cutouts.
+     */
+    const buchi = arr(r.holes)
+      .map((h) =>
+        arr(Array.isArray(h) ? h : (h.points ?? h.vertices))
+          .map((p) => ({ x: num(p.x), y: num(p.y) }))
+          .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null),
+      )
+      .filter((h) => h.length >= 3);
+
+    /** which net the pour serves: the one whose vias and pads sit in its copper */
     const conta = new Map<string, number>();
-    for (const v of arr(pcb.vias)) {
-      const x = num(v.x);
-      const y = num(v.y);
-      const i = num(v.netIndex);
-      if (x === null || y === null || i === null) continue;
-      if (!dentroPoligono(x, y, punti)) continue;
+    const vota = (x: number | null, y: number | null, i: number | null) => {
+      if (x === null || y === null || i === null) return;
+      if (!dentroPoligono(x, y, punti)) return;
+      if (buchi.some((h) => dentroPoligono(x, y, h))) return;
       const nome = nomi.get(i);
       if (nome) conta.set(nome, (conta.get(nome) ?? 0) + 1);
-    }
-    const [vincitore, quante] = [...conta].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
-    const totale = [...conta.values()].reduce((a, b) => a + b, 0);
-    if (!vincitore || quante < 5 || quante / totale < 0.6) continue;
-
-    if (copertura < 0.9) {
-      parziali.push({ strato: s.nome, net: vincitore, copertura: r3(copertura) });
+    };
+    for (const v of arr(pcb.vias)) vota(num(v.x), num(v.y), num(v.netIndex));
+    for (const p of arr(pcb.pads)) vota(num(p.x), num(p.y), num(p.netIndex));
+    /*
+     * The winner has to beat the runner-up by a factor of two, not to hold a
+     * share of the total: a plane is crossed by the vias and the pads of
+     * everything else, each isolated by its own clearance, and they are noise
+     * spread over many nets. This board's largest power region holds 34 votes
+     * for 3V3_MCU and 9 for ground, the rest ones and twos: a 60% share failed
+     * it at 56% and threw away 8% of the board's copper, while against the
+     * runner-up it wins by four to one.
+     */
+    const classifica = [...conta].sort((a, b) => b[1] - a[1]);
+    const [vincitore, quante] = classifica[0] ?? [null, 0];
+    const secondo = classifica[1]?.[1] ?? 0;
+    if (!vincitore || quante === 0 || quante < 2 * secondo) {
+      if (copertura > 0.001) {
+        parziali.push({
+          strato: s.nome,
+          net: vincitore ?? "(sconosciuta)",
+          copertura: r3(copertura),
+          motivo: "non si capisce a quale rete appartiene",
+        });
+      }
       continue;
     }
-    const chiave = `${s.faccia}|${vincitore}`;
-    if (!piani.has(chiave)) piani.set(chiave, { faccia: s.faccia, net: vincitore, copertura: r3(copertura) });
+    candidate.push({ strato: s, net: vincitore, copertura, punti });
   }
-  return { piani: [...piani.values()], parziali };
+
+  /*
+   * A flood is a region that covers its face whole: it is written without an
+   * outline, tscircuit fills the board with it, and it is what a ground plane
+   * is. Its face is then closed to everybody else.
+   */
+  const facciaAllagata = new Map<string, string>();
+  for (const c of candidate) {
+    if (c.copertura < 0.9) continue;
+    if (!facciaAllagata.has(c.strato.faccia!)) facciaAllagata.set(c.strato.faccia!, c.net);
+  }
+
+  const gia = new Set<string>();
+  for (const c of candidate) {
+    const faccia = c.strato.faccia!;
+    const allagata = facciaAllagata.get(faccia);
+    const chiave = `${faccia}|${c.net}`;
+    if (allagata === c.net) {
+      // the flood itself, once
+      if (!gia.has(chiave)) {
+        gia.add(chiave);
+        piani.push({ faccia, net: c.net, copertura: r3(c.copertura) });
+      }
+      continue;
+    }
+    if (allagata) {
+      parziali.push({
+        strato: c.strato.nome,
+        net: c.net,
+        copertura: r3(c.copertura),
+        motivo: `su questa faccia c'e' gia' il piano pieno di ${allagata}, che la coprirebbe`,
+      });
+      continue;
+    }
+    piani.push({
+      faccia,
+      net: c.net,
+      copertura: r3(c.copertura),
+      contorno: c.punti.map((p) => {
+        const q = t(p.x, p.y);
+        return { x: r3(q.x), y: r3(q.y) };
+      }),
+    });
+  }
+  return { piani, parziali };
 }
 
-/**
- * The layer table Altium uses when the file does not carry one.
- *
- * A .PcbLib has no stack: it is a box of footprints, and its primitives quote
- * the LEGACY layer ids, which are fixed — 1 is the top copper, 32 the bottom, 33
- * and 34 the two silkscreens, and so on. The board files carry the same table in
- * `primitiveLayers`, renamed where the designer renamed a mechanical layer.
- */
 export function stratiPredefiniti(): Map<number, Strato> {
   const out = new Map<number, Strato>();
   out.set(1, { genere: "rame", faccia: "top", lato: "top", nome: "TOP" });
