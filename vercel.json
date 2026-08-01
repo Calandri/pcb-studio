@@ -1,0 +1,8 @@
+{
+  "regions": ["fra1"],
+  "functions": {
+    "src/app/api/compile/route.ts": {
+      "memory": 3009
+    }
+  }
+}

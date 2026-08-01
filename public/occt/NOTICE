@@ -1,0 +1,13 @@
+occt-import-js
+==============
+
+The files in this directory (occt-import-js.js, occt-import-js.wasm) are a
+vendored copy of occt-import-js, https://github.com/kovacsv/occt-import-js,
+Copyright (C) Viktor Kovacs (kovacsv) and contributors.
+
+occt-import-js is licensed under the GNU Lesser General Public License,
+version 2.1 (see LICENSE.md in this directory). It embeds Open CASCADE
+Technology, which is licensed under LGPL-2.1 with additional permissions
+(https://dev.opencascade.org/resources/licensing).
+
+The sources and any modifications are available at the upstream repository.

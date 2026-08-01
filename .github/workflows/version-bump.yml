@@ -1,0 +1,51 @@
+name: Version bump
+
+on:
+  push:
+    branches: [main]
+
+# one bump at a time: if two pushes land together, the first wins and the
+# second replays on top of it
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    # the bump commit itself must not retrigger the loop
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Bump version from the commit kind
+        id: bump
+        run: |
+          set -e
+          msg="${{ github.event.head_commit.message }}"
+          # feat* → minor, everything else → patch
+          if echo "$msg" | grep -qiE '^feat'; then part=minor; else part=patch; fi
+          old=$(node -p "require('./package.json').version")
+          npm version "$part" --no-git-tag-version
+          new=$(node -p "require('./package.json').version")
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "part=$part" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, tag and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "chore(release): v${{ steps.bump.outputs.new }} [skip ci]"
+          git tag "v${{ steps.bump.outputs.new }}"
+          git push origin main --follow-tags

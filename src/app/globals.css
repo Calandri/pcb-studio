@@ -1,0 +1,217 @@
+/*
+ * Tailwind imported in three pieces instead of a single @import, for a precise
+ * reason: on mount, runframe injects a Tailwind v3 preflight WITHOUT cascade
+ * layers, which contains `*, ::after, ::before { border: 0 solid }`.
+ * Non-layered rules beat any @layer, so that reset wiped out the borders of
+ * the whole app (panels, cards, tab pills) as soon as the viewer opened.
+ * Keeping the utilities OUTSIDE the utilities layer makes them win by
+ * specificity (class > universal selector) and the borders survive.
+ *
+ * source(../../src) = only src/ is scanned for classes: the default heuristic
+ * walks into node_modules and chokes on tscircuit's minified bundles.
+ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" source("../../src");
+
+/*
+ * PCB Studio: dark workspace, the board canvas in the center and everything
+ * else (what I am looking at, what is wrong, how much it costs) around it,
+ * always readable.
+ */
+:root {
+  /* workspace palette: near-black greens, always readable */
+  --canvas: #070A09;
+  --surface: #0C1211;
+  --surface-sunken: #0A0F0E;
+  --panel-raised: #0E1615;
+  --line: #1B2523;
+  --line-strong: #22302C;
+
+  --text: #E7EFEC;
+  --text-muted: #8A9C96;
+  --text-faint: #6E827C;
+
+  --brand: #3BE8B0;
+  /* text on top of the brand green: the green is light, white is unreadable */
+  --ink: #06110D;
+  --brand-strong: #2C9C77;
+  --brand-wash: #17241F;
+  --accent: #E8B23B;
+  --accent-wash: #16130C;
+  --danger: #FF6B5A;
+  --danger-wash: #160F0F;
+  --copper: #D9932F;
+  --copper-light: #F2C078;
+  --blue: #7FB4FF;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 12px 30px rgba(0, 0, 0, 0.6);
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-sunken: var(--surface-sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-brand: var(--brand);
+  --color-ink: var(--ink);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-wash: var(--brand-wash);
+  --color-accent: var(--accent);
+  --color-accent-wash: var(--accent-wash);
+  --color-danger: var(--danger);
+  --color-danger-wash: var(--danger-wash);
+  --color-copper: var(--copper);
+  --color-copper-light: var(--copper-light);
+  --color-blue: var(--blue);
+  --color-raised: var(--panel-raised);
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+}
+
+html,
+body {
+  background: var(--canvas);
+  color: var(--text);
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+}
+
+/* Section label: small, letter-spaced, always above a group. */
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* Agent status dot. */
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: none;
+}
+.dot-idle {
+  background: var(--text-faint);
+}
+.dot-busy {
+  background: var(--accent);
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+.dot-live {
+  background: var(--brand);
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.slide-in {
+  animation: slide-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+
+/*
+ * Internal toolbar of the PCB viewer (layer / errors / Edit Traces / Move
+ * Components / Rats Nest / Bounds / View). It is hidden: the same commands
+ * live in our own editor bar, and overlapped they were unreadable.
+ * Its buttons are <div>s with no classes and INLINE styles, so they are
+ * matched from the style itself; if the package changes those styles the bar
+ * simply reappears, nothing breaks.
+ */
+.viewer-shell div[style*="user-select: none"][style*="border-radius: 2px"] {
+  display: none !important;
+}
+
+/*
+ * Markers on the board: the viewer draws a red diamond for each error
+ * (an <svg> in mix-blend-mode difference above the canvas). Standing still it
+ * gets lost among the copper; pulsing it is spotted at once. If the package
+ * changes the inline style the diamond just goes back to static.
+ */
+@keyframes drc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+/* opacity only: this way it applies both to our circle and to the diamond of
+   the old viewer, which stays visible in edit modes */
+.drc-marker,
+.viewer-shell svg[style*="mix-blend-mode: difference"] > rect {
+  animation: drc-pulse 1.6s ease-in-out infinite;
+}
+
+/*
+ * Runframe tab bar: it shows a single pill (the tab is chosen by our header)
+ * plus two icons of its own. It is noise above the canvas, so it is hidden.
+ * If runframe changes the classes the bar reappears: no harm done.
+ */
+.viewer-shell .rf-flex.rf-items-center.rf-gap-2.rf-p-2.rf-pb-0 {
+  display: none !important;
+}
+
+

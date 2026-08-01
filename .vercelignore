@@ -1,0 +1,8 @@
+# Cosa NON deve viaggiare a ogni deploy. Vercel non applica .gitignore quando
+# carica i file, quindi le cartelle di lavoro vanno escluse qui: senza, il
+# pacchetto supera i 10 MB consentiti e il deploy viene rifiutato in partenza.
+.scratch
+.tmp
+*.log
+tsconfig.tsbuildinfo
+scripts-read-batbs.mjs

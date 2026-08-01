@@ -1,0 +1,22 @@
+diff --git a/dist/index.js b/dist/index.js
+index 250882313adea8cb51d908ec4f96ce11a319bb7e..5899888c594860a80065a1f852cfa4fdb8a1cef7 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -5140,14 +5140,9 @@ var require_js = __commonJS({
+       beautify.html_beautify = html_beautify.html_beautify;
+       return beautify;
+     }
+-    if (typeof define === "function" && define.amd) {
+-      define([
+-        "./lib/beautify",
+-        "./lib/beautify-css",
+-        "./lib/beautify-html"
+-      ], function(js_beautify, css_beautify, html_beautify) {
+-        return get_beautify(js_beautify, css_beautify, html_beautify);
+-      });
++    if (false) {
++      /* AMD branch removed: bundlers (turbopack) statically resolve the
++         define() deps "./lib/beautify*" which do not exist in this bundle */
+     } else {
+       (function(mod) {
+         var beautifier = require_src();

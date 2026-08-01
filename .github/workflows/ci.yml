@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: npx tsc --noEmit
+
+      - run: pnpm lint
+
+      - run: pnpm build
+        env:
+          # the build must pass without real secrets; Next only needs these to exist
+          DATABASE_URL: postgres://user:pass@localhost:5432/db
+          AUTH_SECRET: ci-dummy-secret

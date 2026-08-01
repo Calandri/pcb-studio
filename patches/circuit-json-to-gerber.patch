@@ -1,0 +1,16 @@
+diff --git a/dist/chunk-2INVOBQL.js b/dist/chunk-2INVOBQL.js
+index b566e49b407b9d0bb9636d08f0c507e1acf1f5a2..ca3dbbe9b71358a374291a405e386ca44341781a 100644
+--- a/dist/chunk-2INVOBQL.js
++++ b/dist/chunk-2INVOBQL.js
+@@ -2362,7 +2362,10 @@ var layerTypeToGerberSuffix = {
+ var getGerberLayerName = (layer_ref, layer_type) => {
+   if (layer_ref === "edgecut") return "Edge_Cuts";
+   if (layer_ref.startsWith("inner") && layer_type !== "copper") {
+-    throw new Error(`Inner layer ${layer_ref} only supports copper gerbers`);
++    /* patched: plated holes/vias iterate every copper layer and ask for the
++       soldermask glayer; inner layers have none. Return a key that is not in
++       glayers so lookups resolve to undefined instead of crashing. */
++    return `${"In" + layer_ref.slice(5) + "_"}${layerTypeToGerberSuffix[layer_type]}__nonexistent`;
+   }
+   const prefix = layer_ref.startsWith("inner") ? `In${layer_ref.slice("inner".length)}_` : outerLayerRefToGerberPrefix[layer_ref];
+   return `${prefix}${layerTypeToGerberSuffix[layer_type]}`;
