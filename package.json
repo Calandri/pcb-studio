@@ -65,6 +65,7 @@
     "next": "16.2.11",
     "next-auth": "5.0.0-beta.32",
     "occt-import-js": "0.0.23",
+    "posthog-js": "^1.253.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-error-boundary": "^6.0.0",
