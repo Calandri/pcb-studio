@@ -802,7 +802,7 @@ export async function importAltiumProject(
   const nativo = scheda ? costruisciDaNativo(scheda, merged, opts.traceWidthMm ?? 0.25) : null;
   if (nativo) warnings.push(...nativo.warnings);
 
-  const senzaFantasmi = soloQuelloCheStaSullaScheda(merged);
+  const senzaFantasmi = soloQuelloCheStaSullaScheda(merged, nativo?.nomiDellePorte.values() ?? []);
   warnings.push(...senzaFantasmi.warnings);
   const base = nativo
     ? // the copper of the flattened model goes: it is rebuilt below, on its real
@@ -1017,7 +1017,17 @@ function indiciDeiComponenti(pcb: Record<string, unknown>): Map<number, string> 
  * said out loud: if a real part is missing from the layout, whoever imports must
  * find that out from the import, not from the fab.
  */
-function soloQuelloCheStaSullaScheda(cj: El[]): { elementi: El[]; warnings: string[] } {
+function soloQuelloCheStaSullaScheda(
+  cj: El[],
+  /**
+   * The REAL names of the pads, which at this point the elements do not carry
+   * yet: the flattened model still names every port with a counter, and the
+   * shield pads of the microSD are called SM1..SM4 only in the file. Without
+   * them the check below cannot tell that the `SM1` of the schematic is a pad of
+   * J4 and reports it as a missing component.
+   */
+  nomiVeriDeiPad: Iterable<string> = [],
+): { elementi: El[]; warnings: string[] } {
   const conGeometria = new Set<string>();
   for (const el of cj) {
     if (el.type === "pcb_component" && el.source_component_id) {
@@ -1053,8 +1063,37 @@ function soloQuelloCheStaSullaScheda(cj: El[]): { elementi: El[]; warnings: stri
     return true;
   });
 
-  /** the real parts among them: the ones with a designator worth reading */
-  const nomi = [...fuori.values()].filter((n) => /^[A-Za-z]{1,3}\d+$/.test(n));
+  /*
+   * The real parts among them, and this list has to be RIGHT: whoever imports a
+   * board reads "these components seem real and are not there" and goes looking
+   * for what broke. On BAT_BS it named seven and all seven were on the board:
+   *
+   *  - C30, C31, R18 come from a sheet placed twice, so the board calls them
+   *    C30_1 and C30_2 — the name on the sheet exists nowhere as such;
+   *  - SM1..SM4 are the shield pads of the microSD, drawn on the schematic as
+   *    one pin symbols and living on the board as pads of J4.
+   *
+   * So a name is only reported when the board has nothing that could be it:
+   * neither the name itself, nor a numbered copy of it, nor a pad carrying it.
+   */
+  const suiPad = new Set<string>(nomiVeriDeiPad);
+  for (const el of cj) {
+    if (el.type !== "source_port") continue;
+    if (portiFuori.has(String(el.source_port_id ?? ""))) continue;
+    const nome = String(el.name ?? "").trim();
+    if (nome) suiPad.add(nome);
+  }
+  const sullaScheda = new Set<string>();
+  for (const el of cj) {
+    if (el.type !== "source_component" || fuori.has(String(el.source_component_id ?? ""))) continue;
+    const nome = String(el.name ?? "").trim();
+    if (nome) sullaScheda.add(nome);
+  }
+  const esiste = (n: string): boolean =>
+    sullaScheda.has(n) ||
+    suiPad.has(n) ||
+    [...sullaScheda].some((s) => new RegExp(`^${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_\\d+$`).test(s));
+  const nomi = [...fuori.values()].filter((n) => /^[A-Za-z]{1,3}\d+$/.test(n) && !esiste(n));
   const warnings = [
     `${fuori.size} elementi degli schemi non stanno sulla scheda e non sono stati importati` +
       (nomi.length ? `; fra questi ${nomi.length} sembrano componenti veri: ${nomi.join(", ")}` : ""),

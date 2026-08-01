@@ -535,7 +535,92 @@ export function serigrafiaNativa(
       ccw_rotation: num(te.rotation) ?? 0,
     });
   }
+
+  /*
+   * THE FILLED SHAPES: the logo, and the little marks.
+   *
+   * Silkscreen is not only lines and letters. Fifty-one shapes of this board are
+   * `regions` — filled polygons — and reading only tracks, arcs and texts left
+   * them out without a word: the customer's logo (a 2161 vertex outline of
+   * "XNATURA - Environmental Technologies" plus a leaf, 100mm2, 2.8% of the
+   * board), the pin one triangle of J2 and six marks on the microcontroller.
+   * A board that comes back without its own name printed on it is not the same
+   * board.
+   *
+   * They are drawn as a CLOSED PATH and not as a filled shape, because that is
+   * what the format has: the outline of a logo reads as the logo, and it is the
+   * same thing a stencil of it would say.
+   */
+  for (const re of arr(pcb.regions)) {
+    const s = strati.get(num(re.layerId) ?? -1);
+    if (s?.genere !== "serigrafia") continue;
+    const punti = arr(re.points)
+      .map((p) => ({ x: num(p.x), y: num(p.y) }))
+      .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null)
+      .map((p) => {
+        const q = t(p.x, p.y);
+        return { x: r3(q.x), y: r3(q.y) };
+      });
+    if (punti.length < 3) continue;
+    /*
+     * Simplified before writing: these outlines come out of a vector drawing and
+     * carry a vertex every few microns — seven thousand of them, a hundred and
+     * thirty kilobytes of coordinates on top of a project that is one hundred
+     * and eighty. A twentieth of a millimetre is half the width of the thinnest
+     * silkscreen line a fab will print, so nothing that can be seen is lost.
+     */
+    const ridotti = semplifica(punti, 0.015);
+    const chiuso =
+      ridotti[0].x === ridotti[ridotti.length - 1].x &&
+      ridotti[0].y === ridotti[ridotti.length - 1].y
+        ? ridotti
+        : [...ridotti, ridotti[0]];
+    out.push({
+      type: "pcb_silkscreen_path",
+      layer: s.lato,
+      designator: proprietario(re),
+      route: chiuso,
+      stroke_width: 0.1,
+    });
+  }
   return out;
+}
+
+/**
+ * Douglas-Peucker: drops the vertices that sit on the line between their
+ * neighbours, within a tolerance. Written here because it is needed here and
+ * nowhere else, and because the alternative — a dependency for forty lines — is
+ * not one.
+ */
+function semplifica(
+  punti: Array<{ x: number; y: number }>,
+  tolleranza: number,
+): Array<{ x: number; y: number }> {
+  if (punti.length <= 2) return punti;
+  const a = punti[0];
+  const b = punti[punti.length - 1];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lung = Math.hypot(dx, dy);
+  let peggiore = 0;
+  let indice = 0;
+  for (let i = 1; i < punti.length - 1; i++) {
+    const p = punti[i];
+    // distance from the segment, or from the point when the segment is a point
+    const d =
+      lung < 1e-9
+        ? Math.hypot(p.x - a.x, p.y - a.y)
+        : Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / lung;
+    if (d > peggiore) {
+      peggiore = d;
+      indice = i;
+    }
+  }
+  if (peggiore <= tolleranza) return [a, b];
+  return [
+    ...semplifica(punti.slice(0, indice + 1), tolleranza).slice(0, -1),
+    ...semplifica(punti.slice(indice), tolleranza),
+  ];
 }
 
 const dentroPoligono = (
