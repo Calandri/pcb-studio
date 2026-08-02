@@ -1,7 +1,8 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
-import { getCompileCache, saveCompileCache } from "@/lib/project-store";
+import { withLibrary } from "@/lib/agent-tools";
+import { getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -36,7 +37,17 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   try {
-    const summary = summarizeCircuit(cache.circuitJson);
+    /*
+     * WITH THE SOURCES. summarizeCircuit reads the footprint of each component
+     * from the project code — the string never reaches the Circuit JSON — so
+     * calling it without them wiped the footprint provenance of every component
+     * at each recheck: 98 records became zero, and the board looked like nobody
+     * knew where its footprints came from.
+     */
+    const summary = summarizeCircuit(
+      cache.circuitJson,
+      await withLibrary(await getProject(projectId)),
+    );
     await saveCompileCache(
       projectId,
       cache.filesHash,

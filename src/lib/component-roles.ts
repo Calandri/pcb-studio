@@ -15,6 +15,8 @@
  * filter, and for that one you can even say where it cuts.
  */
 
+import { eMassa, ePotenza, ruoloDiRete } from "./net-roles";
+
 export interface ComponentRole {
   /** one line: what it is */
   role: string;
@@ -30,8 +32,13 @@ interface El {
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 
-const POWER_RE = /^(v|p\d|3v3|5v|vbat|vcc|vdd|vin|vout|vbus|vsys)/i;
-const GROUND_RE = /^(gnd|agnd|dgnd|vss)\b/i;
+/*
+ * Ground and supplies by the shared classifier, like everywhere else: the two
+ * patterns that lived here wanted a bare name, and on an imported board the
+ * ground net is called GND_2 and the rails P3V3_MCU. See net-roles.ts.
+ */
+const POWER_RE = { test: (n: string) => ePotenza(n) };
+const GROUND_RE = { test: (n: string) => eMassa(n) };
 
 /** value in farads/ohms from "100nF" / "4.7k" / a bare number */
 function parseValue(raw: unknown): number | null {
@@ -97,6 +104,20 @@ export function inferRoles(circuitJson: unknown[] | null): Map<string, Component
   /** for each component: the nets it touches and the components it is in contact with */
   const nets = new Map<string, Set<string>>();
   const neighbours = new Map<string, Set<string>>();
+  /*
+   * WHO IS NEXT TO WHOM, read from the NET and not from the single connection.
+   *
+   * A trace that hangs one pin on a named net owns one port and nobody else, so
+   * taking the owners of each trace one at a time left every component without
+   * neighbours — and an imported board is written exactly that way, one pin per
+   * trace. That is why every one of this board's 98 components came out with the
+   * fallback role: a decoupling capacitor is recognised by what it sits next to,
+   * and nothing sat next to anything.
+   *
+   * Two components are neighbours when they share a net that is not a rail: a
+   * hundred parts on ground are not neighbours, they are all on ground.
+   */
+  const perRete = new Map<string, Set<string>>();
   for (const el of elements) {
     if (el.type !== "source_trace") continue;
     const ports = (el.connected_source_port_ids as string[] | undefined) ?? [];
@@ -111,6 +132,21 @@ export function inferRoles(circuitJson: unknown[] | null): Map<string, Component
       const near = neighbours.get(owner) ?? new Set<string>();
       for (const other of owners) if (other !== owner) near.add(other);
       neighbours.set(owner, near);
+    }
+    for (const label of netLabels) {
+      const set = perRete.get(label) ?? new Set<string>();
+      for (const owner of owners) set.add(owner);
+      perRete.set(label, set);
+    }
+  }
+  for (const [rete, membri] of perRete) {
+    // a rail joins everything: on it nobody is anybody's neighbour
+    if (ruoloDiRete(rete) !== "segnale") continue;
+    if (membri.size > 8) continue;
+    for (const uno of membri) {
+      const near = neighbours.get(uno) ?? new Set<string>();
+      for (const altro of membri) if (altro !== uno) near.add(altro);
+      neighbours.set(uno, near);
     }
   }
 
