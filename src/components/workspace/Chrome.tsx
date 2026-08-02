@@ -3,13 +3,14 @@
 import type { BoardReport } from "@/lib/board-report";
 import { LogoMark } from "../Logo";
 
-export type BoardTab = "schematic" | "pcb" | "cad" | "bom";
+export type BoardTab = "schematic" | "pcb" | "cad" | "bom" | "stato";
 
 const TABS: Array<{ key: BoardTab; label: string }> = [
   { key: "schematic", label: "Schematico" },
   { key: "pcb", label: "Sbroglio" },
   { key: "cad", label: "3D" },
   { key: "bom", label: "Distinta" },
+  { key: "stato", label: "Stato" },
 ];
 
 export function Header({

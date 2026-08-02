@@ -18,6 +18,7 @@ import { LeftRail, type SchematicSummary, type SheetNet } from "./workspace/Left
 import { extractComponents } from "@/lib/inspect";
 import { applyManualEditsToFsMap } from "@/lib/manual-edits";
 import { BomView } from "./workspace/BomView";
+import { StatusView } from "./workspace/StatusView";
 import { PartCard } from "./workspace/PartCard";
 import { PartPicker } from "./workspace/PartPicker";
 import { ClaudeWork } from "./workspace/ClaudeWork";
@@ -1343,6 +1344,8 @@ export function Studio({
                 )
               ) : tab === "bom" ? (
                 <BomView projectId={projectId} />
+              ) : tab === "stato" ? (
+                <StatusView projectId={projectId} />
               ) : tab === "schematic" ? (
                 <SchematicView
                   circuitJson={circuitJson}
@@ -1379,7 +1382,9 @@ export function Studio({
                 mainComponentPath="main.tsx"
                 showRunButton={false}
                 availableTabs={["schematic", "pcb", "cad", "bom"]}
-                defaultActiveTab={tab}
+                // the fallback viewer knows nothing about our own views: on
+                // those it opens on the board, which is the closest thing it has
+                defaultActiveTab={tab === "stato" ? "pcb" : tab}
               />
             ) : (
               <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
@@ -1699,6 +1704,7 @@ const TAB_TITLES: Record<BoardTab, string> = {
   pcb: "Sbroglio",
   cad: "Vista 3D",
   bom: "Distinta base",
+  stato: "Stato dei componenti",
 };
 
 const TAB_CAPTIONS: Record<BoardTab, string> = {
@@ -1706,6 +1712,7 @@ const TAB_CAPTIONS: Record<BoardTab, string> = {
   pcb: "",
   cad: "vista 3D",
   bom: "distinta base",
+  stato: "stato dei componenti",
 };
 
 const TAB_BODIES: Record<BoardTab, string> = {
@@ -1713,6 +1720,7 @@ const TAB_BODIES: Record<BoardTab, string> = {
   pcb: "",
   cad: "La scheda come sarà una volta montata, con gli ingombri veri dei componenti.",
   bom: "L'elenco dei componenti da comprare, con codice fornitore e quantità.",
+  stato: "A che punto è ogni componente: footprint controllato, datasheet, errata, a cosa serve qui, collegamenti.",
 };
 
 function layerCaption(layer: string): string {
