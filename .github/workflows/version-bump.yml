@@ -29,9 +29,17 @@ jobs:
 
       - name: Bump version from the commit kind
         id: bump
+        # The message travels in the ENVIRONMENT, never interpolated into the
+        # script: written as ${{ }} inside `run` it is pasted into the shell and
+        # executed. A commit that mentioned `<footprint name="...">` was read as a
+        # redirect and broke the build ("footprint: No such file or directory"),
+        # and a commit message is something anybody with push rights can write:
+        # the same hole runs whatever it says.
+        env:
+          MSG: ${{ github.event.head_commit.message }}
         run: |
           set -e
-          msg="${{ github.event.head_commit.message }}"
+          msg="$MSG"
           # feat* → minor, everything else → patch
           if echo "$msg" | grep -qiE '^feat'; then part=minor; else part=patch; fi
           old=$(node -p "require('./package.json').version")
