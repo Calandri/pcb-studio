@@ -7,7 +7,7 @@ import {
   importAltiumLibrary,
   importAltiumProject,
 } from "./altium-import";
-import { importDatasheetsForIdentities } from "./altium-datasheets";
+import { codiciLcsc, importDatasheetsForIdentities } from "./altium-datasheets";
 import { resolveDesignRules } from "./design-rules";
 import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { saveLibraryComponent } from "./library-store";
@@ -45,6 +45,8 @@ export interface AltiumImportReport {
   footprint: number;
   librerie: number;
   datasheet: { scaricati: number; su: number; pagine: number } | null;
+  /** components that came back with a supplier code, so the BOM can be ordered */
+  codiciLcsc: number;
   /** the 3D meshes of the components, taken from the STEP inside the file */
   modelli3d: number;
   triangoli3d: number;
@@ -106,6 +108,7 @@ export async function importaAltium({
     modelli3d: 0,
     triangoli3d: 0,
     datasheet: null,
+    codiciLcsc: 0,
     compilato: null,
     warnings: [],
     stats: {},
@@ -227,6 +230,40 @@ export async function importaAltium({
       }).catch(() => null);
       if (saved) report.footprint++;
     }
+  }
+
+  /*
+   * THE ORDER CODES, and this is what turns a drawing into something a factory
+   * can quote. A board arrives with its manufacturer part numbers and nothing a
+   * supplier answers to: every row of the bill of materials said NON ORDINABILE.
+   * The search that finds the code was already being run for the datasheets and
+   * the code was thrown away, so here it is asked for on purpose and written
+   * into the project, where the BOM reads it.
+   *
+   * It goes in main.tsx and not in a side file because it belongs to the part:
+   * `supplierPartNumbers` is a prop like the manufacturer number next to it.
+   */
+  if (conDatasheet) {
+    passo("codici LCSC");
+    const codici = await codiciLcsc(imported.identita, (fatti, totale, mpn) =>
+      passo(`codice ${fatti + 1}/${totale}: ${mpn}`),
+    ).catch(() => new Map<string, string>());
+    if (codici.size > 0) {
+      const main = imported.fsMap["main.tsx"] ?? "";
+      const conCodici = main.replace(
+        /<(\w+) name="([^"]+)"/g,
+        (tutto, tag: string, nome: string) => {
+          const codice = codici.get(nome);
+          if (!codice || tag.toLowerCase() === "net") return tutto;
+          return `<${tag} name="${nome}" supplierPartNumbers={{ jlcpcb: ["${codice}"] }}`;
+        },
+      );
+      if (conCodici !== main) {
+        imported.fsMap["main.tsx"] = conCodici;
+        await writeProjectFile(id, "main.tsx", conCodici);
+      }
+    }
+    report.codiciLcsc = codici.size;
   }
 
   if (conDatasheet) {

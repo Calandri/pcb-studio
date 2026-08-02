@@ -282,6 +282,8 @@ function retiDaiPad(
   pcb: Record<string, unknown>,
   cj: El[],
   strati: Map<number, Strato>,
+  /** native mils -> millimetres from the centre of the board */
+  t: Trasforma,
 ): {
   elementi: El[];
   reti: number;
@@ -303,6 +305,13 @@ function retiDaiPad(
   /** the real name of each pad, by pad id, and of its port, by source port id */
   nomiPad: Map<string, string>;
   nomiPorte: Map<string, string>;
+  /**
+   * The pads that belong to NO component in the file: mounting holes drilled in
+   * the board, by position in hundredths of a millimetre. The flat model files
+   * them under whatever part happened to be nearest, and there they become pins
+   * of a microphone and travel with it.
+   */
+  liberi: Set<string>;
 } {
   const nomi = nomiDelleReti(pcb);
   const nativi = Array.isArray(pcb.pads) ? (pcb.pads as Array<Record<string, unknown>>) : [];
@@ -355,6 +364,7 @@ function retiDaiPad(
   const margini = new Map<string, number>();
   const nomiPad = new Map<string, string>();
   const nomiPorte = new Map<string, string>();
+  const liberi = new Set<string>();
   const nomiDaiRecord = nomiDeiPad(pcb);
   const perIndiceNativo = indiciDeiComponenti(pcb);
   let agganciati = 0;
@@ -407,6 +417,13 @@ function retiDaiPad(
      * The pad's own name. Empty ones (a shield pad with no designator: two on
      * this board) keep what they had rather than becoming a nameless port.
      */
+    // a pad the file gives to no component: its POSITION is the key, because the
+    // flat model may have turned it into a hole with no port to match it by.
+    // In board coordinates, which is where the elements are read back.
+    if (suo === null) {
+      const q = t(x, y);
+      liberi.add(`${Math.round(q.x * 100)},${Math.round(q.y * 100)}`);
+    }
     const nomePad = (nomiDaiRecord[indice] ?? "").trim();
     if (idPad && nomePad) {
       nomiPad.set(idPad, nomePad);
@@ -462,6 +479,7 @@ function retiDaiPad(
     margini,
     nomiPad,
     nomiPorte,
+    liberi,
   };
 }
 
@@ -568,6 +586,13 @@ function identityFromNative(native: Record<string, unknown>): Map<string, Compon
       produttore: cerca("manufacturer", "mfr", "mfrname", "manufacturername", "supplier1"),
       descrizione,
       datasheetUrl: datasheet,
+      /*
+       * The footprint's name as the CAD library calls it: "CAP 0402_1005",
+       * "SOT23-5", "LQFP64". The geometry travels inline, so without this the
+       * PACKAGE column of the bill of materials says "<footprint> inline" and
+       * whoever has to buy the parts learns nothing from it.
+       */
+      pattern: String(c.pattern ?? "").trim() || undefined,
     };
     if (Object.values(identita).some(Boolean)) out.set(nome, identita);
   }
@@ -748,6 +773,7 @@ export async function importAltiumProject(
         produttore: prima.produttore ?? dati.produttore,
         descrizione: prima.descrizione ?? dati.descrizione,
         datasheetUrl: prima.datasheetUrl ?? dati.datasheetUrl,
+        pattern: prima.pattern ?? dati.pattern,
       });
     }
     for (const el of model) {
@@ -834,6 +860,24 @@ export async function importAltiumProject(
           // il foro passante e' un pad come gli altri: senza la sua chiave il
           // pad teneva il nome del contatore mentre la sua porta aveva quello
           // vero, e tscircuit si ritrovava con due porte per lo stesso piedino
+          /*
+           * A hole that belongs to nobody goes back to belonging to nobody: the
+           * three 2.4mm mounting holes of this board were filed inside a
+           * microphone's footprint, which made it a nine pin part and would have
+           * dragged three holes across the board with it.
+           */
+          const px = num(el.x);
+          const py = num(el.y);
+          if (
+            el.pcb_component_id &&
+            px !== null &&
+            py !== null &&
+            nativo.padLiberi.has(`${Math.round(px * 100)},${Math.round(py * 100)}`)
+          ) {
+            const senzaComponente = { ...el };
+            delete senzaComponente.pcb_component_id;
+            return senzaComponente;
+          }
           const id = String(el.pcb_smtpad_id ?? el.pcb_plated_hole_id ?? "");
           const faccia = nativo.facceDeiPad.get(id);
           const margine = nativo.marginiDeiPad.get(id);
@@ -1131,6 +1175,8 @@ function costruisciDaNativo(
   /** the real pad names, by pad id and by source port id */
   nomiDeiPad: Map<string, string>;
   nomiDellePorte: Map<string, string>;
+  /** positions (hundredths of a mm) of the pads the file gives to no component */
+  padLiberi: Set<string>;
   warnings: string[];
   stats: Record<string, number | undefined>;
 } {
@@ -1214,7 +1260,7 @@ function costruisciDaNativo(
       : {}),
   }));
 
-  const reti = retiDaiPad(pcb, merged, strati);
+  const reti = retiDaiPad(pcb, merged, strati, t);
 
   /** how many copper layers the board has: the ones the stack declares */
   const facceRame = new Set<Layer>();
@@ -1310,6 +1356,7 @@ function costruisciDaNativo(
     marginiDeiPad: reti.margini,
     nomiDeiPad: reti.nomiPad,
     nomiDellePorte: reti.nomiPorte,
+    padLiberi: reti.liberi,
     warnings,
     stats: {
       rame_tracce: rame.tracce,

@@ -38,7 +38,9 @@ import { datasheetMpns, saveDatasheet } from "./library-store";
  * manufacturer code into an LCSC code, and LCSC keeps a copy of the datasheet on
  * its own servers. Same source the app already uses for stock and prices.
  */
-async function datasheetDaLcsc(mpn: string): Promise<string | null> {
+async function cercaSuLcsc(
+  mpn: string,
+): Promise<{ codice: string; datasheet: string | null } | null> {
   try {
     const ricerca = new URL("https://jlcsearch.tscircuit.com/api/search");
     ricerca.searchParams.set("q", mpn);
@@ -71,18 +73,59 @@ async function datasheetDaLcsc(mpn: string): Promise<string | null> {
       return lungo.startsWith(corto) && lungo.length - corto.length <= 2;
     });
     if (!primo?.lcsc) return null;
+    const codice = `C${primo.lcsc}`;
 
-    const pagina = await fetch(`https://www.lcsc.com/product-detail/C${primo.lcsc}.html`, {
+    const pagina = await fetch(`https://www.lcsc.com/product-detail/${codice}.html`, {
       signal: AbortSignal.timeout(15_000),
       headers: { "User-Agent": "pcb-studio/1.0" },
     });
-    if (!pagina.ok) return null;
+    if (!pagina.ok) return { codice, datasheet: null };
     const html = await pagina.text();
     const m = /https:\/\/datasheet\.lcsc\.com\/[^"' ]+\.pdf/i.exec(html);
-    return m ? m[0] : null;
+    return { codice, datasheet: m ? m[0] : null };
   } catch {
     return null;
   }
+}
+
+/**
+ * THE ORDER CODE OF EVERY PART.
+ *
+ * An imported board arrives with the manufacturer part numbers its designer
+ * wrote and with no supplier code, and a bill of materials without one cannot be
+ * ordered: every row of BAT_BS said "NON ORDINABILE" while the search that finds
+ * the code was already being run, for the datasheet, and the code thrown away.
+ *
+ * One search per distinct part, six at a time, and only for parts that have a
+ * manufacturer number to search by. Whoever does not match exactly (see the rule
+ * in cercaSuLcsc) keeps no code at all rather than somebody else's.
+ */
+export async function codiciLcsc(
+  identita: Map<string, ComponentIdentity>,
+  onProgress?: (fatti: number, totale: number, mpn: string) => void,
+): Promise<Map<string, string>> {
+  const perMpn = new Map<string, string[]>();
+  for (const [designator, id] of identita) {
+    const mpn = (id.mpn ?? "").trim();
+    if (!mpn) continue;
+    perMpn.set(mpn, [...(perMpn.get(mpn) ?? []), designator]);
+  }
+  const lista = [...perMpn];
+  const out = new Map<string, string>();
+  let fatti = 0;
+  const PARALLELE = 6;
+  for (let i = 0; i < lista.length; i += PARALLELE) {
+    const gruppo = lista.slice(i, i + PARALLELE);
+    await Promise.all(
+      gruppo.map(async ([mpn, designators]) => {
+        onProgress?.(fatti++, lista.length, mpn);
+        const trovato = await cercaSuLcsc(mpn).catch(() => null);
+        if (!trovato) return;
+        for (const d of designators) out.set(d, trovato.codice);
+      }),
+    );
+  }
+  return out;
 }
 
 export interface DatasheetImportResult {
@@ -158,7 +201,7 @@ export async function importDatasheetsForIdentities({
         pdf = await fetchDatasheetFromUrl(url);
       } catch (primoErrore) {
         // the link in the file is dead: the part is looked up by code
-        const ripiego = await datasheetDaLcsc(mpn);
+        const ripiego = (await cercaSuLcsc(mpn))?.datasheet;
         if (!ripiego) throw primoErrore;
         usato = ripiego;
         pdf = await fetchDatasheetFromUrl(ripiego);

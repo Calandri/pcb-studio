@@ -487,6 +487,16 @@ export async function compileProject(
   try {
     state.attempts += 1;
     geometry = await compileGeometryOnly(fsMap);
+    // PROVA SM (da rimuovere): le colate importate al posto di quelle calcolate
+    if (process.env.SM_POURS && geometry) {
+      const { readFileSync: leggi } = await import("node:fs");
+      const importate = JSON.parse(leggi(process.env.SM_POURS, "utf8")) as CircuitElement[];
+      const facce = new Set(importate.map((p) => String(p.layer)));
+      geometry = [
+        ...geometry.filter((el) => el.type !== "pcb_copper_pour" || !facce.has(String(el.layer))),
+        ...importate,
+      ];
+    }
   } catch (err) {
     state.fatalError = err instanceof Error ? err.message : String(err);
   }

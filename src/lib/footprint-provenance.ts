@@ -219,6 +219,8 @@ function parseSources(sources: Sources): Map<string, Declared> {
     for (const m of content.matchAll(/<([A-Za-z_][\w]*)\s([^>]*?)\/?>/g)) {
       const tag = m[1];
       const body = m[2];
+      // the <footprint name="..."> tag is the footprint's own name, not a component
+      if (tag.toLowerCase() === "footprint") continue;
       const name = /name="([\w]+)"/.exec(body)?.[1];
       if (!name) continue;
 
@@ -232,7 +234,21 @@ function parseSources(sources: Sources): Map<string, Declared> {
       } else if (fromLib) {
         declared.set(name, { footprint: tag, inline: false, fromLib: true, lcsc });
       } else if (/footprint=\{/.test(body)) {
-        declared.set(name, { footprint: "<footprint> inline", inline: true, fromLib: false, lcsc });
+        /*
+         * The name the CAD gave it, when it is written on the tag: an imported
+         * board carries its geometry inline, and "<footprint> inline" in the
+         * PACKAGE column of a bill of materials tells a buyer nothing. The file
+         * knows it is a "CAP 0402_1005".
+         */
+        const nome = /<footprint\s+name="([^"]+)"/.exec(
+          content.slice(m.index ?? 0, (m.index ?? 0) + 600),
+        )?.[1];
+        declared.set(name, {
+          footprint: nome ?? "<footprint> inline",
+          inline: true,
+          fromLib: false,
+          lcsc,
+        });
       }
     }
   }

@@ -288,6 +288,13 @@ export interface ComponentIdentity {
   descrizione?: string;
   /** the datasheet the file itself points to */
   datasheetUrl?: string;
+  /**
+   * The name the source CAD gives the footprint — "CAP 0402_1005", "SOT23-5",
+   * "LQFP64". It is what goes in the PACKAGE column of the bill of materials: an
+   * imported board writes its footprints inline, as geometry, and a purchasing
+   * office reading "<footprint> inline" learns nothing about what to buy.
+   */
+  pattern?: string;
 }
 
 export interface ProjectFromCircuitJson {
@@ -394,8 +401,9 @@ export function circuitJsonToProjectFiles(
     const hasGeometry = compEls.some(
       (e) => e.type === "pcb_smtpad" || e.type === "pcb_plated_hole" || e.type === "pcb_hole",
     );
+    const nomeFootprint = opts.identita?.get(name)?.pattern;
     const footprint = hasGeometry
-      ? `\n    footprint={\n      <footprint>\n${footprintJsx(compEls, { cx, cy, rotationDeg: rotation, sotto }, "        ")}\n      </footprint>\n    }`
+      ? `\n    footprint={\n      <footprint${nomeFootprint ? ` name="${nomeFootprint.replace(/"/g, "&quot;")}"` : ""}>\n${footprintJsx(compEls, { cx, cy, rotationDeg: rotation, sotto }, "        ")}\n      </footprint>\n    }`
       : "";
 
     // pin labels from source ports
@@ -568,6 +576,21 @@ export function circuitJsonToProjectFiles(
   const silkLines: string[] = [];
   for (const el of cj) {
     if (el.pcb_component_id) continue;
+    /*
+     * The holes that belong to nobody: mounting holes drilled in the board, not
+     * in a part. They used to travel inside whatever footprint the CAD's flat
+     * model had filed them under — three 2.4mm holes ended up inside a
+     * microphone, on the other side of the board — and there they would follow
+     * the part around if anybody moved it.
+     */
+    if (el.type === "pcb_hole") {
+      const x = num(el.x);
+      const y = num(el.y);
+      const d = num(el.hole_diameter) ?? num(el.diameter);
+      if (x === null || y === null || !d) continue;
+      silkLines.push(`    <hole pcbX={${r3(x)}} pcbY={${r3(y)}} diameter={${r3(d)}} />`);
+      continue;
+    }
     if (el.type === "pcb_silkscreen_text") {
       const text = String(el.text ?? "").replace(/"/g, '\\"');
       if (!text) continue;
