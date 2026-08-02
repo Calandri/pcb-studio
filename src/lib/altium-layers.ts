@@ -950,22 +950,90 @@ export function pianiNativi(
    * hold somebody else's copper are stitched into it (see pour-keyhole.ts).
    * Everything comes in, nothing overlaps.
    */
-  const conRame = (buco: Array<{ x: number; y: number }>, esclusa: number): boolean =>
+  /*
+   * Copper of somebody else inside this opening — ON THE SAME FACE. Two pieces
+   * of copper on different layers do not touch, so a hole in the ground plane
+   * that happens to sit above an island of the top face needs no channel: cut
+   * anyway, it slits a plane that on the real board is whole. Measured before
+   * the face was checked: 652mm of slits through one ground plane, against the
+   * 47 that are actually needed.
+   */
+  /**
+   * What a piece of copper holds together: the pads AND the vias of its own net
+   * that sit on it. The vias count, and it is not a detail — seventeen of this
+   * board's regions have no pad on them and a via that ties them to their net
+   * through another layer. Reading only the pads calls them dead copper, drops
+   * them, and lets the plane around them close over live copper of another net.
+   */
+  const agganciDentro = (poligono: Array<{ x: number; y: number }>, net: string): number => {
+    let n = 0;
+    const conta = (x: number | null, y: number | null, i: number | null) => {
+      if (x === null || y === null || i === null || nomi.get(i) !== net) return;
+      if (dentroPoligono(x, y, poligono)) n++;
+    };
+    for (const p of arr(pcb.pads)) conta(num(p.x), num(p.y), num(p.netIndex));
+    for (const v of arr(pcb.vias)) conta(num(v.x), num(v.y), num(v.netIndex));
+    return n;
+  };
+
+  const conRame = (
+    buco: Array<{ x: number; y: number }>,
+    esclusa: number,
+    faccia: Layer,
+  ): boolean =>
     regioni.some((altra, i) => {
-      if (i === esclusa) return false;
-      // a point of the other region inside this hole: its copper lives there
-      return altra.punti.some((p) => dentroPoligono(p.x, p.y, buco));
+      if (i === esclusa || altra.strato.faccia !== faccia) return false;
+      if (!altra.punti.some((p) => dentroPoligono(p.x, p.y, buco))) return false;
+      /*
+       * And only if that copper HOLDS something. A channel is a cut through the
+       * plane: it is worth making when it lets an island keep a pad connected,
+       * and it is only damage when the island is a scrap of copper with nothing
+       * on it. Those scraps are simply left out.
+       */
+      const suaRete = candidate.find((c) => c.indice === i)?.net;
+      return suaRete ? agganciDentro(altra.punti, suaRete) > 0 : false;
     });
 
+  /*
+   * A piece of copper that sits inside an opening of another one, ON THE SAME
+   * FACE, and holds no pad of its own: it is a scrap. Bringing it in would put
+   * it under the copper around it — the plane is written as one ring and does
+   * not know it is there — and cutting a channel to keep them apart would slit
+   * the plane to save nothing. So it stays out, and it is said.
+   */
+  const scarti = new Set<number>();
   for (const c of candidate) {
+    if (agganciDentro(c.punti, c.net) > 0) continue;
+    const dentroUnAltra = candidate.some(
+      (altra) =>
+        altra.indice !== c.indice &&
+        altra.strato.faccia === c.strato.faccia &&
+        altra.buchi.some((b) => c.punti.some((p) => dentroPoligono(p.x, p.y, b))),
+    );
+    if (dentroUnAltra) {
+      scarti.add(c.indice);
+      parziali.push({
+        strato: c.strato.nome,
+        net: c.net,
+        copertura: r3(c.copertura),
+        motivo:
+          "e' dentro un'apertura del piano e non ha ne' un pad ne' una via della sua rete: e' rame morto",
+        pad: 0,
+      });
+    }
+  }
+
+  for (const c of candidate) {
+    if (scarti.has(c.indice)) continue;
     const faccia = c.strato.faccia!;
     /*
-     * Only the holes that matter: of this board's 55, seventeen hold another
-     * net's copper and 38 are the clearances around pads and vias, which the
-     * solver carves again by itself. Stitching those too would add thousands of
-     * vertices to say something already said.
+     * Only the holes that matter: of this board's 55 regions the openings are
+     * dozens, and almost all of them are the clearances around pads and vias,
+     * which the solver carves again by itself. Stitching those too would add
+     * thousands of vertices to say something already said, and every channel is
+     * a cut through the plane.
      */
-    const daCucire = c.buchi.filter((b) => conRame(b, c.indice));
+    const daCucire = c.buchi.filter((b) => conRame(b, c.indice, faccia));
     const contorno = c.punti;
     if (daCucire.length > 0) {
       const cucito = cuciBuchi(
