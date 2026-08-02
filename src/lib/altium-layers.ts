@@ -1,4 +1,5 @@
 import type { Layer, ManualRoute } from "./manual-routes";
+import { cuciBuchi } from "./pour-keyhole";
 
 /**
  * The LAYERS of an Altium board, and what each one is for.
@@ -787,6 +788,8 @@ export function pianiNativi(
   strati: Map<number, Strato>,
   t: Trasforma,
   areaBoardMm2: number,
+  /** the board's minimum clearance: how wide the channels into the holes are cut */
+  larghezzaCanaleMm = 0.1524,
 ): {
   piani: PianoImportato[];
   parziali: Array<{
@@ -813,6 +816,10 @@ export function pianiNativi(
     net: string;
     copertura: number;
     punti: Array<{ x: number; y: number }>;
+    /** the openings the file drew in it, in native units */
+    buchi: Array<Array<{ x: number; y: number }>>;
+    /** its place in `regioni`, to tell its own copper from everybody else's */
+    indice: number;
   }
   const candidate: Candidata[] = [];
 
@@ -836,6 +843,7 @@ export function pianiNativi(
   const regioni: Array<{
     strato: Strato;
     punti: Array<{ x: number; y: number }>;
+    buchi: Array<Array<{ x: number; y: number }>>;
     copertura: number;
     chiave: string;
   }> = [];
@@ -884,7 +892,7 @@ export function pianiNativi(
     for (const v of arr(pcb.vias)) vota(num(v.x), num(v.y), num(v.netIndex), false);
     for (const p of arr(pcb.pads)) vota(num(p.x), num(p.y), num(p.netIndex), true);
     perPoligono.set(chiave, voti);
-    regioni.push({ strato: s, punti, copertura, chiave });
+    regioni.push({ strato: s, punti, buchi, copertura, chiave });
   }
 
   for (const reg of regioni) {
@@ -921,63 +929,71 @@ export function pianiNativi(
       net: vincitore,
       copertura: reg.copertura,
       punti: reg.punti,
+      buchi: reg.buchi,
+      indice: regioni.indexOf(reg),
     });
   }
 
   /*
-   * A flood is a region that covers its face whole: it is written without an
-   * outline, tscircuit fills the board with it, and it is what a ground plane
-   * is. Its face is then closed to everybody else.
+   * EVERY REGION KEEPS ITS OWN SHAPE, and the holes go in with it.
+   *
+   * A flood — a pour written with no outline — fills the whole face, and that is
+   * how the ground of this board used to arrive: a rectangle as big as the board
+   * claiming to be ground. It is wrong twice. It says there is copper where the
+   * file draws none (the top ground is 2681mm2 of the 3551 the flood claimed),
+   * and it swallows the islands of the other nets: they sit inside the HOLES of
+   * the ground polygon, and the pour solver carves around pads and traces but
+   * never around another pour, so grafting them under a flood shorts them. The
+   * gerbers we export carry the pours, so that short would reach the fab.
+   *
+   * So each region is written with the outline the file drew, and the holes that
+   * hold somebody else's copper are stitched into it (see pour-keyhole.ts).
+   * Everything comes in, nothing overlaps.
    */
-  const facciaAllagata = new Map<string, string>();
-  for (const c of candidate) {
-    if (c.copertura < 0.9) continue;
-    if (!facciaAllagata.has(c.strato.faccia!)) facciaAllagata.set(c.strato.faccia!, c.net);
-  }
+  const conRame = (buco: Array<{ x: number; y: number }>, esclusa: number): boolean =>
+    regioni.some((altra, i) => {
+      if (i === esclusa) return false;
+      // a point of the other region inside this hole: its copper lives there
+      return altra.punti.some((p) => dentroPoligono(p.x, p.y, buco));
+    });
 
-  const gia = new Set<string>();
   for (const c of candidate) {
     const faccia = c.strato.faccia!;
-    const allagata = facciaAllagata.get(faccia);
-    const chiave = `${faccia}|${c.net}`;
-    if (allagata === c.net) {
-      /*
-       * The flood, once, and described by its LARGEST piece: a poured plane
-       * arrives as a heap of regions — thirteen of them here for the ground of
-       * one face — and taking the first one met says the ground plane covers a
-       * tenth of a percent of the board, which is the number the person
-       * importing reads.
-       */
-      const prima = piani.find((p) => p.faccia === faccia && p.net === c.net && !p.contorno);
-      if (!prima) {
-        gia.add(chiave);
-        piani.push({ faccia, net: c.net, copertura: r3(c.copertura) });
-      } else if (c.copertura > prima.copertura) {
-        prima.copertura = r3(c.copertura);
+    /*
+     * Only the holes that matter: of this board's 55, seventeen hold another
+     * net's copper and 38 are the clearances around pads and vias, which the
+     * solver carves again by itself. Stitching those too would add thousands of
+     * vertices to say something already said.
+     */
+    const daCucire = c.buchi.filter((b) => conRame(b, c.indice));
+    const contorno = c.punti;
+    if (daCucire.length > 0) {
+      const cucito = cuciBuchi(
+        c.punti.map((p) => t(p.x, p.y)),
+        daCucire.map((b) => b.map((p) => t(p.x, p.y))),
+        larghezzaCanaleMm,
+      );
+      for (const s of cucito.scartati) {
+        parziali.push({
+          strato: c.strato.nome,
+          net: c.net,
+          copertura: 0,
+          motivo: `un'apertura da ${s.areaMm2}mm2 nel piano non si e' potuta cucire: ${s.motivo}`,
+          pad: 0,
+        });
       }
-      continue;
-    }
-    if (allagata) {
-      /*
-       * How many pads of that net sit on this piece of copper: it is the number
-       * that says what leaving it out COSTS. An area in square millimetres does
-       * not tell anybody that eleven pads of a supply rail have nothing holding
-       * them together any more.
-       */
-      let pad = 0;
-      for (const p of arr(pcb.pads)) {
-        const x = num(p.x);
-        const y = num(p.y);
-        const i = num(p.netIndex);
-        if (x === null || y === null || i === null || nomi.get(i) !== c.net) continue;
-        if (dentroPoligono(x, y, c.punti)) pad++;
-      }
-      parziali.push({
-        strato: c.strato.nome,
+      piani.push({
+        faccia,
         net: c.net,
         copertura: r3(c.copertura),
-        motivo: `su questa faccia c'e' gia' il piano pieno di ${allagata}, che la coprirebbe`,
-        pad,
+        /*
+         * Simplified like the silkscreen: a poured outline carries a vertex every
+         * few microns and the plane of one face alone is twelve hundred of them.
+         * A hundredth of a millimetre is under what a fab can hold, and it is ten
+         * times narrower than the channels cut into the holes, so nothing that
+         * matters moves.
+         */
+        contorno: semplifica(cucito.anello, 0.01).map((p) => ({ x: r3(p.x), y: r3(p.y) })),
       });
       continue;
     }
@@ -985,12 +1001,13 @@ export function pianiNativi(
       faccia,
       net: c.net,
       copertura: r3(c.copertura),
-      contorno: c.punti.map((p) => {
-        const q = t(p.x, p.y);
-        return { x: r3(q.x), y: r3(q.y) };
-      }),
+      contorno: semplifica(
+        contorno.map((p) => t(p.x, p.y)),
+        0.01,
+      ).map((p) => ({ x: r3(p.x), y: r3(p.y) })),
     });
   }
+
   return { piani, parziali };
 }
 

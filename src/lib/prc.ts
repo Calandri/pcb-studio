@@ -12,6 +12,67 @@
 
 import { eMassa, ePotenza } from "./net-roles";
 
+/** the outer ring of a pour, whatever shape it was written as */
+function anelloDi(pour: El): Array<{ x: number; y: number }> | null {
+  if (pour.shape === "brep") {
+    const ring = (
+      pour.brep_shape as { outer_ring?: { vertices?: Array<{ x: number; y: number }> } }
+    )?.outer_ring?.vertices;
+    return ring && ring.length >= 3 ? ring.map((p) => ({ x: Number(p.x), y: Number(p.y) })) : null;
+  }
+  if (pour.shape === "polygon" && Array.isArray(pour.points)) {
+    return (pour.points as Array<{ x: number; y: number }>).map((p) => ({
+      x: Number(p.x),
+      y: Number(p.y),
+    }));
+  }
+  return null;
+}
+
+/**
+ * Whether another pour of the same net, on the same layer, comes up against this
+ * one: they are two pieces of the same poured polygon, not two islands.
+ */
+function touchesSamePour(
+  pour: El,
+  circuitJson: El[],
+  layer: string,
+  netName: string,
+  maps: Maps,
+): boolean {
+  const mio = anelloDi(pour);
+  if (!mio) return false;
+  const VICINO_MM = 0.05;
+  for (const altro of circuitJson) {
+    if (altro.type !== "pcb_copper_pour" || altro === pour) continue;
+    if (String(altro.layer ?? "") !== layer) continue;
+    if (maps.netNameById.get(String(altro.source_net_id)) !== netName) continue;
+    const suo = anelloDi(altro);
+    if (!suo) continue;
+    /*
+     * Two pieces of one plane share an EDGE, and sharing an edge does not mean
+     * sharing a vertex: the test has to be point against segment, or a T
+     * junction reads as two separate islands.
+     */
+    if (mio.some((p) => pointInPolygon(p.x, p.y, suo))) return true;
+    if (suo.some((p) => pointInPolygon(p.x, p.y, mio))) return true;
+    const vicino = (punti: Array<{ x: number; y: number }>, anello: Array<{ x: number; y: number }>) =>
+      punti.some((p) =>
+        anello.some((a, i) => {
+          const b = anello[(i + 1) % anello.length];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const l2 = dx * dx + dy * dy;
+          if (l2 < 1e-12) return Math.hypot(p.x - a.x, p.y - a.y) <= VICINO_MM;
+          const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
+          return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)) <= VICINO_MM;
+        }),
+      );
+    if (vicino(mio, suo) || vicino(suo, mio)) return true;
+  }
+  return false;
+}
+
 export interface PrcViolation {
   rule: "decoupling_distance" | "pour_island" | "return_via_connector" | "power_trace_width";
   severity: "warn" | "fail";
@@ -253,7 +314,16 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
       if (netNameOfPad(el, maps) !== netName) continue;
       if (contains(x, y)) connected = true;
     }
-    if (!connected) {
+    /*
+     * A piece of a plane is not an island. A poured polygon arrives cut into as
+     * many pieces as it took to go round the obstacles — one face of an imported
+     * board is thirteen of them — and the pieces TOUCH: only some hold a pad, and
+     * calling the others dead copper is fourteen false alarms on a board that has
+     * none. So a pour with no pad of its own counts as dead only when it is not
+     * up against another pour of the same net on the same layer.
+     */
+    const attaccataAdAltra = !connected && touchesSamePour(pour, circuitJson, layer, netName, maps);
+    if (!connected && !attaccataAdAltra) {
       const c = (pour.center as { x?: number; y?: number } | undefined) ?? {};
       push({
         rule: "pour_island",
