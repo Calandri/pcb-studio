@@ -153,6 +153,9 @@ export function Sidebar({
   }, []);
 
   useEffect(() => {
+    // a message about the section you have just left has nothing to say about
+    // the one you are opening
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNote(null);
     if (section === "datasheets") {
       void fetch(`/api/datasheet?projectId=${projectId}`)
@@ -638,6 +641,8 @@ export function Sidebar({
             {user.email}
           </span>
         )}
+        {/* /api/auth/signout is a route, not a page: <Link> would navigate to it on the client and the session would never be closed */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a
           href="/api/auth/signout"
           title="Esci"

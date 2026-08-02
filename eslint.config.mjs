@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // vendored: the WASM glue of occt-import-js, as upstream ships it
+    "public/occt/**",
+    // throwaway measurement scripts, not part of the app
+    ".scratch/**",
   ]),
 ]);
 

@@ -105,6 +105,11 @@ export function OrgConsole({
       .then((r) => r.json())
       .then((d) => setProjects(d.projects ?? []))
       .catch(() => undefined);
+    /*
+     * The state is set inside the promise, that is after the answer comes back
+     * and not while the effect runs: the rule cannot tell the two apart.
+     */
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshOrgs();
     void fetch("/api/tokens")
       .then((r) => r.json())
@@ -115,6 +120,12 @@ export function OrgConsole({
   // members follow the selected organization
   useEffect(() => {
     if (!selectedOrgId) return;
+    /*
+     * Emptying the list while the new one is being fetched is the point: without
+     * it the members of the organisation you just left stay on screen until the
+     * answer arrives, and they read as the members of the one you just chose.
+     */
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMembers([]);
     void fetch(`/api/orgs?orgId=${selectedOrgId}`)
       .then((r) => r.json())
@@ -607,7 +618,7 @@ function UsersSection({
           <div className="mb-1.5 text-xs font-semibold">Inviti in sospeso</div>
           <p className="text-[11px] leading-relaxed text-muted">
             Gli inviti registrati entrano al primo accesso con il magic link. Il ruolo predefinito
-            per i nuovi membri e' Membro.
+            per i nuovi membri e&apos; Membro.
           </p>
         </div>
         <div className="rounded-xl border border-line bg-surface p-4">

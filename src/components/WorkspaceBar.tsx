@@ -49,6 +49,9 @@ export function WorkspaceBar({
   }, []);
 
   useEffect(() => {
+    // the state is set inside the promise, after the answer comes back and not
+    // while the effect runs: the rule cannot tell the two apart
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadProjects();
   }, [loadProjects]);
 
@@ -139,6 +142,7 @@ export function WorkspaceBar({
         <span className="ml-1 text-xs text-neutral-500" title={user.email}>
           {user.email}
         </span>
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- it is an API route, not a page: <Link> would not close the session */}
         <a href="/api/auth/signout" className={btn}>
           Esci
         </a>
