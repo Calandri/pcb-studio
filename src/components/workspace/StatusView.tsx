@@ -97,6 +97,38 @@ export function StatusView({ projectId }: { projectId: string }) {
     void carica();
   }, [carica]);
 
+  /*
+   * The two checks the agent can do on its own: find and read the errata, and
+   * write what the part does here. The others are a person's judgement — a
+   * footprint is compared by somebody who looks at both drawings — so they are
+   * confirmed, not delegated.
+   */
+  const fallo = useCallback(
+    async (componente: string, voce: Voce) => {
+      setInCorso(`${componente}|${voce}`);
+      try {
+        const url = voce === "errata" ? "/api/errata" : "/api/describe-component";
+        const body =
+          voce === "errata"
+            ? { projectId, componente }
+            : { projectId, component: componente };
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const d = (await r.json()) as { error?: string };
+        if (d.error) setErrore(d.error);
+        await carica();
+      } catch (e) {
+        setErrore(e instanceof Error ? e.message : String(e));
+      } finally {
+        setInCorso(null);
+      }
+    },
+    [projectId, carica],
+  );
+
   /** a check confirmed by hand: it is the person saying "I looked at this" */
   const conferma = useCallback(
     async (componente: string, voce: Voce, stato: "fatto" | "non-applicabile" | "da-fare") => {
@@ -263,6 +295,7 @@ export function StatusView({ projectId }: { projectId: string }) {
           riga={quadro.righe.find((r) => r.nome === aperto)!}
           onChiudi={() => setAperto(null)}
           onSegna={(v, s) => void conferma(aperto, v, s)}
+          onFallo={(v) => void fallo(aperto, v)}
         />
       )}
     </div>
@@ -274,10 +307,12 @@ function Dettaglio({
   riga,
   onChiudi,
   onSegna,
+  onFallo,
 }: {
   riga: Riga;
   onChiudi: () => void;
   onSegna: (voce: Voce, stato: "fatto" | "non-applicabile" | "da-fare") => void;
+  onFallo: (voce: Voce) => void;
 }) {
   return (
     <div className="mt-4 rounded-[10px] border border-line bg-[#0E1513] p-4">
@@ -303,6 +338,14 @@ function Dettaglio({
               )}
             </div>
             <div className="flex shrink-0 gap-1">
+              {(v === "errata" || v === "uso") && riga.voci[v].stato !== "verde" && (
+                <button
+                  onClick={() => onFallo(v)}
+                  className="rounded border border-[#3BE8B0] px-2 py-0.5 text-[10.5px] font-semibold text-[#C7D6D1] hover:bg-[#0F1F1B]"
+                >
+                  fallo fare
+                </button>
+              )}
               <button
                 onClick={() => onSegna(v, "fatto")}
                 className="rounded border border-line-strong px-2 py-0.5 text-[10.5px] text-faint hover:border-[#3BE8B0] hover:text-[#C7D6D1]"
