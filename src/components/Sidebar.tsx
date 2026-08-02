@@ -115,6 +115,7 @@ export function Sidebar({
   collapsed,
   onToggleCollapsed,
   circuitJson,
+  fsMap,
   circuitStale,
   onAsk,
 }: {
@@ -129,6 +130,8 @@ export function Sidebar({
   collapsed: boolean;
   onToggleCollapsed: () => void;
   circuitJson: unknown[] | null;
+  /** the project code: descriptions and tags live there, not in the circuit */
+  fsMap?: Record<string, string> | null;
   circuitStale: boolean;
   onAsk: (prompt: string) => void;
 }) {
@@ -321,7 +324,13 @@ export function Sidebar({
         )}
 
         {section === "inspect" && (
-          <InspectPanel circuitJson={circuitJson} stale={circuitStale} projectId={projectId} onAsk={onAsk} />
+          <InspectPanel
+            circuitJson={circuitJson}
+            fsMap={fsMap}
+            stale={circuitStale}
+            projectId={projectId}
+            onAsk={onAsk}
+          />
         )}
 
         {section === "datasheets" && (

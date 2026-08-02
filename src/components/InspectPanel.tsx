@@ -20,11 +20,18 @@ const TABS: Array<{ key: Tab; label: string }> = [
 
 export function InspectPanel({
   circuitJson,
+  fsMap,
   stale,
   projectId,
   onAsk,
 }: {
   circuitJson: unknown[] | null;
+  /**
+   * The project code. Without it every component comes back with no
+   * description, no tags and no domain: those props never reach the Circuit
+   * JSON, they live in the sources and nowhere else.
+   */
+  fsMap?: Record<string, string> | null;
   stale: boolean;
   projectId: string;
   /** sends a request to the agent: the agent is the one that modifies the board */
@@ -35,7 +42,10 @@ export function InspectPanel({
   const [pair, setPair] = useState<[string | null, string | null]>([null, null]);
 
   const issues = useMemo(() => extractIssues(circuitJson), [circuitJson]);
-  const parts = useMemo(() => extractComponents(circuitJson), [circuitJson]);
+  const parts = useMemo(
+    () => extractComponents(circuitJson, fsMap ?? {}),
+    [circuitJson, fsMap],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

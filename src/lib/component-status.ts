@@ -199,7 +199,13 @@ export function quadroDeiComponenti(input: IngressoQuadro): QuadroComponenti {
     const prov = provenienza.get(nome);
     const pin = pinPerComponente.get(sourceId) ?? { tot: 0, liberi: [] };
     const impronta = pcb ? improntaGeometria(circuitJson, String(pcb.pcb_component_id)) : "";
-    const marchio = NON_E_UNA_PARTE.test(nome);
+    /*
+     * A MARK, NOT A PART. The regex is not enough: the five test points of this
+     * board are called 3V3_MCU, 3V3_MIC, 3V3_SD, GND and VBAT — the name of the
+     * net they touch — and read as parts they ask for a datasheet that does not
+     * exist. One pad and no manufacturer code is what a mark looks like.
+     */
+    const marchio = NON_E_UNA_PARTE.test(nome) || (pin.tot <= 1 && !mpn);
 
     const registrato = (voce: Voce): ControlloRegistrato | undefined =>
       controlloDi.get(`${nome}|${voce}`);
@@ -239,6 +245,18 @@ export function quadroDeiComponenti(input: IngressoQuadro): QuadroComponenti {
         return {
           stato: "rosso",
           dettaglio: "geometria senza nome: non si sa quale package sia",
+        };
+      }
+      /*
+       * More pins than pads: the part cannot be soldered as drawn. On this board
+       * it is the two microphones, 5 pads against 6 and 9 pins, and it is the
+       * kind of thing that is invisible until the assembler asks.
+       */
+      const pad = Number(impronta.split(":")[0] ?? 0);
+      if (pin.tot > 0 && pad > 0 && pad !== pin.tot) {
+        return {
+          stato: "rosso",
+          dettaglio: `${pin.tot} piedini ma ${pad} pad: il footprint non regge il componente`,
         };
       }
       return {
@@ -316,9 +334,18 @@ export function quadroDeiComponenti(input: IngressoQuadro): QuadroComponenti {
         return { stato: "verde", dettaglio: `tutti i ${pin.tot} piedini collegati` };
       }
       if (dalRegistro) return dalRegistro;
+      if (marchio) {
+        return { stato: "non-applicabile", dettaglio: "e' un segno sulla scheda, non collega niente" };
+      }
+      /*
+       * Free pins are not a mistake by themselves: a 64 pin microcontroller with
+       * thirteen unused ones is normal, and calling it wrong would make the
+       * column red on every real board. What is missing is somebody saying "yes,
+       * those are NC" — which is a confirmation, so it is yellow.
+       */
       return {
-        stato: "rosso",
-        dettaglio: `${pin.liberi.length} piedini liberi su ${pin.tot}: ${pin.liberi.slice(0, 6).join(", ")}${pin.liberi.length > 6 ? "..." : ""}`,
+        stato: "giallo",
+        dettaglio: `${pin.liberi.length} piedini liberi su ${pin.tot}, da confermare come non collegati: ${pin.liberi.slice(0, 6).join(", ")}${pin.liberi.length > 6 ? "..." : ""}`,
       };
     })();
 

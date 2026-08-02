@@ -1679,6 +1679,7 @@ export function Studio({
               collapsed={false}
               onToggleCollapsed={() => setDrawer(false)}
               circuitJson={circuitJson}
+              fsMap={fsMap}
               circuitStale={circuitStale}
               onAsk={(prompt) => {
                 setDrawer(false);
