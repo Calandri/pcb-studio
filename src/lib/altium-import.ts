@@ -1206,7 +1206,7 @@ function costruisciDaNativo(
    */
   const rame = rameNativo(pcb, strati, t, larghezzaMm);
   const regole = regoleNative(pcb);
-  const { piani, isolette, parziali } = pianiNativi(pcb, strati, t, areaBoard);
+  const { piani, isolette, parziali, coperte } = pianiNativi(pcb, strati, t, areaBoard);
 
   /*
    * THE ISLANDS, drawn as the copper they are. Each one joins its pads with a
@@ -1397,6 +1397,11 @@ function costruisciDaNativo(
   }
   const contorno = contornoNativo(pcb, t);
 
+  if (coperte > 0) {
+    warnings.push(
+      `${coperte} regioni di rame gia' coperte da una colata piu' grande della loro rete: non riscritte`,
+    );
+  }
   if (rameDelleIsolette.length > 0) {
     warnings.push(
       `${isolette.length} isolette di rame dentro i piani rese come piste larghe (${rameDelleIsolette.length} tratti): il piano resta intero invece di essere tagliato per aggirarle`,

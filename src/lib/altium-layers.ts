@@ -818,6 +818,8 @@ export function pianiNativi(
   piani: PianoImportato[];
   /** the pieces that come in as copper instead of as pours: see Isoletta */
   isolette: Isoletta[];
+  /** regions a larger pour of their own net already covers: not written twice */
+  coperte: number;
   parziali: Array<{
     strato: string;
     net: string;
@@ -1025,8 +1027,30 @@ export function pianiNativi(
     }
   }
 
+  /*
+   * ALREADY COVERED. A poured plane arrives in pieces, and the pieces sit in
+   * each other's openings — but the openings are not written, so the biggest
+   * piece already covers the ground its neighbours stand on. Writing them too
+   * paints the same copper twice: on this board fifteen pours out of
+   * twenty-five, 393mm2 of double paint, and on screen it reads as blotches of
+   * copper on a board that looks otherwise bare, because a pour is drawn
+   * translucent and two of them are darker than one.
+   */
+  const coperte = new Set<number>();
   for (const c of candidate) {
-    if (scarti.has(c.indice)) continue;
+    const dentroUnaPiuGrande = candidate.some(
+      (altra) =>
+        altra.indice !== c.indice &&
+        altra.strato.faccia === c.strato.faccia &&
+        altra.net === c.net &&
+        areaPoligono(altra.punti) > areaPoligono(c.punti) &&
+        c.punti.every((p) => dentroPoligono(p.x, p.y, altra.punti)),
+    );
+    if (dentroUnaPiuGrande) coperte.add(c.indice);
+  }
+
+  for (const c of candidate) {
+    if (scarti.has(c.indice) || coperte.has(c.indice)) continue;
     const faccia = c.strato.faccia!;
 
     /*
@@ -1101,7 +1125,7 @@ export function pianiNativi(
     });
   }
 
-  return { piani, isolette, parziali };
+  return { piani, isolette, parziali, coperte: coperte.size };
 }
 
 export function stratiPredefiniti(): Map<number, Strato> {
