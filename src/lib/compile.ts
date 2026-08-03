@@ -45,6 +45,7 @@ import {
   MANUAL_EDITS_PATH,
 } from "./manual-edits";
 import { applyManualRoutes } from "./manual-routes";
+import { ricolaPiani } from "./pours-recompute";
 import { Profiler, routerPhases, type Profile } from "./profile";
 import {
   analyzePlacement,
@@ -593,7 +594,12 @@ export async function compileProject(
       viaDiameter: projectRules.rules.minViaDiameterMm,
       viaHoleDiameter: projectRules.rules.minViaHoleMm,
     });
-    const circuitJson = conMano.circuitJson as CircuitElement[];
+    // the planes, poured again with the copper in place: see pours-recompute.ts
+    const ricolate = await ricolaPiani({
+      circuitJson: conMano.circuitJson as never,
+      clearanceMm: projectRules.rules.minClearanceMm,
+    }).catch(() => null);
+    const circuitJson = (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[];
     say({ step: "Controllo le regole", progress: 0.95, circuitJson });
     const summary = await summarize(circuitJson, projectFsMap);
     summary.manualEdits = manualEdits;
@@ -889,7 +895,17 @@ export async function compileProject(
     viaDiameter: projectRules.rules.minViaDiameterMm,
     viaHoleDiameter: projectRules.rules.minViaHoleMm,
   });
-  const circuitJson = manual.circuitJson as CircuitElement[];
+  /*
+   * AND THE PLANES ARE POURED AGAIN, now that all the copper is on the board.
+   * tscircuit pours while it builds, and the imported copper arrives after: the
+   * plane was carved around a board with no traces on it and poured straight
+   * over them. See pours-recompute.ts.
+   */
+  const ricolate = await ricolaPiani({
+    circuitJson: manual.circuitJson as never,
+    clearanceMm: projectRules.rules.minClearanceMm,
+  }).catch(() => null);
+  const circuitJson = (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[];
   // we analyze the REAL sources, not the ones with injected props: otherwise
   // every hand-pinned component would be flagged as a spurious schX/schY
   // and the agent would chase a defect that does not exist

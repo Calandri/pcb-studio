@@ -32,6 +32,7 @@
     "@tscircuit/3d-viewer": "^0.0.578",
     "@tscircuit/assembly-viewer": "^0.0.6",
     "@tscircuit/capacity-autorouter": "^0.0.717",
+    "@tscircuit/copper-pour-solver": "0.0.39",
     "@tscircuit/core": "^0.0.1512",
     "@tscircuit/create-snippet-url": "^0.0.9",
     "@tscircuit/eval": "^0.0.1059",

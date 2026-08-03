@@ -79,6 +79,9 @@ importers:
       '@tscircuit/capacity-autorouter':
         specifier: ^0.0.717
         version: 0.0.717(typescript@5.9.3)
+      '@tscircuit/copper-pour-solver':
+        specifier: 0.0.39
+        version: 0.0.39(typescript@5.9.3)
       '@tscircuit/core':
         specifier: ^0.0.1512
         version: 0.0.1512(2kcxtle6yfurffoh6xgxjraibm)
