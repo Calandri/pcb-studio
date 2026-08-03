@@ -1227,6 +1227,11 @@ export function regoleNative(pcb: Record<string, unknown>): {
   minViaHoleMm?: number;
   minViaDiameterMm?: number;
   targetTraceWidthMm?: number;
+  minBoardEdgeClearanceMm?: number;
+  /** how far the poured planes stay from other nets: the file says it apart */
+  planeClearanceMm?: number;
+  /** drill to drill, edge to edge */
+  minHoleToHoleMm?: number;
   /** the narrow rules that DO fit a pair of kinds: pad-via, via-via, ... */
   clearanceByPairMm?: Partial<Record<ChiaveCoppia, number>>;
   /** the narrow-scope clearance rules that no pair of kinds can express */
@@ -1332,6 +1337,14 @@ export function regoleNative(pcb: Record<string, unknown>): {
     targetTraceWidthMm: fuori(valore("Width", "PREFEREDWIDTH"), 0.05, 5),
     minViaDiameterMm: fuori(valore("RoutingVias", "MINWIDTH"), 0.1, 5),
     minViaHoleMm: fuori(valore("RoutingVias", "MINHOLEWIDTH"), 0.05, 5),
+    /*
+     * Three more the file states and nobody was reading. The plane one is the
+     * one that shows: pouring at the trace clearance gave this board 5% more
+     * copper than it has, all of it crowded against the pads.
+     */
+    minBoardEdgeClearanceMm: fuori(valore("BoardOutlineClearance", "GAP"), 0.05, 5),
+    planeClearanceMm: fuori(valore("PlaneClearance", "CLEARANCE"), 0.05, 5),
+    minHoleToHoleMm: fuori(valore("HoleToHoleClearance", "GAP"), 0.05, 3),
   };
 }
 

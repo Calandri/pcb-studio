@@ -39,6 +39,8 @@ const FIELDS: Array<{ key: CampoNumerico; label: string; hint: string }> = [
   { key: "minBoardEdgeClearanceMm", label: "Margine dal bordo", hint: "quanto il rame sta lontano dal taglio" },
   { key: "minViaHoleMm", label: "Foro via minimo", hint: "diametro della punta piu' piccola" },
   { key: "minViaDiameterMm", label: "Pad via minimo", hint: "corona attorno al foro" },
+  { key: "minHoleToHoleMm", label: "Foro-foro", hint: "fra due punte, che e' quello che rompe la scheda" },
+  { key: "planeClearanceMm", label: "Distanza del piano", hint: "quanto la colata sta lontano dalle altre net" },
 ];
 
 export function DesignRulesDialog({
@@ -182,10 +184,16 @@ export function DesignRulesDialog({
                   type="number"
                   step="0.001"
                   min="0.05"
-                  value={custom[f.key]}
-                  onChange={(e) =>
-                    setCustom({ ...custom, [f.key]: Number(e.target.value) })
-                  }
+                  /* the plane distance may be empty: then the general one applies */
+                  placeholder={String(custom.minClearanceMm)}
+                  value={custom[f.key] ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setCustom({
+                      ...custom,
+                      [f.key]: v === "" ? undefined : Number(v),
+                    });
+                  }}
                   className="w-[86px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none focus:border-brand"
                 />
                 <span className="w-5 font-mono text-[10px] text-faint">mm</span>

@@ -62,6 +62,27 @@ export interface DesignRules {
    * Keys are the two kinds in alphabetical order, `chiaveCoppia` builds them.
    */
   clearanceByPairMm?: Partial<Record<ChiaveCoppia, number>>;
+  /**
+   * How far a POURED PLANE stays from the copper of other nets.
+   *
+   * It is not the same number as the general clearance and no fab quotes it:
+   * it is a design choice, and a plane is where it matters most, because it
+   * touches everything. BAT_BS asks 0.508mm where its traces get 0.1524, and
+   * pouring it at the trace figure gave the board 5% more copper than the file
+   * has, all of it crowded against the pads.
+   *
+   * Missing: the general clearance, which is what a board with nothing to say
+   * about its planes means.
+   */
+  planeClearanceMm?: number;
+  /**
+   * Between two DRILLS, edge to edge. Nothing else measures it: two vias whose
+   * rings overlap can still be legal, and two that look far apart can have
+   * their holes a tenth of a millimetre from each other, which is where the
+   * drill breaks out and the board is scrap. BAT_BS states 0.25mm and its
+   * tightest power via cluster sits at 0.258.
+   */
+  minHoleToHoleMm: number;
 }
 
 /** what a clearance rule can talk about */
@@ -107,6 +128,8 @@ export const DEFAULT_DESIGN_RULES: DesignRules = {
   targetTraceWidthMm: 0.25,
   targetClearanceMm: 0.2,
   viaCostMm: 5,
+  // the value the fabs quote for two via drills side by side
+  minHoleToHoleMm: 0.25,
 };
 
 export interface FabRuleset {
@@ -143,6 +166,7 @@ export const FAB_RULESETS: FabRuleset[] = [
       targetTraceWidthMm: 0.25,
       targetClearanceMm: 0.2,
       viaCostMm: 5,
+      minHoleToHoleMm: 0.3,
     },
   },
   {
@@ -160,6 +184,7 @@ export const FAB_RULESETS: FabRuleset[] = [
       targetClearanceMm: 0.15,
       // HDI vias are microvias: cheaper to drill, but still a hole in the plane
       viaCostMm: 3,
+      minHoleToHoleMm: 0.2,
     },
   },
 ];
@@ -186,7 +211,10 @@ export interface ProjectRules {
   isCustom: boolean;
 }
 
-const LIMITS: Record<Exclude<keyof DesignRules, "clearanceByPairMm">, { min: number; max: number }> = {
+const LIMITS: Record<
+  Exclude<keyof DesignRules, "clearanceByPairMm" | "planeClearanceMm"> | "planeClearanceMm",
+  { min: number; max: number }
+> = {
   minTraceWidthMm: { min: 0.05, max: 2 },
   minClearanceMm: { min: 0.05, max: 2 },
   minBoardEdgeClearanceMm: { min: 0.1, max: 5 },
@@ -197,6 +225,8 @@ const LIMITS: Record<Exclude<keyof DesignRules, "clearanceByPairMm">, { min: num
   // zero means "vias are free", which is never true; above 50mm the router
   // would rather cross the whole board than change layer
   viaCostMm: { min: 0, max: 50 },
+  minHoleToHoleMm: { min: 0.05, max: 3 },
+  planeClearanceMm: { min: 0.05, max: 5 },
 };
 
 /**

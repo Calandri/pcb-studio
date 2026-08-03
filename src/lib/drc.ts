@@ -67,6 +67,8 @@ interface Box {
    * violate — 56 of this board's 67 trace-to-copper reports were that corner.
    */
   raggio?: number;
+  /** the drill, when the thing has one: only this one decides hole to hole */
+  foro?: number;
 }
 
 /*
@@ -378,6 +380,7 @@ export function runDrcChecks(
          */
         kind: el.type === "pcb_via" ? "via" : "pad",
         raggio: d / 2,
+        ...(num(el.hole_diameter) ? { foro: num(el.hole_diameter)! } : {}),
       });
     }
   }
@@ -449,6 +452,34 @@ export function runDrcChecks(
       "vicinanza_pad_senza_rete",
       `${senzaRete} coppie in cui il vicino e' un pad SENZA rete (pin non collegati, gusci di connettore, fiducial): non sono nodi elettrici e non vengono segnati sul disegno`,
     );
+  }
+
+  /*
+   * --- 4.b DRILL TO DRILL.
+   *
+   * The only check that looks at the HOLE and not at the copper around it. Two
+   * vias whose rings touch can be perfectly legal — a power net brings four of
+   * them side by side to carry current — while two that look far apart on
+   * screen can have their drills a tenth of a millimetre from each other, and
+   * that is where the wall between them breaks out and the board is scrap. It
+   * is measured edge to edge, on the drill, whatever net they are on: the
+   * drill does not know about nets.
+   */
+  const fori = boxes.filter((b) => b.foro !== undefined);
+  for (let i = 0; i < fori.length; i++) {
+    for (let j = i + 1; j < fori.length; j++) {
+      const a = fori[i];
+      const b = fori[j];
+      const ca = centroDi(a);
+      const cb = centroDi(b);
+      const d = Math.hypot(ca.x - cb.x, ca.y - cb.y) - (a.foro ?? 0) / 2 - (b.foro ?? 0) / 2;
+      if (d >= rules.minHoleToHoleMm - TOLLERANZA_MM) continue;
+      push(
+        "hole_to_hole",
+        `${a.label} <-> ${b.label}: fori a ${d.toFixed(3)}mm < min ${rules.minHoleToHoleMm}mm`,
+        midpoint(ca, cb),
+      );
+    }
   }
 
   /*
