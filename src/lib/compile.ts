@@ -598,6 +598,7 @@ export async function compileProject(
     const ricolate = await ricolaPiani({
       circuitJson: conMano.circuitJson as never,
       clearanceMm: projectRules.rules.minClearanceMm,
+      bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
     }).catch(() => null);
     const circuitJson = (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[];
     say({ step: "Controllo le regole", progress: 0.95, circuitJson });
@@ -904,6 +905,7 @@ export async function compileProject(
   const ricolate = await ricolaPiani({
     circuitJson: manual.circuitJson as never,
     clearanceMm: projectRules.rules.minClearanceMm,
+    bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
   }).catch(() => null);
   const circuitJson = (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[];
   // we analyze the REAL sources, not the ones with injected props: otherwise

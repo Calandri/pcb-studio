@@ -63,10 +63,18 @@ const areaNetta = (forma: { outer_ring?: Anello; inner_rings?: Anello[] }): numb
 export async function ricolaPiani({
   circuitJson,
   clearanceMm,
+  bordoMm,
 }: {
   circuitJson: El[];
   /** the project's minimum spacing: what the pour keeps from everything else */
   clearanceMm: number;
+  /**
+   * And from the edge of the board, which is a different number and a stricter
+   * one: copper that reaches the rout leaves burrs and shorts on the panel.
+   * Trusting the outline for it was wrong — measured 0.207mm against a rule that
+   * asks for 0.3.
+   */
+  bordoMm: number;
 }): Promise<EsitoRicolata> {
   const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
   if (pours.length === 0) {
@@ -101,7 +109,7 @@ export async function ricolaPiani({
         source_net_id: String(pour.source_net_id ?? ""),
         pad_margin: clearanceMm,
         trace_margin: clearanceMm,
-        board_edge_margin: 0,
+        board_edge_margin: bordoMm,
         cutout_margin: clearanceMm,
         outline: contorno,
       } as never,
