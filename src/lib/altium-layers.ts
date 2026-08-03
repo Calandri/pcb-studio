@@ -1228,7 +1228,14 @@ export function regoleNative(pcb: Record<string, unknown>): {
   minViaDiameterMm?: number;
   targetTraceWidthMm?: number;
   minBoardEdgeClearanceMm?: number;
-  /** how far the poured planes stay from other nets: the file says it apart */
+  /**
+   * PlaneClearance: it is NOT the distance a polygon pour keeps. In Altium it
+   * belongs to the negative INTERNAL PLANE layers, and a board can state it
+   * while having none — this one asks 0.508mm and its four copper layers are
+   * all signal layers with polygons on them, whose openings measure 0.21 to
+   * 0.25mm from the copper that caused them. Pouring at 0.508 cost this board
+   * 800mm2 of legitimate copper. It is read to be reported, not applied.
+   */
   planeClearanceMm?: number;
   /** drill to drill, edge to edge */
   minHoleToHoleMm?: number;

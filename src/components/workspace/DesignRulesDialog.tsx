@@ -40,7 +40,6 @@ const FIELDS: Array<{ key: CampoNumerico; label: string; hint: string }> = [
   { key: "minViaHoleMm", label: "Foro via minimo", hint: "diametro della punta piu' piccola" },
   { key: "minViaDiameterMm", label: "Pad via minimo", hint: "corona attorno al foro" },
   { key: "minHoleToHoleMm", label: "Foro-foro", hint: "fra due punte, che e' quello che rompe la scheda" },
-  { key: "planeClearanceMm", label: "Distanza del piano", hint: "quanto la colata sta lontano dalle altre net" },
 ];
 
 export function DesignRulesDialog({

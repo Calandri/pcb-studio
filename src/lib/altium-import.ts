@@ -955,7 +955,17 @@ export async function importAltiumProject(
    * happens to default to.
    */
   if (nativo?.regole) {
-    const { ristrette, ...limiti } = nativo.regole;
+    const { ristrette, planeClearanceMm, ...limiti } = nativo.regole;
+    /*
+     * Read and said, not applied: see regoleNative. A pour on a signal layer
+     * does not use this number, and using it anyway carved 800mm2 off this
+     * board's planes.
+     */
+    if (planeClearanceMm !== undefined) {
+      warnings.push(
+        `il file chiede ${planeClearanceMm}mm di distanza per i PIANI NEGATIVI (regola PlaneClearance): questa scheda non ne ha, le sue facce di rame sono strati di segnale con delle colate sopra, che usano la distanza generale`,
+      );
+    }
     if (Object.values(limiti).some((v) => v !== undefined)) {
       fsMap[DESIGN_RULES_PATH] = serializeDesignRules(buildProjectRules("custom", limiti));
     }
