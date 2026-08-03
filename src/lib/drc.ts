@@ -198,6 +198,15 @@ export function runDrcChecks(
   const groupOfVia = (el: El): string | null => {
     const own = groupOfPcbPort(el.pcb_port_id);
     if (own) return own;
+    /*
+     * The key the element carries, which the imported vias now have: it is the
+     * same key the traces group by. Looking only for the route point under the
+     * hole left 25 of this board's 26 via-to-pad pairs unnamed, and a via
+     * sitting in its own pad — which is what via-in-pad is — was reported as a
+     * clearance violation. Twenty-five false alarms hiding the one real one.
+     */
+    const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+    if (chiave) return chiave;
     const x = num(el.x);
     const y = num(el.y);
     if (x === null || y === null) return null;
