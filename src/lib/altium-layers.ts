@@ -1,5 +1,4 @@
 import type { Layer, ManualRoute } from "./manual-routes";
-import { cuciBuchi } from "./pour-keyhole";
 
 /**
  * The LAYERS of an Altium board, and what each one is for.
@@ -736,6 +735,31 @@ const dentroPoligono = (
   return dentro;
 };
 
+/**
+ * A piece of copper that sits inside an opening of another net's pour.
+ *
+ * It cannot be a pour of its own: the plane around it is written as a single
+ * ring, it does not know the island is there, and it would close over it — in
+ * the gerbers, a short. Cutting a channel out to the boundary keeps them apart
+ * and costs a slit through the plane: on this board up to twenty millimetres of
+ * it, for an island of three square millimetres. A ground plane with a twenty
+ * millimetre cut across it is a worse board than one with a small piece of
+ * copper drawn as a track.
+ *
+ * So the island comes in as COPPER BETWEEN ITS PADS, which is what it is there
+ * to do, and the pour solver carves its own clearance around it — that it does
+ * know how to do. The plane stays whole.
+ */
+export interface Isoletta {
+  faccia: Layer;
+  net: string;
+  /** the pads it holds together, in board millimetres */
+  pad: Array<{ x: number; y: number }>;
+  /** how wide to draw it: the island's own thickness, within reason */
+  larghezzaMm: number;
+  areaMm2: number;
+}
+
 export interface PianoImportato {
   faccia: Layer;
   net: string;
@@ -792,6 +816,8 @@ export function pianiNativi(
   larghezzaCanaleMm = 0.1524,
 ): {
   piani: PianoImportato[];
+  /** the pieces that come in as copper instead of as pours: see Isoletta */
+  isolette: Isoletta[];
   parziali: Array<{
     strato: string;
     net: string;
@@ -803,6 +829,7 @@ export function pianiNativi(
 } {
   const nomi = nomiDelleReti(pcb);
   const piani: PianoImportato[] = [];
+  const isolette: Isoletta[] = [];
   const parziali: Array<{
     strato: string;
     net: string;
@@ -935,28 +962,27 @@ export function pianiNativi(
   }
 
   /*
-   * EVERY REGION KEEPS ITS OWN SHAPE, and the holes go in with it.
+   * EVERY REGION KEEPS ITS OWN SHAPE, AND ITS HOLES STAY UNWRITTEN.
    *
-   * A flood — a pour written with no outline — fills the whole face, and that is
-   * how the ground of this board used to arrive: a rectangle as big as the board
+   * A flood — a pour with no outline — fills the whole face, and that is how the
+   * ground of this board used to arrive: a rectangle as big as the board
    * claiming to be ground. It is wrong twice. It says there is copper where the
    * file draws none (the top ground is 2681mm2 of the 3551 the flood claimed),
-   * and it swallows the islands of the other nets: they sit inside the HOLES of
-   * the ground polygon, and the pour solver carves around pads and traces but
-   * never around another pour, so grafting them under a flood shorts them. The
-   * gerbers we export carry the pours, so that short would reach the fab.
+   * and it closes over the islands of the other nets, which in the gerbers we
+   * export is a short that reaches the fab.
    *
-   * So each region is written with the outline the file drew, and the holes that
-   * hold somebody else's copper are stitched into it (see pour-keyhole.ts).
-   * Everything comes in, nothing overlaps.
-   */
-  /*
-   * Copper of somebody else inside this opening — ON THE SAME FACE. Two pieces
-   * of copper on different layers do not touch, so a hole in the ground plane
-   * that happens to sit above an island of the top face needs no channel: cut
-   * anyway, it slits a plane that on the real board is whole. Measured before
-   * the face was checked: 652mm of slits through one ground plane, against the
-   * 47 that are actually needed.
+   * So each region is written with the outline the file drew. Its OPENINGS are
+   * not written, because a `<copperpour>` takes one ring and has nowhere to put
+   * a second one — and the way round that, cutting a channel from the opening
+   * out to the boundary, means slitting the plane from the middle of the board
+   * to its edge: measured here, nineteen cuts, the longest twenty millimetres,
+   * to keep out islands of three square millimetres. A ground plane with a
+   * twenty millimetre cut in it is a worse board than one missing a scrap of
+   * copper.
+   *
+   * What lives in those openings comes in as COPPER instead (see Isoletta): a
+   * track between the pads the island held together, which the solver then
+   * carves its own clearance around — that it does know how to do.
    */
   /**
    * What a piece of copper holds together: the pads AND the vias of its own net
@@ -976,31 +1002,6 @@ export function pianiNativi(
     return n;
   };
 
-  const conRame = (
-    buco: Array<{ x: number; y: number }>,
-    esclusa: number,
-    faccia: Layer,
-  ): boolean =>
-    regioni.some((altra, i) => {
-      if (i === esclusa || altra.strato.faccia !== faccia) return false;
-      if (!altra.punti.some((p) => dentroPoligono(p.x, p.y, buco))) return false;
-      /*
-       * And only if that copper HOLDS something. A channel is a cut through the
-       * plane: it is worth making when it lets an island keep a pad connected,
-       * and it is only damage when the island is a scrap of copper with nothing
-       * on it. Those scraps are simply left out.
-       */
-      const suaRete = candidate.find((c) => c.indice === i)?.net;
-      return suaRete ? agganciDentro(altra.punti, suaRete) > 0 : false;
-    });
-
-  /*
-   * A piece of copper that sits inside an opening of another one, ON THE SAME
-   * FACE, and holds no pad of its own: it is a scrap. Bringing it in would put
-   * it under the copper around it — the plane is written as one ring and does
-   * not know it is there — and cutting a channel to keep them apart would slit
-   * the plane to save nothing. So it stays out, and it is said.
-   */
   const scarti = new Set<number>();
   for (const c of candidate) {
     if (agganciDentro(c.punti, c.net) > 0) continue;
@@ -1008,6 +1009,7 @@ export function pianiNativi(
       (altra) =>
         altra.indice !== c.indice &&
         altra.strato.faccia === c.strato.faccia &&
+        altra.net !== c.net &&
         altra.buchi.some((b) => c.punti.some((p) => dentroPoligono(p.x, p.y, b))),
     );
     if (dentroUnAltra) {
@@ -1026,42 +1028,58 @@ export function pianiNativi(
   for (const c of candidate) {
     if (scarti.has(c.indice)) continue;
     const faccia = c.strato.faccia!;
+
     /*
-     * Only the holes that matter: of this board's 55 regions the openings are
-     * dozens, and almost all of them are the clearances around pads and vias,
-     * which the solver carves again by itself. Stitching those too would add
-     * thousands of vertices to say something already said, and every channel is
-     * a cut through the plane.
+     * Inside somebody else's opening: it goes in as copper, not as a pour. See
+     * Isoletta for why — the alternative is a slit through the plane that is
+     * longer than the island is wide.
      */
-    const daCucire = c.buchi.filter((b) => conRame(b, c.indice, faccia));
-    const contorno = c.punti;
-    if (daCucire.length > 0) {
-      const cucito = cuciBuchi(
-        c.punti.map((p) => t(p.x, p.y)),
-        daCucire.map((b) => b.map((p) => t(p.x, p.y))),
-        larghezzaCanaleMm,
-      );
-      for (const s of cucito.scartati) {
-        parziali.push({
-          strato: c.strato.nome,
-          net: c.net,
-          copertura: 0,
-          motivo: `un'apertura da ${s.areaMm2}mm2 nel piano non si e' potuta cucire: ${s.motivo}`,
-          pad: 0,
-        });
+    const dentroAltrui = candidate.some(
+      (altra) =>
+        altra.indice !== c.indice &&
+        altra.strato.faccia === faccia &&
+        altra.net !== c.net &&
+        altra.buchi.some((b) => c.punti.some((p) => dentroPoligono(p.x, p.y, b))),
+    );
+    if (dentroAltrui) {
+      /*
+       * What the island holds together: its pads AND its vias. The vias count —
+       * an island with one pad and a via is a pad brought down to another layer,
+       * and reading only the pads leaves that pad connected to nothing.
+       */
+      const pad: Array<{ x: number; y: number }> = [];
+      for (const p of [...arr(pcb.pads), ...arr(pcb.vias)]) {
+        const x = num(p.x);
+        const y = num(p.y);
+        const i = num(p.netIndex);
+        if (x === null || y === null || i === null || nomi.get(i) !== c.net) continue;
+        if (!dentroPoligono(x, y, c.punti)) continue;
+        const q = t(x, y);
+        pad.push({ x: r3(q.x), y: r3(q.y) });
       }
-      piani.push({
-        faccia,
+      const areaMm2 = areaPoligono(c.punti) * MIL * MIL;
+      let perimetro = 0;
+      for (let i = 0; i < c.punti.length; i++) {
+        const a = c.punti[i];
+        const b = c.punti[(i + 1) % c.punti.length];
+        perimetro += Math.hypot(a.x - b.x, a.y - b.y) * MIL;
+      }
+      // twice the area over the perimeter is the width of a strip of that shape
+      const larghezza = perimetro > 0 ? Math.min(2, Math.max(0.2, (2 * areaMm2) / perimetro)) : 0.4;
+      if (pad.length >= 2) {
+        isolette.push({ faccia, net: c.net, pad, larghezzaMm: r3(larghezza), areaMm2: r3(areaMm2) });
+        continue;
+      }
+      /*
+       * One pad and nothing to join it to: as a track it would be a stub that
+       * connects nothing. It stays out and it is counted.
+       */
+      parziali.push({
+        strato: c.strato.nome,
         net: c.net,
         copertura: r3(c.copertura),
-        /*
-         * Simplified like the silkscreen: a poured outline carries a vertex every
-         * few microns and the plane of one face alone is twelve hundred of them.
-         * A hundredth of a millimetre is under what a fab can hold, and it is ten
-         * times narrower than the channels cut into the holes, so nothing that
-         * matters moves.
-         */
-        contorno: semplifica(cucito.anello, 0.01).map((p) => ({ x: r3(p.x), y: r3(p.y) })),
+        motivo: "isoletta dentro il piano con un solo aggancio: non c'e' niente da collegare",
+        pad: pad.length,
       });
       continue;
     }
@@ -1069,14 +1087,21 @@ export function pianiNativi(
       faccia,
       net: c.net,
       copertura: r3(c.copertura),
+      /*
+       * The outline the file drew, simplified to a hundredth of a millimetre —
+       * under what a fab can hold. The openings are NOT written: a pour takes one
+       * ring and has nowhere to put an inner one, and whatever lives in those
+       * openings comes in as copper of its own (see Isoletta), which the solver
+       * then carves its own clearance around.
+       */
       contorno: semplifica(
-        contorno.map((p) => t(p.x, p.y)),
+        c.punti.map((p) => t(p.x, p.y)),
         0.01,
       ).map((p) => ({ x: r3(p.x), y: r3(p.y) })),
     });
   }
 
-  return { piani, parziali };
+  return { piani, isolette, parziali };
 }
 
 export function stratiPredefiniti(): Map<number, Strato> {

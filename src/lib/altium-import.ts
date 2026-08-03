@@ -1206,7 +1206,59 @@ function costruisciDaNativo(
    */
   const rame = rameNativo(pcb, strati, t, larghezzaMm);
   const regole = regoleNative(pcb);
-  const { piani, parziali } = pianiNativi(pcb, strati, t, areaBoard);
+  const { piani, isolette, parziali } = pianiNativi(pcb, strati, t, areaBoard);
+
+  /*
+   * THE ISLANDS, drawn as the copper they are. Each one joins its pads with a
+   * track as wide as the island is thick: the connection is the same, the plane
+   * around it stays whole, and the pour solver carves its own clearance. The
+   * alternative was a channel cut from the island out to the edge of the board.
+   */
+  const rameDelleIsolette: ManualRoute[] = [];
+  for (const iso of isolette) {
+    // nearest neighbour: a chain that touches every pad once, and short
+    const restanti = [...iso.pad];
+    let corrente = restanti.shift()!;
+    while (restanti.length > 0) {
+      let vicino = 0;
+      let minimo = Infinity;
+      restanti.forEach((p, i) => {
+        const d = Math.hypot(p.x - corrente.x, p.y - corrente.y);
+        if (d < minimo) {
+          minimo = d;
+          vicino = i;
+        }
+      });
+      const prossimo = restanti.splice(vicino, 1)[0];
+      /*
+       * At the angles copper is drawn at: straight, then 45 degrees, then
+       * straight. A free diagonal between two pads is not how a board is made
+       * and the checks say so, forty times.
+       */
+      const dx = prossimo.x - corrente.x;
+      const dy = prossimo.y - corrente.y;
+      const diagonale = Math.min(Math.abs(dx), Math.abs(dy));
+      const gomito =
+        Math.abs(dx) > Math.abs(dy)
+          ? { x: corrente.x + Math.sign(dx) * (Math.abs(dx) - diagonale), y: corrente.y }
+          : { x: corrente.x, y: corrente.y + Math.sign(dy) * (Math.abs(dy) - diagonale) };
+      const punti = [
+        { x: corrente.x, y: corrente.y, layer: iso.faccia },
+        ...(diagonale > 1e-6 && Math.abs(Math.abs(dx) - Math.abs(dy)) > 1e-6
+          ? [{ x: r3(gomito.x), y: r3(gomito.y), layer: iso.faccia }]
+          : []),
+        { x: prossimo.x, y: prossimo.y, layer: iso.faccia },
+      ];
+      rameDelleIsolette.push({
+        connection: `net.${iso.net}`,
+        net: iso.net,
+        points: punti,
+        width: iso.larghezzaMm,
+        importato: true,
+      });
+      corrente = prossimo;
+    }
+  }
 
   /** designator by native component index, and the value to print for .Comment */
   const comps = Array.isArray(pcb.components)
@@ -1345,8 +1397,14 @@ function costruisciDaNativo(
   }
   const contorno = contornoNativo(pcb, t);
 
+  if (rameDelleIsolette.length > 0) {
+    warnings.push(
+      `${isolette.length} isolette di rame dentro i piani rese come piste larghe (${rameDelleIsolette.length} tratti): il piano resta intero invece di essere tagliato per aggirarle`,
+    );
+  }
+
   return {
-    routes: rame.routes,
+    routes: [...rame.routes, ...rameDelleIsolette],
     reti: reti.elementi,
     serigrafia,
     piani,
