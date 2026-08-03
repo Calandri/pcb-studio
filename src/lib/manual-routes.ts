@@ -344,6 +344,20 @@ export function applyManualRoutes({
   for (const e of out) {
     if (e.type === "pcb_via") gia.add(`${round3(num(e.x))},${round3(num(e.y))}`);
   }
+  /*
+   * WHICH NET THE HOLE IS ON. A pcb_trace carries no connectivity key in this
+   * version of tscircuit — it carries the source_trace_id, and the key is on the
+   * source trace. Reading only the trace left all 636 imported vias with no net,
+   * and a via with no net is invisible to every check that asks "is there a via
+   * of this net here": the copper an island hangs from stopped counting, and the
+   * islands were reported as dead copper.
+   */
+  const chiaveDiSorgente = new Map<string, string>();
+  for (const e of els) {
+    if (e.type !== "source_trace" || typeof e.source_trace_id !== "string") continue;
+    const k = e.subcircuit_connectivity_map_key;
+    if (typeof k === "string" && k) chiaveDiSorgente.set(e.source_trace_id, k);
+  }
   let nVia = 0;
   for (const e of out) {
     if (e.type !== "pcb_trace" || !e.manual) continue;
@@ -361,7 +375,9 @@ export function applyManualRoutes({
         outer_diameter: dia,
         hole_diameter: num(p.via_hole_diameter) || viaHoleDiameter,
         layers: [String(p.from_layer ?? "top"), String(p.to_layer ?? "bottom")],
-        subcircuit_connectivity_map_key: e.subcircuit_connectivity_map_key,
+        subcircuit_connectivity_map_key:
+          e.subcircuit_connectivity_map_key ??
+          chiaveDiSorgente.get(String(e.source_trace_id ?? "")),
       });
     }
   }

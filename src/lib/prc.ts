@@ -186,7 +186,16 @@ function padsOfComponent(circuitJson: El[], sourceComponentId: string, maps: Map
 
 function netNameOfPad(pad: El, maps: Maps): string | null {
   const group = maps.groupOfPad(pad);
-  return group ? (maps.groupNet.get(group) ?? null) : null;
+  if (group) return maps.groupNet.get(group) ?? null;
+  /*
+   * A via is not a pin: it has no pcb_port to walk back to, and asking for one
+   * left every via with no net. It carries the connectivity key instead, which
+   * is the same key these maps are built on. Without this, the copper an island
+   * hangs from does not count, and a pour tied to its net by three vias gets
+   * reported as dead copper.
+   */
+  const chiave = String(pad.subcircuit_connectivity_map_key ?? "");
+  return chiave ? (maps.groupNet.get(chiave) ?? null) : null;
 }
 
 function pointInPolygon(x: number, y: number, points: Array<{ x: number; y: number }>): boolean {

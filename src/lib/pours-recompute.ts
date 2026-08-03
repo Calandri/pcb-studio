@@ -48,6 +48,12 @@ export interface EsitoRicolata {
   areaDopoMm2: number;
   /** rotated pads handed to the solver by hand, because it cannot read them */
   padRuotatiAggiunti: number;
+  /** openings cut back into a plane for the pours living inside it */
+  colateScavate: number;
+  /** splinters thrown away: smaller than a square of the minimum clearance */
+  bricioleTolte: number;
+  /** small scraps left holding nothing of their net after the carving */
+  orfaneTolte: number;
 }
 
 const area = (v: Array<{ x: number; y: number }>): number => {
@@ -130,6 +136,192 @@ function padRuotati(
   return fuori;
 }
 
+/**
+ * WHERE EACH NET HAS COPPER: pads, vias and the points of its traces.
+ *
+ * It answers one question, asked of every piece a pour breaks into: is there
+ * anything of this net inside it? A scrap with nothing inside is copper that
+ * connects nothing — the file drew it whole and our clearances cut it loose.
+ */
+function ancore(circuitJson: El[], serviti: Map<string, string>): Map<string, Array<{ x: number; y: number }>> {
+  const out = new Map<string, Array<{ x: number; y: number }>>();
+  const metti = (net: string, x: number | null, y: number | null) => {
+    if (!net || x === null || y === null) return;
+    const l = out.get(net) ?? [];
+    l.push({ x, y });
+    out.set(net, l);
+  };
+  /** connectivity key -> net, the only handle a via has */
+  const netDiChiave = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type !== "source_net") continue;
+    const k = String(el.subcircuit_connectivity_map_key ?? "");
+    if (k) netDiChiave.set(k, String(el.source_net_id ?? ""));
+  }
+  const netDiTraccia = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type !== "source_trace") continue;
+    const reti = (el.connected_source_net_ids as string[] | undefined) ?? [];
+    if (reti[0]) netDiTraccia.set(String(el.source_trace_id ?? ""), String(reti[0]));
+  }
+  for (const el of circuitJson) {
+    if (el.type === "pcb_smtpad" || el.type === "pcb_plated_hole") {
+      metti(serviti.get(String(el.pcb_port_id ?? "")) ?? "", num(el.x), num(el.y));
+      continue;
+    }
+    if (el.type === "pcb_via") {
+      metti(netDiChiave.get(String(el.subcircuit_connectivity_map_key ?? "")) ?? "", num(el.x), num(el.y));
+      continue;
+    }
+    if (el.type !== "pcb_trace") continue;
+    const net = netDiTraccia.get(String(el.source_trace_id ?? "")) ?? "";
+    if (!net) continue;
+    for (const q of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
+      metti(net, num(q.x), num(q.y));
+    }
+  }
+  return out;
+}
+
+/** whether a point falls inside a ring */
+function dentro(x: number, y: number, anello: Array<{ x: number; y: number }>): boolean {
+  let d = false;
+  for (let i = 0, j = anello.length - 1; i < anello.length; j = i++) {
+    const a = anello[i];
+    const b = anello[j];
+    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) d = !d;
+  }
+  return d;
+}
+
+/**
+ * THE BAND ALONG THE BOARD EDGE, as obstacles.
+ *
+ * The solver takes one `outline` and keeps `board_edge_margin` away from it —
+ * and the outline it is given here is not the board, it is the pour's own
+ * boundary, the shape the file drew. So asking it for a 0.3mm edge margin ate
+ * 0.3mm off the whole perimeter of every pour: the ground plane of the top face
+ * came out at 73% of the copper the file has, and the small islands, which are
+ * perimeter and little else, at 28% or nothing at all.
+ *
+ * The edge clearance belongs at the EDGE. It is handed over as a band of
+ * obstacles along the board outline, so a pour that reaches the rout is cut back
+ * and a pour in the middle of the board is left alone. The key says neither hole
+ * nor cutout on purpose: a polygon obstacle with such a key is subtracted
+ * exactly as given, which is what a measured band has to be.
+ */
+function bandaDelBordo(
+  circuitJson: El[],
+  faccia: string,
+  bordoMm: number,
+): Array<Record<string, unknown>> {
+  if (bordoMm <= 0) return [];
+  const board = circuitJson.find((el) => el.type === "pcb_board");
+  if (!board) return [];
+  const centro = (board.center as { x?: number; y?: number } | undefined) ?? {};
+  const cx = num(centro.x) ?? 0;
+  const cy = num(centro.y) ?? 0;
+  const w = num(board.width);
+  const h = num(board.height);
+  const contorno = Array.isArray(board.outline)
+    ? (board.outline as Array<{ x?: number; y?: number }>)
+        .map((p) => ({ x: num(p.x) ?? 0, y: num(p.y) ?? 0 }))
+    : w !== null && h !== null
+      ? [
+          { x: cx - w / 2, y: cy - h / 2 },
+          { x: cx + w / 2, y: cy - h / 2 },
+          { x: cx + w / 2, y: cy + h / 2 },
+          { x: cx - w / 2, y: cy + h / 2 },
+        ]
+      : [];
+  if (contorno.length < 3) return [];
+
+  const fuori: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < contorno.length; i++) {
+    const a = contorno[i];
+    const b = contorno[(i + 1) % contorno.length];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const l = Math.hypot(dx, dy);
+    if (l < 1e-9) continue;
+    /* the strip that follows the edge, half of it inside the board */
+    const nx = (-dy / l) * bordoMm;
+    const ny = (dx / l) * bordoMm;
+    fuori.push({
+      shape: "polygon",
+      padId: `bordo_${i}`,
+      layer: faccia,
+      connectivityKey: `unconnected:bordo_${i}`,
+      points: [
+        { x: a.x + nx, y: a.y + ny },
+        { x: b.x + nx, y: b.y + ny },
+        { x: b.x - nx, y: b.y - ny },
+        { x: a.x - nx, y: a.y - ny },
+      ],
+    });
+    /* and a square on the corner, or the strips leave a notch where they meet */
+    fuori.push({
+      shape: "polygon",
+      padId: `angolo_${i}`,
+      layer: faccia,
+      connectivityKey: `unconnected:angolo_${i}`,
+      points: [
+        { x: a.x - bordoMm, y: a.y - bordoMm },
+        { x: a.x + bordoMm, y: a.y - bordoMm },
+        { x: a.x + bordoMm, y: a.y + bordoMm },
+        { x: a.x - bordoMm, y: a.y + bordoMm },
+      ],
+    });
+  }
+  return fuori;
+}
+
+/**
+ * THE POURS OF THE OTHER NETS ON THIS FACE.
+ *
+ * The solver carves a pour around pads, traces, vias and cutouts, and around
+ * nothing else: another pour is invisible to it, which is exactly what made a
+ * plane close over the islands living inside its openings. A `<copperpour>`
+ * writes one ring and cannot say "there is a hole here", so the hole has to be
+ * cut again at the end, and here is where.
+ *
+ * Only the SMALLER pours are subtracted: the big plane gives way to the island
+ * and not the other way round, so the gap between them is one clearance and not
+ * two, and the island keeps the shape the file drew. Handing them over with a
+ * `cutout:` key is what makes the solver apply a margin at all — it offsets a
+ * polygon obstacle only when the key says hole or cutout.
+ */
+function altreColate(
+  colate: El[],
+  questa: El,
+  areaDiQuesta: number,
+): Array<Record<string, unknown>> {
+  const fuori: Array<Record<string, unknown>> = [];
+  for (const altra of colate) {
+    if (altra === questa) continue;
+    if (String(altra.layer ?? "") !== String(questa.layer ?? "")) continue;
+    if (String(altra.source_net_id ?? "") === String(questa.source_net_id ?? "")) continue;
+    const brep = altra.brep_shape as { outer_ring?: Anello } | undefined;
+    const punti = brep?.outer_ring?.vertices ?? [];
+    if (punti.length < 3) continue;
+    const sua = area(punti);
+    /* the bigger one yields; equal areas are decided by id, so the run repeats */
+    const cede =
+      sua < areaDiQuesta ||
+      (sua === areaDiQuesta &&
+        String(altra.pcb_copper_pour_id ?? "") < String(questa.pcb_copper_pour_id ?? ""));
+    if (!cede) continue;
+    fuori.push({
+      shape: "polygon",
+      padId: String(altra.pcb_copper_pour_id ?? ""),
+      layer: String(questa.layer ?? ""),
+      connectivityKey: `cutout:${String(altra.pcb_copper_pour_id ?? "")}`,
+      points: punti.map((p) => ({ x: p.x, y: p.y })),
+    });
+  }
+  return fuori;
+}
+
 const areaNetta = (forma: { outer_ring?: Anello; inner_rings?: Anello[] }): number =>
   area(forma.outer_ring?.vertices ?? []) -
   (forma.inner_rings ?? []).reduce((s, r) => s + area(r.vertices ?? []), 0);
@@ -152,17 +344,21 @@ export async function ricolaPiani({
 }): Promise<EsitoRicolata> {
   const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
   if (pours.length === 0) {
-    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0 };
+    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0, colateScavate: 0, bricioleTolte: 0, orfaneTolte: 0 };
   }
 
   await initializeManifoldGeometry();
   const serviti = planeServedPorts(circuitJson, readPours(circuitJson));
+  const punti = ancore(circuitJson, serviti);
 
   const nuovi: El[] = [];
   let areaPrima = 0;
   let areaDopo = 0;
   let ricolate = 0;
   let aggiunti = 0;
+  let scavate = 0;
+  let briciole = 0;
+  let orfane = 0;
 
   for (const pour of pours) {
     const brep = pour.brep_shape as { outer_ring?: Anello; inner_rings?: Anello[] } | undefined;
@@ -185,13 +381,15 @@ export async function ricolaPiani({
         source_net_id: String(pour.source_net_id ?? ""),
         pad_margin: clearanceMm,
         trace_margin: clearanceMm,
-        board_edge_margin: bordoMm,
+        /* zero on purpose: the edge is kept by the band, see bandaDelBordo */
+        board_edge_margin: 0,
         cutout_margin: clearanceMm,
         outline: contorno,
       } as never,
     );
 
-    /* the rotated pads the converter dropped on the floor */
+    /* the rotated pads the converter dropped on the floor, and the pours it
+     * cannot see at all */
     const mancanti = padRuotati(
       circuitJson,
       String(pour.layer),
@@ -199,10 +397,13 @@ export async function ricolaPiani({
       clearanceMm,
       serviti,
     );
-    if (mancanti.length > 0) {
+    const vicine = altreColate(pours, pour, areaNetta(brep ?? {}));
+    const bordo = bandaDelBordo(circuitJson, String(pour.layer), bordoMm);
+    if (mancanti.length + vicine.length + bordo.length > 0) {
       const p = problema as unknown as { pads?: Array<Record<string, unknown>> };
-      p.pads = [...(p.pads ?? []), ...mancanti];
+      p.pads = [...(p.pads ?? []), ...mancanti, ...vicine, ...bordo];
       aggiunti += mancanti.length;
+      scavate += vicine.length;
     }
 
     let forme: Array<{ outer_ring?: Anello; inner_rings?: Anello[] }> = [];
@@ -221,7 +422,37 @@ export async function ricolaPiani({
 
     ricolate++;
     forme.forEach((forma, i) => {
-      areaDopo += areaNetta(forma);
+      /*
+       * The splinters go in the bin. Cutting a plane with booleans leaves
+       * shapes of a thousandth of a square millimetre — 97 of this board's 203,
+       * a third of a square millimetre in all: nothing a fab can hold and
+       * nothing that carries current, but each one is a pour of its own, drawn
+       * on the screen and reported as dead copper by the electrical checks. The
+       * line is a square of the minimum clearance, under which there is not
+       * room for anything at all.
+       */
+      const suaArea = areaNetta(forma);
+      if (suaArea < clearanceMm * clearanceMm) {
+        briciole++;
+        return;
+      }
+      /*
+       * And the scraps that hold nothing. A piece under a square millimetre with
+       * no pad, no via and no trace of its net inside it is copper that connects
+       * nothing: the file drew the island whole and our clearances cut a corner
+       * of it loose. Left in, the electrical check reports it as dead copper,
+       * which it is. Big pieces are never dropped, however empty they look:
+       * losing a plane by mistake is not worth a tidy report.
+       */
+      if (suaArea < 1) {
+        const anello = forma.outer_ring?.vertices ?? [];
+        const suoi = punti.get(String(pour.source_net_id ?? "")) ?? [];
+        if (anello.length >= 3 && !suoi.some((q) => dentro(q.x, q.y, anello))) {
+          orfane++;
+          return;
+        }
+      }
+      areaDopo += suaArea;
       nuovi.push({
         ...pour,
         pcb_copper_pour_id: `${String(pour.pcb_copper_pour_id)}_r${i}`,
@@ -236,6 +467,9 @@ export async function ricolaPiani({
     areaPrimaMm2: Number(areaPrima.toFixed(1)),
     areaDopoMm2: Number(areaDopo.toFixed(1)),
     padRuotatiAggiunti: aggiunti,
+    colateScavate: scavate,
+    bricioleTolte: briciole,
+    orfaneTolte: orfane,
   };
 }
 

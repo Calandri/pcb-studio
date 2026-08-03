@@ -45,8 +45,19 @@ import {
   MANUAL_EDITS_PATH,
 } from "./manual-edits";
 import { applyManualRoutes } from "./manual-routes";
-import { ricolaPiani } from "./pours-recompute";
+import { ricolaPiani, type EsitoRicolata } from "./pours-recompute";
 import { Profiler, routerPhases, type Profile } from "./profile";
+
+/** the pour numbers, in the shape the summary declares them */
+const esitoColate = (e: EsitoRicolata): NonNullable<CompileSummary["pours"]> => ({
+  ricalcolate: e.ricolate,
+  areaPrimaMm2: e.areaPrimaMm2,
+  areaDopoMm2: e.areaDopoMm2,
+  padRuotati: e.padRuotatiAggiunti,
+  apertureRitagliate: e.colateScavate,
+  bricioleTolte: e.bricioleTolte,
+  orfaneTolte: e.orfaneTolte,
+});
 import {
   analyzePlacement,
   emptyPlacementQuality,
@@ -185,6 +196,22 @@ export interface CompileSummary {
    * problem: it is a part that does not fit, and the design must change.
    */
   placementReport?: PlacementReport;
+  /**
+   * What the planes did when they were poured again at the end, with all the
+   * copper in place: how many were recomputed, how much copper they hold, and
+   * what was thrown away. The scraps matter — a piece of an island that our
+   * clearances cut loose is copper the file had and the board will not, and
+   * nobody would see it go without this line.
+   */
+  pours?: {
+    ricalcolate: number;
+    areaPrimaMm2: number;
+    areaDopoMm2: number;
+    padRuotati: number;
+    apertureRitagliate: number;
+    bricioleTolte: number;
+    orfaneTolte: number;
+  };
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{
     section: string;
@@ -601,8 +628,10 @@ export async function compileProject(
       bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
     }).catch(() => null);
     const circuitJson = (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[];
+    const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
     say({ step: "Controllo le regole", progress: 0.95, circuitJson });
     const summary = await summarize(circuitJson, projectFsMap);
+    summary.pours = rapportoColate;
     summary.manualEdits = manualEdits;
     if (placementReport) summary.placementReport = placementReport;
     const orfane = danglingTraces(circuitJson);
@@ -908,6 +937,7 @@ export async function compileProject(
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
   }).catch(() => null);
   const circuitJson = (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[];
+  const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise
   // every hand-pinned component would be flagged as a spurious schX/schY
   // and the agent would chase a defect that does not exist
@@ -915,6 +945,7 @@ export async function compileProject(
   const summary = await profiler.run("controlli (DRC, elettrici, schematico, footprint)", () =>
     summarize(circuitJson, projectFsMap),
   );
+  summary.pours = rapportoColate;
   summary.manualEdits = manualEdits;
   /*
    * The router's internal phases are read from the solver at the end of the

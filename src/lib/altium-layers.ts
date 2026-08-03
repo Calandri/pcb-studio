@@ -738,25 +738,25 @@ const dentroPoligono = (
 /**
  * A piece of copper that sits inside an opening of another net's pour.
  *
- * It cannot be a pour of its own: the plane around it is written as a single
- * ring, it does not know the island is there, and it would close over it — in
- * the gerbers, a short. Cutting a channel out to the boundary keeps them apart
- * and costs a slit through the plane: on this board up to twenty millimetres of
- * it, for an island of three square millimetres. A ground plane with a twenty
- * millimetre cut across it is a worse board than one with a small piece of
- * copper drawn as a track.
+ * It comes in as a pour of its own, with the shape the file drew. For a long
+ * time it could not: the plane around it is written as a single ring, it does
+ * not know the island is there, and it closed over it — in the gerbers, a
+ * short. The way round it was a channel cut from the island out to the
+ * boundary, twenty millimetres of slit through a ground plane to keep out three
+ * square millimetres of copper; then a wide track between its pads, which is
+ * not the shape the island has and ran over the pads of other nets, a hundred
+ * and forty-one times on this board.
  *
- * So the island comes in as COPPER BETWEEN ITS PADS, which is what it is there
- * to do, and the pour solver carves its own clearance around it — that it does
- * know how to do. The plane stays whole.
+ * What makes it possible now is that the recompute carves each plane around the
+ * SMALLER pours of other nets on its face (see pours-recompute.ts). The opening
+ * comes back on its own, exactly where the island is, and nothing has to be cut
+ * to reach it.
  */
 export interface Isoletta {
   faccia: Layer;
   net: string;
-  /** the pads it holds together, in board millimetres */
-  pad: Array<{ x: number; y: number }>;
-  /** how wide to draw it: the island's own thickness, within reason */
-  larghezzaMm: number;
+  /** how many pads and vias of its net it holds: what it is there to connect */
+  agganci: number;
   areaMm2: number;
 }
 
@@ -801,22 +801,20 @@ function areaPoligono(punti: Array<{ x: number; y: number }>): number {
  * Verified on @tscircuit/core: two pours on the same layer, different nets and
  * different outlines, compile and come back as two breps with the right nets.
  *
- * The one thing that is NOT taken is a region on a face where another net is
- * already poured as a FLOOD. The flood fills everything it is not told about —
- * it carves its clearances around pads and traces, never around another pour —
- * so an island grafted under it would be a short. Those are counted and named,
- * not silently dropped.
+ * The one thing that is NOT taken is a region with nothing of its net on it and
+ * no way to reach it: dead copper. Those are counted and named, not silently
+ * dropped. Everything else comes in, the pieces inside another net's openings
+ * too: the recompute at the end of the compile carves each plane around the
+ * smaller pours on its face, so the opening the file drew comes back on its own.
  */
 export function pianiNativi(
   pcb: Record<string, unknown>,
   strati: Map<number, Strato>,
   t: Trasforma,
   areaBoardMm2: number,
-  /** the board's minimum clearance: how wide the channels into the holes are cut */
-  larghezzaCanaleMm = 0.1524,
 ): {
   piani: PianoImportato[];
-  /** the pieces that come in as copper instead of as pours: see Isoletta */
+  /** the regions that live inside another net's opening: see Isoletta */
   isolette: Isoletta[];
   /** regions a larger pour of their own net already covers: not written twice */
   coperte: number;
@@ -982,9 +980,10 @@ export function pianiNativi(
    * twenty millimetre cut in it is a worse board than one missing a scrap of
    * copper.
    *
-   * What lives in those openings comes in as COPPER instead (see Isoletta): a
-   * track between the pads the island held together, which the solver then
-   * carves its own clearance around — that it does know how to do.
+   * What lives in those openings comes in as a pour of its own, with its own
+   * shape (see Isoletta), and the opening comes back by itself: the recompute
+   * carves every plane around the smaller pours of other nets that sit on its
+   * face, which is the same clearance it keeps from a pad.
    */
   /**
    * What a piece of copper holds together: the pads AND the vias of its own net
@@ -1054,9 +1053,8 @@ export function pianiNativi(
     const faccia = c.strato.faccia!;
 
     /*
-     * Inside somebody else's opening: it goes in as copper, not as a pour. See
-     * Isoletta for why — the alternative is a slit through the plane that is
-     * longer than the island is wide.
+     * Inside somebody else's opening: a pour like the others, and counted apart
+     * so the report can say how many there were. See Isoletta.
      */
     const dentroAltrui = candidate.some(
       (altra) =>
@@ -1066,46 +1064,9 @@ export function pianiNativi(
         altra.buchi.some((b) => c.punti.some((p) => dentroPoligono(p.x, p.y, b))),
     );
     if (dentroAltrui) {
-      /*
-       * What the island holds together: its pads AND its vias. The vias count —
-       * an island with one pad and a via is a pad brought down to another layer,
-       * and reading only the pads leaves that pad connected to nothing.
-       */
-      const pad: Array<{ x: number; y: number }> = [];
-      for (const p of [...arr(pcb.pads), ...arr(pcb.vias)]) {
-        const x = num(p.x);
-        const y = num(p.y);
-        const i = num(p.netIndex);
-        if (x === null || y === null || i === null || nomi.get(i) !== c.net) continue;
-        if (!dentroPoligono(x, y, c.punti)) continue;
-        const q = t(x, y);
-        pad.push({ x: r3(q.x), y: r3(q.y) });
-      }
+      const agganci = agganciDentro(c.punti, c.net);
       const areaMm2 = areaPoligono(c.punti) * MIL * MIL;
-      let perimetro = 0;
-      for (let i = 0; i < c.punti.length; i++) {
-        const a = c.punti[i];
-        const b = c.punti[(i + 1) % c.punti.length];
-        perimetro += Math.hypot(a.x - b.x, a.y - b.y) * MIL;
-      }
-      // twice the area over the perimeter is the width of a strip of that shape
-      const larghezza = perimetro > 0 ? Math.min(2, Math.max(0.2, (2 * areaMm2) / perimetro)) : 0.4;
-      if (pad.length >= 2) {
-        isolette.push({ faccia, net: c.net, pad, larghezzaMm: r3(larghezza), areaMm2: r3(areaMm2) });
-        continue;
-      }
-      /*
-       * One pad and nothing to join it to: as a track it would be a stub that
-       * connects nothing. It stays out and it is counted.
-       */
-      parziali.push({
-        strato: c.strato.nome,
-        net: c.net,
-        copertura: r3(c.copertura),
-        motivo: "isoletta dentro il piano con un solo aggancio: non c'e' niente da collegare",
-        pad: pad.length,
-      });
-      continue;
+      isolette.push({ faccia, net: c.net, agganci, areaMm2: r3(areaMm2) });
     }
     piani.push({
       faccia,
@@ -1114,9 +1075,9 @@ export function pianiNativi(
       /*
        * The outline the file drew, simplified to a hundredth of a millimetre —
        * under what a fab can hold. The openings are NOT written: a pour takes one
-       * ring and has nowhere to put an inner one, and whatever lives in those
-       * openings comes in as copper of its own (see Isoletta), which the solver
-       * then carves its own clearance around.
+       * ring and has nowhere to put an inner one. They come back in the
+       * recompute, where each plane is carved around the smaller pours that live
+       * inside it (see Isoletta and pours-recompute.ts).
        */
       contorno: semplifica(
         c.punti.map((p) => t(p.x, p.y)),
