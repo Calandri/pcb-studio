@@ -706,8 +706,19 @@ export function BoardCanvas({
                      * the first thing that must be recognized. Here it stays
                      * discreet under the traces but visible even when it is not
                      * the foreground layer.
+                     *
+                     * AND IT HAS AN EDGE. At a fifth of the colour a plane that
+                     * covers the whole face is a uniform tint over a dark board:
+                     * indistinguishable from the board itself, and read as "the
+                     * pour is missing" — which happened, twice, on a board whose
+                     * ground covers 3216 of its 3551 square millimetres. The
+                     * outline is what says there is copper here and it ends
+                     * there; the clearances around pads become visible with it.
                      */
-                    opacity={l === active ? 0.2 : (xray / 100) * 0.45}
+                    stroke={LAYER_COLOR[l]}
+                    strokeWidth={mmPerPx * (l === active ? 1.4 : 1)}
+                    strokeOpacity={l === active ? 0.85 : (xray / 100) * 0.7}
+                    opacity={l === active ? 0.45 : (xray / 100) * 0.45}
                   />
                 )),
             )}
