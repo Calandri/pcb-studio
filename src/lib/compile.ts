@@ -57,6 +57,7 @@ const esitoColate = (e: EsitoRicolata): NonNullable<CompileSummary["pours"]> => 
   apertureRitagliate: e.colateScavate,
   bricioleTolte: e.bricioleTolte,
   orfaneTolte: e.orfaneTolte,
+  viaRiconosciute: e.viaRiconosciute,
 });
 import {
   analyzePlacement,
@@ -211,6 +212,7 @@ export interface CompileSummary {
     apertureRitagliate: number;
     bricioleTolte: number;
     orfaneTolte: number;
+    viaRiconosciute: number;
   };
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{

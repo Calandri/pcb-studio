@@ -54,6 +54,8 @@ export interface EsitoRicolata {
   bricioleTolte: number;
   /** small scraps left holding nothing of their net after the carving */
   orfaneTolte: number;
+  /** vias of the pour's own net the solver would have carved around */
+  viaRiconosciute: number;
 }
 
 const area = (v: Array<{ x: number; y: number }>): number => {
@@ -134,6 +136,40 @@ function padRuotati(
     });
   }
   return fuori;
+}
+
+/**
+ * THE VIAS OF THE POUR'S OWN NET, PUT BACK ON ITS SIDE.
+ *
+ * The solver decides what to carve by comparing strings: an obstacle whose
+ * connectivity key is not the pour's key gets subtracted. For a trace it reads
+ * that key through the connectivity map and gets the SCOPED form
+ * (`subcircuit:...:connectivity:net0`); a standalone `pcb_via` is in no map —
+ * nothing references its id — so it falls back to the key written on the
+ * element, which is the RAW form (`...net0`). The two never match.
+ *
+ * The result is a ground plane that opens a hole around each of its own
+ * stitching vias: 519 of them on this board, holes where the copper should
+ * close, which is exactly what a plane is for. Here the keys of the vias that
+ * are on the pour's net are set to the pour's own, so the solver leaves them
+ * alone.
+ */
+function riconosciLeVia(
+  problema: { pads?: Array<Record<string, unknown>>; regionsForPour?: Array<Record<string, unknown>> },
+  netDiVia: Map<string, string>,
+  netDellaColata: string,
+): number {
+  const chiave = problema.regionsForPour?.[0]?.connectivityKey;
+  if (typeof chiave !== "string" || !chiave) return 0;
+  let n = 0;
+  for (const pad of problema.pads ?? []) {
+    const suo = netDiVia.get(String(pad.padId ?? ""));
+    if (!suo || suo !== netDellaColata) continue;
+    if (pad.connectivityKey === chiave) continue;
+    pad.connectivityKey = chiave;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -344,12 +380,27 @@ export async function ricolaPiani({
 }): Promise<EsitoRicolata> {
   const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
   if (pours.length === 0) {
-    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0, colateScavate: 0, bricioleTolte: 0, orfaneTolte: 0 };
+    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0, colateScavate: 0, bricioleTolte: 0, orfaneTolte: 0, viaRiconosciute: 0 };
   }
 
   await initializeManifoldGeometry();
   const serviti = planeServedPorts(circuitJson, readPours(circuitJson));
   const punti = ancore(circuitJson, serviti);
+  /** which net every via is on, read from the key the element carries */
+  const netDiVia = new Map<string, string>();
+  {
+    const netDiChiave = new Map<string, string>();
+    for (const el of circuitJson) {
+      if (el.type !== "source_net") continue;
+      const k = String(el.subcircuit_connectivity_map_key ?? "");
+      if (k) netDiChiave.set(k, String(el.source_net_id ?? ""));
+    }
+    for (const el of circuitJson) {
+      if (el.type !== "pcb_via") continue;
+      const net = netDiChiave.get(String(el.subcircuit_connectivity_map_key ?? ""));
+      if (net) netDiVia.set(String(el.pcb_via_id ?? ""), net);
+    }
+  }
 
   const nuovi: El[] = [];
   let areaPrima = 0;
@@ -359,6 +410,7 @@ export async function ricolaPiani({
   let scavate = 0;
   let briciole = 0;
   let orfane = 0;
+  let riconosciute = 0;
 
   for (const pour of pours) {
     const brep = pour.brep_shape as { outer_ring?: Anello; inner_rings?: Anello[] } | undefined;
@@ -396,6 +448,11 @@ export async function ricolaPiani({
       String(pour.source_net_id ?? ""),
       clearanceMm,
       serviti,
+    );
+    riconosciute += riconosciLeVia(
+      problema as never,
+      netDiVia,
+      String(pour.source_net_id ?? ""),
     );
     const vicine = altreColate(pours, pour, areaNetta(brep ?? {}));
     const bordo = bandaDelBordo(circuitJson, String(pour.layer), bordoMm);
@@ -470,6 +527,7 @@ export async function ricolaPiani({
     colateScavate: scavate,
     bricioleTolte: briciole,
     orfaneTolte: orfane,
+    viaRiconosciute: riconosciute,
   };
 }
 
