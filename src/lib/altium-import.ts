@@ -959,9 +959,17 @@ export async function importAltiumProject(
     if (Object.values(limiti).some((v) => v !== undefined)) {
       fsMap[DESIGN_RULES_PATH] = serializeDesignRules(buildProjectRules("custom", limiti));
     }
+    const coppie = Object.entries(limiti.clearanceByPairMm ?? {});
+    if (coppie.length > 0) {
+      warnings.push(
+        `distanze per coppia prese dal file: ${coppie
+          .map(([k, v]) => `${k} ${v}mm`)
+          .join(", ")} (le eccezioni che il file scrive dentro il predicato, tipo "non i testpoint", non sono espresse: la regola vale per tutti gli oggetti di quel tipo)`,
+      );
+    }
     for (const r of ristrette ?? []) {
       warnings.push(
-        `regola "${r.nome}" (${r.ambito}) chiede ${r.gapMm}mm: pcb-studio ha un solo minimo per tutto, il controllo usa quello generale`,
+        `regola "${r.nome}" (${r.ambito}) chiede ${r.gapMm}mm e non parla di un tipo di oggetto: non e' stata tradotta, il controllo usa il minimo generale`,
       );
     }
   }

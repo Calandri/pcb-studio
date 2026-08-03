@@ -48,7 +48,53 @@ export interface DesignRules {
    * and the stitching ones HELP the return current instead of getting in its way.
    */
   viaCostMm: number;
+  /**
+   * THE DISTANCE FOR ONE PAIR OF THINGS, when the board declares one.
+   *
+   * A single copper-to-copper minimum is what a fab quotes, not what a board is
+   * drawn to. BAT_BS states `PadToViaClearance` at 0.0254mm where its general
+   * rule asks 0.1524, and it uses it: under the BGA the fanout vias pass a
+   * hundredth of a millimetre from the balls. Measured against one global
+   * number those are twenty-two violations that the designer never committed,
+   * and twenty-two lines of noise hide the one line that matters.
+   *
+   * So a pair can have its own minimum. Missing pair: the general one applies.
+   * Keys are the two kinds in alphabetical order, `chiaveCoppia` builds them.
+   */
+  clearanceByPairMm?: Partial<Record<ChiaveCoppia, number>>;
 }
+
+/** what a clearance rule can talk about */
+export type TipoRame = "pad" | "trace" | "via";
+
+export type ChiaveCoppia =
+  | "pad-pad"
+  | "pad-trace"
+  | "pad-via"
+  | "trace-trace"
+  | "trace-via"
+  | "via-via";
+
+/** the key of a pair, in the one order that makes lookups match */
+export function chiaveCoppia(a: TipoRame, b: TipoRame): ChiaveCoppia {
+  return (a <= b ? `${a}-${b}` : `${b}-${a}`) as ChiaveCoppia;
+}
+
+/** how far apart two pieces of copper of different nets have to stay */
+export function distanzaMinimaFra(rules: DesignRules, a: TipoRame, b: TipoRame): number {
+  const suo = rules.clearanceByPairMm?.[chiaveCoppia(a, b)];
+  return typeof suo === "number" && Number.isFinite(suo) && suo > 0 ? suo : rules.minClearanceMm;
+}
+
+/** the pairs, in the order they are shown and written */
+export const COPPIE: Array<{ chiave: ChiaveCoppia; label: string }> = [
+  { chiave: "pad-pad", label: "pad e pad" },
+  { chiave: "pad-trace", label: "pad e pista" },
+  { chiave: "pad-via", label: "pad e via" },
+  { chiave: "trace-trace", label: "pista e pista" },
+  { chiave: "trace-via", label: "pista e via" },
+  { chiave: "via-via", label: "via e via" },
+];
 
 export const DEFAULT_DESIGN_RULES: DesignRules = {
   minTraceWidthMm: 0.127,
@@ -140,7 +186,7 @@ export interface ProjectRules {
   isCustom: boolean;
 }
 
-const LIMITS: Record<keyof DesignRules, { min: number; max: number }> = {
+const LIMITS: Record<Exclude<keyof DesignRules, "clearanceByPairMm">, { min: number; max: number }> = {
   minTraceWidthMm: { min: 0.05, max: 2 },
   minClearanceMm: { min: 0.05, max: 2 },
   minBoardEdgeClearanceMm: { min: 0.1, max: 5 },
@@ -161,12 +207,25 @@ const LIMITS: Record<keyof DesignRules, { min: number; max: number }> = {
 function clampRules(input: Partial<DesignRules> | undefined): DesignRules {
   const out = { ...DEFAULT_DESIGN_RULES };
   if (!input) return out;
-  for (const key of Object.keys(LIMITS) as Array<keyof DesignRules>) {
+  type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm">;
+  for (const key of Object.keys(LIMITS) as Numeriche[]) {
     const v = input[key];
     if (typeof v !== "number" || !Number.isFinite(v)) continue;
     const { min, max } = LIMITS[key];
     out[key] = Math.min(max, Math.max(min, v));
   }
+  /*
+   * The pair distances, kept only where they say something: a pair asking for
+   * MORE than the general rule is not a special case, it is the general rule
+   * badly copied, and one asking for less than ten microns is a mangled file.
+   */
+  const coppie: Partial<Record<ChiaveCoppia, number>> = {};
+  for (const { chiave } of COPPIE) {
+    const v = input.clearanceByPairMm?.[chiave];
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    coppie[chiave] = Math.min(2, Math.max(0.01, v));
+  }
+  if (Object.keys(coppie).length > 0) out.clearanceByPairMm = coppie;
   return out;
 }
 

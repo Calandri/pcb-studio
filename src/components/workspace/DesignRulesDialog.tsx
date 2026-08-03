@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { DesignRules } from "@/lib/design-rules";
+import { COPPIE, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
 
 /**
  * Board fabrication rules.
@@ -31,7 +31,9 @@ interface Current {
   rules: DesignRules;
 }
 
-const FIELDS: Array<{ key: keyof DesignRules; label: string; hint: string }> = [
+type CampoNumerico = Exclude<keyof DesignRules, "clearanceByPairMm">;
+
+const FIELDS: Array<{ key: CampoNumerico; label: string; hint: string }> = [
   { key: "minTraceWidthMm", label: "Pista minima", hint: "la pista piu' sottile che il fornitore incide" },
   { key: "minClearanceMm", label: "Distanza minima", hint: "rame-rame fra net diverse" },
   { key: "minBoardEdgeClearanceMm", label: "Margine dal bordo", hint: "quanto il rame sta lontano dal taglio" },
@@ -189,6 +191,51 @@ export function DesignRulesDialog({
                 <span className="w-5 font-mono text-[10px] text-faint">mm</span>
               </label>
             ))}
+
+            {/*
+              The distance for ONE PAIR of things. A single copper-to-copper
+              number is what a fab quotes, not what a board is drawn to: an
+              imported board can say "a via may come within a hundredth of a
+              millimetre of a pad", and under a BGA it does. Empty means the
+              general minimum above applies, which is the common case.
+            */}
+            <div className="mt-3 border-t border-line pt-3">
+              <p className="text-[12px] text-text">Distanze per coppia</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
+                Vuoto = vale la distanza minima qui sopra. Si riempiono da sole quando
+                si importa una scheda che le dichiara.
+              </p>
+              <div className="mt-2 space-y-1.5">
+                {COPPIE.map((c) => (
+                  <label key={c.chiave} className="flex items-center gap-3">
+                    <span className="min-w-0 flex-1 text-[12px] text-muted">{c.label}</span>
+                    <input
+                      type="number"
+                      step="0.001"
+                      min="0.01"
+                      placeholder={String(custom.minClearanceMm)}
+                      value={custom.clearanceByPairMm?.[c.chiave] ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        const resto: Partial<Record<ChiaveCoppia, number>> = {
+                          ...(custom.clearanceByPairMm ?? {}),
+                        };
+                        if (v === "") delete resto[c.chiave];
+                        else resto[c.chiave] = Number(v);
+                        setCustom({
+                          ...custom,
+                          ...(Object.keys(resto).length
+                            ? { clearanceByPairMm: resto }
+                            : { clearanceByPairMm: undefined }),
+                        });
+                      }}
+                      className="w-[86px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none placeholder:text-faint focus:border-brand"
+                    />
+                    <span className="w-5 font-mono text-[10px] text-faint">mm</span>
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 

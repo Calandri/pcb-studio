@@ -1,3 +1,4 @@
+import { chiaveCoppia, type ChiaveCoppia, type TipoRame } from "./design-rules";
 import type { Layer, ManualRoute } from "./manual-routes";
 
 /**
@@ -1226,7 +1227,9 @@ export function regoleNative(pcb: Record<string, unknown>): {
   minViaHoleMm?: number;
   minViaDiameterMm?: number;
   targetTraceWidthMm?: number;
-  /** the narrow-scope clearance rules, which one global minimum cannot express */
+  /** the narrow rules that DO fit a pair of kinds: pad-via, via-via, ... */
+  clearanceByPairMm?: Partial<Record<ChiaveCoppia, number>>;
+  /** the narrow-scope clearance rules that no pair of kinds can express */
   ristrette?: Array<{ nome: string; gapMm: number; ambito: string }>;
 } {
   const generali = arr(pcb.rules).filter((r) => {
@@ -1251,13 +1254,40 @@ export function regoleNative(pcb: Record<string, unknown>): {
     v !== undefined && v >= min && v <= max ? v : undefined;
 
   /*
-   * The clearance rules with a NARROW scope. This board has one for vias against
-   * pads that lets them come within 1 mil, where the general rule asks for 6, and
-   * it is why 22 vias look too close to a pad they are perfectly legal next to.
-   * pcb-studio has one minimum for everything, so the rule cannot be applied:
-   * it is reported, and whoever imports knows why the check complains.
+   * THE CLEARANCE RULES WITH A NARROW SCOPE.
+   *
+   * This board has one that lets a via come within 1 mil of a pad where the
+   * general rule asks for 6, and it uses it: under the BGA the fanout passes a
+   * hundredth of a millimetre from the balls. Read as one global minimum it is
+   * twenty-two violations the designer never committed.
+   *
+   * A scope is a predicate, and predicates can say anything. The ones taken are
+   * the ones that name a KIND of object and nothing else that changes the
+   * geometry: `IsVia`, `IsPad`, `IsTrack`. The trailing exceptions the file
+   * writes to keep a rule off testpoints or component vias are dropped, which
+   * makes the rule apply to slightly MORE objects than the file meant: it is
+   * written here so the trade is on the record, and the alternative was
+   * throwing the whole rule away. Anything else — a net class, a named part, a
+   * layer — is not translated and is reported instead.
    */
+  const tipoDelloScopo = (scopo: Record<string, unknown>): TipoRame | null => {
+    if (scopo.isAll === true) return null;
+    const testo = String(scopo.predicate ?? "");
+    // only the POSITIVE terms count: "IsVia and not IsComponentVia" is a via
+    const positivi = testo
+      .split(/\band\b/i)
+      .map((p) => p.trim())
+      .filter((p) => !/^not\b/i.test(p));
+    for (const p of positivi) {
+      if (/\bisvia\b/i.test(p)) return "via";
+      if (/\bis(smt|th|multilayer)?pad\b/i.test(p)) return "pad";
+      if (/\bis(track|line|arc)\b/i.test(p)) return "trace";
+    }
+    return null;
+  };
   const ristrette: Array<{ nome: string; gapMm: number; ambito: string }> = [];
+  const coppie: Partial<Record<ChiaveCoppia, number>> = {};
+  const prioritaDellaCoppia = new Map<ChiaveCoppia, number>();
   for (const r of arr(pcb.rules)) {
     if (String(r.ruleKind ?? "") !== "Clearance" || r.enabled === false) continue;
     const s1 = (r.scope1 ?? {}) as Record<string, unknown>;
@@ -1266,15 +1296,36 @@ export function regoleNative(pcb: Record<string, unknown>): {
     const valori = (r.constraintValues ?? {}) as Record<string, { valueMm?: unknown }>;
     const gap = num(valori.GAP?.valueMm);
     if (gap === null) continue;
-    ristrette.push({
-      nome: String(r.name ?? "senza nome"),
-      gapMm: gap,
-      ambito: `${String(s1.predicate ?? "?")} / ${String(s2.predicate ?? "?")}`,
-    });
+    const t1 = tipoDelloScopo(s1);
+    const t2 = tipoDelloScopo(s2);
+    /* one side "All" means every kind against the other one */
+    const lati: TipoRame[] = ["pad", "trace", "via"];
+    const da = t1 ? [t1] : s1.isAll === true ? lati : [];
+    const a = t2 ? [t2] : s2.isAll === true ? lati : [];
+    if (da.length === 0 || a.length === 0) {
+      ristrette.push({
+        nome: String(r.name ?? "senza nome"),
+        gapMm: gap,
+        ambito: `${String(s1.predicate ?? "?")} / ${String(s2.predicate ?? "?")}`,
+      });
+      continue;
+    }
+    // in Altium the smaller number is the stronger rule: it wins
+    const priorita = num(r.priority) ?? 99;
+    for (const x of da) {
+      for (const y of a) {
+        const k = chiaveCoppia(x, y);
+        const vecchia = prioritaDellaCoppia.get(k);
+        if (vecchia !== undefined && vecchia <= priorita) continue;
+        prioritaDellaCoppia.set(k, priorita);
+        coppie[k] = gap;
+      }
+    }
   }
 
   return {
     ...(ristrette.length ? { ristrette } : {}),
+    ...(Object.keys(coppie).length ? { clearanceByPairMm: coppie } : {}),
     // the bounds keep a mangled file from turning into an unusable project
     minClearanceMm: fuori(valore("Clearance", "GAP"), 0.02, 2),
     minTraceWidthMm: fuori(valore("Width", "MINLIMIT"), 0.02, 2),

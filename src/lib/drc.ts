@@ -1,4 +1,9 @@
-import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
+import {
+  DEFAULT_DESIGN_RULES,
+  distanzaMinimaFra,
+  type DesignRules,
+  type TipoRame,
+} from "./design-rules";
 import { netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
 
 export interface DrcViolation {
@@ -53,6 +58,15 @@ interface Box {
   group: string | null;
   /** degrees the rectangle is turned by, for pads the CAD placed at an angle */
   rot?: number;
+  /** what it is, for the pair the clearance rule talks about */
+  kind: TipoRame;
+  /**
+   * Set when the thing is ROUND: a via, a hole, a circular pad. Measured as the
+   * square that contains it, a 0.5mm via grows 0.1mm of corner in every
+   * diagonal direction and the check reports a clearance the board does not
+   * violate — 56 of this board's 67 trace-to-copper reports were that corner.
+   */
+  raggio?: number;
 }
 
 /*
@@ -67,7 +81,43 @@ interface Box {
  */
 const TOLLERANZA_MM = 0.001;
 
+/** the centre of a box, without needing the whole helper */
+const centroDi = (r: Box) => ({ x: (r.minX + r.maxX) / 2, y: (r.minY + r.maxY) / 2 });
+
+/** how far a point is from a rectangle that may be turned */
+function distanzaPuntoRettangolo(px: number, py: number, r: Box): number {
+  const punti = angoliDi(r);
+  let dentro = false;
+  for (let i = 0, j = punti.length - 1; i < punti.length; j = i++) {
+    const a = punti[i];
+    const b = punti[j];
+    if (a.y > py !== b.y > py && px < ((b.x - a.x) * (py - a.y)) / (b.y - a.y) + a.x) {
+      dentro = !dentro;
+    }
+  }
+  if (dentro) return 0;
+  let best = Infinity;
+  for (let i = 0; i < punti.length; i++) {
+    const a = punti[i];
+    const b = punti[(i + 1) % punti.length];
+    best = Math.min(best, pointSegDistance(px, py, a.x, a.y, b.x, b.y));
+  }
+  return best;
+}
+
 function boxDistance(a: Box, b: Box): number {
+  // round against round, and round against everything else
+  if (a.raggio !== undefined && b.raggio !== undefined) {
+    const ca = centroDi(a);
+    const cb = centroDi(b);
+    return Math.max(0, Math.hypot(ca.x - cb.x, ca.y - cb.y) - a.raggio - b.raggio);
+  }
+  if (a.raggio !== undefined || b.raggio !== undefined) {
+    const tondo = a.raggio !== undefined ? a : b;
+    const altro = a.raggio !== undefined ? b : a;
+    const c = centroDi(tondo);
+    return Math.max(0, distanzaPuntoRettangolo(c.x, c.y, altro) - (tondo.raggio ?? 0));
+  }
   if (a.rot || b.rot) return distanzaFraRettangoli(a, b);
   const dx = Math.max(a.minX - b.maxX, b.minX - a.maxX, 0);
   const dy = Math.max(a.minY - b.maxY, b.minY - a.maxY, 0);
@@ -86,24 +136,36 @@ function boxDistance(a: Box, b: Box): number {
  * distance whenever a face is what faces the other one, and never more than the
  * real distance otherwise, so the check can only stay cautious, never miss.
  */
+/**
+ * Which rule the number comes from, said out loud when it is not the general
+ * one: a check that reports "less than 0.0254mm" against a board whose stated
+ * minimum is 0.1524 looks like a bug in the checker, and whoever reads it
+ * deserves to know that the board itself asked for that.
+ */
+function quale(rules: DesignRules, minimo: number, a: TipoRame, b: TipoRame): string {
+  return minimo === rules.minClearanceMm ? "" : ` (regola ${a}-${b} del progetto)`;
+}
+
+/** the four corners of a box, turned by its own angle */
+function angoliDi(r: Box): Array<{ x: number; y: number }> {
+  const cx = (r.minX + r.maxX) / 2;
+  const cy = (r.minY + r.maxY) / 2;
+  const hw = (r.maxX - r.minX) / 2;
+  const hh = (r.maxY - r.minY) / 2;
+  const rad = ((r.rot ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return [
+    [-hw, -hh],
+    [hw, -hh],
+    [hw, hh],
+    [-hw, hh],
+  ].map(([dx, dy]) => ({ x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }));
+}
+
 function distanzaFraRettangoli(a: Box, b: Box): number {
-  const angoli = (r: Box): Array<{ x: number; y: number }> => {
-    const cx = (r.minX + r.maxX) / 2;
-    const cy = (r.minY + r.maxY) / 2;
-    const hw = (r.maxX - r.minX) / 2;
-    const hh = (r.maxY - r.minY) / 2;
-    const rad = ((r.rot ?? 0) * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    return [
-      [-hw, -hh],
-      [hw, -hh],
-      [hw, hh],
-      [-hw, hh],
-    ].map(([dx, dy]) => ({ x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }));
-  };
-  const A = angoli(a);
-  const B = angoli(b);
+  const A = angoliDi(a);
+  const B = angoliDi(b);
   const assi = [a, b].flatMap((r) => {
     const rad = ((r.rot ?? 0) * Math.PI) / 180;
     return [
@@ -289,6 +351,10 @@ export function runDrcChecks(
         layer: el.layer ? String(el.layer) : null,
         label: String(el.pcb_smtpad_id ?? "pad"),
         group: groupOfPcbPort(el.pcb_port_id),
+        kind: "pad",
+        ...(el.shape === "circle" && num(el.radius) !== null
+          ? { raggio: num(el.radius)! }
+          : {}),
         ...(num(el.ccw_rotation) ? { rot: num(el.ccw_rotation)! } : {}),
       });
     } else if (el.type === "pcb_plated_hole" || el.type === "pcb_via") {
@@ -305,6 +371,13 @@ export function runDrcChecks(
         label: String(el.pcb_via_id ?? el.pcb_plated_hole_id ?? el.type),
         group:
           el.type === "pcb_via" ? groupOfVia(el) : groupOfPcbPort(el.pcb_port_id),
+        /*
+         * A plated hole is a PAD with a hole in it: that is what the board
+         * calls it and what the file's rules are written against. Only the
+         * bare via is a via.
+         */
+        kind: el.type === "pcb_via" ? "via" : "pad",
+        raggio: d / 2,
       });
     }
   }
@@ -353,15 +426,16 @@ export function runDrcChecks(
       const b = boxes[j];
       if (a.layer && b.layer && a.layer !== b.layer) continue;
       if (a.group !== null && a.group === b.group) continue;
+      const minimo = distanzaMinimaFra(rules, a.kind, b.kind);
       if (a.group === null || b.group === null) {
-        if (boxDistance(a, b) < rules.minClearanceMm - TOLLERANZA_MM) senzaRete++;
+        if (boxDistance(a, b) < minimo - TOLLERANZA_MM) senzaRete++;
         continue;
       }
       const d = boxDistance(a, b);
-      if (d < rules.minClearanceMm - TOLLERANZA_MM) {
+      if (d < minimo - TOLLERANZA_MM) {
         push(
           "pad_clearance",
-          `${a.label} <-> ${b.label}: ${d.toFixed(3)}mm < min ${rules.minClearanceMm}mm`,
+          `${a.label} <-> ${b.label}: ${d.toFixed(3)}mm < min ${minimo}mm${quale(rules, minimo, a.kind, b.kind)}`,
           midpoint(boxCenter(a), boxCenter(b)),
         );
       }
@@ -545,11 +619,12 @@ export function runDrcChecks(
     for (const pad of boxes) {
       if (pad.group === null || pad.group === seg.group) continue;
       if (pad.layer && seg.layer && pad.layer !== seg.layer) continue;
+      const minimo = distanzaMinimaFra(rules, "trace", pad.kind);
       const d = segToBoxDistance(seg, pad) - seg.halfW;
-      if (d < rules.minClearanceMm - TOLLERANZA_MM) {
+      if (d < minimo - TOLLERANZA_MM) {
         push(
           "trace_pad_clearance",
-          `${seg.label} over ${pad.label}: ${Math.max(0, d).toFixed(3)}mm < min ${rules.minClearanceMm}mm`,
+          `${seg.label} over ${pad.label}: ${Math.max(0, d).toFixed(3)}mm < min ${minimo}mm${quale(rules, minimo, "trace", pad.kind)}`,
           midpoint(boxCenter(pad), {
             x: (seg.ax + seg.bx) / 2,
             y: (seg.ay + seg.by) / 2,
@@ -567,11 +642,12 @@ export function runDrcChecks(
       const b = segs[j];
       if (!b.group || a.group === b.group) continue;
       if (a.layer && b.layer && a.layer !== b.layer) continue;
+      const minimo = distanzaMinimaFra(rules, "trace", "trace");
       const d = segSegDistance(a, b) - a.halfW - b.halfW;
-      if (d < rules.minClearanceMm - TOLLERANZA_MM) {
+      if (d < minimo - TOLLERANZA_MM) {
         push(
           "trace_trace_clearance",
-          `${a.label} <-> ${b.label}: ${Math.max(0, d).toFixed(3)}mm < min ${rules.minClearanceMm}mm (${a.layer ?? "?"})`,
+          `${a.label} <-> ${b.label}: ${Math.max(0, d).toFixed(3)}mm < min ${minimo}mm${quale(rules, minimo, "trace", "trace")} (${a.layer ?? "?"})`,
           { x: (a.ax + a.bx) / 2, y: (a.ay + a.by) / 2 },
         );
       }
@@ -724,16 +800,31 @@ function segToBoxDistance(
   seg: { ax: number; ay: number; bx: number; by: number },
   box: Box,
 ): number {
-  // an endpoint inside the box, or the segment crosses an edge: distance 0
-  const inside = (x: number, y: number) =>
-    x >= box.minX && x <= box.maxX && y >= box.minY && y <= box.maxY;
+  if (box.raggio !== undefined) {
+    const c = centroDi(box);
+    return Math.max(
+      0,
+      pointSegDistance(c.x, c.y, seg.ax, seg.ay, seg.bx, seg.by) - box.raggio,
+    );
+  }
+  /*
+   * The corners are the TURNED ones. Measuring a pad at 45 degrees as if it
+   * were straight does not even measure the box that contains it: it measures
+   * a different rectangle, in the wrong direction, and on this board that is
+   * every pin of a component the designer rotated.
+   */
+  const punti = angoliDi(box);
+  const inside = (x: number, y: number) => {
+    let dentro = false;
+    for (let i = 0, j = punti.length - 1; i < punti.length; j = i++) {
+      const p = punti[i];
+      const q = punti[j];
+      if (p.y > y !== q.y > y && x < ((q.x - p.x) * (y - p.y)) / (q.y - p.y) + p.x) dentro = !dentro;
+    }
+    return dentro;
+  };
   if (inside(seg.ax, seg.ay) || inside(seg.bx, seg.by)) return 0;
-  const corners = [
-    [box.minX, box.minY],
-    [box.maxX, box.minY],
-    [box.maxX, box.maxY],
-    [box.minX, box.maxY],
-  ] as const;
+  const corners = punti.map((p) => [p.x, p.y] as const);
   let best = Infinity;
   for (let i = 0; i < 4; i++) {
     const [cx1, cy1] = corners[i];
