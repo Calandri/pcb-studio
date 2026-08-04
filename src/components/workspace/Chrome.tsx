@@ -135,6 +135,7 @@ export function Footer({
   layer,
   traceWidths = [],
   activeRules = null,
+  viaSizes = [],
   onEditRules,
 }: {
   report: BoardReport;
@@ -143,6 +144,8 @@ export function Footer({
   traceWidths?: number[];
   /** ruleset the board was routed and checked with */
   activeRules?: string | null;
+  /** le famiglie di via che la scheda usa: pad, foro e quante sono */
+  viaSizes?: Array<{ pad: number; foro: number; quante: number }>;
   onEditRules?: () => void;
 }) {
   const sideCaption =
@@ -187,12 +190,34 @@ export function Footer({
         {/* real trace widths: they used to sit in a balloon above the board
             and covered the copper. Here they are a stat like the others; the
             full list stays in the tooltip, the widest one (the power) in copper */}
+        {viaSizes.length > 0 && (
+          <>
+            <Divider />
+            {/* le via che la scheda usa davvero: si clicca e si aprono le misure */}
+            <button
+              type="button"
+              onClick={onEditRules}
+              title={`Via di questa scheda:\n${viaSizes
+                .map((v) => `${v.quante} da ${v.pad}mm con foro ${v.foro}mm`)
+                .join("\n")}\n\nClicca per cambiarle tutte insieme`}
+              className="flex items-center gap-1.5 transition-colors hover:text-brand"
+            >
+              via{" "}
+              <span className="text-copper">
+                {viaSizes.map((v) => `${v.foro}`).join(" · ")}
+              </span>
+            </button>
+          </>
+        )}
+
         {traceWidths.length > 0 && (
           <>
             <Divider />
-            <span
-              className="flex items-center gap-1.5"
-              title={`Larghezze piste: ${traceWidths.join(" · ")} mm${activeRules ? `\nminimi: ${activeRules}` : ""}`}
+            <button
+              type="button"
+              onClick={onEditRules}
+              title={`Larghezze piste: ${traceWidths.join(" · ")} mm${activeRules ? `\nminimi: ${activeRules}` : ""}\n\nClicca per cambiarle tutte insieme`}
+              className="flex items-center gap-1.5 transition-colors hover:text-brand"
             >
               {traceWidths.length > 1 ? (
                 <>
@@ -203,24 +228,15 @@ export function Footer({
                 traceWidths[0]
               )}{" "}
               mm
-              {onEditRules && (
-                <button
-                  type="button"
-                  onClick={onEditRules}
-                  title={`Regole di fabbricazione${activeRules ? `: ${activeRules}` : ""}`}
-                  className="grid h-5 w-5 place-items-center rounded-[5px] transition-colors hover:text-brand"
-                >
-                  <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none">
-                    <path
-                      d="M11.2 2.8l2 2L6 12H4v-2l7.2-7.2z"
-                      stroke="currentColor"
-                      strokeWidth="1.4"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-              )}
-            </span>
+              <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none">
+                <path
+                  d="M11.2 2.8l2 2L6 12H4v-2l7.2-7.2z"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
           </>
         )}
         <Divider />

@@ -928,6 +928,28 @@ export function Studio({
     return [...widths].sort((a, b) => a - b);
   }, [circuitJson]);
 
+  /*
+   * Le famiglie di via, contate: la stessa cosa che il piede mostra gia' per le
+   * piste. Stavano solo dentro il pannello delle regole, dietro una matita, e
+   * "dove le vedo?" era la domanda giusta: le misure che una scheda usa sono la
+   * prima cosa da vedere, non l'ultima.
+   */
+  const viaSizes = useMemo(() => {
+    if (!circuitJson) return [] as Array<{ pad: number; foro: number; quante: number }>;
+    const fam = new Map<string, { pad: number; foro: number; quante: number }>();
+    for (const el of circuitJson as Array<Record<string, unknown>>) {
+      if (el?.type !== "pcb_via") continue;
+      const pad = Math.round(Number(el.outer_diameter ?? 0) * 1000) / 1000;
+      const foro = Math.round(Number(el.hole_diameter ?? 0) * 1000) / 1000;
+      if (!(pad > 0) || !(foro > 0)) continue;
+      const k = `${pad}/${foro}`;
+      const c = fam.get(k) ?? { pad, foro, quante: 0 };
+      c.quante++;
+      fam.set(k, c);
+    }
+    return [...fam.values()].sort((a, b) => a.foro - b.foro);
+  }, [circuitJson]);
+
   const refreshLibrary = useCallback(async () => {
     const d = await fetch(`/api/project?projectId=${projectId}`)
       .then((r) => r.json())
@@ -1643,6 +1665,7 @@ export function Studio({
         report={report}
         layer={layer}
         traceWidths={tab === "pcb" ? traceWidths : []}
+        viaSizes={tab === "pcb" ? viaSizes : []}
         activeRules={activeRules}
         onEditRules={() => setRulesOpen(true)}
       />
