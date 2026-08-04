@@ -11,6 +11,7 @@
  */
 
 import { eMassa, ePotenza } from "./net-roles";
+import { insidePour, readPours } from "./pours";
 
 /** the outer ring of a pour, whatever shape it was written as */
 function anelloDi(pour: El): Array<{ x: number; y: number }> | null {
@@ -349,6 +350,14 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
   const numLayers = board ? (num(board.num_layers) ?? 2) : 2;
   if (numLayers >= 4) {
     const vias = circuitJson.filter((el) => el.type === "pcb_via");
+    /*
+     * A pad already sitting IN the plane needs no via to reach it: the copper
+     * is under it. This check is about the return path, and asking for a
+     * stitching via next to a ground pad immersed in the ground pour is asking
+     * for a hole that connects copper to itself — seven of this board's eight
+     * connector pads, two of them plated holes that cross all four layers.
+     */
+    const colate = readPours(circuitJson);
     for (const comp of circuitJson) {
       if (comp.type !== "source_component") continue;
       const ftype = String(comp.ftype ?? "");
@@ -360,6 +369,16 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
         const px = num(pad.x);
         const py = num(pad.y);
         if (px === null || py === null) continue;
+        const facce = Array.isArray(pad.layers)
+          ? (pad.layers as unknown[]).map(String)
+          : [String(pad.layer ?? "top")];
+        const immerso = colate.some(
+          (c) =>
+            facce.includes(c.layer) &&
+            (maps.netNameById.get(c.net) ?? c.net) === net &&
+            insidePour(px, py, c),
+        );
+        if (immerso) continue;
         const near = vias.some((via) => {
           const vx = num(via.x);
           const vy = num(via.y);
@@ -397,6 +416,8 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
   }
 
   // --- 4. power traces must actually be wide (house style: 0.5mm target)
+  let stretteImportate = 0;
+  let piuStretta = Infinity;
   for (const el of circuitJson) {
     if (el.type !== "pcb_trace") continue;
     let net: string | null = null;
@@ -428,16 +449,34 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
       .filter((w): w is number => w !== null);
     if (!widths.length) continue;
     const minW = Math.min(...widths);
-    if (minW < POWER_TRACE_MIN_WIDTH_MM - 1e-6) {
-      const first = route.find((p) => p.route_type === "wire");
-      push({
-        rule: "power_trace_width",
-        severity: "fail",
-        message: `power net ${net} routed at ${minW}mm (min ${POWER_TRACE_MIN_WIDTH_MM}mm, house style 0.5mm)`,
-        x: num(first?.x) ?? undefined,
-        y: num(first?.y) ?? undefined,
-      });
+    if (minW >= POWER_TRACE_MIN_WIDTH_MM - 1e-6) continue;
+    /*
+     * IMPORTED COPPER IS A GIVEN. Four tenths of a millimetre on a supply is
+     * OUR figure, and it is a good one for a board being drawn here; on a board
+     * that arrived already made it is a judgement on somebody else's work, and
+     * eleven of them bury the findings that matter. They are counted and said
+     * once, with the narrowest, exactly as the drawing rules do.
+     */
+    if (el.importato === true) {
+      stretteImportate++;
+      piuStretta = Math.min(piuStretta, minW);
+      continue;
     }
+    const first = route.find((p) => p.route_type === "wire");
+    push({
+      rule: "power_trace_width",
+      severity: "fail",
+      message: `power net ${net} routed at ${minW}mm (min ${POWER_TRACE_MIN_WIDTH_MM}mm, house style 0.5mm)`,
+      x: num(first?.x) ?? undefined,
+      y: num(first?.y) ?? undefined,
+    });
+  }
+  if (stretteImportate > 0) {
+    push({
+      rule: "power_trace_width",
+      severity: "warn",
+      message: `${stretteImportate} tratti di rame importato su reti di potenza sono piu' stretti di ${POWER_TRACE_MIN_WIDTH_MM}mm (il piu' stretto ${piuStretta}mm): e' come e' disegnata la scheda di partenza, non un errore introdotto qui`,
+    });
   }
 
   return violations;

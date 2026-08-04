@@ -8,6 +8,8 @@
  * answer it the same way, otherwise one adds vias the other keeps asking for.
  */
 
+import { eMassa } from "./net-roles";
+
 export interface PourShape {
   /** the net the plane belongs to */
   net: string;
@@ -246,6 +248,24 @@ export function tutteLeVia(
     if (reti[0]) netDiSourceTrace.set(String(el.source_trace_id), reti[0]);
   }
 
+  /*
+   * A THROUGH VIA CROSSES THE LAYERS IT PASSES BETWEEN.
+   *
+   * The hole is drilled through the board: a via that goes from top to bottom
+   * touches the inner copper as well, whether anybody wrote it down or not. The
+   * element carries only the two ends — from_layer and to_layer, which is all
+   * the route point said — and reading it literally made the check declare that
+   * two pours of one net, one on top and one on inner2, had no via joining
+   * them, with six of them standing in both.
+   */
+  const facceDelloStack = ["top", "inner1", "inner2", "bottom"];
+  const board = els.find((e) => e.type === "pcb_board");
+  const strati = num(board?.num_layers) ?? 4;
+  const attraversate = (facce: string[]): string[] => {
+    if (strati < 3 || !facce.includes("top") || !facce.includes("bottom")) return facce;
+    return facceDelloStack.slice(0, Math.min(strati, facceDelloStack.length));
+  };
+
   const out: Array<{ x: number; y: number; net: string; facce: string[] }> = [];
   for (const el of els) {
     if (el.type === "pcb_via") {
@@ -256,7 +276,7 @@ export function tutteLeVia(
         x,
         y,
         net: netDiChiave.get(String(el.subcircuit_connectivity_map_key ?? "")) ?? "",
-        facce: ((el.layers as unknown[] | undefined) ?? []).map(String),
+        facce: attraversate(((el.layers as unknown[] | undefined) ?? []).map(String)),
       });
       continue;
     }
@@ -274,7 +294,9 @@ export function tutteLeVia(
         x,
         y,
         net,
-        facce: [String(p.from_layer ?? ""), String(p.to_layer ?? "")].filter(Boolean),
+        facce: attraversate(
+          [String(p.from_layer ?? ""), String(p.to_layer ?? "")].filter(Boolean),
+        ),
       });
     }
   }
@@ -315,6 +337,36 @@ export function padsOffPlane(
     }
   }
   const vias = tutteLeVia(circuitJson, netDiChiave);
+  /** the name of each net, to tell a ground from a rail */
+  const nomeDellaRete = new Map<string, string>();
+  for (const el of els) {
+    if (el.type !== "source_net") continue;
+    nomeDellaRete.set(String(el.source_net_id ?? ""), String(el.name ?? ""));
+  }
+  /** every point of copper, with the net it belongs to: what touches a pad */
+  const tratti: Array<{ x: number; y: number; layer: string; net: string }> = [];
+  {
+    const netDiTraccia = new Map<string, string>();
+    for (const el of els) {
+      if (el.type !== "source_trace") continue;
+      const reti = ((el.connected_source_net_ids as unknown[] | undefined) ?? []).map(String);
+      if (reti[0]) netDiTraccia.set(String(el.source_trace_id ?? ""), reti[0]);
+    }
+    for (const el of els) {
+      if (el.type !== "pcb_trace") continue;
+      const net =
+        netDiChiave.get(String(el.subcircuit_connectivity_map_key ?? "")) ??
+        netDiTraccia.get(String(el.source_trace_id ?? "")) ??
+        "";
+      if (!net) continue;
+      for (const p of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
+        const x = num(p.x);
+        const y = num(p.y);
+        if (x === null || y === null) continue;
+        tratti.push({ x, y, layer: String(p.layer ?? ""), net });
+      }
+    }
+  }
 
   const out: Array<{ pad: string; port: string; net: string; x: number; y: number }> = [];
   for (const el of els) {
@@ -360,6 +412,31 @@ export function padsOffPlane(
       (c) => Math.abs(c.x - x) <= hw + 0.05 && Math.abs(c.y - y) <= hh + 0.05,
     );
     if (conCollegamento) continue;
+    /*
+     * A RAIL IS NOT A GROUND.
+     *
+     * This check exists for the return path: a ground pad wants the plane under
+     * it or a via within reach, because the return current travels there and a
+     * detour is an antenna. A supply rail is another matter — it is routed with
+     * traces, and its pour is copper for the current, not a return path — so a
+     * pad of P3V3 fed by its own trace is connected, full stop. Measured on an
+     * imported board: nine reports, all of them rails, every one of them with
+     * copper of its own net arriving at the pad. Asking a rail for a via next to
+     * each pad is asking the designer to redraw a board that works.
+     *
+     * So: ground keeps the strict rule, and any other net with a pour is only
+     * reported when NO copper of its own net touches the pad at all.
+     */
+    if (!eMassa(nomeDellaRete.get(net) ?? net)) {
+      const toccata = tratti.some(
+        (t) =>
+          t.net === net &&
+          t.layer === layer &&
+          Math.abs(t.x - x) <= hw + 0.06 &&
+          Math.abs(t.y - y) <= hh + 0.06,
+      );
+      if (toccata) continue;
+    }
     out.push({
       pad: String(el.pcb_smtpad_id ?? ""),
       port: String(el.pcb_port_id ?? ""),
