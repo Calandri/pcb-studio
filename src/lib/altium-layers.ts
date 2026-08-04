@@ -239,20 +239,18 @@ function arcoInPunti(
  * where it ends, and at both joints the copper does not kink. Of the two arcs
  * that share those endpoints only one has that property, so the tracks decide.
  *
- * The test is the tangent. Leaving the start angle counterclockwise the arc
- * heads along (-sin, cos); the track sitting there runs AWAY from the joint, so
- * a counterclockwise arc has it pointing the opposite way. The arriving end is
- * the mirror of that. Each end that answers gives a vote between -1 and 1, and
- * the sum picks the side.
- *
- * An arc with no track at either end (a curve between two other arcs, a piece of
- * outline) keeps the counterclockwise reading: nothing here can do better, and
- * it is what was drawn before this existed.
+ * It is measured as an ANGLE, not as a sum of dot products, and at each joint
+ * only the BEST matching track counts. Summing every track at the joint let a
+ * T junction outvote the one track that actually continues the arc, and a
+ * handful of meander ends came out knotted because of it. The winner is the
+ * side whose two joints bend the least; if even the winner bends more than
+ * thirty degrees the arc is left as the file's angles read it, because at that
+ * point nothing here understood the shape.
  */
-function versoDegliArchi(
+export function versoDegliArchi(
   pcb: Record<string, unknown>,
   strati: Map<number, Strato>,
-): Map<number, "ccw" | "cw"> {
+): Map<number, { senso: "ccw" | "cw"; erroreGradi: number }> {
   /** every track end, by layer, with the direction it leaves that point */
   const capi = new Map<string, Array<{ x: number; y: number }>>();
   const chiave = (layer: number, x: number, y: number) =>
@@ -276,9 +274,23 @@ function versoDegliArchi(
       capi.set(k, [...(capi.get(k) ?? []), v]);
     }
   }
+  /** the tracks that touch a point, whatever rounding put them a hair away */
+  const attorno = (layer: number, x: number, y: number): Array<{ x: number; y: number }> => {
+    const out: Array<{ x: number; y: number }> = [];
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        out.push(...(capi.get(chiave(layer, x + dx * 0.1, y + dy * 0.1)) ?? []));
+      }
+    }
+    return out;
+  };
 
-  const out = new Map<number, "ccw" | "cw">();
+  const out = new Map<number, { senso: "ccw" | "cw"; erroreGradi: number }>();
   const archi = arr(pcb.arcs);
+  const rad = (g: number) => (g * Math.PI) / 180;
+  const gradiFra = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    (Math.acos(Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y))) * 180) / Math.PI;
+
   for (let i = 0; i < archi.length; i++) {
     const ar = archi[i];
     const layer = num(ar.layerId);
@@ -291,25 +303,43 @@ function versoDegliArchi(
     if (strati.get(layer)?.genere !== "rame") continue;
     // a full circle has no side to choose
     if (Math.abs(da - fine) < 1e-9) continue;
-    const rad = (g: number) => (g * Math.PI) / 180;
-    let voto = 0;
-    const estremi: Array<[number, 1 | -1]> = [
-      [da, -1],
-      [fine, 1],
-    ];
-    for (const [ang, segno] of estremi) {
-      const px = cx + r * Math.cos(rad(ang));
-      const py = cy + r * Math.sin(rad(ang));
-      for (const dx of [-1, 0, 1]) {
-        for (const dy of [-1, 0, 1]) {
-          const vicini = capi.get(chiave(layer, px + dx * 0.1, py + dy * 0.1));
-          if (!vicini) continue;
-          const tangente = { x: -Math.sin(rad(ang)), y: Math.cos(rad(ang)) };
-          for (const v of vicini) voto += segno * (v.x * tangente.x + v.y * tangente.y);
-        }
+
+    /*
+     * At the start the arc LEAVES along its tangent, so the track sitting there
+     * runs the opposite way; at the end it ARRIVES, and the track continues the
+     * same way. Both cases are one comparison once the sign is folded in.
+     */
+    const errore = (senso: "ccw" | "cw"): number => {
+      let somma = 0;
+      let nodi = 0;
+      const estremi: Array<[number, boolean]> = [
+        [da, true],
+        [fine, false],
+      ];
+      for (const [ang, partenza] of estremi) {
+        const px = cx + r * Math.cos(rad(ang));
+        const py = cy + r * Math.sin(rad(ang));
+        const vicine = attorno(layer, px, py);
+        if (vicine.length === 0) continue;
+        const t =
+          senso === "ccw"
+            ? { x: -Math.sin(rad(ang)), y: Math.cos(rad(ang)) }
+            : { x: Math.sin(rad(ang)), y: -Math.cos(rad(ang)) };
+        const atteso = partenza ? { x: -t.x, y: -t.y } : t;
+        let migliore = 180;
+        for (const v of vicine) migliore = Math.min(migliore, gradiFra(v, atteso));
+        somma += migliore;
+        nodi++;
       }
-    }
-    if (voto < 0) out.set(i, "cw");
+      return nodi === 0 ? 180 : somma / nodi;
+    };
+
+    const eCcw = errore("ccw");
+    const eCw = errore("cw");
+    const senso = eCw < eCcw ? "cw" : "ccw";
+    const erroreGradi = Math.min(eCcw, eCw);
+    if (erroreGradi > 30) continue; // nothing here understood it: leave it be
+    out.set(i, { senso, erroreGradi });
   }
   return out;
 }
@@ -485,7 +515,7 @@ export function rameNativo(
       out.senzaRete++;
       continue;
     }
-    const punti = arcoInPunti(ar, t, verso.get(iArco) ?? "ccw");
+    const punti = arcoInPunti(ar, t, verso.get(iArco)?.senso ?? "ccw");
     if (punti.length < 2) continue;
     out.routes.push({
       connection: `net.${net}`,
