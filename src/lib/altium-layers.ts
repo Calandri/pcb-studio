@@ -191,15 +191,27 @@ export function nomiDelleReti(pcb: Record<string, unknown>): Map<number, string>
 /**
  * An Altium arc as a polyline.
  *
- * Angles are degrees counterclockwise from the positive x axis, and the arc runs
- * CCW from start to end: when the end is not past the start it has wrapped
- * around, and a start equal to the end is a full circle (there are two on this
- * board, the ring pads of a test point). One segment every fifteen degrees is
- * below what the eye or the fab resolves.
+ * Angles are degrees counterclockwise from the positive x axis, and a start
+ * equal to the end is a full circle (there are two on this board, the ring pads
+ * of a test point). One segment every fifteen degrees is below what the eye or
+ * the fab resolves.
+ *
+ * THE WAY ROUND IS NOT IN THE FILE. The record holds a centre, a radius and two
+ * angles, and nothing that says which of the two arcs between them is the one
+ * drawn. Assuming counterclockwise put 181 of this board's 189 copper arcs on
+ * the wrong side: the meanders that tune the length of the BGA escapes came out
+ * bulging the other way, half circle after half circle, which is why the
+ * serpentine looked lopsided and crossed its neighbours.
+ *
+ * Who knows the answer is the copper attached at the two ends: a track arrives
+ * at one end and leaves at the other, and only one of the two arcs continues
+ * them without a kink. That is what `senso` carries, decided by the caller that
+ * can see the tracks (see versoDegliArchi).
  */
 function arcoInPunti(
   arc: Record<string, unknown>,
   t: Trasforma,
+  senso: "ccw" | "cw" = "ccw",
 ): Array<{ x: number; y: number }> {
   const cx = num(arc.x);
   const cy = num(arc.y);
@@ -207,8 +219,10 @@ function arcoInPunti(
   if (cx === null || cy === null || r === null || r <= 0) return [];
   const da = num(arc.startAngle) ?? 0;
   const a = num(arc.endAngle) ?? 0;
-  const ampiezza = a > da ? a - da : a + 360 - da;
-  const passi = Math.max(2, Math.ceil(ampiezza / 15));
+  const ccw = a > da ? a - da : a + 360 - da;
+  // going the other way round is the same two ends and the complementary sweep
+  const ampiezza = senso === "ccw" ? ccw : -(360 - ccw);
+  const passi = Math.max(2, Math.ceil(Math.abs(ampiezza) / 15));
   const punti: Array<{ x: number; y: number }> = [];
   for (let i = 0; i <= passi; i++) {
     const ang = ((da + (ampiezza * i) / passi) * Math.PI) / 180;
@@ -216,6 +230,88 @@ function arcoInPunti(
     punti.push({ x: r3(p.x), y: r3(p.y) });
   }
   return punti;
+}
+
+/**
+ * WHICH WAY ROUND EACH COPPER ARC GOES, read from the copper around it.
+ *
+ * The board is continuous: a track ends where the arc begins and starts again
+ * where it ends, and at both joints the copper does not kink. Of the two arcs
+ * that share those endpoints only one has that property, so the tracks decide.
+ *
+ * The test is the tangent. Leaving the start angle counterclockwise the arc
+ * heads along (-sin, cos); the track sitting there runs AWAY from the joint, so
+ * a counterclockwise arc has it pointing the opposite way. The arriving end is
+ * the mirror of that. Each end that answers gives a vote between -1 and 1, and
+ * the sum picks the side.
+ *
+ * An arc with no track at either end (a curve between two other arcs, a piece of
+ * outline) keeps the counterclockwise reading: nothing here can do better, and
+ * it is what was drawn before this existed.
+ */
+function versoDegliArchi(
+  pcb: Record<string, unknown>,
+  strati: Map<number, Strato>,
+): Map<number, "ccw" | "cw"> {
+  /** every track end, by layer, with the direction it leaves that point */
+  const capi = new Map<string, Array<{ x: number; y: number }>>();
+  const chiave = (layer: number, x: number, y: number) =>
+    `${layer}|${Math.round(x * 10)},${Math.round(y * 10)}`;
+  for (const tr of arr(pcb.tracks)) {
+    const layer = num(tr.layerId);
+    const x1 = num(tr.x1);
+    const y1 = num(tr.y1);
+    const x2 = num(tr.x2);
+    const y2 = num(tr.y2);
+    if (layer === null || x1 === null || y1 === null || x2 === null || y2 === null) continue;
+    if (strati.get(layer)?.genere !== "rame") continue;
+    const lung = Math.hypot(x2 - x1, y2 - y1);
+    if (lung < 1e-6) continue;
+    const versi: Array<[number, number, { x: number; y: number }]> = [
+      [x1, y1, { x: (x2 - x1) / lung, y: (y2 - y1) / lung }],
+      [x2, y2, { x: (x1 - x2) / lung, y: (y1 - y2) / lung }],
+    ];
+    for (const [x, y, v] of versi) {
+      const k = chiave(layer, x, y);
+      capi.set(k, [...(capi.get(k) ?? []), v]);
+    }
+  }
+
+  const out = new Map<number, "ccw" | "cw">();
+  const archi = arr(pcb.arcs);
+  for (let i = 0; i < archi.length; i++) {
+    const ar = archi[i];
+    const layer = num(ar.layerId);
+    const cx = num(ar.x);
+    const cy = num(ar.y);
+    const r = num(ar.radius);
+    const da = num(ar.startAngle) ?? 0;
+    const fine = num(ar.endAngle) ?? 0;
+    if (layer === null || cx === null || cy === null || r === null || r <= 0) continue;
+    if (strati.get(layer)?.genere !== "rame") continue;
+    // a full circle has no side to choose
+    if (Math.abs(da - fine) < 1e-9) continue;
+    const rad = (g: number) => (g * Math.PI) / 180;
+    let voto = 0;
+    const estremi: Array<[number, 1 | -1]> = [
+      [da, -1],
+      [fine, 1],
+    ];
+    for (const [ang, segno] of estremi) {
+      const px = cx + r * Math.cos(rad(ang));
+      const py = cy + r * Math.sin(rad(ang));
+      for (const dx of [-1, 0, 1]) {
+        for (const dy of [-1, 0, 1]) {
+          const vicini = capi.get(chiave(layer, px + dx * 0.1, py + dy * 0.1));
+          if (!vicini) continue;
+          const tangente = { x: -Math.sin(rad(ang)), y: Math.cos(rad(ang)) };
+          for (const v of vicini) voto += segno * (v.x * tangente.x + v.y * tangente.y);
+        }
+      }
+    }
+    if (voto < 0) out.set(i, "cw");
+  }
+  return out;
 }
 
 export interface RameNativo {
@@ -378,7 +474,10 @@ export function rameNativo(
     }
   }
 
-  for (const ar of arr(pcb.arcs)) {
+  const verso = versoDegliArchi(pcb, strati);
+  const listaArchi = arr(pcb.arcs);
+  for (let iArco = 0; iArco < listaArchi.length; iArco++) {
+    const ar = listaArchi[iArco];
     const s = strati.get(num(ar.layerId) ?? -1);
     if (s?.genere !== "rame" || !s.faccia) continue;
     const net = rete(ar);
@@ -386,7 +485,7 @@ export function rameNativo(
       out.senzaRete++;
       continue;
     }
-    const punti = arcoInPunti(ar, t);
+    const punti = arcoInPunti(ar, t, verso.get(iArco) ?? "ccw");
     if (punti.length < 2) continue;
     out.routes.push({
       connection: `net.${net}`,
