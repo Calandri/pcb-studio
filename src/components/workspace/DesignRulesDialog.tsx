@@ -308,7 +308,7 @@ export function DesignRulesDialog({
         <div className="mt-4 flex flex-none items-center gap-2">
           <span className="flex-1 text-[11px] text-faint">
             {changed
-              ? "Dopo il salvataggio serve ricompilare per rifare il rame."
+              ? "Salvando, la scheda si ricompila da sola: le colate si rifanno coi numeri nuovi e i controlli ripartono. Il rame gia' disegnato o importato non si tocca."
               : "Nessuna modifica."}
           </span>
           <button
