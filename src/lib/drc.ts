@@ -411,6 +411,48 @@ export function runDrcChecks(
   }
 
   /*
+   * THE NET TIES, which are copper that shorts two nets ON PURPOSE.
+   *
+   * A net tie is a component whose two pads sit on two different nets with a
+   * slab of copper across them: the schematic keeps the nets apart, the layout
+   * joins them at that one point, and it is how a board ties analogue ground to
+   * digital ground exactly once. To a clearance check it looks like a trace
+   * lying on another net's pad, and on this board it was eight of the twelve
+   * findings that were left.
+   *
+   * What is exempt is the BRIDGE, against the copper of the two nets it joins,
+   * and nothing else: the two nets go on being measured against each other
+   * everywhere else on the board, which is the point of tying them in one place.
+   */
+  const ponti: Array<{ id: string; gruppi: Set<string> }> = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_trace" || el.netTie !== true) continue;
+    const gruppi = new Set<string>();
+    for (const p of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
+      const x = num(p.x);
+      const y = num(p.y);
+      if (x === null || y === null) continue;
+      for (const b of boxes) {
+        if (b.group === null) continue;
+        // the pad the bridge lands on: its centre within the pad, generously
+        const dx = Math.max(b.minX - x, x - b.maxX, 0);
+        const dy = Math.max(b.minY - y, y - b.maxY, 0);
+        if (Math.hypot(dx, dy) <= 0.2) gruppi.add(b.group);
+      }
+    }
+    const proprio = groupOfTrace(el);
+    if (proprio) gruppi.add(proprio);
+    if (gruppi.size > 0) ponti.push({ id: String(el.pcb_trace_id ?? ""), gruppi });
+  }
+  /** whether this pair is the net tie doing its job */
+  const eIlPonte = (idA: string | null, gruppoA: string | null, idB: string | null, gruppoB: string | null) =>
+    ponti.some(
+      (p) =>
+        (p.id === idA && gruppoB !== null && p.gruppi.has(gruppoB)) ||
+        (p.id === idB && gruppoA !== null && p.gruppi.has(gruppoA)),
+    );
+
+  /*
    * A PAD WITH NO NET IS NOT AN ELECTRICAL NODE.
    *
    * An imported board has them: the unconnected pins of a microcontroller, the
@@ -650,6 +692,7 @@ export function runDrcChecks(
     for (const pad of boxes) {
       if (pad.group === null || pad.group === seg.group) continue;
       if (pad.layer && seg.layer && pad.layer !== seg.layer) continue;
+      if (eIlPonte(seg.label, seg.group, null, pad.group)) continue;
       const minimo = distanzaMinimaFra(rules, "trace", pad.kind);
       const d = segToBoxDistance(seg, pad) - seg.halfW;
       if (d < minimo - TOLLERANZA_MM) {
@@ -673,6 +716,7 @@ export function runDrcChecks(
       const b = segs[j];
       if (!b.group || a.group === b.group) continue;
       if (a.layer && b.layer && a.layer !== b.layer) continue;
+      if (eIlPonte(a.label, a.group, b.label, b.group)) continue;
       const minimo = distanzaMinimaFra(rules, "trace", "trace");
       const d = segSegDistance(a, b) - a.halfW - b.halfW;
       if (d < minimo - TOLLERANZA_MM) {

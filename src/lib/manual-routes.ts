@@ -58,6 +58,14 @@ export interface ManualRoute {
    * other copper.
    */
   importato?: boolean;
+  /**
+   * A NET TIE: copper that shorts two nets on purpose, one point on the board
+   * and nowhere else. The schematic keeps the two apart, the layout joins them,
+   * and every clearance check sees a trace lying on another net's pad. Marked
+   * here, the check can leave THIS piece of copper alone without going blind on
+   * the two nets everywhere else.
+   */
+  netTie?: boolean;
 
   /** the via's real size, when the copper brings its own */
   viaDiameter?: number;
@@ -112,6 +120,7 @@ export function parseManualRoutes(value: unknown): ManualRoute[] {
       ...(net ? { net } : {}),
       ...(r.arco === true ? { arco: true } : {}),
       ...(r.importato === true ? { importato: true } : {}),
+      ...(r.netTie === true ? { netTie: true } : {}),
       ...(Number.isFinite(r.viaDiameter) ? { viaDiameter: num(r.viaDiameter) } : {}),
       ...(Number.isFinite(r.viaHoleDiameter) ? { viaHoleDiameter: num(r.viaHoleDiameter) } : {}),
     });
@@ -286,6 +295,7 @@ export function applyManualRoutes({
         manual: true,
         ...(route.arco ? { arco: true } : {}),
         ...(route.importato ? { importato: true } : {}),
+        ...(route.netTie ? { netTie: true } : {}),
         route: toCircuitRoute(route, viaDiameter, viaHoleDiameter),
       });
       continue;
@@ -305,7 +315,7 @@ export function applyManualRoutes({
         manual: true,
         ...(route.arco ? { arco: true } : {}),
         ...(route.importato ? { importato: true } : {}),
-        ...(route.importato ? { importato: true } : {}),
+        ...(route.netTie ? { netTie: true } : {}),
         route: toCircuitRoute(route, viaDiameter, viaHoleDiameter),
       });
     }
@@ -324,6 +334,7 @@ export function applyManualRoutes({
       manual: true,
       ...(route.arco ? { arco: true } : {}),
       ...(route.importato ? { importato: true } : {}),
+      ...(route.netTie ? { netTie: true } : {}),
       route: toCircuitRoute(route, viaDiameter, viaHoleDiameter),
     });
   }

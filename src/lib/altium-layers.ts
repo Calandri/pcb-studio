@@ -646,7 +646,8 @@ export function rameNativo(
       out.senzaRete++;
       continue;
     }
-    if (reti.length > 1) out.ponti.push({ da: reti[0], a: reti[1] });
+    const ponte = reti.length > 1;
+    if (ponte) out.ponti.push({ da: reti[0], a: reti[1] });
     out.routes.push({
       connection: `net.${net}`,
       net,
@@ -655,6 +656,14 @@ export function rameNativo(
         { x: r3(capoB.x), y: r3(capoB.y), layer: s.faccia },
       ],
       width: r4(spessore),
+      /*
+       * A BRIDGE, and it says so. This slab shorts two nets that the schematic
+       * keeps apart, which is the whole point of a net tie and looks to any
+       * clearance check like a trace lying on another net's pad. Saying it here
+       * is what lets the check tell a net tie from a mistake, instead of
+       * reporting eight violations that the board is supposed to have.
+       */
+      ...(ponte ? { netTie: true } : {}),
       importato,
     });
     out.riempimenti++;
