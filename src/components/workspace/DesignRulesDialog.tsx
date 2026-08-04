@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { ClassiRame } from "@/lib/classi-rame";
 import { COPPIE, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
 
 /**
@@ -90,6 +91,16 @@ export function DesignRulesDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unita, setUnita] = useState<"mm" | "mil">("mm");
+  /*
+   * LE CLASSI DEL RAME: le misure che questa scheda usa davvero, contate. Una
+   * regola di fabbricazione dice cosa il fornitore riesce a fare e non tocca il
+   * rame; una classe E' il rame, e cambiarla lo riscrive. Sono due cose diverse
+   * e stanno in due riquadri diversi, con due bottoni diversi.
+   */
+  const [classi, setClassi] = useState<ClassiRame | null>(null);
+  const [nuove, setNuove] = useState<ClassiRame | null>(null);
+  const [applico, setApplico] = useState(false);
+  const [esito, setEsito] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/api/design-rules?projectId=${encodeURIComponent(projectId)}`)
@@ -102,7 +113,63 @@ export function DesignRulesDialog({
         setCustom(d.current.rules);
       })
       .catch(() => setError("non riesco a leggere le regole del progetto"));
+    fetch(`/api/copper-classes?projectId=${encodeURIComponent(projectId)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d?.classi) return;
+        setClassi(d.classi);
+        setNuove(structuredClone(d.classi));
+      })
+      .catch(() => undefined);
   }, [projectId]);
+
+  /** quanti pezzi sposterebbe l'applicazione, per dirlo prima di farla */
+  const daSpostare = (() => {
+    if (!classi || !nuove) return { via: 0, piste: 0 };
+    let via = 0;
+    let piste = 0;
+    classi.via.forEach((c, i) => {
+      const n = nuove.via[i];
+      if (n && (n.foroMm !== c.foroMm || n.padMm !== c.padMm)) via += c.quante;
+    });
+    classi.piste.forEach((c, i) => {
+      const n = nuove.piste[i];
+      if (n && n.larghezzaMm !== c.larghezzaMm) piste += c.quanti;
+    });
+    return { via, piste };
+  })();
+
+  const applica = async () => {
+    if (!classi || !nuove) return;
+    setApplico(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/copper-classes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          via: classi.via
+            .map((c, i) => ({ da: { padMm: c.padMm, foroMm: c.foroMm }, a: nuove.via[i] }))
+            .filter((x) => x.a && (x.a.padMm !== x.da.padMm || x.a.foroMm !== x.da.foroMm))
+            .map((x) => ({ da: x.da, a: { padMm: x.a.padMm, foroMm: x.a.foroMm } })),
+          piste: classi.piste
+            .map((c, i) => ({ daMm: c.larghezzaMm, aMm: nuove.piste[i]?.larghezzaMm }))
+            .filter((x) => x.aMm !== undefined && x.aMm !== x.daMm),
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+      setClassi(d.classi);
+      setNuove(structuredClone(d.classi));
+      setEsito(`${d.viaCambiate} via e ${d.pisteCambiate} piste aggiornate, ricompilo`);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setApplico(false);
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -301,6 +368,119 @@ export function DesignRulesDialog({
           </div>
         )}
 
+          {/*
+            Le classi stanno qui sotto, con il loro bottone: il primo salva i
+            MINIMI e non tocca niente, questo riscrive il rame. Dice quanti
+            pezzi sposta prima di spostarli, perche' una modifica di massa che
+            non si sa quanto pesa non e' una modifica, e' una sorpresa.
+          */}
+          {classi && nuove && (classi.via.length > 0 || classi.piste.length > 0) && (
+            <div className="mt-3 rounded-[10px] border border-line p-3">
+              <p className="text-[13px] font-semibold text-text">Le misure di questa scheda</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
+                Non sono minimi: sono le famiglie di via e di piste che il rame usa
+                davvero, contate. Cambiarne una le sposta tutte insieme. Toccando il
+                foro, il pad segue per tenere la stessa corona.
+              </p>
+
+              {classi.via.length > 0 && (
+                <div className="mt-2.5">
+                  <p className="text-[11px] text-muted">Via</p>
+                  {classi.via.map((c, i) => (
+                    <div key={`${c.padMm}/${c.foroMm}`} className="mt-1.5 flex items-center gap-2">
+                      <span className="w-[92px] flex-none text-[11px] text-muted">
+                        {c.quante} via
+                      </span>
+                      <span className="text-[10px] text-faint">foro</span>
+                      <input
+                        type="number"
+                        step={unita === "mm" ? "0.001" : "0.1"}
+                        value={inUnita(nuove.via[i]?.foroMm, unita)}
+                        onChange={(e) => {
+                          const foro = inMm(e.target.value.trim(), unita);
+                          const copia = structuredClone(nuove);
+                          copia.via[i].foroMm = foro;
+                          // il pad segue: la corona e' la misura che rompe
+                          copia.via[i].padMm = Number((foro + 2 * c.coronaMm).toFixed(4));
+                          setNuove(copia);
+                        }}
+                        className="w-[80px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none focus:border-brand"
+                      />
+                      <span className="text-[10px] text-faint">pad</span>
+                      <input
+                        type="number"
+                        step={unita === "mm" ? "0.001" : "0.1"}
+                        value={inUnita(nuove.via[i]?.padMm, unita)}
+                        onChange={(e) => {
+                          const copia = structuredClone(nuove);
+                          copia.via[i].padMm = inMm(e.target.value.trim(), unita);
+                          setNuove(copia);
+                        }}
+                        className="w-[80px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none focus:border-brand"
+                      />
+                      <span className="w-6 font-mono text-[10px] text-faint">{unita}</span>
+                      <span className="flex-1 text-right font-mono text-[10px] text-faint">
+                        corona{" "}
+                        {inUnita(
+                          Math.max(0, ((nuove.via[i]?.padMm ?? 0) - (nuove.via[i]?.foroMm ?? 0)) / 2),
+                          unita,
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {classi.piste.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-[11px] text-muted">Piste</p>
+                  {classi.piste.map((c, i) => (
+                    <div key={c.larghezzaMm} className="mt-1.5 flex items-center gap-2">
+                      <span className="w-[92px] flex-none text-[11px] text-muted">
+                        {c.quanti} tratte
+                      </span>
+                      <span className="flex-1 text-[10px] text-faint">
+                        {c.lunghezzaMm.toFixed(0)}mm di rame
+                      </span>
+                      <input
+                        type="number"
+                        step={unita === "mm" ? "0.001" : "0.1"}
+                        value={inUnita(nuove.piste[i]?.larghezzaMm, unita)}
+                        onChange={(e) => {
+                          const copia = structuredClone(nuove);
+                          copia.piste[i].larghezzaMm = inMm(e.target.value.trim(), unita);
+                          setNuove(copia);
+                        }}
+                        className="w-[80px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none focus:border-brand"
+                      />
+                      <span className="w-6 font-mono text-[10px] text-faint">{unita}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-3 flex items-center gap-2">
+                <span className="flex-1 text-[10px] leading-relaxed text-faint">
+                  {esito ??
+                    (daSpostare.via + daSpostare.piste > 0
+                      ? `Sposta ${daSpostare.via} via e ${daSpostare.piste} tratte di pista, e ricompila.`
+                      : "Nessuna misura cambiata.")}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void applica()}
+                  disabled={applico || daSpostare.via + daSpostare.piste === 0}
+                  className={`rounded-[8px] px-3 py-[6px] text-[12px] font-semibold transition-colors ${
+                    !applico && daSpostare.via + daSpostare.piste > 0
+                      ? "bg-brand text-ink hover:bg-brand-strong"
+                      : "bg-sunken text-faint"
+                  }`}
+                >
+                  {applico ? "Applico..." : "Applica al rame"}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {error && <p className="mt-3 flex-none text-[11px] text-danger">{error}</p>}
