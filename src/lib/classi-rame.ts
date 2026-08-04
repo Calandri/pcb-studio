@@ -349,6 +349,29 @@ export function applicaDoveCiSta(
   ostacoli: Ostacoli,
   distanze: { padVia: number; viaVia: number; pistaVia: number; foroForo: number },
 ): EsitoCambio {
+  /*
+   * CRESCONO TUTTE INSIEME, e il vicino cresce anche lui.
+   *
+   * Misurare una via alla volta contro il rame com'e' adesso e' sbagliato di un
+   * fattore due: due via della stessa famiglia a un decimo l'una dall'altra
+   * passano il controllo tutte e due e poi si trovano addosso, perche' ognuna e'
+   * stata misurata contro il vicino piccolo. Su BAT_BS e' successo una volta,
+   * due via finite a 0.142 dove il minimo e' 0.1524.
+   *
+   * Quindi il vicino della stessa famiglia si misura GIA' CRESCIUTO: si perde
+   * qualche via che forse ci sarebbe stata, e non se ne perde nessuna che non
+   * ci sta.
+   */
+  const cresciuti: Ostacoli = {
+    pads: ostacoli.pads,
+    tratti: ostacoli.tratti,
+    vie: ostacoli.vie.map((v) => {
+      const c = (cambi.via ?? []).find(
+        (x) => stessaMisura(x.da.padMm, v.rMm * 2) && stessaMisura(x.da.foroMm, v.foroMm),
+      );
+      return c ? { ...v, rMm: Math.max(v.rMm, c.a.padMm / 2), foroMm: Math.max(v.foroMm, c.a.foroMm) } : v;
+    }),
+  };
   let viaCambiate = 0;
   let pisteCambiate = 0;
   let viaLasciate = 0;
@@ -375,7 +398,7 @@ export function applicaDoveCiSta(
         String(r.net ?? ""),
         c.a.padMm,
         c.a.foroMm,
-        ostacoli,
+        cresciuti,
         distanze,
       );
       if (male) {
