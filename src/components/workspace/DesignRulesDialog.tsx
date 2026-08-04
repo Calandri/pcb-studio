@@ -33,14 +33,45 @@ interface Current {
 
 type CampoNumerico = Exclude<keyof DesignRules, "clearanceByPairMm">;
 
-const FIELDS: Array<{ key: CampoNumerico; label: string; hint: string }> = [
+const FIELDS: Array<{
+  key: CampoNumerico;
+  label: string;
+  hint: string;
+  /** vuoto = vale la distanza minima generale */
+  puoEsserVuoto?: boolean;
+}> = [
   { key: "minTraceWidthMm", label: "Pista minima", hint: "la pista piu' sottile che il fornitore incide" },
   { key: "minClearanceMm", label: "Distanza minima", hint: "rame-rame fra net diverse" },
   { key: "minBoardEdgeClearanceMm", label: "Margine dal bordo", hint: "quanto il rame sta lontano dal taglio" },
   { key: "minViaHoleMm", label: "Foro via minimo", hint: "diametro della punta piu' piccola" },
   { key: "minViaDiameterMm", label: "Pad via minimo", hint: "corona attorno al foro" },
   { key: "minHoleToHoleMm", label: "Foro-foro", hint: "fra due punte, che e' quello che rompe la scheda" },
+  {
+    key: "pourClearanceMm",
+    label: "Distanza della colata",
+    hint: "quanto il piano sta lontano dalle altre net: si tiene piu' largo di una pista",
+    puoEsserVuoto: true,
+  },
 ];
+
+/*
+ * MILLIMETRI O MILS.
+ *
+ * Le regole si salvano SEMPRE in millimetri: il pollice sta nella casella, non
+ * nel file, altrimenti un progetto aperto con l'unita' sbagliata cambierebbe
+ * scheda da solo. Un mil e' un millesimo di pollice, cioe' 0.0254mm, ed e'
+ * l'unita' in cui i fornitori quotano e in cui questa scheda e' disegnata: 6
+ * mil di distanza, 10 mil di colata, numeri tondi che in millimetri sono
+ * 0.1524 e 0.254.
+ */
+const MIL = 0.0254;
+const inUnita = (mm: number | undefined, unita: "mm" | "mil"): string => {
+  if (mm === undefined || !Number.isFinite(mm)) return "";
+  const v = unita === "mm" ? mm : mm / MIL;
+  return String(Number(v.toFixed(unita === "mm" ? 4 : 2)));
+};
+const inMm = (testo: string, unita: "mm" | "mil"): number =>
+  unita === "mm" ? Number(testo) : Number(testo) * MIL;
 
 export function DesignRulesDialog({
   projectId,
@@ -58,6 +89,7 @@ export function DesignRulesDialog({
   const [custom, setCustom] = useState<DesignRules | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unita, setUnita] = useState<"mm" | "mil">("mm");
 
   useEffect(() => {
     fetch(`/api/design-rules?projectId=${encodeURIComponent(projectId)}`)
@@ -112,8 +144,8 @@ export function DesignRulesDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(4,7,6,0.7)] backdrop-blur-[2px]">
-      <div className="card w-[520px] max-w-[92vw] p-5">
-        <div className="flex items-start gap-3">
+      <div className="card flex max-h-[88vh] w-[680px] max-w-[94vw] flex-col p-5">
+        <div className="flex flex-none items-start gap-3">
           <div className="min-w-0 flex-1">
             <h2 className="text-[15px] font-bold text-text">Regole di fabbricazione</h2>
             <p className="mt-1 text-[12px] leading-relaxed text-muted">
@@ -133,7 +165,10 @@ export function DesignRulesDialog({
           </button>
         </div>
 
-        <div className="mt-4 space-y-1.5">
+        {/* la parte che scorre: i preset e i campi. Titolo e bottoni restano
+            fermi, perche' un pannello che cresce fino a uscire dallo schermo
+            porta il bottone Salva fuori dalla finestra */}
+        <div className="-mr-2 mt-4 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-2">
           {presets.map((p) => (
             <button
               key={p.key}
@@ -169,10 +204,30 @@ export function DesignRulesDialog({
             </span>
             <span className="text-[11px] text-faint">valori a mano</span>
           </button>
-        </div>
 
         {choice === "custom" && custom && (
           <div className="mt-3 space-y-2 rounded-[10px] border border-line p-3">
+            {/* millimetri o mils: cambia solo quello che si legge e si scrive,
+                il progetto resta sempre in millimetri */}
+            <div className="mb-1 flex items-center gap-2">
+              <span className="flex-1 text-[11px] text-faint">
+                Unita&apos; con cui scrivere questi numeri
+              </span>
+              <div className="flex overflow-hidden rounded-[7px] border border-line">
+                {(["mm", "mil"] as const).map((u) => (
+                  <button
+                    key={u}
+                    type="button"
+                    onClick={() => setUnita(u)}
+                    className={`px-2.5 py-1 font-mono text-[11px] transition-colors ${
+                      unita === u ? "bg-brand text-ink" : "text-muted hover:text-text"
+                    }`}
+                  >
+                    {u}
+                  </button>
+                ))}
+              </div>
+            </div>
             {FIELDS.map((f) => (
               <label key={f.key} className="flex items-center gap-3">
                 <span className="min-w-0 flex-1">
@@ -181,21 +236,21 @@ export function DesignRulesDialog({
                 </span>
                 <input
                   type="number"
-                  step="0.001"
-                  min="0.05"
-                  /* the plane distance may be empty: then the general one applies */
-                  placeholder={String(custom.minClearanceMm)}
-                  value={custom[f.key] ?? ""}
+                  step={unita === "mm" ? "0.001" : "0.1"}
+                  min={unita === "mm" ? "0.05" : "2"}
+                  /* la distanza della colata puo' restare vuota: vale la generale */
+                  placeholder={f.puoEsserVuoto ? inUnita(custom.minClearanceMm, unita) : undefined}
+                  value={inUnita(custom[f.key], unita)}
                   onChange={(e) => {
                     const v = e.target.value.trim();
                     setCustom({
                       ...custom,
-                      [f.key]: v === "" ? undefined : Number(v),
+                      [f.key]: v === "" ? undefined : inMm(v, unita),
                     });
                   }}
-                  className="w-[86px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none focus:border-brand"
+                  className="w-[92px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none placeholder:text-faint focus:border-brand"
                 />
-                <span className="w-5 font-mono text-[10px] text-faint">mm</span>
+                <span className="w-6 font-mono text-[10px] text-faint">{unita}</span>
               </label>
             ))}
 
@@ -218,17 +273,17 @@ export function DesignRulesDialog({
                     <span className="min-w-0 flex-1 text-[12px] text-muted">{c.label}</span>
                     <input
                       type="number"
-                      step="0.001"
-                      min="0.01"
-                      placeholder={String(custom.minClearanceMm)}
-                      value={custom.clearanceByPairMm?.[c.chiave] ?? ""}
+                      step={unita === "mm" ? "0.001" : "0.1"}
+                      min={unita === "mm" ? "0.01" : "0.4"}
+                      placeholder={inUnita(custom.minClearanceMm, unita)}
+                      value={inUnita(custom.clearanceByPairMm?.[c.chiave], unita)}
                       onChange={(e) => {
                         const v = e.target.value.trim();
                         const resto: Partial<Record<ChiaveCoppia, number>> = {
                           ...(custom.clearanceByPairMm ?? {}),
                         };
                         if (v === "") delete resto[c.chiave];
-                        else resto[c.chiave] = Number(v);
+                        else resto[c.chiave] = inMm(v, unita);
                         setCustom({
                           ...custom,
                           ...(Object.keys(resto).length
@@ -236,9 +291,9 @@ export function DesignRulesDialog({
                             : { clearanceByPairMm: undefined }),
                         });
                       }}
-                      className="w-[86px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none placeholder:text-faint focus:border-brand"
+                      className="w-[92px] rounded-[7px] border border-line bg-sunken px-2 py-1 text-right font-mono text-[12px] text-text outline-none placeholder:text-faint focus:border-brand"
                     />
-                    <span className="w-5 font-mono text-[10px] text-faint">mm</span>
+                    <span className="w-6 font-mono text-[10px] text-faint">{unita}</span>
                   </label>
                 ))}
               </div>
@@ -246,9 +301,11 @@ export function DesignRulesDialog({
           </div>
         )}
 
-        {error && <p className="mt-3 text-[11px] text-danger">{error}</p>}
+        </div>
 
-        <div className="mt-4 flex items-center gap-2">
+        {error && <p className="mt-3 flex-none text-[11px] text-danger">{error}</p>}
+
+        <div className="mt-4 flex flex-none items-center gap-2">
           <span className="flex-1 text-[11px] text-faint">
             {changed
               ? "Dopo il salvataggio serve ricompilare per rifare il rame."

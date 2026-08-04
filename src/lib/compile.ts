@@ -626,7 +626,9 @@ export async function compileProject(
     // the planes, poured again with the copper in place: see pours-recompute.ts
     const ricolate = await ricolaPiani({
       circuitJson: conMano.circuitJson as never,
-      clearanceMm: projectRules.rules.minClearanceMm,
+      // a pour holds its own distance, wider than a trace's when the board says so
+      clearanceMm:
+        projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
       bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
     }).catch(() => null);
     const circuitJson = (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[];
@@ -935,7 +937,8 @@ export async function compileProject(
    */
   const ricolate = await ricolaPiani({
     circuitJson: manual.circuitJson as never,
-    clearanceMm: projectRules.rules.minClearanceMm,
+    clearanceMm:
+      projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
   }).catch(() => null);
   const circuitJson = (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[];

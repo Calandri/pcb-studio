@@ -1366,6 +1366,83 @@ export function footprintDaNativo(
 }
 
 /**
+ * HOW FAR THE POURS OF THIS BOARD KEEP FROM THE COPPER OF OTHER NETS, MEASURED.
+ *
+ * It is not in the rules. In Altium the distance a polygon pour holds is written
+ * on the POLYGON — the Clearance field of the pour dialog, usually ten mil —
+ * and the general Clearance rule, the one for traces, is another number
+ * entirely: on this board 6 mil against 10. Pouring at the trace figure gives
+ * the board five per cent more copper than it has, all of it crowded against
+ * the pads, and no rule in the file says so.
+ *
+ * The file does say it, though, in its own geometry: every opening a pour has
+ * was cut around something, and the gap between the two IS the number. It is
+ * measured on the vias, because a via is a circle of known radius and the
+ * opening around it is unambiguous; the median of them all is the answer, and a
+ * handful of samples is not enough to claim one.
+ */
+export function distanzaColataMisurata(
+  pcb: Record<string, unknown>,
+  strati: Map<number, Strato>,
+): number | undefined {
+  const nomi = nomiDelleReti(pcb);
+  const vie = arr(pcb.vias)
+    .map((v) => ({
+      x: num(v.x),
+      y: num(v.y),
+      r: ((num(v.diameter) ?? 0) / 2) * MIL,
+      net: num(v.netIndex) === null ? null : (nomi.get(num(v.netIndex)!) ?? null),
+    }))
+    .filter((v) => v.x !== null && v.y !== null && v.r > 0);
+  if (vie.length === 0) return undefined;
+
+  const scarti: number[] = [];
+  for (const re of arr(pcb.regions)) {
+    const strato = num(re.layerId);
+    if (strato === null || strati.get(strato)?.genere !== "rame") continue;
+    if (re.isKeepout === true || re.isBoardCutout === true) continue;
+    const buchi = arr(re.holes as unknown)
+      .map((h) => (Array.isArray(h) ? h : (h as { points?: unknown }).points))
+      .filter((h): h is Array<{ x: number; y: number }> => Array.isArray(h) && h.length > 2);
+    if (buchi.length === 0) continue;
+    const sua = String(re.netName ?? (num(re.netIndex) !== null ? nomi.get(num(re.netIndex)!) : "") ?? "");
+    for (const buco of buchi) {
+      for (const v of vie) {
+        if (v.net && sua && v.net === sua) continue;
+        if (!dentroPoligono(v.x!, v.y!, buco)) continue;
+        /* the opening was cut for THIS via: how much air is left around it */
+        let d = Infinity;
+        for (let i = 0, j = buco.length - 1; i < buco.length; j = i++) {
+          d = Math.min(d, distanzaPuntoSegmento(v.x!, v.y!, buco[j], buco[i]));
+        }
+        const gap = d * MIL - v.r;
+        if (gap > 0.02 && gap < 1.5) scarti.push(gap);
+        break;
+      }
+    }
+  }
+  if (scarti.length < 8) return undefined;
+  scarti.sort((a, b) => a - b);
+  const mediana = scarti[Math.floor(scarti.length / 2)];
+  return mediana > 0.05 && mediana < 1 ? r3(mediana) : undefined;
+}
+
+/** distance from a point to a segment, in the units it is given */
+function distanzaPuntoSegmento(
+  px: number,
+  py: number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  if (l2 < 1e-12) return Math.hypot(px - a.x, py - a.y);
+  const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / l2));
+  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
+
+/**
  * THE FABRICATION RULES THE BOARD WAS DESIGNED TO.
  *
  * A .PcbDoc carries them — this one has fifty-six — and until now the imported

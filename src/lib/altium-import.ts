@@ -21,6 +21,7 @@ import {
   nomiDelleReti,
   pianiNativi,
   rameNativo,
+  distanzaColataMisurata,
   regoleNative,
   serigrafiaNativa,
   stratiPredefiniti,
@@ -1223,7 +1224,15 @@ function costruisciDaNativo(
    * copper declared a connection nobody had ever created.
    */
   const rame = rameNativo(pcb, strati, t, larghezzaMm);
-  const regole = regoleNative(pcb);
+  const regole = {
+    ...regoleNative(pcb),
+    /*
+     * The distance the pours of THIS board keep, measured on its own openings:
+     * no rule in the file states it, and using the traces' one gives the board
+     * five per cent more copper than it has. See distanzaColataMisurata.
+     */
+    pourClearanceMm: distanzaColataMisurata(pcb, strati),
+  };
   const { piani, isolette, parziali, coperte } = pianiNativi(pcb, strati, t, areaBoard);
 
   /** designator by native component index, and the value to print for .Comment */

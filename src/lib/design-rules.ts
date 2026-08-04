@@ -70,6 +70,19 @@ export interface DesignRules {
    * tightest power via cluster sits at 0.258.
    */
   minHoleToHoleMm: number;
+  /**
+   * How far a POURED PLANE stays from the copper of other nets.
+   *
+   * It is a different number from the general clearance and it is not the fab's:
+   * a pour touches everything, and it is held wider on purpose. In Altium it is
+   * written on the polygon and not in the rules — this board asks 0.254mm where
+   * its traces get 0.1524 — so on import it is MEASURED from the openings the
+   * file's own pours have (see distanzaColataMisurata).
+   *
+   * Missing: the general clearance, which is what a board with nothing to say
+   * about its pours means.
+   */
+  pourClearanceMm?: number;
 }
 
 /** what a clearance rule can talk about */
@@ -198,7 +211,10 @@ export interface ProjectRules {
   isCustom: boolean;
 }
 
-const LIMITS: Record<Exclude<keyof DesignRules, "clearanceByPairMm">, { min: number; max: number }> = {
+const LIMITS: Record<
+  Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm"> | "pourClearanceMm",
+  { min: number; max: number }
+> = {
   minTraceWidthMm: { min: 0.05, max: 2 },
   minClearanceMm: { min: 0.05, max: 2 },
   minBoardEdgeClearanceMm: { min: 0.1, max: 5 },
@@ -210,6 +226,7 @@ const LIMITS: Record<Exclude<keyof DesignRules, "clearanceByPairMm">, { min: num
   // would rather cross the whole board than change layer
   viaCostMm: { min: 0, max: 50 },
   minHoleToHoleMm: { min: 0.05, max: 3 },
+  pourClearanceMm: { min: 0.05, max: 5 },
 };
 
 /**
