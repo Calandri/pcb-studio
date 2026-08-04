@@ -125,18 +125,23 @@ export function DesignRulesDialog({
 
   /** quanti pezzi sposterebbe l'applicazione, per dirlo prima di farla */
   const daSpostare = (() => {
-    if (!classi || !nuove) return { via: 0, piste: 0 };
+    if (!classi || !nuove) return { via: 0, piste: 0, nomi: 0 };
     let via = 0;
     let piste = 0;
+    let nomi = 0;
     classi.via.forEach((c, i) => {
       const n = nuove.via[i];
-      if (n && (n.foroMm !== c.foroMm || n.padMm !== c.padMm)) via += c.quante;
+      if (!n) return;
+      if (n.foroMm !== c.foroMm || n.padMm !== c.padMm) via += c.quante;
+      if (n.nome !== c.nome) nomi++;
     });
     classi.piste.forEach((c, i) => {
       const n = nuove.piste[i];
-      if (n && n.larghezzaMm !== c.larghezzaMm) piste += c.quanti;
+      if (!n) return;
+      if (n.larghezzaMm !== c.larghezzaMm) piste += c.quanti;
+      if (n.nome !== c.nome) nomi++;
     });
-    return { via, piste };
+    return { via, piste, nomi };
   })();
 
   const applica = async () => {
@@ -156,6 +161,10 @@ export function DesignRulesDialog({
           piste: classi.piste
             .map((c, i) => ({ daMm: c.larghezzaMm, aMm: nuove.piste[i]?.larghezzaMm }))
             .filter((x) => x.aMm !== undefined && x.aMm !== x.daMm),
+          nomi: [
+            ...nuove.via.map((c) => ({ padMm: c.padMm, foroMm: c.foroMm, nome: c.nome })),
+            ...nuove.piste.map((c) => ({ larghezzaMm: c.larghezzaMm, nome: c.nome })),
+          ],
         }),
       });
       const d = await res.json();
@@ -379,8 +388,10 @@ export function DesignRulesDialog({
               <p className="text-[13px] font-semibold text-text">Le misure di questa scheda</p>
               <p className="mt-0.5 text-[10px] leading-relaxed text-faint">
                 Non sono minimi: sono le famiglie di via e di piste che il rame usa
-                davvero, contate. Cambiarne una le sposta tutte insieme. Toccando il
-                foro, il pad segue per tenere la stessa corona.
+                davvero, contate. Il nome se lo prendono da quello che ci passa dentro
+                (massa, potenza, segnale) e lo puoi riscrivere. Cambiare una misura le
+                sposta tutte insieme; toccando il foro, il pad segue per tenere la
+                stessa corona.
               </p>
 
               {classi.via.length > 0 && (
@@ -388,7 +399,16 @@ export function DesignRulesDialog({
                   <p className="text-[11px] text-muted">Via</p>
                   {classi.via.map((c, i) => (
                     <div key={`${c.padMm}/${c.foroMm}`} className="mt-1.5 flex items-center gap-2">
-                      <span className="w-[92px] flex-none text-[11px] text-muted">
+                      <input
+                        value={nuove.via[i]?.nome ?? ""}
+                        onChange={(e) => {
+                          const copia = structuredClone(nuove);
+                          copia.via[i].nome = e.target.value.slice(0, 40);
+                          setNuove(copia);
+                        }}
+                        className="w-[104px] flex-none rounded-[7px] border border-line bg-sunken px-2 py-1 text-[12px] text-text outline-none focus:border-brand"
+                      />
+                      <span className="w-[54px] flex-none text-[10px] text-faint">
                         {c.quante} via
                       </span>
                       <span className="text-[10px] text-faint">foro</span>
@@ -436,11 +456,17 @@ export function DesignRulesDialog({
                   <p className="text-[11px] text-muted">Piste</p>
                   {classi.piste.map((c, i) => (
                     <div key={c.larghezzaMm} className="mt-1.5 flex items-center gap-2">
-                      <span className="w-[92px] flex-none text-[11px] text-muted">
-                        {c.quanti} tratte
-                      </span>
+                      <input
+                        value={nuove.piste[i]?.nome ?? ""}
+                        onChange={(e) => {
+                          const copia = structuredClone(nuove);
+                          copia.piste[i].nome = e.target.value.slice(0, 40);
+                          setNuove(copia);
+                        }}
+                        className="w-[104px] flex-none rounded-[7px] border border-line bg-sunken px-2 py-1 text-[12px] text-text outline-none focus:border-brand"
+                      />
                       <span className="flex-1 text-[10px] text-faint">
-                        {c.lunghezzaMm.toFixed(0)}mm di rame
+                        {c.quanti} tratte · {c.lunghezzaMm.toFixed(0)}mm
                       </span>
                       <input
                         type="number"
@@ -464,19 +490,25 @@ export function DesignRulesDialog({
                   {esito ??
                     (daSpostare.via + daSpostare.piste > 0
                       ? `Sposta ${daSpostare.via} via e ${daSpostare.piste} tratte di pista, e ricompila.`
-                      : "Nessuna misura cambiata.")}
+                      : daSpostare.nomi > 0
+                        ? `${daSpostare.nomi} ${daSpostare.nomi === 1 ? "nome" : "nomi"} da salvare.`
+                        : "Nessuna misura cambiata.")}
                 </span>
                 <button
                   type="button"
                   onClick={() => void applica()}
-                  disabled={applico || daSpostare.via + daSpostare.piste === 0}
+                  disabled={applico || daSpostare.via + daSpostare.piste + daSpostare.nomi === 0}
                   className={`rounded-[8px] px-3 py-[6px] text-[12px] font-semibold transition-colors ${
-                    !applico && daSpostare.via + daSpostare.piste > 0
+                    !applico && daSpostare.via + daSpostare.piste + daSpostare.nomi > 0
                       ? "bg-brand text-ink hover:bg-brand-strong"
                       : "bg-sunken text-faint"
                   }`}
                 >
-                  {applico ? "Applico..." : "Applica al rame"}
+                  {applico
+                    ? "Applico..."
+                    : daSpostare.via + daSpostare.piste > 0
+                      ? "Applica al rame"
+                      : "Salva i nomi"}
                 </button>
               </div>
             </div>

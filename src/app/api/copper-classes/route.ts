@@ -2,8 +2,10 @@ import { requireProjectAccess } from "@/lib/acl";
 import {
   applicaClassi,
   classiDalRame,
+  CLASSI_PATH,
   type CambioPista,
   type CambioVia,
+  type NomiDelleClassi,
 } from "@/lib/classi-rame";
 import {
   MANUAL_EDITS_PATH,
@@ -32,7 +34,21 @@ export async function GET(req: Request): Promise<Response> {
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
   const fsMap = await getProject(projectId);
   const edits = parseManualEdits(fsMap[MANUAL_EDITS_PATH]);
-  return Response.json({ ok: true, classi: classiDalRame(edits.pcb_routes ?? []) });
+  return Response.json({
+    ok: true,
+    classi: classiDalRame(edits.pcb_routes ?? [], leggiNomi(fsMap[CLASSI_PATH])),
+  });
+}
+
+/** i nomi salvati: un file che non blocca niente se e' rotto o non c'e' */
+function leggiNomi(raw: string | undefined): NomiDelleClassi {
+  if (!raw) return {};
+  try {
+    const d = JSON.parse(raw) as NomiDelleClassi;
+    return typeof d === "object" && d !== null ? d : {};
+  } catch {
+    return {};
+  }
 }
 
 /** una misura credibile: sotto i 20 micron non e' rame, sopra i 10mm non e' una via */
@@ -84,22 +100,44 @@ export async function POST(req: Request): Promise<Response> {
     piste.push({ daMm: da, aMm: a });
   }
 
-  if (via.length === 0 && piste.length === 0) {
+  if (via.length === 0 && piste.length === 0 && !Array.isArray(body.nomi)) {
     return Response.json({ error: "niente da cambiare" }, { status: 400 });
+  }
+
+  /*
+   * I NOMI viaggiano con la misura NUOVA: se la via piccola passa da 0.15 a
+   * 0.1524 il suo nome deve seguirla, altrimenti dopo il cambio la famiglia si
+   * ritrova senza nome e sembra un'altra.
+   */
+  const nomi: NomiDelleClassi = { via: [], piste: [] };
+  for (const x of Array.isArray(body.nomi) ? body.nomi : []) {
+    const c = x as Record<string, unknown>;
+    const nome = typeof c.nome === "string" ? c.nome.trim().slice(0, 40) : "";
+    if (!nome) continue;
+    const pad = misura(c.padMm, 0.05, 10);
+    const foro = misura(c.foroMm, 0.02, 10);
+    const larg = misura(c.larghezzaMm, 0.02, 20);
+    if (pad !== null && foro !== null) nomi.via!.push({ padMm: pad, foroMm: foro, nome });
+    else if (larg !== null) nomi.piste!.push({ larghezzaMm: larg, nome });
   }
 
   const fsMap = await getProject(projectId);
   const edits = parseManualEdits(fsMap[MANUAL_EDITS_PATH]);
   const esito = applicaClassi(edits.pcb_routes ?? [], { via, piste });
-  await writeProjectFile(
-    projectId,
-    MANUAL_EDITS_PATH,
-    serializeManualEdits({ ...edits, pcb_routes: esito.routes }),
-  );
+  if (esito.viaCambiate + esito.pisteCambiate > 0) {
+    await writeProjectFile(
+      projectId,
+      MANUAL_EDITS_PATH,
+      serializeManualEdits({ ...edits, pcb_routes: esito.routes }),
+    );
+  }
+  if ((nomi.via?.length ?? 0) + (nomi.piste?.length ?? 0) > 0) {
+    await writeProjectFile(projectId, CLASSI_PATH, `${JSON.stringify(nomi, null, 2)}\n`);
+  }
   return Response.json({
     ok: true,
     viaCambiate: esito.viaCambiate,
     pisteCambiate: esito.pisteCambiate,
-    classi: classiDalRame(esito.routes),
+    classi: classiDalRame(esito.routes, nomi),
   });
 }

@@ -1,3 +1,4 @@
+import { eMassa, ePotenza } from "./net-roles";
 import type { ManualRoute } from "./manual-routes";
 
 /**
@@ -30,6 +31,8 @@ export interface ClasseVia {
   quante: number;
   /** il rame che resta attorno al foro: la misura che rompe, non il pad */
   coronaMm: number;
+  /** come si chiama: quello scritto a mano, o quello che si vede dalle reti */
+  nome: string;
 }
 
 export interface ClassePista {
@@ -37,7 +40,45 @@ export interface ClassePista {
   /** quanti tratti, e quanto rame in tutto */
   quanti: number;
   lunghezzaMm: number;
+  nome: string;
 }
+
+/** i nomi che l'utente ha dato, agganciati alla misura */
+export interface NomiDelleClassi {
+  via?: Array<{ padMm: number; foroMm: number; nome: string }>;
+  piste?: Array<{ larghezzaMm: number; nome: string }>;
+}
+
+export const CLASSI_PATH = "classi-rame.json";
+
+/**
+ * COME SI CHIAMA UNA FAMIGLIA, quando nessuno le ha dato un nome.
+ *
+ * Non dalla misura — "0.15" non dice niente a nessuno — ma da quello che ci
+ * passa dentro: si guarda la rete di ogni pezzo e si vede se quella misura la
+ * usano le masse, le alimentazioni o i segnali. E' la stessa distinzione che
+ * fanno i controlli elettrici, con lo stesso classificatore, cosi' due parti
+ * dell'app non chiamano potenza cose diverse.
+ *
+ * Quando due famiglie hanno lo stesso ruolo si distinguono per misura, in mils,
+ * perche' e' cosi' che le chiama chi disegna: "la sei mil".
+ */
+function ruoloDelle(reti: string[]): "massa" | "potenza" | "segnale" {
+  let massa = 0;
+  let potenza = 0;
+  for (const n of reti) {
+    if (eMassa(n)) massa++;
+    else if (ePotenza(n)) potenza++;
+  }
+  if (massa > reti.length / 2) return "massa";
+  if (massa + potenza > reti.length / 2) return "potenza";
+  return "segnale";
+}
+
+const inMil = (mm: number) => {
+  const v = mm / 0.0254;
+  return `${Number(v.toFixed(v < 10 ? 1 : 0))} mil`;
+};
 
 export interface ClassiRame {
   via: ClasseVia[];
@@ -53,9 +94,14 @@ const eUnaVia = (r: ManualRoute): boolean =>
 const r4 = (n: number) => Number(n.toFixed(4));
 
 /** le famiglie di misure che questo rame usa, dalla piu' usata alla meno */
-export function classiDalRame(routes: ManualRoute[]): ClassiRame {
+export function classiDalRame(
+  routes: ManualRoute[],
+  nomi: NomiDelleClassi = {},
+): ClassiRame {
   const via = new Map<string, ClasseVia>();
   const piste = new Map<string, ClassePista>();
+  const retiVia = new Map<string, string[]>();
+  const retiPista = new Map<string, string[]>();
 
   for (const r of routes) {
     if (eUnaVia(r)) {
@@ -63,9 +109,16 @@ export function classiDalRame(routes: ManualRoute[]): ClassiRame {
       const foroMm = r4(r.viaHoleDiameter ?? 0);
       if (padMm <= 0 || foroMm <= 0) continue;
       const k = `${padMm}/${foroMm}`;
-      const c = via.get(k) ?? { padMm, foroMm, quante: 0, coronaMm: r4((padMm - foroMm) / 2) };
+      const c = via.get(k) ?? {
+        padMm,
+        foroMm,
+        quante: 0,
+        coronaMm: r4((padMm - foroMm) / 2),
+        nome: "",
+      };
       c.quante++;
       via.set(k, c);
+      retiVia.set(k, [...(retiVia.get(k) ?? []), String(r.net ?? "")]);
       continue;
     }
     const larghezzaMm = r4(r.width ?? 0);
@@ -77,15 +130,62 @@ export function classiDalRame(routes: ManualRoute[]): ClassiRame {
       if (a.layer !== b.layer) continue;
       lung += Math.hypot(b.x - a.x, b.y - a.y);
     }
-    const c = piste.get(String(larghezzaMm)) ?? { larghezzaMm, quanti: 0, lunghezzaMm: 0 };
+    const c = piste.get(String(larghezzaMm)) ?? {
+      larghezzaMm,
+      quanti: 0,
+      lunghezzaMm: 0,
+      nome: "",
+    };
     c.quanti++;
     c.lunghezzaMm = r4(c.lunghezzaMm + lung);
     piste.set(String(larghezzaMm), c);
+    retiPista.set(String(larghezzaMm), [
+      ...(retiPista.get(String(larghezzaMm)) ?? []),
+      String(r.net ?? ""),
+    ]);
   }
 
+  const listaVia = [...via.values()].sort((a, b) => a.foroMm - b.foroMm);
+  const listaPiste = [...piste.values()].sort((a, b) => a.larghezzaMm - b.larghezzaMm);
+
+  /*
+   * Il nome scritto a mano vince. Le VIA, quando non ce l'hanno, si chiamano
+   * per taglia e non per ruolo: quasi tutte sono cuciture di massa, quindi il
+   * ruolo le chiamerebbe tutte allo stesso modo, mentre chi disegna dice "la
+   * piccola" e "la grande". Le PISTE invece il ruolo ce l'hanno vero, ed e'
+   * quello che si vuole leggere: sei mil di segnale, venti di potenza.
+   */
+  const taglie =
+    listaVia.length <= 1
+      ? ["unica"]
+      : listaVia.length === 2
+        ? ["piccola", "grande"]
+        : listaVia.length === 3
+          ? ["piccola", "media", "grande"]
+          : listaVia.map((c) => inMil(c.foroMm));
+  listaVia.forEach((c, i) => {
+    const suo = (nomi.via ?? []).find(
+      (n) => stessaMisura(n.padMm, c.padMm) && stessaMisura(n.foroMm, c.foroMm),
+    );
+    c.nome = suo?.nome?.trim() || taglie[i] || inMil(c.foroMm);
+  });
+
+  const ruoliPiste = listaPiste.map((c) => ruoloDelle(retiPista.get(String(c.larghezzaMm)) ?? []));
+  listaPiste.forEach((c, i) => {
+    const suo = (nomi.piste ?? []).find((n) => stessaMisura(n.larghezzaMm, c.larghezzaMm));
+    const doppio = ruoliPiste.filter((r) => r === ruoliPiste[i]).length > 1;
+    c.nome =
+      suo?.nome?.trim() || (doppio ? `${ruoliPiste[i]} ${inMil(c.larghezzaMm)}` : ruoliPiste[i]);
+  });
+
+  return { via: listaVia, piste: listaPiste };
+}
+
+/** i nomi da salvare, agganciati alla misura che la famiglia ha adesso */
+export function nomiDaSalvare(classi: ClassiRame): NomiDelleClassi {
   return {
-    via: [...via.values()].sort((a, b) => a.foroMm - b.foroMm),
-    piste: [...piste.values()].sort((a, b) => a.larghezzaMm - b.larghezzaMm),
+    via: classi.via.map((c) => ({ padMm: c.padMm, foroMm: c.foroMm, nome: c.nome })),
+    piste: classi.piste.map((c) => ({ larghezzaMm: c.larghezzaMm, nome: c.nome })),
   };
 }
 
