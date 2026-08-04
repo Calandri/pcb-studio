@@ -1,4 +1,4 @@
-import { requireProjectAccess } from "@/lib/acl";
+import { accessoDaRichiesta } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
 import { compileProject, type CompileProgress } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
@@ -44,8 +44,9 @@ export async function POST(req: Request): Promise<Response> {
     // no body: recompile the default project
   }
 
-  const { ok } = await requireProjectAccess(projectId, "edit");
-  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  if (!(await accessoDaRichiesta(req, projectId, "edit"))) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({

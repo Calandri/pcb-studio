@@ -1,5 +1,4 @@
-import { currentViewer, projectAccess, requireProjectAccess } from "@/lib/acl";
-import { resolveApiToken } from "@/lib/api-tokens";
+import { accessoDaRichiesta } from "@/lib/acl";
 import {
   applicaClassi,
   applicaDoveCiSta,
@@ -20,37 +19,9 @@ import { getCompileCache, getProject, writeProjectFile } from "@/lib/project-sto
 
 export const runtime = "nodejs";
 
-/**
- * Il browser manda una sessione, la riga di comando manda un token personale
- * (pcbs_..., lo stesso dell'import e del server MCP). Due porte, una sola
- * implementazione dietro: una classe cambiata da terminale deve essere la
- * stessa cosa di una cambiata dal pannello.
- */
-async function chiPuoScrivere(req: Request, projectId: string): Promise<boolean> {
-  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-  if (!bearer) return (await requireProjectAccess(projectId, "edit")).ok;
-  const viewer = await resolveApiToken(bearer);
-  if (!viewer) return false;
-  return (await projectAccess(projectId, viewer)) === "edit";
-}
-
-/**
- * LE CLASSI DEL RAME di un progetto: quali misure usa, e cambiarne una in blocco.
- *
- * Sta qui e non nelle regole di fabbricazione perche' sono due cose diverse e
- * confonderle e' il modo di rovinare una scheda: un minimo dice cosa il
- * fornitore riesce a fare e non tocca il rame, una classe E' il rame e cambiarla
- * lo riscrive. Per questo l'operazione e' esplicita, dice quanti pezzi sposta
- * prima di spostarli, e scrive in manual-edits.json, cioe' dove sta tutto il
- * rame disegnato a mano: da li' la compilazione lo rimette sulla scheda e i
- * controlli lo rimisurano.
- */
-
 export async function GET(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "default";
-  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-  const viewer = bearer ? await resolveApiToken(bearer) : await currentViewer();
-  if ((await projectAccess(projectId, viewer)) === "none") {
+  if (!(await accessoDaRichiesta(req, projectId, "view"))) {
     return Response.json({ error: "forbidden" }, { status: 403 });
   }
   const fsMap = await getProject(projectId);
@@ -87,7 +58,7 @@ export async function POST(req: Request): Promise<Response> {
     typeof body.projectId === "string" && body.projectId.length <= 120
       ? body.projectId
       : "default";
-  if (!(await chiPuoScrivere(req, projectId))) {
+  if (!(await accessoDaRichiesta(req, projectId, "edit"))) {
     return Response.json({ error: "forbidden" }, { status: 403 });
   }
 

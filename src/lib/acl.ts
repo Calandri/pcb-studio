@@ -1,5 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { auth } from "@/auth";
+import { resolveApiToken } from "./api-tokens";
 import type { ProjectRole, ProjectSummary } from "./org-store";
 
 export interface Viewer {
@@ -72,6 +73,26 @@ async function explicitShare(
   `) as Array<{ role: ProjectRole }>;
   if (rows.length === 0) return null;
   return rows[0].role === "editor" ? "edit" : "view";
+}
+
+/**
+ * L'ACCESSO A UN PROGETTO DA UNA RICHIESTA, comunque sia entrata.
+ *
+ * Il browser manda una sessione, la riga di comando e il server MCP mandano un
+ * token personale (pcbs_...). Sono due porte per la stessa casa, e ogni rotta
+ * che se le scriveva da sola era un posto in cui potevano divergere: l'import
+ * accettava il token, la compilazione no, e da terminale si poteva cambiare una
+ * scheda ma non ricompilarla.
+ */
+export async function accessoDaRichiesta(
+  req: Request,
+  projectId: string,
+  need: "view" | "edit",
+): Promise<boolean> {
+  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  const viewer = bearer ? await resolveApiToken(bearer) : await currentViewer();
+  const level = await projectAccess(projectId, viewer);
+  return need === "view" ? level !== "none" : level === "edit";
 }
 
 export async function requireProjectAccess(
