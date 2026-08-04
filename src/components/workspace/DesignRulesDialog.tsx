@@ -171,7 +171,16 @@ export function DesignRulesDialog({
       if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
       setClassi(d.classi);
       setNuove(structuredClone(d.classi));
-      setEsito(`${d.viaCambiate} via e ${d.pisteCambiate} piste aggiornate, ricompilo`);
+      const perche = Object.entries(d.motivi ?? {})
+        .map(([k, n]) => `${n} per ${k}`)
+        .join(", ");
+      setEsito(
+        `${d.viaCambiate} via e ${d.pisteCambiate} piste aggiornate` +
+          (d.viaLasciate > 0
+            ? `. ${d.viaLasciate} via lasciate dov'erano perche' non ci stavano${perche ? ` (${perche})` : ""}`
+            : "") +
+          ", ricompilo",
+      );
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -489,7 +498,7 @@ export function DesignRulesDialog({
                 <span className="flex-1 text-[10px] leading-relaxed text-faint">
                   {esito ??
                     (daSpostare.via + daSpostare.piste > 0
-                      ? `Sposta ${daSpostare.via} via e ${daSpostare.piste} tratte di pista, e ricompila.`
+                      ? `Sposta fino a ${daSpostare.via} via e ${daSpostare.piste} tratte di pista, e ricompila. Allargando, le via che non ci stanno restano dove sono e te lo dico.`
                       : daSpostare.nomi > 0
                         ? `${daSpostare.nomi} ${daSpostare.nomi === 1 ? "nome" : "nomi"} da salvare.`
                         : "Nessuna misura cambiata.")}

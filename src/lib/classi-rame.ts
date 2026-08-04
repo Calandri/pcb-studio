@@ -203,6 +203,102 @@ export interface EsitoCambio {
   routes: ManualRoute[];
   viaCambiate: number;
   pisteCambiate: number;
+  /** le via che sono rimaste com'erano perche' non c'era posto, e perche' */
+  viaLasciate?: number;
+  motivi?: Record<string, number>;
+}
+
+interface Ostacoli {
+  pads: Array<{ poly: Array<{ x: number; y: number }>; net: string; foroMm: number }>;
+  vie: Array<{ x: number; y: number; rMm: number; foroMm: number; net: string }>;
+  tratti: Array<{
+    a: { x: number; y: number };
+    b: { x: number; y: number };
+    semiMm: number;
+    net: string;
+  }>;
+}
+
+/**
+ * ALLARGARE UN FORO IN MEZZO A UN RAME GIA' INSTRADATO NON E' GRATIS.
+ *
+ * Portare la via piccola alla misura standard e' la cosa giusta dove c'e'
+ * spazio — un foro da sei mil su una scheda da 1.4mm e' un rapporto di 9 a 1,
+ * lavoro fine pagato anche dove non serve — ma sotto il BGA lo spazio non c'e',
+ * e una via allargata contro la pista del vicino e' un corto che nessuno ha
+ * chiesto.
+ *
+ * Quindi si allarga DOVE CI STA, una via alla volta, misurando contro il rame
+ * delle altre reti con le distanze del progetto (comprese quelle per coppia:
+ * su questa scheda un pad puo' stare a un mil da una via) e contro i fori con
+ * la distanza foro-foro. Quelle che non ci stanno restano come sono e vengono
+ * contate: su BAT_BS 479 su 510 passano, 31 no, e quelle 31 sono esattamente
+ * il fanout stretto.
+ */
+function distanzaPuntoPoligono(
+  px: number,
+  py: number,
+  poly: Array<{ x: number; y: number }>,
+): number {
+  let dentro = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a.y > py !== b.y > py && px < ((b.x - a.x) * (py - a.y)) / (b.y - a.y) + a.x) {
+      dentro = !dentro;
+    }
+  }
+  if (dentro) return 0;
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[j];
+    const b = poly[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const l2 = dx * dx + dy * dy;
+    const t = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / l2));
+    best = Math.min(best, Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy)));
+  }
+  return best;
+}
+
+/** se una via di quella misura, in quel punto, sta dentro le regole */
+function ciSta(
+  x: number,
+  y: number,
+  net: string,
+  padMm: number,
+  foroMm: number,
+  o: Ostacoli,
+  d: { padVia: number; viaVia: number; pistaVia: number; foroForo: number },
+): string | null {
+  const r = padMm / 2;
+  for (const p of o.pads) {
+    if (p.net && net && p.net === net) continue;
+    if (distanzaPuntoPoligono(x, y, p.poly) - r < d.padVia - 0.001) return "pad di un'altra rete";
+    if (p.foroMm > 0 && Math.hypot(p.poly[0].x - x, p.poly[0].y - y) < 5) {
+      const centro = p.poly.reduce((s, q) => ({ x: s.x + q.x / p.poly.length, y: s.y + q.y / p.poly.length }), { x: 0, y: 0 });
+      if (Math.hypot(centro.x - x, centro.y - y) - (p.foroMm + foroMm) / 2 < d.foroForo - 0.001) {
+        return "foro contro foro";
+      }
+    }
+  }
+  for (const v of o.vie) {
+    const dist = Math.hypot(v.x - x, v.y - y);
+    if (dist < 1e-6) continue; // e' lei stessa
+    if (v.net !== net && dist - v.rMm - r < d.viaVia - 0.001) return "via di un'altra rete";
+    if (dist - (v.foroMm + foroMm) / 2 < d.foroForo - 0.001) return "foro contro foro";
+  }
+  for (const t of o.tratti) {
+    if (t.net && net && t.net === net) continue;
+    const dx = t.b.x - t.a.x;
+    const dy = t.b.y - t.a.y;
+    const l2 = dx * dx + dy * dy;
+    const u = l2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((x - t.a.x) * dx + (y - t.a.y) * dy) / l2));
+    const dist = Math.hypot(x - (t.a.x + u * dx), y - (t.a.y + u * dy));
+    if (dist - t.semiMm - r < d.pistaVia - 0.001) return "pista di un'altra rete";
+  }
+  return null;
 }
 
 const stessaMisura = (a: number, b: number) => Math.abs(a - b) < UGUALE_MM;
@@ -241,4 +337,137 @@ export function applicaClassi(
   });
 
   return { routes: fuori, viaCambiate, pisteCambiate };
+}
+
+/**
+ * Lo stesso cambio, ma allargando solo dove ci sta: vedi ciSta.
+ * Restringere sta sempre, quindi la misura si applica e basta.
+ */
+export function applicaDoveCiSta(
+  routes: ManualRoute[],
+  cambi: { via?: CambioVia[]; piste?: CambioPista[] },
+  ostacoli: Ostacoli,
+  distanze: { padVia: number; viaVia: number; pistaVia: number; foroForo: number },
+): EsitoCambio {
+  let viaCambiate = 0;
+  let pisteCambiate = 0;
+  let viaLasciate = 0;
+  const motivi: Record<string, number> = {};
+
+  const fuori = routes.map((r) => {
+    if (!eUnaVia(r)) {
+      const c = (cambi.piste ?? []).find((x) => stessaMisura(x.daMm, r.width ?? 0));
+      if (!c) return r;
+      pisteCambiate++;
+      return { ...r, width: r4(c.aMm) };
+    }
+    const pad = r.viaDiameter ?? 0;
+    const foro = r.viaHoleDiameter ?? 0;
+    const c = (cambi.via ?? []).find(
+      (x) => stessaMisura(x.da.padMm, pad) && stessaMisura(x.da.foroMm, foro),
+    );
+    if (!c) return r;
+    const allarga = c.a.padMm > pad + UGUALE_MM || c.a.foroMm > foro + UGUALE_MM;
+    if (allarga) {
+      const male = ciSta(
+        r.points[0].x,
+        r.points[0].y,
+        String(r.net ?? ""),
+        c.a.padMm,
+        c.a.foroMm,
+        ostacoli,
+        distanze,
+      );
+      if (male) {
+        viaLasciate++;
+        motivi[male] = (motivi[male] ?? 0) + 1;
+        return r;
+      }
+    }
+    viaCambiate++;
+    return { ...r, viaDiameter: r4(c.a.padMm), viaHoleDiameter: r4(c.a.foroMm) };
+  });
+
+  return { routes: fuori, viaCambiate, pisteCambiate, viaLasciate, motivi };
+}
+
+/** il rame contro cui si misura, letto dalla scheda compilata */
+export function ostacoliDaCircuito(circuitJson: unknown[]): Ostacoli {
+  const els = circuitJson as Array<Record<string, unknown>>;
+  const netDiChiave = new Map<string, string>();
+  for (const e of els) {
+    if (e.type === "source_net" && e.subcircuit_connectivity_map_key) {
+      netDiChiave.set(String(e.subcircuit_connectivity_map_key), String(e.name ?? ""));
+    }
+  }
+  const gruppoDiPorta = new Map<string, string>();
+  for (const e of els) {
+    if (e.type !== "source_trace") continue;
+    const k = String(e.subcircuit_connectivity_map_key ?? "");
+    for (const p of (e.connected_source_port_ids as string[] | undefined) ?? []) {
+      gruppoDiPorta.set(String(p), k);
+    }
+  }
+  const sorgenteDiPorta = new Map<string, string>();
+  for (const e of els) {
+    if (e.type === "pcb_port") sorgenteDiPorta.set(String(e.pcb_port_id), String(e.source_port_id));
+  }
+  const retePad = (e: Record<string, unknown>) =>
+    netDiChiave.get(gruppoDiPorta.get(sorgenteDiPorta.get(String(e.pcb_port_id ?? "")) ?? "") ?? "") ??
+    "";
+
+  const pads: Ostacoli["pads"] = [];
+  const vie: Ostacoli["vie"] = [];
+  const tratti: Ostacoli["tratti"] = [];
+  for (const e of els) {
+    if (e.type === "pcb_smtpad" || e.type === "pcb_plated_hole") {
+      const x = Number(e.x);
+      const y = Number(e.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const hw = Number(e.width ?? (Number(e.radius ?? 0) || Number(e.outer_diameter ?? 0)) ) / 2;
+      const hh = Number(e.height ?? (Number(e.radius ?? 0) || Number(e.outer_diameter ?? 0))) / 2;
+      const rad = ((Number(e.ccw_rotation ?? 0) || 0) * Math.PI) / 180;
+      const co = Math.cos(rad);
+      const si = Math.sin(rad);
+      pads.push({
+        net: retePad(e),
+        foroMm: Number(e.hole_diameter ?? 0) || 0,
+        poly: [
+          [-hw, -hh],
+          [hw, -hh],
+          [hw, hh],
+          [-hw, hh],
+        ].map(([a, b]) => ({ x: x + a * co - b * si, y: y + a * si + b * co })),
+      });
+      continue;
+    }
+    if (e.type === "pcb_via") {
+      vie.push({
+        x: Number(e.x),
+        y: Number(e.y),
+        rMm: Number(e.outer_diameter ?? 0) / 2,
+        foroMm: Number(e.hole_diameter ?? 0),
+        net: netDiChiave.get(String(e.subcircuit_connectivity_map_key ?? "")) ?? "",
+      });
+      continue;
+    }
+    if (e.type !== "pcb_trace") continue;
+    const st = els.find(
+      (x) => x.type === "source_trace" && String(x.source_trace_id) === String(e.source_trace_id),
+    );
+    const net = netDiChiave.get(String(st?.subcircuit_connectivity_map_key ?? "")) ?? "";
+    const rotta = (e.route as Array<Record<string, unknown>> | undefined) ?? [];
+    for (let i = 1; i < rotta.length; i++) {
+      const a = rotta[i - 1];
+      const b = rotta[i];
+      if (a.route_type !== "wire" || b.route_type !== "wire" || a.layer !== b.layer) continue;
+      tratti.push({
+        a: { x: Number(a.x), y: Number(a.y) },
+        b: { x: Number(b.x), y: Number(b.y) },
+        semiMm: Number(b.width ?? a.width ?? 0.15) / 2,
+        net,
+      });
+    }
+  }
+  return { pads, vie, tratti };
 }

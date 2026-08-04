@@ -1,8 +1,10 @@
 import { requireProjectAccess } from "@/lib/acl";
 import {
   applicaClassi,
+  applicaDoveCiSta,
   classiDalRame,
   CLASSI_PATH,
+  ostacoliDaCircuito,
   type CambioPista,
   type CambioVia,
   type NomiDelleClassi,
@@ -12,7 +14,8 @@ import {
   parseManualEdits,
   serializeManualEdits,
 } from "@/lib/manual-edits";
-import { getProject, writeProjectFile } from "@/lib/project-store";
+import { distanzaMinimaFra, resolveDesignRules } from "@/lib/design-rules";
+import { getCompileCache, getProject, writeProjectFile } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 
@@ -123,7 +126,29 @@ export async function POST(req: Request): Promise<Response> {
 
   const fsMap = await getProject(projectId);
   const edits = parseManualEdits(fsMap[MANUAL_EDITS_PATH]);
-  const esito = applicaClassi(edits.pcb_routes ?? [], { via, piste });
+  /*
+   * Allargare un foro dentro un rame gia' instradato non e' gratis: si allarga
+   * dove ci sta, misurando contro il rame delle altre reti con le distanze del
+   * progetto, e quelle che non ci stanno restano com'erano e si contano. Senza
+   * la scheda compilata non c'e' niente contro cui misurare, e allora si
+   * applica e basta: e' il caso di un progetto mai compilato, dove il rame non
+   * esiste ancora.
+   */
+  const regole = resolveDesignRules(fsMap).rules;
+  const compilato = await getCompileCache(projectId).catch(() => null);
+  const esito = compilato?.circuitJson
+    ? applicaDoveCiSta(
+        edits.pcb_routes ?? [],
+        { via, piste },
+        ostacoliDaCircuito(compilato.circuitJson as unknown[]),
+        {
+          padVia: distanzaMinimaFra(regole, "pad", "via"),
+          viaVia: distanzaMinimaFra(regole, "via", "via"),
+          pistaVia: distanzaMinimaFra(regole, "trace", "via"),
+          foroForo: regole.minHoleToHoleMm,
+        },
+      )
+    : applicaClassi(edits.pcb_routes ?? [], { via, piste });
   if (esito.viaCambiate + esito.pisteCambiate > 0) {
     await writeProjectFile(
       projectId,
@@ -138,6 +163,8 @@ export async function POST(req: Request): Promise<Response> {
     ok: true,
     viaCambiate: esito.viaCambiate,
     pisteCambiate: esito.pisteCambiate,
+    viaLasciate: esito.viaLasciate ?? 0,
+    motivi: esito.motivi ?? {},
     classi: classiDalRame(esito.routes, nomi),
   });
 }
