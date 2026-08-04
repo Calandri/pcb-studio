@@ -477,7 +477,34 @@ export function circuitJsonToProjectFiles(
           : null;
     const wantedTag = FTYPE_ELEMENT[ftype] ?? daValore ?? daDesignator ?? "chip";
     const requiredProp = VALUE_PROPS[wantedTag];
-    const tag = requiredProp && !value ? "chip" : wantedTag;
+    /*
+     * DUE PIN VUOL DIRE DUE PIN.
+     *
+     * Un <diode>, un <resistor>, un <capacitor> accettano solo le etichette che
+     * la loro forma prevede: pin1, pin2, anode, cathode. Su BIRDY_BS il diodo D8
+     * arriva dal file con CINQUE porte (1, 2, 219, 220, 221 — il simbolo ne
+     * dichiara piu' di quante ne ha il package), e tscircuit rifiuta di
+     * costruirlo: componente perso, e con lui due connessioni, piu' l'errore di
+     * piazzamento a valle.
+     *
+     * Meglio un simbolo generico che un componente che non esiste: se le porte
+     * non stanno nella forma, si scrive <chip>, che le etichette le accetta
+     * tutte. Si perde il triangolo sullo schematico, si tiene la scheda.
+     */
+    const quantePorte = cj.filter(
+      (e) => e.type === "source_port" && e.source_component_id === sourceId,
+    ).length;
+    const massimoPin: Record<string, number> = {
+      resistor: 2,
+      capacitor: 2,
+      led: 2,
+      diode: 2,
+      inductor: 2,
+      crystal: 2,
+      fuse: 2,
+    };
+    const troppePorte = (massimoPin[wantedTag] ?? Infinity) < quantePorte;
+    const tag = (requiredProp && !value) || troppePorte ? "chip" : wantedTag;
     /*
      * The value written the way the compiler reads it: "10 kOhms" is a phrase,
      * "10kohm" is a quantity. Spaces out, plural out, and the unit lowercase —

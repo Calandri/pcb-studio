@@ -756,9 +756,51 @@ export async function importAltiumProject(
     const peso = (f: AltiumFile) => (altiumExtension(f.path) === ".pcbdoc" ? 0 : 1);
     return peso(a) - peso(b) || a.path.localeCompare(b.path);
   });
+  /*
+   * UNA IMPORTAZIONE, UNA SCHEDA.
+   *
+   * Un progetto Altium non contiene solo la scheda: contiene il PANNELLO di
+   * produzione, le varianti, i coupon di test, e sono tutti .PcbDoc. BIRDY_BS ne
+   * ha due — la scheda, 68x52mm con 98 componenti e 2370 piste, e Panel_BS,
+   * 88x290mm con quattro fiducial e nient'altro — e prendendoli tutti e due i
+   * fiducial del pannello finivano sulla scheda a duecento millimetri dal suo
+   * bordo: tre errori di piazzamento e l'instradamento saltato.
+   *
+   * La scheda e' quella con il rame: si contano piste, pad e componenti e vince
+   * la piu' ricca. Le altre vengono dette e lasciate fuori, geometria e
+   * componenti compresi.
+   */
+  const parsati: Array<{
+    file: AltiumFile;
+    model: El[];
+    native: Record<string, unknown>;
+  }> = [];
   for (const file of ordinati) {
     const { model, native, warnings: w } = await parseOne(file);
     warnings.push(...w);
+    parsati.push({ file, model, native });
+  }
+  const pesoDiScheda = (n: Record<string, unknown>): number => {
+    const pcbNat = (n.pcb ?? null) as Record<string, unknown> | null;
+    if (!pcbNat) return -1;
+    const conta = (k: string) => (Array.isArray(pcbNat[k]) ? (pcbNat[k] as unknown[]).length : 0);
+    return conta("tracks") + conta("pads") + conta("components");
+  };
+  const documentiPcb = parsati.filter((x) => altiumExtension(x.file.path) === ".pcbdoc");
+  const vincitore = documentiPcb
+    .slice()
+    .sort((a, b) => pesoDiScheda(b.native) - pesoDiScheda(a.native))[0];
+  const scartati = documentiPcb.filter((x) => x !== vincitore);
+  if (scartati.length > 0) {
+    warnings.push(
+      `${documentiPcb.length} documenti PCB nel progetto: importato ${vincitore.file.path}, lasciati fuori ${scartati
+        .map((x) => x.file.path)
+        .join(", ")} (pannelli, varianti o coupon: una importazione e' una scheda)`,
+    );
+  }
+
+  for (const { file, model, native } of parsati) {
+    if (altiumExtension(file.path) === ".pcbdoc" && vincitore && file !== vincitore.file) continue;
     const pcbNat = (native.pcb ?? null) as Record<string, unknown> | null;
     if (!scheda && pcbNat && Array.isArray(pcbNat.tracks) && pcbNat.tracks.length > 0) {
       scheda = pcbNat;
