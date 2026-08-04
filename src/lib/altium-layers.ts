@@ -264,7 +264,14 @@ export function versoDegliArchi(
     if (layer === null || x1 === null || y1 === null || x2 === null || y2 === null) continue;
     if (strati.get(layer)?.genere !== "rame") continue;
     const lung = Math.hypot(x2 - x1, y2 - y1);
-    if (lung < 1e-6) continue;
+    /*
+     * The slivers do not get a vote. Altium leaves a hundred tracks shorter
+     * than a micron behind — leftovers of edits, which the import already
+     * throws away as copper — and each one sits at a joint pointing BOTH ways,
+     * so it fits either side of the arc and the vote ends in a tie. Two arcs
+     * came out as 270 degree curls because of exactly that.
+     */
+    if (lung * MIL < 0.002) continue;
     const versi: Array<[number, number, { x: number; y: number }]> = [
       [x1, y1, { x: (x2 - x1) / lung, y: (y2 - y1) / lung }],
       [x2, y2, { x: (x1 - x2) / lung, y: (y1 - y2) / lung }],
@@ -336,6 +343,18 @@ export function versoDegliArchi(
 
     const eCcw = errore("ccw");
     const eCw = errore("cw");
+    /*
+     * When the two sides fit the same — no track at either end, or a joint that
+     * is tangent whichever way you go round — the shorter way wins. A trace
+     * that turns a corner takes the corner; going round three quarters of a
+     * circle to arrive at the same place is not something anybody draws.
+     */
+    const ccw = fine > da ? fine - da : fine + 360 - da;
+    if (Math.abs(eCcw - eCw) < 1) {
+      // a tie says nothing about the side, so the shorter way decides
+      out.set(i, { senso: ccw <= 180 ? "ccw" : "cw", erroreGradi: 0 });
+      continue;
+    }
     const senso = eCw < eCcw ? "cw" : "ccw";
     const erroreGradi = Math.min(eCcw, eCw);
     if (erroreGradi > 30) continue; // nothing here understood it: leave it be
