@@ -1,4 +1,5 @@
-import { requireProjectAccess } from "@/lib/acl";
+import { currentViewer, projectAccess, requireProjectAccess } from "@/lib/acl";
+import { resolveApiToken } from "@/lib/api-tokens";
 import {
   applicaClassi,
   applicaDoveCiSta,
@@ -20,6 +21,20 @@ import { getCompileCache, getProject, writeProjectFile } from "@/lib/project-sto
 export const runtime = "nodejs";
 
 /**
+ * Il browser manda una sessione, la riga di comando manda un token personale
+ * (pcbs_..., lo stesso dell'import e del server MCP). Due porte, una sola
+ * implementazione dietro: una classe cambiata da terminale deve essere la
+ * stessa cosa di una cambiata dal pannello.
+ */
+async function chiPuoScrivere(req: Request, projectId: string): Promise<boolean> {
+  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!bearer) return (await requireProjectAccess(projectId, "edit")).ok;
+  const viewer = await resolveApiToken(bearer);
+  if (!viewer) return false;
+  return (await projectAccess(projectId, viewer)) === "edit";
+}
+
+/**
  * LE CLASSI DEL RAME di un progetto: quali misure usa, e cambiarne una in blocco.
  *
  * Sta qui e non nelle regole di fabbricazione perche' sono due cose diverse e
@@ -33,8 +48,11 @@ export const runtime = "nodejs";
 
 export async function GET(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "default";
-  const { ok } = await requireProjectAccess(projectId, "view");
-  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  const viewer = bearer ? await resolveApiToken(bearer) : await currentViewer();
+  if ((await projectAccess(projectId, viewer)) === "none") {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
   const fsMap = await getProject(projectId);
   const edits = parseManualEdits(fsMap[MANUAL_EDITS_PATH]);
   return Response.json({
@@ -69,8 +87,9 @@ export async function POST(req: Request): Promise<Response> {
     typeof body.projectId === "string" && body.projectId.length <= 120
       ? body.projectId
       : "default";
-  const { ok } = await requireProjectAccess(projectId, "edit");
-  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  if (!(await chiPuoScrivere(req, projectId))) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
 
   const via: CambioVia[] = [];
   for (const x of Array.isArray(body.via) ? body.via : []) {
