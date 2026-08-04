@@ -598,10 +598,18 @@ export function rameNativo(
    */
   /** the nets of each component's pads: a fill belongs to a component, and so do they */
   const retiDelComponente = new Map<number, string[]>();
+  /** and WHERE those pads are: un ponte va da un pad all'altro, non a caso */
+  const padDelComponente = new Map<number, Array<{ x: number; y: number }>>();
   for (const p of arr(pcb.pads)) {
     const i = num(p.componentIndex);
+    if (i === null) continue;
+    const x = num(p.x);
+    const y = num(p.y);
+    if (x !== null && y !== null) {
+      padDelComponente.set(i, [...(padDelComponente.get(i) ?? []), { x, y }]);
+    }
     const n = rete(p);
-    if (i === null || !n) continue;
+    if (!n) continue;
     const lista = retiDelComponente.get(i) ?? [];
     if (!lista.includes(n)) lista.push(n);
     retiDelComponente.set(i, lista);
@@ -628,12 +636,35 @@ export function rameNativo(
     const spessore = Math.min(larghezza, altezza) * MIL;
     const cx = (x1 + x2) / 2;
     const cy = (y1 + y2) / 2;
-    const capoA = orizzontale
-      ? t(Math.min(x1, x2) + Math.min(larghezza, altezza) / 2, cy)
-      : t(cx, Math.min(y1, y2) + Math.min(larghezza, altezza) / 2);
-    const capoB = orizzontale
-      ? t(Math.max(x1, x2) - Math.min(larghezza, altezza) / 2, cy)
-      : t(cx, Math.max(y1, y2) - Math.min(larghezza, altezza) / 2);
+    /*
+     * IL PONTE VA DA UN PAD ALL'ALTRO, e non e' un dettaglio di stile.
+     *
+     * Un fill in Altium ha una rotazione, e questo parser non la espone: da' i
+     * quattro angoli come se la lastra fosse dritta. Su un net tie girato di
+     * 45 gradi — e sotto un microcontrollore lo sono tutti, perche' il ventaglio
+     * dei pin e' a 45 — il risultato e' una barretta ORIZZONTALE in mezzo a un
+     * disegno tutto in diagonale: la lunghezza e la larghezza sono giuste,
+     * l'inclinazione no, e i due pad che dovrebbe unire restano fuori.
+     *
+     * La rotazione non serve indovinarla: un net tie e' il rame fra i suoi DUE
+     * pad, e quei due pad il file ce li ha. Si va da uno all'altro. Quando i pad
+     * non sono due (una lastra che non e' un ponte) si torna al rettangolo
+     * dritto, che per una lastra dritta e' esatto.
+     */
+    const suoiPad = padDelComponente.get(num(f.componentIndex) ?? -1) ?? [];
+    let capoA: { x: number; y: number };
+    let capoB: { x: number; y: number };
+    if (suoiPad.length === 2) {
+      capoA = t(suoiPad[0].x, suoiPad[0].y);
+      capoB = t(suoiPad[1].x, suoiPad[1].y);
+    } else {
+      capoA = orizzontale
+        ? t(Math.min(x1, x2) + Math.min(larghezza, altezza) / 2, cy)
+        : t(cx, Math.min(y1, y2) + Math.min(larghezza, altezza) / 2);
+      capoB = orizzontale
+        ? t(Math.max(x1, x2) - Math.min(larghezza, altezza) / 2, cy)
+        : t(cx, Math.max(y1, y2) - Math.min(larghezza, altezza) / 2);
+    }
 
     /*
      * The nets it joins: the ones of the pads of the component the fill belongs
