@@ -2,6 +2,11 @@ import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
 import { runDrcChecks, type DrcViolation } from "./drc";
+import {
+  controllaLunghezze,
+  leggiGruppi,
+  LUNGHEZZE_PATH,
+} from "./lunghezze";
 import { runPrcChecks, type PrcViolation } from "./prc";
 import { emptyErcReport, runErcChecks, type ErcReport } from "./erc";
 import {
@@ -1782,6 +1787,25 @@ function summarize(
   const projectRules = resolveDesignRules(sources);
   const drcViolations = runDrcChecks(circuitJson, projectRules.rules);
   const prcViolations = runPrcChecks(circuitJson);
+  /*
+   * LE LUNGHEZZE APPAIATE, quando il progetto ne porta i gruppi: un bus arriva
+   * in fase solo se i suoi fili sono lunghi uguale, e il file lo scrive. E' il
+   * primo controllo che guarda se la scheda FUNZIONA e non se si fabbrica, per
+   * questo sta con gli altri elettrici. Vedi lunghezze.ts, comprese le due
+   * attenzioni: i pezzi di un net tie sono un filo solo, e la nostra misura e'
+   * il rame della rete, non il percorso fra due pin.
+   */
+  for (const e of controllaLunghezze(circuitJson, leggiGruppi(sources[LUNGHEZZE_PATH]))) {
+    if (e.dentro) continue;
+    const elenco = e.misure
+      .map((m) => `${m.net} ${m.lunghezzaMm}mm`)
+      .join(", ");
+    prcViolations.push({
+      rule: "matched_length",
+      severity: "warn",
+      message: `il gruppo ${e.gruppo} vuole le reti lunghe uguale entro ${e.tolleranzaMm}mm e ne ballano ${e.scartoMm}mm (misurato sul rame di ogni rete, non sul percorso fra i due pin come fa Altium): ${elenco}`,
+    });
+  }
   // multi-ruleset: the main DRC already covers the ruleset CHOSEN by the
   // project, which is no longer necessarily the first in the list
   const fabClasses = FAB_RULESETS.map((rs) => {

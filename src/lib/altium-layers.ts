@@ -1413,6 +1413,56 @@ export function footprintDaNativo(
 }
 
 /**
+ * I GRUPPI DI RETI CHE DEVONO ESSERE LUNGHE UGUALE, come li dichiara il file.
+ *
+ * Altium li scrive in due pezzi: le CLASSI DI RETE (`kindName: "net"`), che sono
+ * elenchi di nomi, e le regole `MatchedLengths`, che puntano a una classe e
+ * dicono la tolleranza. BIRDY_BS ne ha sette, tutte con 47.2441 mil (1.2mm), su
+ * cinque classi: RAM_DATA, RAM_DATA_QUAD, MIC_DATA, SD_DATA, SD_DATA_NF.
+ *
+ * Le regole che puntano a una classe di xSignal invece che di rete restano fuori:
+ * un xSignal e' un percorso fra due pin, non un elenco di reti, e senza quei
+ * percorsi non c'e' niente da confrontare. Contarle come se fossero classi di
+ * rete darebbe gruppi vuoti che sembrano controlli passati.
+ */
+export function gruppiDiLunghezzaNativi(
+  pcb: Record<string, unknown>,
+): Array<{ nome: string; tolleranzaMm: number; reti: string[] }> {
+  const classi = new Map<string, string[]>();
+  for (const c of arr(pcb.classes)) {
+    if (String(c.kindName ?? "") !== "net") continue;
+    const membri = Array.isArray(c.members) ? (c.members as unknown[]).map(String) : [];
+    if (membri.length > 0) classi.set(String(c.name ?? ""), membri);
+  }
+  /** "47.2441mil" o "1.2mm" come li scrive il file */
+  const misura = (v: unknown): number | undefined => {
+    const t = String(v ?? "").trim();
+    const m = /^(-?[\d.]+)\s*(mil|mm)$/i.exec(t);
+    if (!m) return undefined;
+    const n = Number(m[1]);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return m[2].toLowerCase() === "mil" ? r4(n * MIL) : r4(n);
+  };
+
+  const out: Array<{ nome: string; tolleranzaMm: number; reti: string[] }> = [];
+  const visti = new Set<string>();
+  for (const r of arr(pcb.rules)) {
+    if (String(r.ruleKind ?? "") !== "MatchedLengths" || r.enabled === false) continue;
+    const s1 = (r.scope1 ?? {}) as Record<string, unknown>;
+    if (String(s1.predicate ?? "") !== "InNetClass") continue;
+    const nome = String((s1.arguments as unknown[] | undefined)?.[0] ?? "");
+    const reti = classi.get(nome);
+    if (!nome || !reti || visti.has(nome)) continue;
+    const vincoli = (r.constraints ?? {}) as Record<string, unknown>;
+    const toll = misura(vincoli.TOLERANCE);
+    if (toll === undefined) continue;
+    visti.add(nome);
+    out.push({ nome, tolleranzaMm: toll, reti });
+  }
+  return out;
+}
+
+/**
  * HOW FAR THE POURS OF THIS BOARD KEEP FROM THE COPPER OF OTHER NETS, MEASURED.
  *
  * It is not in the rules. In Altium the distance a polygon pour holds is written

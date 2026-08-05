@@ -75,7 +75,12 @@ function touchesSamePour(
 }
 
 export interface PrcViolation {
-  rule: "decoupling_distance" | "pour_island" | "return_via_connector" | "power_trace_width";
+  rule:
+    | "decoupling_distance"
+    | "pour_island"
+    | "return_via_connector"
+    | "power_trace_width"
+    | "matched_length";
   severity: "warn" | "fail";
   message: string;
   x?: number;

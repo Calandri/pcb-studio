@@ -8,6 +8,7 @@ import {
   type El,
 } from "./circuit-json-to-project";
 import { buildProjectRules, DESIGN_RULES_PATH, serializeDesignRules } from "./design-rules";
+import { LUNGHEZZE_PATH, serializzaGruppi } from "./lunghezze";
 import type { Layer, ManualRoute, ManualRoutePoint } from "./manual-routes";
 import { modelli3dNativi } from "./altium-3d";
 import { schematicaNativa, type FoglioAltium } from "./altium-schematic";
@@ -22,6 +23,7 @@ import {
   pianiNativi,
   rameNativo,
   distanzaColataMisurata,
+  gruppiDiLunghezzaNativi,
   regoleNative,
   serigrafiaNativa,
   stratiPredefiniti,
@@ -997,6 +999,19 @@ export async function importAltiumProject(
    * has to be checked against six mil, not against whatever preset the app
    * happens to default to.
    */
+  /*
+   * I GRUPPI DI LUNGHEZZA APPAIATA, come li dichiara il file: viaggiano col
+   * progetto come le regole di fabbricazione, e la compilazione li misura.
+   */
+  const gruppiLunghezza = nativo?.gruppiLunghezza ?? [];
+  if (gruppiLunghezza.length > 0) {
+    fsMap[LUNGHEZZE_PATH] = serializzaGruppi(gruppiLunghezza);
+    warnings.push(
+      `${gruppiLunghezza.length} gruppi di reti che il file vuole lunghe uguale: ${gruppiLunghezza
+        .map((g) => `${g.nome} (${g.reti.length} reti, tolleranza ${g.tolleranzaMm}mm)`)
+        .join(", ")}`,
+    );
+  }
   if (nativo?.regole) {
     const { ristrette, planeClearanceMm, ...limiti } = nativo.regole;
     /*
@@ -1229,6 +1244,8 @@ function costruisciDaNativo(
   strati: number;
   /** the fabrication limits the file declares */
   regole: ReturnType<typeof regoleNative>;
+  /** i gruppi di reti che il file vuole lunghe uguale, con la loro tolleranza */
+  gruppiLunghezza: ReturnType<typeof gruppiDiLunghezzaNativi>;
   /** the real face of each pad: the flattened model puts every one of them on top */
   facceDeiPad: Map<string, Layer>;
   /** the solder mask opening of each pad, from the file */
@@ -1437,6 +1454,7 @@ function costruisciDaNativo(
     piani,
     strati: numeroStrati,
     regole,
+    gruppiLunghezza: gruppiDiLunghezzaNativi(pcb),
     facceDeiPad: reti.facce,
     marginiDeiPad: reti.margini,
     nomiDeiPad: reti.nomiPad,
