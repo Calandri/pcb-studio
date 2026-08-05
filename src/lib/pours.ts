@@ -373,6 +373,18 @@ export function padsOffPlane(
     if (el.type !== "pcb_smtpad") continue;
     const net = served.get(String(el.pcb_port_id ?? ""));
     if (!net) continue;
+    /*
+     * UN PAD SENZA RAME NON SI CUCE.
+     *
+     * Un file puo' dichiarare un pad di dimensione zero: BIRDY_BS ne ha due, il
+     * pin 5 dei due microfoni, tondi e larghi zero. Non hanno rame, quindi non
+     * sono dentro nessun piano e nessuna via li tocca, e il controllo chiedeva
+     * una cucitura per una cosa che non esiste. Che il file li dichiari cosi' e'
+     * un fatto della scheda di partenza e si dice all'import, non qui.
+     */
+    const misura =
+      (num(el.width) ?? 0) + (num(el.height) ?? 0) + (num(el.radius) ?? 0) * 2;
+    if (misura < 0.001) continue;
     let x = num(el.x);
     let y = num(el.y);
     let hw = (num(el.width) ?? (num(el.radius) ?? 0) * 2) / 2;

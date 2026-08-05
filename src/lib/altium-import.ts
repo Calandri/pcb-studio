@@ -1419,6 +1419,11 @@ function costruisciDaNativo(
       `${coperte} regioni di rame gia' coperte da una colata piu' grande della loro rete: non riscritte`,
     );
   }
+  if (rame.padSenzaRame > 0) {
+    warnings.push(
+      `${rame.padSenzaRame} pad che il file dichiara larghi zero: lo schema li da' collegati e il disegno non gli mette rame, quindi sulla scheda vera quel pin non tocca niente. Importati come sono, senza inventargli una misura`,
+    );
+  }
   if (isolette.length > 0) {
     warnings.push(
       `${isolette.length} isolette di rame dentro le aperture dei piani, prese con la forma che hanno (${isolette.reduce((n, i) => n + i.agganci, 0)} fra pad e via): il piano viene scavato intorno a loro`,
@@ -1444,6 +1449,7 @@ function costruisciDaNativo(
       rame_via: rame.via,
       rame_senza_rete: rame.senzaRete,
       rame_schegge_scartate: rame.scartate,
+      pad_senza_rame: rame.padSenzaRame,
       serigrafia_elementi: serigrafia.length,
       piani_importati: piani.length,
       reti_dai_pad: reti.reti,

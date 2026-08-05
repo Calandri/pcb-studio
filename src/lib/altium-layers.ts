@@ -372,6 +372,8 @@ export interface RameNativo {
   senzaRete: number;
   /** zero length slivers: not copper, leftovers of edits */
   scartate: number;
+  /** pad che il file dichiara larghi zero: rame che non c'e' */
+  padSenzaRame: number;
   /** filled rectangles of copper: on this board they are the net tie bridges */
   riempimenti: number;
   /**
@@ -411,6 +413,7 @@ export function rameNativo(
     via: 0,
     senzaRete: 0,
     scartate: 0,
+    padSenzaRame: 0,
     riempimenti: 0,
     ponti: [],
   };
@@ -613,6 +616,19 @@ export function rameNativo(
     const lista = retiDelComponente.get(i) ?? [];
     if (!lista.includes(n)) lista.push(n);
     retiDelComponente.set(i, lista);
+  }
+
+  /*
+   * I PAD LARGHI ZERO. Un file puo' dichiararli, e sono rame che non c'e':
+   * BIRDY_BS ne ha due, il pin 5 dei due microfoni, tondi e di dimensione zero
+   * sulla massa. Lo schema dice che quel pin e' collegato, il disegno non gli
+   * da' un millimetro di rame, e su una scheda vera quel pin non tocca niente.
+   * Non e' una cosa che possiamo aggiustare noi: si conta e si dice.
+   */
+  for (const p of arr(pcb.pads)) {
+    const w = num(p.sizeTopX) ?? 0;
+    const h = num(p.sizeTopY) ?? 0;
+    if (w === 0 && h === 0 && num(p.holeDiameter) === 0) out.padSenzaRame++;
   }
 
   for (const f of arr(pcb.fills)) {
