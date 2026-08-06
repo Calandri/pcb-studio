@@ -50,6 +50,8 @@ interface El {
 interface SummaryLike {
   errors?: Array<{ type?: string; message: string }>;
   drcViolations?: Array<{ rule?: string; message: string }>;
+  /** i controlli elettrici: "funziona", che e' un'altra domanda da "si fabbrica" */
+  prcViolations?: Array<{ rule?: string; message: string }>;
   unroutedConnections?: string[];
   components?: Array<{ name: string }>;
 }
@@ -99,6 +101,20 @@ export function buildBoardReport(
   const edgeRules = drc.filter((v) => /edge/i.test(v.rule ?? v.message));
   const escapeRules = drc.filter((v) => /pin_escape/i.test(v.rule ?? v.message));
   const overlaps = errors.filter((e) => /overlap|outside/i.test(e.type ?? e.message));
+  /*
+   * I CONTROLLI ELETTRICI, che nel pannello non c'erano.
+   *
+   * Il riquadro mostrava solo il DRC: se la scheda si riesce a fabbricare. Ma
+   * "si fabbrica" e "funziona" sono due domande diverse, e la seconda finiva
+   * solo nel sommario che legge l'agente — quindi le lunghezze appaiate, i
+   * ritorni di massa ai connettori e il rame morto l'utente non li vedeva. Le
+   * lunghezze stanno in una riga loro perche' sono l'unica cosa qui dentro che
+   * l'occhio non puo' controllare: due piste identiche a vedersi possono
+   * differire di cinque millimetri.
+   */
+  const prc = summary?.prcViolations ?? [];
+  const lunghezze = prc.filter((v) => /matched_length/i.test(v.rule ?? ""));
+  const elettrici = prc.filter((v) => !/matched_length/i.test(v.rule ?? ""));
 
   const row = (
     id: string,
@@ -127,6 +143,22 @@ export function buildBoardReport(
       "Uscita dai pin",
       escapeRules,
       "Ogni pista esce dal pad dritta, come da regola di casa.",
+      "interference",
+      "warn",
+    ),
+    row(
+      "lunghezze",
+      "Lunghezze appaiate",
+      lunghezze,
+      "I bus che devono arrivare in fase sono lunghi uguale, entro la tolleranza del progetto.",
+      "copper",
+      "warn",
+    ),
+    row(
+      "elettrici",
+      "Controlli elettrici",
+      elettrici,
+      "Disaccoppiamenti vicini, ritorni di massa ai connettori, niente rame morto.",
       "interference",
       "warn",
     ),
