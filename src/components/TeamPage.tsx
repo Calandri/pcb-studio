@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card, SettingsShell } from "./SettingsShell";
 import { Btn, Chip, Field, Select } from "./ui";
+import { postJson } from "./post-json";
 
 type Share = { userId: string; email: string; role: string };
 type Visibility = "private" | "org" | "link";
@@ -70,18 +71,13 @@ export function TeamPage({
   const post = useCallback(async (url: string, body: Record<string, unknown>) => {
     setBusy(true);
     setNote(null);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const d = await res.json().catch(() => ({}));
-    setBusy(false);
-    if (!res.ok) {
-      setNote(d.error ?? `Errore ${res.status}`);
-      return null;
+    try {
+      const { data, error } = await postJson(url, body);
+      if (error) setNote(error);
+      return data;
+    } finally {
+      setBusy(false);
     }
-    return d;
   }, []);
 
   return (

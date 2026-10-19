@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { InspectPanel } from "./InspectPanel";
 import { Btn, Chip, EmptyState, Field, SectionLabel, Select } from "./ui";
 import { LogoMark } from "./Logo";
+import { postJson } from "./post-json";
 
 export type SectionKey = "org" | "library" | "inspect" | "datasheets" | "team";
 
@@ -194,18 +195,13 @@ export function Sidebar({
   const post = useCallback(async (url: string, body: Record<string, unknown>) => {
     setBusy(true);
     setNote(null);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const d = await res.json().catch(() => ({}));
-    setBusy(false);
-    if (!res.ok) {
-      setNote(d.error ?? `Errore ${res.status}`);
-      return null;
+    try {
+      const { data, error } = await postJson(url, body);
+      if (error) setNote(error);
+      return data;
+    } finally {
+      setBusy(false);
     }
-    return d;
   }, []);
 
   const counts: Record<SectionKey, number | undefined> = {
@@ -586,7 +582,11 @@ export function Sidebar({
                   <p className="text-[11px] font-semibold text-brand-strong">
                     Copialo ora: non verrà più mostrato.
                   </p>
-                  <code className="block break-all rounded bg-surface px-2 py-1.5 font-mono text-[10px] text-text">
+                  {/* the token in clear: covered in the feedback screenshot, see feedback/redact.ts */}
+                  <code
+                    data-feedback-redact
+                    className="block break-all rounded bg-surface px-2 py-1.5 font-mono text-[10px] text-text"
+                  >
                     {freshToken}
                   </code>
                   <Btn size="sm" onClick={() => setFreshToken(null)}>

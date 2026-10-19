@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Btn, Chip, EmptyState, Field, Select } from "./ui";
+import { postJson } from "./post-json";
 
 /* Admin console ("ORG and users" redesign, Niccolo's mockup):
    PLATFORM sidebar with 5 sections + tables. Same palette as the Studio. */
@@ -76,18 +77,13 @@ export function OrgConsole({
   const post = useCallback(async (url: string, body: Record<string, unknown>) => {
     setBusy(true);
     setNote(null);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const d = await res.json().catch(() => ({}));
-    setBusy(false);
-    if (!res.ok) {
-      setNote(d.error ?? `Errore ${res.status}`);
-      return null;
+    try {
+      const { data, error } = await postJson(url, body);
+      if (error) setNote(error);
+      return data;
+    } finally {
+      setBusy(false);
     }
-    return d;
   }, []);
 
   const refreshOrgs = useCallback(async () => {
@@ -626,7 +622,8 @@ function UsersSection({
           {freshToken && (
             <div className="mb-2 space-y-1.5 rounded-lg bg-brand-wash p-2.5">
               <p className="text-[10px] font-semibold text-brand-strong">Copialo ora: non verrà più mostrato.</p>
-              <code className="block break-all rounded bg-surface px-2 py-1 font-mono text-[10px]">{freshToken}</code>
+              {/* the token in clear: covered in the feedback screenshot, see feedback/redact.ts */}
+              <code data-feedback-redact className="block break-all rounded bg-surface px-2 py-1 font-mono text-[10px]">{freshToken}</code>
               <Btn size="sm" onClick={() => setFreshToken(null)}>Ho copiato</Btn>
             </div>
           )}

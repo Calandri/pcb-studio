@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card, SettingsShell } from "./SettingsShell";
 import { Btn, Chip, EmptyState, Field, Select } from "./ui";
+import { postJson } from "./post-json";
 
 type Project = { id: string; access?: string; visibility?: string; updated_at?: string };
 type Member = { userId: string; email: string; role: string };
@@ -100,18 +101,13 @@ export function OrgPage({
   const post = useCallback(async (url: string, body: Record<string, unknown>) => {
     setBusy(true);
     setNote(null);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const d = await res.json().catch(() => ({}));
-    setBusy(false);
-    if (!res.ok) {
-      setNote(d.error ?? `Errore ${res.status}`);
-      return null;
+    try {
+      const { data, error } = await postJson(url, body);
+      if (error) setNote(error);
+      return data;
+    } finally {
+      setBusy(false);
     }
-    return d;
   }, []);
 
   const orgName = orgs[0]?.name ?? "Organizzazione";
@@ -347,7 +343,11 @@ export function OrgPage({
               <p className="text-xs font-semibold text-brand-strong">
                 Copialo ora: non verrà più mostrato.
               </p>
-              <code className="block break-all rounded-lg bg-surface px-3 py-2 font-mono text-[11px] text-text">
+              {/* the token in clear: covered in the feedback screenshot, see feedback/redact.ts */}
+              <code
+                data-feedback-redact
+                className="block break-all rounded-lg bg-surface px-3 py-2 font-mono text-[11px] text-text"
+              >
                 {freshToken}
               </code>
               <Btn size="sm" onClick={() => setFreshToken(null)}>

@@ -1,6 +1,12 @@
 "use client";
 
-import { snapdom } from "@zumer/snapdom";
+import { snapdom, type SnapdomPlugin } from "@zumer/snapdom";
+import {
+  encodeUnderLimit,
+  isRedacted,
+  redactionPlaceholder,
+  visibleRedactedNodes,
+} from "./redact";
 
 /**
  * Page screenshot for the feedback widget.
@@ -14,6 +20,8 @@ import { snapdom } from "@zumer/snapdom";
  *    computed px for the duration of the capture.
  *  - the widget's own UI must not photobomb: anything under
  *    [data-feedback-widget] is detached and restored after.
+ *  - secrets (tokens, keys, password fields) are replaced by a placeholder in
+ *    the clone, see redact.ts.
  */
 
 export interface SelectionRect {
@@ -35,73 +43,107 @@ export function viewportRect(): SelectionRect {
 
 export async function captureScreenshot(
   rect: SelectionRect,
-  opts?: { maxWidth?: number; quality?: number },
+  opts?: { maxWidth?: number; quality?: number; maxChars?: number },
 ): Promise<string> {
   const maxWidth = opts?.maxWidth ?? 1920;
   const quality = opts?.quality ?? 0.85;
-
-  // 1. snapshot canvases synchronously (WebGL buffers vanish after a flush)
-  const canvasReplacements = swapCanvasesForImages();
+  const maxChars = opts?.maxChars ?? Infinity;
 
   const savedScrollX = window.scrollX;
   const savedScrollY = window.scrollY;
-  const frozenVh = freezeViewportRelativeHeights();
-
-  const internalDpr = window.devicePixelRatio || 1;
-  const docElForScale = document.documentElement;
-  const renderW = Math.max(docElForScale.scrollWidth, docElForScale.clientWidth);
-  const renderH = Math.max(docElForScale.scrollHeight, docElForScale.clientHeight);
-  const dpr = Math.min(
-    internalDpr,
-    2,
-    Math.sqrt(MAX_RENDER_AREA / (renderW * renderH)),
-    MAX_RENDER_DIM / Math.max(renderW, renderH),
-  );
-
-  if (savedScrollX || savedScrollY) {
-    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
-    await new Promise<void>((r) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => r())),
-    );
-  }
+  /*
+   * Every change to the live page happens INSIDE the try. The canvas swap and
+   * the vh freeze used to run before it: when the second one threw (a style
+   * sheet that refuses to be read, a selector the browser rejects) the first
+   * was never undone, and the page stayed with its canvases replaced by
+   * pictures of themselves.
+   */
+  let canvasReplacements: { restore: () => void } | null = null;
+  let frozenVh: { restore: () => void } | null = null;
+  let hidden: { restore: () => void } | null = null;
+  let scrolled = false;
 
   try {
-    const hidden = hideWidgetElements();
-    try {
-      const result = await snapdom(document.documentElement, {
-        scale: dpr / internalDpr,
-        embedFonts: true,
-        fast: true,
-        backgroundColor: "#0B100F",
-      });
-      const fullCanvas = await result.toCanvas();
+    // 1. snapshot canvases synchronously (WebGL buffers vanish after a flush)
+    canvasReplacements = swapCanvasesForImages();
+    frozenVh = freezeViewportRelativeHeights();
 
-      const docEl = document.documentElement;
-      const docW = Math.max(docEl.scrollWidth, docEl.clientWidth);
-      const docH = Math.max(docEl.scrollHeight, docEl.clientHeight);
-      const scaleX = fullCanvas.width / docW;
-      const scaleY = fullCanvas.height / docH;
+    const internalDpr = window.devicePixelRatio || 1;
+    const docElForScale = document.documentElement;
+    const renderW = Math.max(docElForScale.scrollWidth, docElForScale.clientWidth);
+    const renderH = Math.max(docElForScale.scrollHeight, docElForScale.clientHeight);
+    const dpr = Math.min(
+      internalDpr,
+      2,
+      Math.sqrt(MAX_RENDER_AREA / (renderW * renderH)),
+      MAX_RENDER_DIM / Math.max(renderW, renderH),
+    );
 
-      const cropX = Math.max(0, Math.round((rect.x + savedScrollX) * scaleX));
-      const cropY = Math.max(0, Math.round((rect.y + savedScrollY) * scaleY));
-      const cropW = Math.max(1, Math.min(Math.round(rect.width * scaleX), fullCanvas.width - cropX));
-      const cropH = Math.max(1, Math.min(Math.round(rect.height * scaleY), fullCanvas.height - cropY));
-
-      const out = document.createElement("canvas");
-      out.width = cropW;
-      out.height = cropH;
-      const octx = out.getContext("2d");
-      if (!octx) throw new Error("no 2d context");
-      octx.drawImage(fullCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-      return canvasToBase64(out, maxWidth, quality);
-    } finally {
-      hidden.restore();
-    }
-  } finally {
-    canvasReplacements.restore();
-    frozenVh.restore();
     if (savedScrollX || savedScrollY) {
+      scrolled = true;
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      await new Promise<void>((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r())),
+      );
+    }
+
+    hidden = hideWidgetElements();
+
+    // secrets become a placeholder in the clone; every one must be accounted for
+    const expected = new Set<Element>(visibleRedactedNodes(document.documentElement));
+    const redacted = new Set<Element>();
+    const redactPlugin: SnapdomPlugin = {
+      name: "pcb-studio-redact",
+      resolveNode(node) {
+        if (!isRedacted(node)) return undefined;
+        redacted.add(node);
+        return redactionPlaceholder(document);
+      },
+    };
+
+    const result = await snapdom(document.documentElement, {
+      scale: dpr / internalDpr,
+      embedFonts: true,
+      fast: true,
+      backgroundColor: "#0B100F",
+      plugins: [redactPlugin],
+    });
+    for (const node of expected) {
+      if (!redacted.has(node)) {
+        throw new Error("non sono riuscito a nascondere un dato riservato: screenshot non allegato");
+      }
+    }
+    const fullCanvas = await result.toCanvas();
+
+    const docEl = document.documentElement;
+    const docW = Math.max(docEl.scrollWidth, docEl.clientWidth);
+    const docH = Math.max(docEl.scrollHeight, docEl.clientHeight);
+    const scaleX = fullCanvas.width / docW;
+    const scaleY = fullCanvas.height / docH;
+
+    const cropX = Math.max(0, Math.round((rect.x + savedScrollX) * scaleX));
+    const cropY = Math.max(0, Math.round((rect.y + savedScrollY) * scaleY));
+    const cropW = Math.max(1, Math.min(Math.round(rect.width * scaleX), fullCanvas.width - cropX));
+    const cropH = Math.max(1, Math.min(Math.round(rect.height * scaleY), fullCanvas.height - cropY));
+
+    const out = document.createElement("canvas");
+    out.width = cropW;
+    out.height = cropH;
+    const octx = out.getContext("2d");
+    if (!octx) throw new Error("no 2d context");
+    octx.drawImage(fullCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+    return canvasToBase64(out, maxWidth, quality, maxChars);
+  } finally {
+    // each restore on its own: one that fails must not keep the others from running
+    for (const undo of [hidden, canvasReplacements, frozenVh]) {
+      try {
+        undo?.restore();
+      } catch (err) {
+        console.warn("ripristino dopo lo screenshot non riuscito:", err);
+      }
+    }
+    if (scrolled) {
       window.scrollTo({ top: savedScrollY, left: savedScrollX, behavior: "instant" });
     }
   }
@@ -248,14 +290,22 @@ function hideWidgetElements(): { restore: () => void } {
   };
 }
 
-function canvasToBase64(canvas: HTMLCanvasElement, maxWidth: number, quality: number): string {
-  if (canvas.width > maxWidth) {
-    const ratio = maxWidth / canvas.width;
-    const scaled = document.createElement("canvas");
-    scaled.width = maxWidth;
-    scaled.height = Math.round(canvas.height * ratio);
-    scaled.getContext("2d")!.drawImage(canvas, 0, 0, scaled.width, scaled.height);
-    return scaled.toDataURL("image/jpeg", quality).replace(/^data:image\/jpeg;base64,/, "");
-  }
-  return canvas.toDataURL("image/jpeg", quality).replace(/^data:image\/jpeg;base64,/, "");
+function canvasToBase64(
+  canvas: HTMLCanvasElement,
+  maxWidth: number,
+  quality: number,
+  maxChars: number,
+): string {
+  const encode = (width: number, q: number): string => {
+    let source = canvas;
+    if (width < canvas.width) {
+      const scaled = document.createElement("canvas");
+      scaled.width = width;
+      scaled.height = Math.max(1, Math.round((canvas.height * width) / canvas.width));
+      scaled.getContext("2d")!.drawImage(canvas, 0, 0, scaled.width, scaled.height);
+      source = scaled;
+    }
+    return source.toDataURL("image/jpeg", q).replace(/^data:image\/jpeg;base64,/, "");
+  };
+  return encodeUnderLimit(encode, Math.min(canvas.width, maxWidth), quality, maxChars);
 }

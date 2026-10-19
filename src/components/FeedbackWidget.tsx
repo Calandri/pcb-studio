@@ -3,6 +3,13 @@
 import { useState } from "react";
 import { AreaSelector, type SelectorResult } from "./feedback/selector";
 import { captureScreenshot, viewportRect } from "./feedback/capture";
+import { pageShowsSecrets, screenshotByDefault } from "./feedback/redact";
+
+/*
+ * The server refuses a screenshot over 600,000 base64 characters: the capture
+ * aims a little lower, so the margin absorbs the JSON around it.
+ */
+const SCREENSHOT_MAX_CHARS = 550_000;
 
 /**
  * The feedback widget: a floating button that opens a small form. What people
@@ -28,6 +35,10 @@ export function FeedbackWidget() {
   const [website, setWebsite] = useState(""); // honeypot
   const [selection, setSelection] = useState<SelectorResult | null>(null);
   const [attachShot, setAttachShot] = useState(true);
+  /** the screenshot was asked for and did not make it: said, not hidden */
+  const [shotLost, setShotLost] = useState<string | null>(null);
+  /** the page handles keys or tokens: the screenshot started unchecked */
+  const [sensitive, setSensitive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +55,7 @@ export function FeedbackWidget() {
   const submit = async () => {
     setBusy(true);
     setError(null);
+    setShotLost(null);
     try {
       let screenshotBase64: string | undefined;
       if (attachShot) {
@@ -54,9 +66,11 @@ export function FeedbackWidget() {
           screenshotBase64 = await captureScreenshot(selection?.rect ?? viewportRect(), {
             maxWidth: 1600,
             quality: 0.8,
+            maxChars: SCREENSHOT_MAX_CHARS,
           });
-        } catch {
+        } catch (err) {
           screenshotBase64 = undefined; // la segnalazione vale anche senza
+          setShotLost(err instanceof Error ? err.message : String(err));
         } finally {
           setCapturing(false);
         }
@@ -68,9 +82,10 @@ export function FeedbackWidget() {
           kind,
           title,
           body,
-          page: window.location.pathname + window.location.search,
-          pageTitle: document.title,
-          userAgent: navigator.userAgent,
+          // tagliati ai limiti del server: un user agent lungo bocciava tutto il messaggio
+          page: (window.location.pathname + window.location.search).slice(0, 120),
+          pageTitle: document.title.slice(0, 120),
+          userAgent: navigator.userAgent.slice(0, 160),
           viewport: { width: window.innerWidth, height: window.innerHeight },
           screenshotBase64,
           component: selection?.component ?? undefined,
@@ -90,6 +105,7 @@ export function FeedbackWidget() {
 
   const reset = () => {
     setDone(null);
+    setShotLost(null);
     setTitle("");
     setBody("");
     setSelection(null);
@@ -105,7 +121,22 @@ export function FeedbackWidget() {
     <div data-feedback-widget>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          /*
+           * Deciso a ogni apertura, non una volta sola: il widget vive nel
+           * layout e resta montato mentre si cambia pagina, e su /org un token
+           * appena generato e' in chiaro.
+           */
+          if (!open) {
+            const byDefault = screenshotByDefault(
+              window.location.pathname,
+              pageShowsSecrets(document),
+            );
+            setAttachShot(byDefault);
+            setSensitive(!byDefault);
+          }
+          setOpen(!open);
+        }}
         title="Lascia un feedback, un bug o una richiesta"
         className="fixed bottom-4 left-4 z-40 rounded-full border border-[#2C4C42] bg-[rgba(9,20,17,0.94)] px-3.5 py-2 text-[12px] font-semibold text-brand shadow-[0_10px_30px_-10px_rgba(0,0,0,0.7)] backdrop-blur transition-colors hover:border-brand"
       >
@@ -118,6 +149,11 @@ export function FeedbackWidget() {
             <div className="flex flex-col gap-2.5 py-2 text-center">
               <p className="text-[13px] font-semibold text-brand">Grazie!</p>
               <p className="text-[12px] leading-relaxed text-muted">
+                {shotLost && (
+                  <span className="mb-1 block text-[11px] text-faint">
+                    Inviato senza screenshot: {shotLost}.
+                  </span>
+                )}
                 {done.number > 0 ? (
                   <>
                     Il tuo messaggio e&apos; la issue{" "}
@@ -235,6 +271,12 @@ export function FeedbackWidget() {
                 />
                 allega screenshot{selection?.rect ? " dell'area" : " della pagina"}
               </label>
+              {sensitive && (
+                <p className="-mt-1.5 text-[10.5px] leading-snug text-faint">
+                  Questa pagina mostra chiavi o token: lo screenshot parte spento, e se lo
+                  alleghi i dati riservati vengono coperti.
+                </p>
+              )}
 
               {/* honeypot: invisibile agli umani, i bot lo compilano */}
               <input
