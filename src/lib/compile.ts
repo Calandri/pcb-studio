@@ -783,7 +783,9 @@ export async function compileProject(
         progress: 0.6,
       });
       const cj = await profiler.run("ri-sbroglio con le regole del fornitore", () =>
-        compileWithLocalRouter(fsMap, 5, projectRules.rules, routerSay),
+        // on the board without pours, like the first pass: with ground copper
+        // on every layer the solver does not close (see routingFsMap above)
+        compileWithLocalRouter(routingFsMap, 5, projectRules.rules, routerSay),
       );
       consider(cj, "local_retry");
       if (state.best) say({ step: "Seconda passata fatta", progress: 0.7, circuitJson: state.best.circuitJson });
@@ -820,7 +822,7 @@ export async function compileProject(
       });
       consider(
         await profiler.run(`ritentativo locale, sforzo ${efforts[i] ?? 10}`, () =>
-          compileWithLocalRouter(fsMap, efforts[i] ?? 10, projectRules.rules, routerSay),
+          compileWithLocalRouter(routingFsMap, efforts[i] ?? 10, projectRules.rules, routerSay),
         ),
         "local_retry",
       );
