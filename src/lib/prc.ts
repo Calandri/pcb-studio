@@ -130,6 +130,10 @@ interface Maps {
   pcbPortBySource: Map<string, El>;
   padByPcbPort: Map<string, El>;
   groupOfPad: (pad: El) => string | null;
+  /** source trace -> its connectivity group: a trace's net is its connection's */
+  groupOfSourceTrace: Map<string, string>;
+  /** net of the trace whose route passes through this point (vias), by "x,y" at 3 decimals */
+  netOfRoutePoint: Map<string, string>;
 }
 
 function buildMaps(circuitJson: El[]): Maps {
@@ -141,14 +145,35 @@ function buildMaps(circuitJson: El[]): Maps {
   }
   const groupNet = new Map<string, string>();
   const portGroup = new Map<string, string>();
+  const groupOfSourceTrace = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type !== "source_trace") continue;
     const key = String(el.subcircuit_connectivity_map_key ?? el.source_trace_id ?? "");
+    if (el.source_trace_id) groupOfSourceTrace.set(String(el.source_trace_id), key);
     const netIds = (el.connected_source_net_ids as string[] | undefined) ?? [];
     const netName = netIds.length ? netNameById.get(String(netIds[0])) : undefined;
     if (netName) groupNet.set(key, netName);
     for (const pid of (el.connected_source_port_ids as string[] | undefined) ?? []) {
       portGroup.set(pid, key);
+    }
+  }
+  /*
+   * The vias' net, from the trace that drops through them: a via sits on a
+   * point of its own route. It is the only reliable source — the nearest pad,
+   * which was used before, belongs to whoever happens to be close.
+   */
+  const netOfRoutePoint = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_trace") continue;
+    const group = groupOfSourceTrace.get(String(el.source_trace_id ?? "")) ??
+      String(el.subcircuit_connectivity_map_key ?? "");
+    const net = group ? groupNet.get(group) : undefined;
+    if (!net) continue;
+    for (const p of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
+      if (p.route_type !== "via") continue;
+      const x = num(p.x);
+      const y = num(p.y);
+      if (x !== null && y !== null) netOfRoutePoint.set(`${x.toFixed(3)},${y.toFixed(3)}`, net);
     }
   }
   const pcbPortBySource = new Map<string, El>();
@@ -174,7 +199,16 @@ function buildMaps(circuitJson: El[]): Maps {
     const sourcePortId = sourceByPcbPortId.get(String(pad.pcb_port_id ?? ""));
     return sourcePortId ? (portGroup.get(sourcePortId) ?? null) : null;
   };
-  return { netNameById, groupNet, portGroup, pcbPortBySource, padByPcbPort, groupOfPad };
+  return {
+    netNameById,
+    groupNet,
+    portGroup,
+    pcbPortBySource,
+    padByPcbPort,
+    groupOfPad,
+    groupOfSourceTrace,
+    netOfRoutePoint,
+  };
 }
 
 function padsOfComponent(circuitJson: El[], sourceComponentId: string, maps: Maps): El[] {
@@ -216,6 +250,32 @@ function pointInPolygon(x: number, y: number, points: Array<{ x: number; y: numb
   return inside;
 }
 
+/**
+ * A capacitance as a person writes it, in farads.
+ *
+ * "100nF" and "0.1uF" were understood, "100n" and "0.1u" — the way most
+ * schematics write them, without the F — were not: the capacitor came out with
+ * no value and the decoupling check skipped it, so a 100n cap two centimetres
+ * from its chip passed in silence. Also the RKM form ("4n7" = 4.7nF) and plain
+ * numbers in farads ("1e-7").
+ */
+export function parseFarads(text: string): number | null {
+  const t = String(text ?? "").trim();
+  if (!t) return null;
+  if (/^[\d.]+(e[+-]?\d+)?$/i.test(t)) {
+    const v = Number(t);
+    return Number.isFinite(v) ? v : null;
+  }
+  // not followed by another letter: "100nH" is an inductor, not 100 nanofarads
+  const m = /(\d+(?:\.\d+)?)\s*([pnuµμ])(\d*)\s*(?:farad|f)?(?![a-z])/i.exec(t);
+  if (!m) return null;
+  const mult: Record<string, number> = { p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6, "μ": 1e-6 };
+  // RKM: the digits after the unit letter are the decimals ("4n7")
+  const valore = m[3] ? Number(`${m[1]}.${m[3]}`) : Number(m[1]);
+  const f = valore * (mult[m[2].toLowerCase()] ?? mult[m[2]] ?? 0);
+  return Number.isFinite(f) && f > 0 ? f : null;
+}
+
 export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
   const violations: PrcViolation[] = [];
   const push = (v: PrcViolation) => {
@@ -228,15 +288,8 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
     if (comp.type !== "source_component") continue;
     if (String(comp.ftype ?? "") !== "simple_capacitor") continue;
     const valueText = String(comp.display_value ?? comp.capacitance ?? "");
-    // capacitance arrives as numeric farads ("1e-7") or with SI suffix ("100nF")
-    let farads: number | null = null;
-    const suffix = /([\d.]+)\s*(p|n|u|µ)f/i.exec(valueText);
-    if (suffix) {
-      const mult: Record<string, number> = { p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6 };
-      farads = Number(suffix[1]) * (mult[suffix[2].toLowerCase()] ?? 0);
-    } else if (/^[\d.eE+-]+$/.test(valueText)) {
-      farads = Number(valueText);
-    }
+    // the numeric field first, when the compiler wrote one; the text otherwise
+    const farads = num(comp.capacitance) ?? parseFarads(valueText);
     if (!farads || farads >= 1e-6) continue; // bulk cap, less placement-critical
     const fmtFarads = (f: number): string =>
       f >= 1e-6 ? `${f / 1e-6}uF` : f >= 1e-9 ? `${Math.round(f / 1e-9)}nF` : `${Math.round(f / 1e-12)}pF`;
@@ -389,22 +442,14 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
           const vy = num(via.y);
           if (vx === null || vy === null) return false;
           if (Math.hypot(vx - px, vy - py) > RETURN_VIA_MAX_MM) return false;
-          let viaNet = netNameOfPad(via, maps);
-          if (!viaNet) {
-            // core vias have no pcb_port_id: infer the net from the nearest pad
-            let bestD = 0.5;
-            for (const el of circuitJson) {
-              if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
-              const x2 = num(el.x);
-              const y2 = num(el.y);
-              if (x2 === null || y2 === null) continue;
-              const d = Math.hypot(x2 - vx, y2 - vy);
-              if (d < bestD) {
-                bestD = d;
-                viaNet = netNameOfPad(el, maps);
-              }
-            }
-          }
+          /*
+           * Core vias have no pcb_port_id: their net comes from the trace that
+           * drops through them. Not from the nearest pad, as it used to: a
+           * signal via half a millimetre from a ground pad counted as the
+           * ground return, and the missing return path went unreported.
+           */
+          const viaNet =
+            netNameOfPad(via, maps) ?? maps.netOfRoutePoint.get(`${vx.toFixed(3)},${vy.toFixed(3)}`) ?? null;
           return viaNet === net;
         });
         if (!near) {
@@ -427,7 +472,9 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
     if (el.type !== "pcb_trace") continue;
     let net: string | null = null;
     if (el.source_trace_id) {
-      net = maps.groupNet.get(String(el.source_trace_id)) ?? null;
+      // groupNet is keyed by connectivity GROUP, not by trace id: go through it
+      const group = maps.groupOfSourceTrace.get(String(el.source_trace_id)) ?? String(el.source_trace_id);
+      net = maps.groupNet.get(group) ?? null;
     }
     if (!net) {
       // spliced traces (variant engine): infer the net from a touched pad

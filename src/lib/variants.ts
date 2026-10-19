@@ -118,14 +118,32 @@ function traceStats(traces: CircuitElement[]): CandidateStats {
   return { traces: traces.length, vias, lengthMm: Math.round(length * 10) / 10 };
 }
 
+/**
+ * Wall-clock cap for ONE solve of the variant engine or of a zone.
+ *
+ * The step counter alone is not a time limit: two hundred thousand steps are a
+ * second on a small zone and minutes on a dense section, and the loop is
+ * synchronous — while it grinds, nothing else in the compilation moves and the
+ * time budget of the whole compile is spent without anyone deciding to.
+ */
+export const SOLVER_DEADLINE_MS = 90_000;
+
 export function runSolver(
   SolverClass: SolverClass,
   srj: unknown,
   effort: number,
+  deadlineMs: number = SOLVER_DEADLINE_MS,
 ): CircuitElement[] {
   const solver = new SolverClass(srj, { effort });
+  const until = Date.now() + deadlineMs;
   let guard = 0;
-  while (!solver.solved && !solver.failed && guard++ < 200_000) solver.step();
+  while (!solver.solved && !solver.failed && guard++ < 200_000) {
+    solver.step();
+    // the clock is read every hundred steps: reading it costs, a step costs more
+    if (guard % 100 === 0 && Date.now() > until) {
+      throw new Error(`solver oltre ${Math.round(deadlineMs / 1000)}s: interrotto`);
+    }
+  }
   if (solver.failed) throw new Error(solver.error ?? "solver failed");
   return solver.getOutputSimpleRouteJson().traces ?? [];
 }
@@ -302,9 +320,14 @@ export function sourceTraceIdResolver(
 /**
  * Splice a candidate's traces into the circuit: pcb_trace elements plus
  * deduped pcb_via elements (vias shared by merged traces on the same net
- * appear once per trace — insert them once per coordinate). Each via inherits
- * the pcb_port_id of the nearest pad (< 1mm): it is on that pad's net in
- * practice, and it lets the DRC skip false same-net clearance positives.
+ * appear once per trace — insert them once per coordinate).
+ *
+ * EACH VIA TAKES THE NET OF THE TRACE IT BELONGS TO, as its connectivity key.
+ * It used to inherit the pcb_port_id of the nearest pad within a millimetre —
+ * "it is on that pad's net in practice". In practice is exactly where it is
+ * not: a via dropped by another net next to a pad was given that pad's net, and
+ * the DRC skipped the pair as same-net — the one pair that was a short. The
+ * trace says which connection the via serves; the pad nearby says nothing.
  */
 export function spliceTraces(
   base: CircuitElement[],
@@ -313,24 +336,15 @@ export function spliceTraces(
   tag: string,
   rules: DesignRules = DEFAULT_DESIGN_RULES,
 ): CircuitElement[] {
-  const pads: Array<{ x: number; y: number; pcb_port_id: string }> = [];
+  /** source trace -> its connectivity group, the key the checks group by */
+  const groupOfSource = new Map<string, string>();
   for (const el of base) {
-    if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
-    if (typeof el.x !== "number" || typeof el.y !== "number" || !el.pcb_port_id) continue;
-    pads.push({ x: el.x, y: el.y, pcb_port_id: String(el.pcb_port_id) });
+    if (el.type !== "source_trace" || !el.source_trace_id) continue;
+    groupOfSource.set(
+      String(el.source_trace_id),
+      String(el.subcircuit_connectivity_map_key ?? el.source_trace_id),
+    );
   }
-  const nearestPadPort = (x: number, y: number): string | null => {
-    let best: string | null = null;
-    let bestD = 1.0;
-    for (const p of pads) {
-      const d = Math.hypot(p.x - x, p.y - y);
-      if (d < bestD) {
-        bestD = d;
-        best = p.pcb_port_id;
-      }
-    }
-    return best;
-  };
 
   const out = [...base];
   /*
@@ -370,12 +384,13 @@ export function spliceTraces(
       const key = `${Number(p.x).toFixed(3)},${Number(p.y).toFixed(3)}`;
       if (viaSeen.has(key)) continue;
       viaSeen.add(key);
-      const portId = nearestPadPort(Number(p.x), Number(p.y));
+      // no owning connection known: no net, rather than a borrowed one
+      const chiave = from ? groupOfSource.get(from.sourceTraceId) : undefined;
       out.push({
         type: "pcb_via",
         pcb_via_id: `${tag}_via_${viaSeen.size}`,
         subcircuit_id: subcircuitId,
-        ...(portId ? { pcb_port_id: portId } : {}),
+        ...(chiave ? { subcircuit_connectivity_map_key: chiave } : {}),
         x: Number(p.x),
         y: Number(p.y),
         hole_diameter: rules.minViaHoleMm,
