@@ -33,12 +33,27 @@ L'import STEP usa [occt-import-js](https://github.com/kovacsv/occt-import-js)
 ```bash
 pnpm install
 cp .env.example .env.local   # e riempi i valori
+pnpm db:migrate              # crea le tabelle (idempotente, si rilancia senza rischi)
 pnpm dev
+pnpm test                    # test unitari (vitest)
 ```
 
 Le variabili d'ambiente necessarie sono elencate e commentate in
 [.env.example](./.env.example). In sviluppo il magic link di login viene
 stampato nella console del server, non serve aprire la mail.
+
+**Database.** Lo schema e' in [db/schema.sql](./db/schema.sql): tutte le
+tabelle che il codice usa e non crea da solo. Su un database nuovo il primo
+comando e' `pnpm db:migrate` con `DATABASE_URL` impostata; dopo ogni cambio di
+schema si rilancia lo stesso comando. Le tabelle di cache (compilazioni,
+varianti, prezzi) si creano da sole al primo uso.
+
+**Chi puo' entrare.** Il codice tscircuit dei progetti si compila sul server,
+nello stesso processo che tiene le chiavi: un account vale fiducia piena.
+L'accesso e' quindi su lista, con `AUTH_ALLOWED_EMAILS` (indirizzi) e
+`AUTH_ALLOWED_DOMAINS` (domini interi). In produzione, senza nessuna delle
+due, non entra nessuno; togliere un indirizzo chiude anche le sue sessioni e i
+suoi token MCP.
 
 ## Usa il modello che hai già (MCP)
 
