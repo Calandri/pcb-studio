@@ -1,20 +1,28 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Inter } from "next/font/google";
+import localFont from "next/font/local";
 import { FeedbackWidget } from "@/components/FeedbackWidget";
 import "./globals.css";
 
 // Inter for text (the brand font), IBM Plex Mono for figures: columnar
 // measurements must stay aligned and readable at small sizes.
-const brandSans = Inter({
+//
+// The files live in the repo (latin subset, SIL OFL 1.1, licenses next to
+// them). With next/font/google every build downloaded them from Google, and on
+// Vercel that download failed often enough to fail two deploys out of three.
+const brandSans = localFont({
   variable: "--font-plex-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  src: [{ path: "./fonts/inter-latin-var.woff2", weight: "400 700", style: "normal" }],
+  display: "swap",
 });
 
-const plexMono = IBM_Plex_Mono({
+const plexMono = localFont({
   variable: "--font-plex-mono",
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
+  src: [
+    { path: "./fonts/plexmono-latin-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/plexmono-latin-500.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/plexmono-latin-600.woff2", weight: "600", style: "normal" },
+  ],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
