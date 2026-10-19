@@ -24,6 +24,15 @@ export interface StockInfo {
 
 const CACHE_HOURS = 24;
 const JLCSEARCH_BASE = "https://jlcsearch.tscircuit.com";
+/*
+ * How many codes one request may look up, and for how long. A BOM of fifty
+ * lines with three alternates each is two hundred codes; more than that is not
+ * a board, it is someone using the endpoint as a free proxy to jlcsearch. And
+ * the live lookups stop before the route's own time limit, so the answer
+ * arrives with what was found instead of not arriving.
+ */
+export const MAX_CODES_PER_REQUEST = 250;
+const LIVE_BUDGET_MS = 40_000;
 
 /**
  * Component tolerance from the manufacturer's part number. Two honest
@@ -70,7 +79,7 @@ async function readCache(lcscs: string[]): Promise<Map<string, StockInfo>> {
     const rows = (await sql`
       SELECT lcsc, mfr, stock, price_usd, basic, preferred, found, seen_at
       FROM parts_cache
-      WHERE lcsc = ANY(${lcscs}) AND seen_at > now() - interval '${CACHE_HOURS} hours'
+      WHERE lcsc = ANY(${lcscs}) AND seen_at > now() - make_interval(hours => ${CACHE_HOURS}::int)
     `) as Array<Record<string, unknown>>;
     for (const r of rows) {
       out.set(String(r.lcsc), {
@@ -95,7 +104,7 @@ async function writeCache(infos: StockInfo[]): Promise<void> {
   if (!sql || infos.length === 0) return;
   try {
     await ensureTable(sql);
-    for (const i of infos.slice(0, 200)) {
+    for (const i of infos.slice(0, MAX_CODES_PER_REQUEST)) {
       await sql`
         INSERT INTO parts_cache (lcsc, mfr, stock, price_usd, basic, preferred, found)
         VALUES (${i.lcsc}, ${i.mfr}, ${i.stock}, ${i.priceUsd}, ${i.basic}, ${i.preferred}, ${i.found})
@@ -110,8 +119,19 @@ async function writeCache(infos: StockInfo[]): Promise<void> {
   }
 }
 
+/**
+ * A lookup that FAILED is not a part that does not exist. Both used to come
+ * back as `found: false` and both were cached for a day: a jlcsearch hiccup
+ * marked every part of the BOM "unknown" until tomorrow. The flag keeps the
+ * failure out of the cache; the answer to the user is the same.
+ */
+interface Fetched {
+  info: StockInfo;
+  transient: boolean;
+}
+
 /** one live lookup per code, with modest concurrency so we stay polite */
-async function fetchLive(lcsc: string): Promise<StockInfo> {
+async function fetchLive(lcsc: string): Promise<Fetched> {
   const url = new URL(`${JLCSEARCH_BASE}/api/search`);
   url.searchParams.set("q", lcsc);
   url.searchParams.set("limit", "1");
@@ -121,11 +141,12 @@ async function fetchLive(lcsc: string): Promise<StockInfo> {
   };
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-    if (!res.ok) return empty;
+    if (!res.ok) return { info: empty, transient: true };
     const data = (await res.json()) as { components?: Array<Record<string, unknown>> };
     const c = (data.components ?? []).find((x) => `C${x.lcsc}`.toUpperCase() === lcsc.toUpperCase());
-    if (!c) return empty;
-    return {
+    // the service answered and the part is not there: THAT is a "not found"
+    if (!c) return { info: empty, transient: false };
+    const info: StockInfo = {
       lcsc,
       stock: Number(c.stock) || 0,
       priceUsd: typeof c.price === "number" ? Math.round(c.price * 10000) / 10000 : null,
@@ -135,8 +156,9 @@ async function fetchLive(lcsc: string): Promise<StockInfo> {
       seenAt: new Date().toISOString(),
       found: true,
     };
+    return { info, transient: false };
   } catch {
-    return empty;
+    return { info: empty, transient: true };
   }
 }
 
@@ -145,17 +167,31 @@ async function fetchLive(lcsc: string): Promise<StockInfo> {
  * `refresh: true` skips the cache read (the values are rewritten anyway).
  */
 export async function stockForParts(lcscs: string[], refresh = false): Promise<Map<string, StockInfo>> {
-  const unique = [...new Set(lcscs.filter((c) => /^C\d+$/i.test(c)))];
+  const unique = [...new Set(lcscs.filter((c) => /^C\d+$/i.test(c)))].slice(
+    0,
+    MAX_CODES_PER_REQUEST,
+  );
   const out = refresh ? new Map<string, StockInfo>() : await readCache(unique);
   const missing = unique.filter((c) => !out.has(c));
 
   const CONCURRENCY = 4;
-  const fresh: StockInfo[] = [];
+  const startedAt = Date.now();
+  const fresh: Fetched[] = [];
   for (let i = 0; i < missing.length; i += CONCURRENCY) {
+    // out of time: the rest is said as unknown, and is not cached as such
+    if (Date.now() - startedAt > LIVE_BUDGET_MS) {
+      for (const lcsc of missing.slice(i)) {
+        out.set(lcsc, {
+          lcsc, stock: 0, priceUsd: null, basic: false, preferred: false,
+          mfr: "", seenAt: new Date().toISOString(), found: false,
+        });
+      }
+      break;
+    }
     const batch = await Promise.all(missing.slice(i, i + CONCURRENCY).map(fetchLive));
     fresh.push(...batch);
   }
-  for (const info of fresh) out.set(info.lcsc, info);
-  void writeCache(fresh);
+  for (const { info } of fresh) out.set(info.lcsc, info);
+  void writeCache(fresh.filter((f) => !f.transient).map((f) => f.info));
   return out;
 }

@@ -34,7 +34,7 @@ export async function GET(req: Request): Promise<Response> {
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
   const cached = await getCompileCache(projectId).catch(() => null);
-  if (!cached?.circuitJson) {
+  if (!cached?.circuitJson || cached.circuitJson.length === 0) {
     return Response.json({ error: "nessuna scheda compilata" }, { status: 404 });
   }
   const fsMap = await getProject(projectId);
@@ -77,7 +77,15 @@ export async function GET(req: Request): Promise<Response> {
       lcscUrl: r.lcscUrl,
       jlcpcbUrl: r.jlcpcbUrl,
       mouser: m?.found
-        ? { stock: m.stock, priceUsd: m.priceUsd, url: m.url, sku: m.sku }
+        ? {
+            stock: m.stock,
+            priceUsd: m.priceUsd,
+            // the quoted price in its own currency: a euro is not a dollar
+            price: m.price,
+            currency: m.currency,
+            url: m.url,
+            sku: m.sku,
+          }
         : null,
       status,
       stock: info?.stock ?? null,
