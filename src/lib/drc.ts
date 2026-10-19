@@ -15,6 +15,13 @@ export interface DrcViolation {
    * points of all occurrences are kept.
    */
   points?: Array<{ x: number; y: number }>;
+  /**
+   * How many times the rule fired, when the occurrences are aggregated. The
+   * points are capped per rule (a board with three thousand crooked exits does
+   * not need three thousand dots), the count is not: whoever compares two
+   * routes needs the true number.
+   */
+  count?: number;
 }
 
 interface El {
@@ -24,6 +31,246 @@ interface El {
 
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
+
+/**
+ * A STADIUM: a segment with a radius around it. It is the exact shape of a pill
+ * pad, of a slotted drill and — with a core of zero length — of a circle, and
+ * the distance between two of them is the distance between their cores minus
+ * the two radii. No corners to invent.
+ */
+export interface Capsula {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  r: number;
+}
+
+/** the copper of a pad, in the one of three shapes that measures it right */
+export type FormaRame =
+  | { tipo: "cerchio"; x: number; y: number; r: number }
+  | { tipo: "rettangolo"; x: number; y: number; w: number; h: number; rot: number }
+  | { tipo: "capsula"; x: number; y: number; capsula: Capsula };
+
+/** a w x h stadium centred on x,y, its core along the long side, turned by rotDeg */
+export function capsulaDa(x: number, y: number, w: number, h: number, rotDeg = 0): Capsula {
+  const r = Math.min(w, h) / 2;
+  const mezzo = (Math.max(w, h) - Math.min(w, h)) / 2;
+  const rad = (rotDeg * Math.PI) / 180;
+  const ux = w >= h ? Math.cos(rad) : -Math.sin(rad);
+  const uy = w >= h ? Math.sin(rad) : Math.cos(rad);
+  return { ax: x - ux * mezzo, ay: y - uy * mezzo, bx: x + ux * mezzo, by: y + uy * mezzo, r };
+}
+
+/**
+ * THE COPPER OF A THROUGH HOLE, read from the fields ITS shape declares.
+ *
+ * A plated hole comes in six shapes and each writes its size somewhere else:
+ * the round one in `outer_diameter`, the oval and the pill in
+ * `outer_width/outer_height`, the ones with a square pad in
+ * `rect_pad_width/rect_pad_height`, the polygonal one in `pad_outline`. Reading
+ * `outer_diameter ?? hole_diameter` for all of them measured a square pad as the
+ * drill inside it, and skipped the pills altogether — the shell tabs of a USB-C
+ * receptacle, the copper most likely to touch something, were invisible.
+ */
+export function rameDelForo(el: El): FormaRame | null {
+  const x = num(el.x);
+  const y = num(el.y);
+  if (x === null || y === null) return null;
+  const shape = String(el.shape ?? "");
+  if (shape === "circle") {
+    const d = num(el.outer_diameter) ?? num(el.hole_diameter);
+    if (d !== null && d > 0) return { tipo: "cerchio", x, y, r: d / 2 };
+  }
+  if (shape === "oval" || shape === "pill") {
+    const w = num(el.outer_width);
+    const h = num(el.outer_height);
+    // an oval sits inside the stadium of the same size: measured as one, it can
+    // only be reported a hair closer than it is, never farther
+    if (w !== null && h !== null && w > 0 && h > 0) {
+      return { tipo: "capsula", x, y, capsula: capsulaDa(x, y, w, h, num(el.ccw_rotation) ?? 0) };
+    }
+  }
+  if (
+    shape === "circular_hole_with_rect_pad" ||
+    shape === "pill_hole_with_rect_pad" ||
+    shape === "rotated_pill_hole_with_rect_pad"
+  ) {
+    const w = num(el.rect_pad_width);
+    const h = num(el.rect_pad_height);
+    if (w !== null && h !== null && w > 0 && h > 0) {
+      return { tipo: "rettangolo", x, y, w, h, rot: num(el.rect_ccw_rotation) ?? 0 };
+    }
+  }
+  if (shape === "hole_with_polygon_pad" && Array.isArray(el.pad_outline)) {
+    // the outline is relative to the hole's position, as the Gerber draws it
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const p of el.pad_outline as Array<{ x?: unknown; y?: unknown }>) {
+      const px = num(p?.x);
+      const py = num(p?.y);
+      if (px === null || py === null) continue;
+      xs.push(x + px);
+      ys.push(y + py);
+    }
+    if (xs.length >= 3) {
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      return {
+        tipo: "rettangolo",
+        x: (minX + maxX) / 2,
+        y: (minY + maxY) / 2,
+        w: maxX - minX,
+        h: maxY - minY,
+        rot: 0,
+      };
+    }
+  }
+  // a shape this code does not know: whatever size the element declares
+  const d = num(el.outer_diameter);
+  if (d !== null && d > 0) return { tipo: "cerchio", x, y, r: d / 2 };
+  const w = num(el.outer_width) ?? num(el.rect_pad_width);
+  const h = num(el.outer_height) ?? num(el.rect_pad_height);
+  if (w !== null && h !== null && w > 0 && h > 0) {
+    return { tipo: "rettangolo", x, y, w, h, rot: num(el.ccw_rotation) ?? 0 };
+  }
+  const foro = num(el.hole_diameter);
+  return foro !== null && foro > 0 ? { tipo: "cerchio", x, y, r: foro / 2 } : null;
+}
+
+/**
+ * The DRILL of a plated or bare hole, as a stadium: round holes are stadiums
+ * with no core, slots have one. The offset is the one the pad shapes declare
+ * (a square pad does not have to be centred on its hole).
+ *
+ * Approximations, said here once: a square or rectangular drill is measured as
+ * the stadium of the same size, which is a hair lenient at its corners.
+ */
+export function foroDi(el: El): Capsula | null {
+  const x = num(el.x);
+  const y = num(el.y);
+  if (x === null || y === null) return null;
+  const cx = x + (num(el.hole_offset_x) ?? 0);
+  const cy = y + (num(el.hole_offset_y) ?? 0);
+  const shape = String(el.shape ?? "");
+  const holeShape = String(el.hole_shape ?? "");
+  const d = num(el.hole_diameter);
+  const w = num(el.hole_width);
+  const h = num(el.hole_height);
+  let rot = 0;
+  if (el.type === "pcb_plated_hole") {
+    if (shape === "oval" || shape === "pill") rot = num(el.ccw_rotation) ?? 0;
+    else if (shape === "rotated_pill_hole_with_rect_pad") rot = num(el.hole_ccw_rotation) ?? 0;
+  } else {
+    rot = num(el.ccw_rotation) ?? 0;
+  }
+  const tondo = holeShape === "circle" || holeShape === "square" || shape === "circle";
+  if (!tondo && w !== null && h !== null && w > 0 && h > 0) return capsulaDa(cx, cy, w, h, rot);
+  if (d !== null && d > 0) return { ax: cx, ay: cy, bx: cx, by: cy, r: d / 2 };
+  if (w !== null && h !== null && w > 0 && h > 0) return capsulaDa(cx, cy, w, h, rot);
+  return null;
+}
+
+/** how far a point is from a copper shape: 0 inside */
+export function distanzaPuntoForma(f: FormaRame, px: number, py: number): number {
+  if (f.tipo === "cerchio") return Math.max(0, Math.hypot(px - f.x, py - f.y) - f.r);
+  if (f.tipo === "capsula") {
+    const c = f.capsula;
+    return Math.max(0, pointSegDistance(px, py, c.ax, c.ay, c.bx, c.by) - c.r);
+  }
+  // into the rectangle's own frame, where it is straight
+  const rad = (-(f.rot ?? 0) * Math.PI) / 180;
+  const dx = px - f.x;
+  const dy = py - f.y;
+  const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+  return Math.hypot(Math.max(Math.abs(lx) - f.w / 2, 0), Math.max(Math.abs(ly) - f.h / 2, 0));
+}
+
+/** how far a segment is from a copper shape: 0 when it touches or enters it */
+export function distanzaSegmentoForma(
+  f: FormaRame,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  if (f.tipo === "cerchio") return Math.max(0, pointSegDistance(f.x, f.y, ax, ay, bx, by) - f.r);
+  if (f.tipo === "capsula") {
+    const c = f.capsula;
+    return Math.max(0, segSegDistanceRaw(ax, ay, bx, by, c.ax, c.ay, c.bx, c.by) - c.r);
+  }
+  return segToBoxDistance(
+    { ax, ay, bx, by },
+    {
+      minX: f.x - f.w / 2,
+      maxX: f.x + f.w / 2,
+      minY: f.y - f.h / 2,
+      maxY: f.y + f.h / 2,
+      rot: f.rot || undefined,
+      layer: null,
+      label: "",
+      group: null,
+      kind: "pad",
+    },
+  );
+}
+
+/** the straight box that contains a shape, turned or not */
+export function ingombroForma(f: FormaRame): { minX: number; maxX: number; minY: number; maxY: number } {
+  if (f.tipo === "cerchio") return { minX: f.x - f.r, maxX: f.x + f.r, minY: f.y - f.r, maxY: f.y + f.r };
+  if (f.tipo === "capsula") {
+    const c = f.capsula;
+    return {
+      minX: Math.min(c.ax, c.bx) - c.r,
+      maxX: Math.max(c.ax, c.bx) + c.r,
+      minY: Math.min(c.ay, c.by) - c.r,
+      maxY: Math.max(c.ay, c.by) + c.r,
+    };
+  }
+  const rad = ((f.rot ?? 0) * Math.PI) / 180;
+  const hw = (Math.abs(f.w * Math.cos(rad)) + Math.abs(f.h * Math.sin(rad))) / 2;
+  const hh = (Math.abs(f.w * Math.sin(rad)) + Math.abs(f.h * Math.cos(rad))) / 2;
+  return { minX: f.x - hw, maxX: f.x + hw, minY: f.y - hh, maxY: f.y + hh };
+}
+
+/**
+ * The copper of an SMT pad. Pills are stadiums, not rectangles: measured by
+ * their corners they come out closer than they are to whatever sits diagonally.
+ * Polygon pads are measured by the box of their vertices, as everywhere else.
+ */
+export function rameDelPad(el: El): FormaRame | null {
+  const shape = String(el.shape ?? "");
+  const centro = centroDaVertici(el as { points?: unknown });
+  const x = num(el.x) ?? centro?.x ?? null;
+  const y = num(el.y) ?? centro?.y ?? null;
+  if (x === null || y === null) return null;
+  const rot = num(el.ccw_rotation) ?? 0;
+  if (shape === "circle" && num(el.radius) !== null) return { tipo: "cerchio", x, y, r: num(el.radius)! };
+  const w = num(el.width);
+  const h = num(el.height);
+  if ((shape === "pill" || shape === "rotated_pill") && w !== null && h !== null && w > 0 && h > 0) {
+    return { tipo: "capsula", x, y, capsula: capsulaDa(x, y, w, h, rot) };
+  }
+  if (w !== null && h !== null) return { tipo: "rettangolo", x, y, w, h, rot };
+  const punti = (el.points as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [];
+  const xs = punti.map((p) => num(p?.x)).filter((v): v is number => v !== null);
+  const ys = punti.map((p) => num(p?.y)).filter((v): v is number => v !== null);
+  if (xs.length > 0 && ys.length > 0) {
+    return {
+      tipo: "rettangolo",
+      x,
+      y,
+      w: Math.max(...xs) - Math.min(...xs),
+      h: Math.max(...ys) - Math.min(...ys),
+      rot: 0,
+    };
+  }
+  const r = num(el.radius);
+  return r !== null ? { tipo: "cerchio", x, y, r } : null;
+}
 
 /**
  * The center of a pad that does not declare one.
@@ -67,8 +314,39 @@ interface Box {
    * violate — 56 of this board's 67 trace-to-copper reports were that corner.
    */
   raggio?: number;
+  /** set when the thing is a STADIUM (pill pads, slots): measured from its core */
+  capsula?: Capsula;
   /** the drill, when the thing has one: only this one decides hole to hole */
-  foro?: number;
+  foro?: Capsula;
+}
+
+/** a copper shape as a box the checks can measure */
+function boxDaForma(
+  f: FormaRame,
+  resto: Pick<Box, "layer" | "label" | "group" | "kind">,
+): Box {
+  if (f.tipo === "cerchio") {
+    return { ...resto, minX: f.x - f.r, maxX: f.x + f.r, minY: f.y - f.r, maxY: f.y + f.r, raggio: f.r };
+  }
+  if (f.tipo === "capsula") return { ...resto, ...ingombroForma(f), capsula: f.capsula };
+  return {
+    ...resto,
+    minX: f.x - f.w / 2,
+    maxX: f.x + f.w / 2,
+    minY: f.y - f.h / 2,
+    maxY: f.y + f.h / 2,
+    ...(f.rot ? { rot: f.rot } : {}),
+  };
+}
+
+/** the radius of the circle around a box: what it can reach at most, turned or not */
+function raggioEsterno(b: Box): number {
+  if (b.raggio !== undefined) return b.raggio;
+  if (b.capsula) {
+    const c = b.capsula;
+    return Math.hypot(c.bx - c.ax, c.by - c.ay) / 2 + c.r;
+  }
+  return Math.hypot(b.maxX - b.minX, b.maxY - b.minY) / 2;
 }
 
 /*
@@ -108,6 +386,24 @@ function distanzaPuntoRettangolo(px: number, py: number, r: Box): number {
 }
 
 function boxDistance(a: Box, b: Box): number {
+  // a stadium against anything: measured from its core
+  if (a.capsula || b.capsula) {
+    const tondo = a.capsula ? a : b;
+    const altro = a.capsula ? b : a;
+    const c = tondo.capsula!;
+    if (altro.capsula) {
+      const o = altro.capsula;
+      return Math.max(
+        0,
+        segSegDistanceRaw(c.ax, c.ay, c.bx, c.by, o.ax, o.ay, o.bx, o.by) - c.r - o.r,
+      );
+    }
+    if (altro.raggio !== undefined) {
+      const p = centroDi(altro);
+      return Math.max(0, pointSegDistance(p.x, p.y, c.ax, c.ay, c.bx, c.by) - c.r - altro.raggio);
+    }
+    return Math.max(0, segToBoxDistance(c, altro) - c.r);
+  }
   // round against round, and round against everything else
   if (a.raggio !== undefined && b.raggio !== undefined) {
     const ca = centroDi(a);
@@ -197,25 +493,65 @@ export function runDrcChecks(
   rules: DesignRules = DEFAULT_DESIGN_RULES,
 ): DrcViolation[] {
   const raw: DrcViolation[] = [];
+  /*
+   * THE CAP IS PER RULE, the count is not capped at all. A single cap for the
+   * whole check used to stop listing at 500: a board with five hundred crooked
+   * exits filled it before the plane checks ran, and the missing ground
+   * stitching — which is at the end — simply was not reported.
+   */
+  const perRegola = new Map<string, number>();
   const push = (
     rule: string,
     message: string,
     point?: { x: number; y: number } | null,
   ) => {
-    if (raw.length < 500) {
+    const n = (perRegola.get(rule) ?? 0) + 1;
+    perRegola.set(rule, n);
+    if (n <= MAX_PER_REGOLA) {
       raw.push({ rule, message, points: point ? [point] : undefined });
     }
   };
 
   // --- port -> connectivity group map (to know whether two pads are on the same net)
   const portGroup = new Map<string, string>();
+  const groupOfSourceTrace = new Map<string, string>();
+  /** net id -> its group, for keys that name the net instead of the group */
+  const gruppoDiRete = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type !== "source_trace") continue;
     const key = String(el.subcircuit_connectivity_map_key ?? el.source_trace_id ?? "");
+    if (el.source_trace_id) groupOfSourceTrace.set(String(el.source_trace_id), key);
     for (const pid of (el.connected_source_port_ids as string[] | undefined) ?? []) {
       portGroup.set(pid, key);
     }
+    for (const net of (el.connected_source_net_ids as string[] | undefined) ?? []) {
+      if (key && !gruppoDiRete.has(String(net))) gruppoDiRete.set(String(net), key);
+    }
   }
+  const gruppiNoti = new Set(groupOfSourceTrace.values());
+  /*
+   * A connectivity key, brought back to the group the pads are measured by.
+   *
+   * Copper we lay ourselves speaks other dialects: the tie stub to the plane
+   * carries the pad's source port, the stitching vias say `net:<id>`, the
+   * router's ground tree says `source_net_0_mst3`. Read raw, each of them was a
+   * net of its own — a tie stub was skipped by every trace check, a ground via
+   * looked like a stranger to the ground pad next to it.
+   */
+  const risolviChiave = (chiave: string): string | null => {
+    if (!chiave) return null;
+    if (gruppiNoti.has(chiave)) return chiave;
+    const diPorta = portGroup.get(chiave);
+    if (diPorta) return diPorta;
+    const rete = chiave.startsWith("net:")
+      ? chiave.slice(4)
+      : (/^(source_net_\d+)_mst/.exec(chiave)?.[1] ?? null);
+    if (rete) {
+      const g = gruppoDiRete.get(rete);
+      if (g) return g;
+    }
+    return chiave;
+  };
   const pcbPortToSource = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type === "pcb_port" && el.pcb_port_id && el.source_port_id) {
@@ -228,6 +564,28 @@ export function runDrcChecks(
   };
 
   /*
+   * Copper with no source trace — the tie stubs that drop a pad onto its plane
+   * (pcb_trace_plane_*) — is named by its key, and failing that by the pad it
+   * starts from. Before, a trace without `source_trace_id` was skipped by every
+   * clearance check: the stub could cross another net's pad and nobody said so.
+   */
+  let gruppoDelPadSotto: (x: number, y: number) => string | null = () => null;
+  const groupOfTrace = (el: El): string | null => {
+    const st = String(el.source_trace_id ?? "");
+    if (st) return groupOfSourceTrace.get(st) || risolviChiave(String(el.subcircuit_connectivity_map_key ?? ""));
+    const daChiave = risolviChiave(String(el.subcircuit_connectivity_map_key ?? ""));
+    if (daChiave) return daChiave;
+    const route = ((el.route as Array<Record<string, unknown>> | undefined) ?? []).filter(
+      (p) => num(p.x) !== null && num(p.y) !== null,
+    );
+    for (const p of [route[0], route[route.length - 1]]) {
+      if (!p) continue;
+      const g = gruppoDelPadSotto(num(p.x)!, num(p.y)!);
+      if (g) return g;
+    }
+    return null;
+  };
+  /*
    * A via's net deduced from the trace that contains it. Needed because vias
    * produced by the local router carry no `pcb_port_id`: without this, a via
    * placed on the pad it is meant to connect (via-in-pad, by construction on
@@ -235,17 +593,6 @@ export function runDrcChecks(
    * flagged as a clearance violation. They were false positives that hid the
    * real ones.
    */
-  const groupOfTrace = (el: El): string | null => {
-    const st = String(el.source_trace_id ?? "");
-    if (!st) return null;
-    const source = circuitJson.find(
-      (e) => e.type === "source_trace" && String(e.source_trace_id ?? "") === st,
-    );
-    if (!source) return null;
-    return String(
-      source.subcircuit_connectivity_map_key ?? source.source_trace_id ?? "",
-    ) || null;
-  };
   const VIA_ON_TRACE_MM = 0.05;
   const viaGroup = new Map<string, string>();
   for (const el of circuitJson) {
@@ -269,7 +616,7 @@ export function runDrcChecks(
      * sitting in its own pad — which is what via-in-pad is — was reported as a
      * clearance violation. Twenty-five false alarms hiding the one real one.
      */
-    const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+    const chiave = risolviChiave(String(el.subcircuit_connectivity_map_key ?? ""));
     if (chiave) return chiave;
     const x = num(el.x);
     const y = num(el.y);
@@ -332,78 +679,124 @@ export function runDrcChecks(
     if (el.type === "pcb_smtpad") {
       // polygonal pads do not declare a center: it is derived from the
       // vertices, otherwise the clearance check does not see them at all
-      const centro = centroDaVertici(el as { points?: unknown });
-      const punti = (el.points as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [];
-      const x = num(el.x) ?? centro?.x ?? null;
-      const y = num(el.y) ?? centro?.y ?? null;
-      if (x === null || y === null) continue;
-      const xs = punti.map((p) => (typeof p.x === "number" ? p.x : NaN)).filter(Number.isFinite);
-      const ys = punti.map((p) => (typeof p.y === "number" ? p.y : NaN)).filter(Number.isFinite);
-      const w =
-        num(el.width) ??
-        (xs.length ? Math.max(...xs) - Math.min(...xs) : (num(el.radius) ?? 0) * 2);
-      const h =
-        num(el.height) ??
-        (ys.length ? Math.max(...ys) - Math.min(...ys) : (num(el.radius) ?? 0) * 2);
+      const forma = rameDelPad(el);
+      if (!forma) continue;
+      boxes.push(
+        boxDaForma(forma, {
+          layer: el.layer ? String(el.layer) : null,
+          label: String(el.pcb_smtpad_id ?? "pad"),
+          group: groupOfPcbPort(el.pcb_port_id),
+          kind: "pad",
+        }),
+      );
+    } else if (el.type === "pcb_plated_hole") {
+      // the copper as ITS shape declares it: see rameDelForo
+      const forma = rameDelForo(el);
+      if (!forma) continue;
+      const foro = foroDi(el);
       boxes.push({
-        minX: x - w / 2,
-        maxX: x + w / 2,
-        minY: y - h / 2,
-        maxY: y + h / 2,
-        layer: el.layer ? String(el.layer) : null,
-        label: String(el.pcb_smtpad_id ?? "pad"),
-        group: groupOfPcbPort(el.pcb_port_id),
-        kind: "pad",
-        ...(el.shape === "circle" && num(el.radius) !== null
-          ? { raggio: num(el.radius)! }
-          : {}),
-        ...(num(el.ccw_rotation) ? { rot: num(el.ccw_rotation)! } : {}),
+        ...boxDaForma(forma, {
+          layer: null, // spans all layers
+          label: String(el.pcb_plated_hole_id ?? el.type),
+          group: groupOfPcbPort(el.pcb_port_id),
+          /*
+           * A plated hole is a PAD with a hole in it: that is what the board
+           * calls it and what the file's rules are written against. Only the
+           * bare via is a via.
+           */
+          kind: "pad",
+        }),
+        ...(foro ? { foro } : {}),
       });
-    } else if (el.type === "pcb_plated_hole" || el.type === "pcb_via") {
+    } else if (el.type === "pcb_via") {
       const x = num(el.x);
       const y = num(el.y);
       const d = num(el.outer_diameter) ?? num(el.hole_diameter);
       if (x === null || y === null || d === null) continue;
+      const foro = num(el.hole_diameter);
       boxes.push({
         minX: x - d / 2,
         maxX: x + d / 2,
         minY: y - d / 2,
         maxY: y + d / 2,
         layer: null, // spans all layers
-        label: String(el.pcb_via_id ?? el.pcb_plated_hole_id ?? el.type),
-        group:
-          el.type === "pcb_via" ? groupOfVia(el) : groupOfPcbPort(el.pcb_port_id),
-        /*
-         * A plated hole is a PAD with a hole in it: that is what the board
-         * calls it and what the file's rules are written against. Only the
-         * bare via is a via.
-         */
-        kind: el.type === "pcb_via" ? "via" : "pad",
+        label: String(el.pcb_via_id ?? el.type),
+        group: groupOfVia(el),
+        kind: "via",
         raggio: d / 2,
-        ...(num(el.hole_diameter) ? { foro: num(el.hole_diameter)! } : {}),
+        ...(foro ? { foro: { ax: x, ay: y, bx: x, by: y, r: foro / 2 } } : {}),
       });
     }
   }
+  gruppoDelPadSotto = (x, y) => {
+    for (const b of boxes) {
+      if (b.group === null || b.kind !== "pad") continue;
+      if (x < b.minX - 0.01 || x > b.maxX + 0.01 || y < b.minY - 0.01 || y > b.maxY + 0.01) continue;
+      return b.group;
+    }
+    return null;
+  };
+
+  /*
+   * The bare holes (NPTH): no copper and no net, but a drill the edge and the
+   * other drills have to keep their distance from. Before, nothing looked at
+   * them: a mounting hole could sit on the outline or overlap a via's drill.
+   */
+  const foriNudi: Box[] = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_hole") continue;
+    const foro = foroDi(el);
+    if (!foro) continue;
+    foriNudi.push({
+      minX: Math.min(foro.ax, foro.bx) - foro.r,
+      maxX: Math.max(foro.ax, foro.bx) + foro.r,
+      minY: Math.min(foro.ay, foro.by) - foro.r,
+      maxY: Math.max(foro.ay, foro.by) + foro.r,
+      layer: null,
+      label: String(el.pcb_hole_id ?? "hole"),
+      group: null,
+      kind: "pad",
+      capsula: foro,
+      foro,
+    });
+  }
 
   // --- 3. board-edge clearance
+  /*
+   * Measured against the OUTLINE, not against the board's bounding box, and on
+   * the real shape of each thing: a pad turned by 45 degrees, a pill, a trace.
+   * The box only knew the pads and vias, and only as straight rectangles: a
+   * trace running along the edge, a slot, a mounting hole or a pad on a board
+   * with a notch were never measured.
+   */
   const board = circuitJson.find((el) => el.type === "pcb_board");
-  const bw = board ? num(board.width) : null;
-  const bh = board ? num(board.height) : null;
-  if (board && bw !== null && bh !== null) {
-    const center = (board.center as { x?: number; y?: number } | undefined) ?? {};
-    const cx = num(center.x) ?? 0;
-    const cy = num(center.y) ?? 0;
-    const m = rules.minBoardEdgeClearanceMm;
-    for (const b of boxes) {
-      if (
-        b.minX < cx - bw / 2 + m - TOLLERANZA_MM ||
-        b.maxX > cx + bw / 2 - m + TOLLERANZA_MM ||
-        b.minY < cy - bh / 2 + m - TOLLERANZA_MM ||
-        b.maxY > cy + bh / 2 - m + TOLLERANZA_MM
-      ) {
+  const contorno = contornoScheda(board);
+  const bordoM = rules.minBoardEdgeClearanceMm;
+  const lati =
+    contorno.length >= 3
+      ? contorno.map((a, i) => {
+          const b = contorno[(i + 1) % contorno.length];
+          return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+        })
+      : [];
+  const dalBordo = (b: Box): number => {
+    const c = centroDi(b);
+    const raggio = raggioEsterno(b);
+    let d = Infinity;
+    for (const lato of lati) {
+      // far enough not to need the exact measure
+      if (pointSegDistance(c.x, c.y, lato.ax, lato.ay, lato.bx, lato.by) - raggio > bordoM + 1) continue;
+      d = Math.min(d, segToBoxDistance(lato, b));
+    }
+    return d;
+  };
+  if (lati.length > 0) {
+    for (const b of [...boxes, ...foriNudi]) {
+      const c = centroDi(b);
+      if (!dentroPoligono(c.x, c.y, contorno) || dalBordo(b) < bordoM - TOLLERANZA_MM) {
         push(
           "board_edge_clearance",
-          `${b.label} closer than ${m}mm to the board edge`,
+          `${b.label} closer than ${bordoM}mm to the board edge`,
           boxCenter(b),
         );
       }
@@ -507,14 +900,18 @@ export function runDrcChecks(
    * is measured edge to edge, on the drill, whatever net they are on: the
    * drill does not know about nets.
    */
-  const fori = boxes.filter((b) => b.foro !== undefined);
+  // the bare holes too, and slots measured as slots: see foroDi
+  const fori = [...boxes, ...foriNudi].filter((b) => b.foro !== undefined);
   for (let i = 0; i < fori.length; i++) {
     for (let j = i + 1; j < fori.length; j++) {
       const a = fori[i];
       const b = fori[j];
+      const fa = a.foro!;
+      const fb = b.foro!;
       const ca = centroDi(a);
       const cb = centroDi(b);
-      const d = Math.hypot(ca.x - cb.x, ca.y - cb.y) - (a.foro ?? 0) / 2 - (b.foro ?? 0) / 2;
+      const d =
+        segSegDistanceRaw(fa.ax, fa.ay, fa.bx, fa.by, fb.ax, fb.ay, fb.bx, fb.by) - fa.r - fb.r;
       if (d >= rules.minHoleToHoleMm - TOLLERANZA_MM) continue;
       push(
         "hole_to_hole",
@@ -585,11 +982,8 @@ export function runDrcChecks(
       }
       // through holes too (pinheaders, connectors): the straight escape applies just the same
       if (el.type === "pcb_plated_hole") {
-        const px = num(el.x);
-        const py = num(el.y);
-        const d = num(el.outer_diameter) ?? num(el.hole_diameter);
-        if (px === null || py === null || d === null) return false;
-        return Math.hypot(px - x, py - y) <= d / 2 + 1e-6;
+        const forma = rameDelForo(el);
+        return forma !== null && distanzaPuntoForma(forma, x, y) <= 1e-6;
       }
       return false;
     }) ?? null;
@@ -684,6 +1078,33 @@ export function runDrcChecks(
         group,
         label: String(el.pcb_trace_id ?? "trace"),
       });
+    }
+  }
+
+  // --- 3.b the traces against the board edge (see 3.: the outline, not the box)
+  for (const seg of lati.length > 0 ? segs : []) {
+    let d = Infinity;
+    for (const lato of lati) {
+      if (
+        Math.max(seg.ax, seg.bx) + seg.halfW + bordoM < Math.min(lato.ax, lato.bx) ||
+        Math.min(seg.ax, seg.bx) - seg.halfW - bordoM > Math.max(lato.ax, lato.bx) ||
+        Math.max(seg.ay, seg.by) + seg.halfW + bordoM < Math.min(lato.ay, lato.by) ||
+        Math.min(seg.ay, seg.by) - seg.halfW - bordoM > Math.max(lato.ay, lato.by)
+      ) {
+        continue;
+      }
+      d = Math.min(
+        d,
+        segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, lato.ax, lato.ay, lato.bx, lato.by) -
+          seg.halfW,
+      );
+    }
+    if (!dentroPoligono(seg.ax, seg.ay, contorno) || d < bordoM - TOLLERANZA_MM) {
+      push(
+        "board_edge_clearance",
+        `${seg.label} closer than ${bordoM}mm to the board edge`,
+        { x: (seg.ax + seg.bx) / 2, y: (seg.ay + seg.by) / 2 },
+      );
     }
   }
 
@@ -817,19 +1238,61 @@ export function runDrcChecks(
   }
   const aggregated: DrcViolation[] = [];
   for (const [rule, list] of byRule) {
-    if (list.length <= 3) {
+    const totale = perRegola.get(rule) ?? list.length;
+    if (totale <= 3) {
       aggregated.push(...list);
     } else {
       aggregated.push({
         rule,
-        message: `${list.length}x ${rule}: ${list[0].message} (and ${list.length - 1} more)`,
-        // the points of ALL the occurrences: aggregating the text must not
-        // make the dots disappear from the board
+        message: `${totale}x ${rule}: ${list[0].message} (and ${totale - 1} more)`,
+        // the points of the occurrences kept (MAX_PER_REGOLA): aggregating the
+        // text must not make the dots disappear from the board
         points: list.flatMap((v) => v.points ?? []),
+        count: totale,
       });
     }
   }
   return aggregated;
+}
+
+/** occurrences kept with their message and point, per rule; the count goes on */
+const MAX_PER_REGOLA = 200;
+
+/** the board outline: the declared polygon, or the rectangle of the board */
+function contornoScheda(board: El | undefined): Array<{ x: number; y: number }> {
+  if (!board) return [];
+  if (Array.isArray(board.outline)) {
+    const punti: Array<{ x: number; y: number }> = [];
+    for (const p of board.outline as Array<{ x?: unknown; y?: unknown }>) {
+      const x = num(p?.x);
+      const y = num(p?.y);
+      if (x !== null && y !== null) punti.push({ x, y });
+    }
+    if (punti.length >= 3) return punti;
+  }
+  const w = num(board.width);
+  const h = num(board.height);
+  if (w === null || h === null) return [];
+  const center = (board.center as { x?: unknown; y?: unknown } | undefined) ?? {};
+  const cx = num(center.x) ?? 0;
+  const cy = num(center.y) ?? 0;
+  return [
+    { x: cx - w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy + h / 2 },
+    { x: cx - w / 2, y: cy + h / 2 },
+  ];
+}
+
+/** point inside a polygon, ray casting */
+function dentroPoligono(x: number, y: number, poligono: Array<{ x: number; y: number }>): boolean {
+  let dentro = false;
+  for (let i = 0, j = poligono.length - 1; i < poligono.length; j = i++) {
+    const a = poligono[i];
+    const b = poligono[j];
+    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) dentro = !dentro;
+  }
+  return dentro;
 }
 
 /**
@@ -853,7 +1316,7 @@ function midpoint(
 }
 
 /** point-to-segment distance */
-function pointSegDistance(
+export function pointSegDistance(
   px: number,
   py: number,
   ax: number,
@@ -875,6 +1338,13 @@ function segToBoxDistance(
   seg: { ax: number; ay: number; bx: number; by: number },
   box: Box,
 ): number {
+  if (box.capsula) {
+    const c = box.capsula;
+    return Math.max(
+      0,
+      segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, c.ax, c.ay, c.bx, c.by) - c.r,
+    );
+  }
   if (box.raggio !== undefined) {
     const c = centroDi(box);
     return Math.max(
