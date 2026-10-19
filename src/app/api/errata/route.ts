@@ -117,6 +117,20 @@ export async function POST(req: Request): Promise<Response> {
     `\nDocumento di errata ${ricerca.trovato.codice ?? ""} (${ricerca.trovato.url}), ${documento.pagine} pagine:\n\n${documento.testo.slice(0, 90_000)}`,
   ].join("\n\n");
 
+  // BYOK: a failed lookup is NOT "no key", or the turn would quietly move
+  // onto the server's key
+  let keys: Awaited<ReturnType<typeof getAgentKeys>> = {};
+  if (viewer) {
+    try {
+      keys = await getAgentKeys(
+        viewer.userId,
+        (await listUserOrganizations(viewer.userId)).map((o) => o.id),
+      );
+    } catch {
+      return Response.json({ error: "impossibile leggere le chiavi API: riprova fra poco" }, { status: 503 });
+    }
+  }
+
   const risposta = await runAgentTurn(
     {
       system: SYSTEM,
@@ -144,12 +158,7 @@ export async function POST(req: Request): Promise<Response> {
       messages: [{ role: "user", content: brief }],
     },
     {
-      keys: viewer
-        ? await getAgentKeys(
-            viewer.userId,
-            (await listUserOrganizations(viewer.userId).catch(() => [])).map((o) => o.id),
-          ).catch(() => ({}))
-        : {},
+      keys,
     },
   );
 

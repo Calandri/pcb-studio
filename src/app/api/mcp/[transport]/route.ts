@@ -6,6 +6,8 @@ import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { extractComponents, extractIssues } from "@/lib/inspect";
+import { getAgentKeys } from "@/lib/llm-keys";
+import { listUserOrganizations } from "@/lib/org-store";
 import { claimProject, listAccessibleProjects, projectAccess, type Viewer } from "@/lib/acl";
 import {
   filesHash,
@@ -364,7 +366,15 @@ function buildHandler(viewer: Viewer) {
         if ((await projectAccess(projectId, viewer)) !== "edit") {
           return deniedEdit();
         }
-        const { result } = await executeTool(projectId, "review_layout", {});
+        // BYOK: the token user's key, like in the app; a failed lookup stops here
+        let keys: Awaited<ReturnType<typeof getAgentKeys>>;
+        try {
+          const orgs = await listUserOrganizations(viewer.userId);
+          keys = await getAgentKeys(viewer.userId, orgs.map((o) => o.id));
+        } catch {
+          return text({ error: "impossibile leggere le chiavi API: riprova fra poco" });
+        }
+        const { result } = await executeTool(projectId, "review_layout", {}, undefined, { keys });
         return text(result);
       },
     );

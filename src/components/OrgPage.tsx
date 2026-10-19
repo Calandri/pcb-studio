@@ -10,11 +10,10 @@ type Member = { userId: string; email: string; role: string };
 type Token = { id: string; name: string; prefix: string };
 type LibraryItem = { id: number; name: string; description: string; source: string; version: number };
 type Datasheet = { id: number; title: string; pages?: number };
-type MaskedKey = { provider: "glm" | "gemini"; hint: string; scope: "user" | "org"; orgId: string | null };
+type MaskedKey = { provider: "openrouter"; hint: string; scope: "user" | "org"; orgId: string | null };
 
 const PROVIDER_LABELS: Record<MaskedKey["provider"], string> = {
-  glm: "GLM (Z.ai)",
-  gemini: "Gemini (Google)",
+  openrouter: "OpenRouter",
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -441,7 +440,7 @@ export function OrgPage({
               const form = new FormData(formEl);
               const scope = String(form.get("scope") ?? "user");
               const d = await post("/api/keys", {
-                provider: String(form.get("provider") ?? "glm"),
+                provider: String(form.get("provider") ?? "openrouter"),
                 scope,
                 orgId: orgs[0]?.id,
                 key: String(form.get("key") ?? ""),
@@ -456,8 +455,7 @@ export function OrgPage({
               <Select
                 name="provider"
                 options={[
-                  { value: "glm", label: "GLM (Z.ai)" },
-                  { value: "gemini", label: "Gemini (Google)" },
+                  { value: "openrouter", label: "OpenRouter" },
                 ]}
               />
               <Select

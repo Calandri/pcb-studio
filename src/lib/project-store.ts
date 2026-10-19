@@ -331,37 +331,6 @@ export async function saveRevision(
   `;
 }
 
-export interface AgentRunStats {
-  projectId: string;
-  ip: string | null;
-  steps: number;
-  tokensIn: number;
-  tokensOut: number;
-  stopReason: string;
-  durationMs: number;
-}
-
-export async function recordAgentRun(run: AgentRunStats): Promise<void> {
-  const sql = db();
-  if (!sql) return;
-  await sql`
-    INSERT INTO agent_runs (project_id, ip, steps, tokens_in, tokens_out, stop_reason, duration_ms)
-    VALUES (${run.projectId}, ${run.ip}, ${run.steps}, ${run.tokensIn},
-            ${run.tokensOut}, ${run.stopReason}, ${run.durationMs})
-  `;
-}
-
-/** runs in the last hour per IP: the basis of the /api/agent rate limit */
-export async function countRecentRunsByIp(ip: string): Promise<number> {
-  const sql = db();
-  if (!sql) return 0;
-  const [row] = (await sql`
-    SELECT count(*)::int AS n FROM agent_runs
-    WHERE ip = ${ip} AND created_at > now() - interval '1 hour'
-  `) as Array<{ n: number }>;
-  return row?.n ?? 0;
-}
-
 export async function appendChatMessage(
   projectId: string,
   role: ChatMessage["role"],

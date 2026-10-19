@@ -1215,7 +1215,12 @@ export function Studio({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ projectId, history: historyRef.current }),
       });
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok || !res.body) {
+        // the server says why (a run already active on the project, the hourly
+        // limit, a key that does not decrypt): the bare status said nothing
+        const d = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(d?.error ?? `HTTP ${res.status}`);
+      }
       started = true;
 
       let completed = false;

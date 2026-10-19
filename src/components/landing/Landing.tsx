@@ -105,7 +105,7 @@ const COPY = {
       },
       card2: {
         title: "Con la tua API key",
-        body: "Il copilota integrato nello Studio con la tua chiave GLM o Gemini, cifrata e salvata nel tuo profilo o in quello dell'organizzazione.",
+        body: "Il copilota integrato nello Studio con la tua chiave OpenRouter, cifrata e salvata nel tuo profilo o in quello dell'organizzazione.",
         tag: "Disponibile ora",
       },
     },
@@ -209,7 +209,7 @@ const COPY = {
       },
       card2: {
         title: "With your API key",
-        body: "The copilot built into the Studio, running on your GLM or Gemini key — encrypted and stored on your profile or your organisation's.",
+        body: "The copilot built into the Studio, running on your OpenRouter key, encrypted and stored on your profile or your organisation's.",
         tag: "Available now",
       },
     },

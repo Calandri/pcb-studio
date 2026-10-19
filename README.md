@@ -22,7 +22,7 @@ un secondo, senza ricompilare la scheda.
 - **tscircuit** per schematico, autorouting e export (Gerber, BOM, pick&place)
 - **Auth.js v5** con magic link via email (AWS SES)
 - **Neon Postgres** per progetti, chat, cache di compilazione, libreria
-- **Agente LLM** (GLM / Gemini, BYOK) con strumenti di progettazione e un
+- **Agente LLM** via OpenRouter (preset, mai un modello nel codice; BYOK) con strumenti di progettazione e un
   server MCP per pilotare l'app da agenti esterni — vedi [MCP.md](./MCP.md)
 
 L'import STEP usa [occt-import-js](https://github.com/kovacsv/occt-import-js)
