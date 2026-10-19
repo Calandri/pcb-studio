@@ -1,7 +1,15 @@
 /**
- * Compiles JSCAD sources into triangulated meshes, inside a Web Worker: the
- * code may come from the AI and here it has no access to DOM, network or
- * external imports — only to the @jscad/modeling library passed to it.
+ * Compiles JSCAD sources into triangulated meshes, inside a Web Worker, so a
+ * heavy or endless source cannot freeze the page (the client terminates the
+ * worker on timeout, see jscad-client.ts).
+ *
+ * This is NOT a sandbox. The code may come from the AI, and the names shadowed
+ * below (fetch, self, globalThis...) only keep honest code from reaching them
+ * by accident: `Function("return this")()` or any constructor chain gets the
+ * worker's global back, and from there the network, with the app's own origin
+ * and cookies. The worker has no DOM, and that is the whole guarantee. Real
+ * isolation (a sandboxed iframe with an opaque origin, or a server-side
+ * runner) is a separate piece of work.
  *
  * Source contract: it defines `main(jscad)` and returns a geom3 or an array
  * of geom3. The result is an array of flat meshes (positions/normals/indices),
@@ -33,7 +41,7 @@ self.onmessage = async (event: MessageEvent<JscadWorkerRequest>) => {
   try {
     if (code.length > 100_000) throw new Error("sorgente troppo lungo (max 100k caratteri)");
     const jscad = await loadJscad();
-    // no import/require/fetch in the source's environment: it only gets jscad
+    // import/require/fetch hidden from honest code: an obstacle, not a boundary
     const factory = new Function(
       "jscad",
       `"use strict";\nconst require = undefined, fetch = undefined, importScripts = undefined, XMLHttpRequest = undefined, WebSocket = undefined, self = undefined, globalThis = undefined;\n${code}\n;return main(jscad);`,
