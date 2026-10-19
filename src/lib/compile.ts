@@ -1,7 +1,7 @@
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
-import { runDrcChecks, type DrcViolation } from "./drc";
+import { ingombroForma, rameDelForo, runDrcChecks, type DrcViolation } from "./drc";
 import {
   controllaLunghezze,
   leggiGruppi,
@@ -21,6 +21,7 @@ import {
 } from "./schematic-quality";
 import {
   DEFAULT_DESIGN_RULES,
+  DESIGN_RULES_PATH,
   FAB_RULESETS,
   resolveDesignRules,
   type DesignRules,
@@ -28,8 +29,8 @@ import {
 import { routeBoard, type RouteReport } from "./autoroute";
 import { placeComponents, type PlacementReport } from "./placement";
 import {
-  computeUnroutedGroupKeys,
   scoreCircuit,
+  unroutedGroups,
   type CircuitScore,
 } from "./route-score";
 import {
@@ -162,8 +163,17 @@ export interface CompileSummary {
    * components its placement has no effect anymore.
    */
   manualEdits: { schematic: number; pcb: number; traceHints: number; total: number };
-  /** fabrication rules chosen for THIS project (design-rules.json) */
-  designRules: { preset: string; label: string; isCustom: boolean; rules: DesignRules };
+  /**
+   * fabrication rules chosen for THIS project (design-rules.json), with what
+   * was wrong in the file when something was (broken JSON, values corrected)
+   */
+  designRules: {
+    preset: string;
+    label: string;
+    isCustom: boolean;
+    rules: DesignRules;
+    warnings?: string[];
+  };
   /**
    * Where the time went: our phases plus the router's internal ones.
    * Without this, "compilation is slow" stays an impression and one
@@ -522,16 +532,6 @@ export async function compileProject(
   try {
     state.attempts += 1;
     geometry = await compileGeometryOnly(fsMap);
-    // PROVA SM (da rimuovere): le colate importate al posto di quelle calcolate
-    if (process.env.SM_POURS && geometry) {
-      const { readFileSync: leggi } = await import("node:fs");
-      const importate = JSON.parse(leggi(process.env.SM_POURS, "utf8")) as CircuitElement[];
-      const facce = new Set(importate.map((p) => String(p.layer)));
-      geometry = [
-        ...geometry.filter((el) => el.type !== "pcb_copper_pour" || !facce.has(String(el.layer))),
-        ...importate,
-      ];
-    }
   } catch (err) {
     state.fatalError = err instanceof Error ? err.message : String(err);
   }
@@ -726,7 +726,9 @@ export async function compileProject(
             // (upsized JLCPCB vias can clash with pads the solver planned around)
             try {
               return runDrcChecks(
-                spliceTraces(base, section.subcircuitId, traces, "eval"),
+                // the project's vias, not JLCPCB's: the candidate is judged
+                // with the copper it will really be written with
+                spliceTraces(base, section.subcircuitId, traces, "eval", projectRules.rules),
                 projectRules.rules,
               ).length;
             } catch {
@@ -740,7 +742,7 @@ export async function compileProject(
         // every section must contribute, otherwise the assembled circuit is incomplete
         if (picks.length === sections.length) {
           state.variants = sectionVariants;
-          const assembled = assembleCircuit(base, picks);
+          const assembled = assembleCircuit(base, picks, projectRules.rules);
           consider(assembled, "variants");
         }
       }
@@ -847,6 +849,13 @@ export async function compileProject(
       state.attempts += 1;
       say({ step: "Rifinisco le zone peggiori", progress: 0.75 });
       const { circuitJson: looped, report } = await routeBoard(state.best.circuitJson, {
+        /*
+         * The PROJECT's rules. Without them the loop measured, redid and
+         * re-widened every zone against JLCPCB's minimums, on a board whose
+         * own rules the final DRC then applied: it could polish a route the
+         * check would reject, and leave alone one it would have accepted.
+         */
+        rules: projectRules.rules,
         budgetMs: Math.max(20_000, timeLeft() - 60_000),
         maxRounds: opts.routeRounds ?? 12,
         useVision: opts.routeVision ?? false,
@@ -908,8 +917,17 @@ export async function compileProject(
    * connected because it sits inside the copper, not because something
    * reaches it.
    */
+  /*
+   * The ground wires are dropped by stitchToPlanes, AFTER it has tried to give
+   * every pad its via, and only for the pads that got one. Dropping them first
+   * (as a separate pass did) meant that a ground pad with no room for a via
+   * lost its only wire before anyone asked whether it had another way down.
+   */
   const pours = (geometry ?? []).filter((el) => el.type === "pcb_copper_pour");
-  const poured = dropPouredNetTraces([...state.best.circuitJson, ...pours]);
+  const poured =
+    pours.length > 0
+      ? [...state.best.circuitJson.filter((el) => el.type !== "pcb_copper_pour"), ...pours]
+      : state.best.circuitJson;
   state.best = { ...state.best, circuitJson: poured };
 
   const routed = snapTo45(
@@ -1139,37 +1157,6 @@ function withoutCopperPours(fsMap: FsMap): FsMap {
     ...fsMap,
     "main.tsx": main.replace(/^[ \t]*<copperpour\b[^>]*\/>[ \t]*\r?\n/gim, ""),
   };
-}
-
-/**
- * Ground traces, after the pour, are copper in the middle of copper: they are
- * thrown away. A ground pad is connected because it SITS INSIDE the pour, not
- * because a trace reaches it — and that trace, besides being useless, steals
- * the corridor from a signal.
- */
-function dropPouredNetTraces(circuitJson: CircuitElement[]): CircuitElement[] {
-  const pouredNets = new Set<string>();
-  for (const el of circuitJson) {
-    if (el.type !== "pcb_copper_pour") continue;
-    const net = String(el.source_net_id ?? "");
-    if (net) pouredNets.add(net);
-  }
-  if (pouredNets.size === 0) return circuitJson;
-
-  const pouredSourceTraces = new Set<string>();
-  for (const el of circuitJson) {
-    if (el.type !== "source_trace") continue;
-    const nets = (el.connected_source_net_ids as string[] | undefined) ?? [];
-    if (nets.some((n) => pouredNets.has(String(n)))) {
-      pouredSourceTraces.add(String(el.source_trace_id ?? ""));
-    }
-  }
-  if (pouredSourceTraces.size === 0) return circuitJson;
-
-  return circuitJson.filter(
-    (el) =>
-      el.type !== "pcb_trace" || !pouredSourceTraces.has(String(el.source_trace_id ?? "")),
-  );
 }
 
 /**
@@ -1683,20 +1670,22 @@ function summarize(
     String(el.display_name ?? el.source_trace_id ?? "trace");
   const connections = sourceTraceEls.map(traceLabel).slice(0, 40);
 
-  // Routing is judged per CONNECTIVITY GROUP, not per source trace: traces on
-  // the same net get merged by the router, so only some of them carry the
-  // pcb_trace. A group counts as unrouted only if NONE of its traces routed
-  // (id-based or geometric detection, depending on who produced the traces).
+  // Routing is judged per CONNECTIVITY GROUP, pad by pad: a group is open
+  // as long as one of its pads is not on the same copper as the others, even
+  // when some of its traces exist (see route-score.ts, unroutedGroups).
   const groupKey = (el: CircuitElement) =>
     String(el.subcircuit_connectivity_map_key ?? el.source_trace_id ?? "");
-  const unroutedKeys = computeUnroutedGroupKeys(circuitJson);
+  const unrouted = unroutedGroups(circuitJson);
+  const unroutedKeys = new Set(unrouted.keys());
 
   // pad positions per connectivity group (for unrouted detail + ratsnest)
   const pcbPortBySourcePort = new Map<string, CircuitElement>();
+  const pcbPortById = new Map<string, CircuitElement>();
   for (const el of circuitJson) {
     if (el.type === "pcb_port" && el.source_port_id) {
       pcbPortBySourcePort.set(String(el.source_port_id), el);
     }
+    if (el.type === "pcb_port" && el.pcb_port_id) pcbPortById.set(String(el.pcb_port_id), el);
   }
   const groupInfo = new Map<
     string,
@@ -1737,10 +1726,24 @@ function summarize(
     unroutedGroupSeen.add(key);
     unroutedConnections.push(info.label);
     if (unroutedDetail.length < 10) {
+      /*
+       * The pads still waiting for copper, when the group is half routed:
+       * pointing at all of them would send whoever reads it to pads that are
+       * already connected.
+       */
+      const inAttesa: Point[] = [];
+      for (const id of unrouted.get(key) ?? []) {
+        const port = pcbPortById.get(id);
+        const x = num(port?.x);
+        const y = num(port?.y);
+        if (!port || x === null || y === null) continue;
+        const layers = (port.layers as string[] | undefined) ?? [];
+        inAttesa.push({ x, y, layer: layers[0] ?? null });
+      }
       unroutedDetail.push({
         name: info.label,
         nets: [...info.nets].slice(0, 4),
-        points: info.points.slice(0, 8).map((p) => ({
+        points: (inAttesa.length > 0 ? inAttesa : info.points).slice(0, 8).map((p) => ({
           x: round2(p.x),
           y: round2(p.y),
           layer: p.layer,
@@ -1800,10 +1803,21 @@ function summarize(
     const elenco = e.misure
       .map((m) => `${m.net} ${m.lunghezzaMm}mm`)
       .join(", ");
+    // a net that cannot be measured is said by name: see lunghezze.ts
+    const assenti = e.mancanti.filter((m) => m.motivo === "assente").map((m) => m.net);
+    const senzaRame = e.mancanti.filter((m) => m.motivo === "senza_rame").map((m) => m.net);
+    const mancano = [
+      assenti.length ? `non esistono sulla scheda (nome sbagliato?): ${assenti.join(", ")}` : "",
+      senzaRame.length ? `non hanno ancora rame: ${senzaRame.join(", ")}` : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
     prcViolations.push({
       rule: "matched_length",
       severity: "warn",
-      message: `il gruppo ${e.gruppo} vuole le reti lunghe uguale entro ${e.tolleranzaMm}mm e ne ballano ${e.scartoMm}mm (misurato sul rame di ogni rete, non sul percorso fra i due pin come fa Altium): ${elenco}`,
+      message: mancano
+        ? `il gruppo ${e.gruppo} non si puo' appaiare, alcune reti non si misurano: ${mancano}${elenco ? ` (misurate: ${elenco})` : ""}`
+        : `il gruppo ${e.gruppo} vuole le reti lunghe uguale entro ${e.tolleranzaMm}mm e ne ballano ${e.scartoMm}mm (misurato sul rame di ogni rete, non sul percorso fra i due pin come fa Altium): ${elenco}`,
     });
   }
   // multi-ruleset: the main DRC already covers the ruleset CHOSEN by the
@@ -1894,6 +1908,10 @@ function summarize(
           : " - schematic NOT sectioned"
       }.`
     : `Compile finished with ${reportedErrors.length} error(s).`;
+  // a rules file that had to be corrected is said where the agent reads first
+  const regoleCorrette = projectRules.warnings?.length
+    ? ` ATTENZIONE ${DESIGN_RULES_PATH}: ${projectRules.warnings.join("; ")}.`
+    : "";
 
   return {
     ok,
@@ -1923,6 +1941,7 @@ function summarize(
       label: projectRules.label,
       isCustom: projectRules.isCustom,
       rules: projectRules.rules,
+      ...(projectRules.warnings?.length ? { warnings: projectRules.warnings } : {}),
     },
     // compileProject fills this in, being the only one that knows how long everything took
     profile: { spans: [], totalMs: 0 },
@@ -1930,7 +1949,7 @@ function summarize(
     targets,
     routingAttempts: 1,
     router: "default",
-    message,
+    message: message + regoleCorrette,
   };
 }
 
@@ -1970,7 +1989,13 @@ function computeCongestion(circuitJson: CircuitElement[]): CongestionCell[] {
       const w = num(el.width) ?? (num(el.radius) ?? 0) * 2;
       const h = num(el.height) ?? (num(el.radius) ?? 0) * 2;
       addBox(x - w / 2, y - h / 2, x + w / 2, y + h / 2);
-    } else if (el.type === "pcb_plated_hole" || el.type === "pcb_via") {
+    } else if (el.type === "pcb_plated_hole") {
+      // the copper as its shape declares it, pills and square pads included
+      const forma = rameDelForo(el);
+      if (!forma) continue;
+      const b = ingombroForma(forma);
+      addBox(b.minX, b.minY, b.maxX, b.maxY);
+    } else if (el.type === "pcb_via") {
       const x = num(el.x);
       const y = num(el.y);
       const d = num(el.outer_diameter) ?? num(el.hole_diameter);
