@@ -2,8 +2,9 @@ import { KicadToCircuitJsonConverter } from "kicad-to-circuit-json";
 import { parseKicadModToCircuitJson } from "kicad-component-converter";
 import {
   circuitJsonToProjectFiles,
+  commentSafe,
+  etichetteDeiPin,
   footprintJsx,
-  portHintsOf,
   toPascalCase,
   type El,
 } from "./circuit-json-to-project";
@@ -17,8 +18,7 @@ import {
  * Footprints are rebuilt inline from the pcb elements (the converter expands
  * them), so imported designs keep their REAL pad geometry — no guessing.
  *
- * Altium: no open converter exists. Bridge path: KiCad imports .SchDoc/.PcbDoc
- * natively, save as KiCad project, import here.
+ * Altium has its own importer now (altium-import.ts).
  */
 
 // ---------------------------------------------------------------------------
@@ -38,19 +38,14 @@ export async function importKicadFootprint(
   const base = filename.replace(/\.kicad_mod$/i, "");
   const name = toPascalCase(base);
 
-  const pinNumbers = new Set<string>();
-  for (const el of soup) {
-    for (const hint of portHintsOf(el)) {
-      if (/^\d+$/.test(hint)) pinNumbers.add(hint);
-    }
-  }
-  const pinLabels = [...pinNumbers]
-    .sort((a, b) => Number(a) - Number(b))
-    .map((n, i) => `pin${i + 1}: "${n}"`)
-    .join(", ");
+  /*
+   * `pin<n>` for the pad NUMBERED n: numbering the sorted pads from one put
+   * every label after a gap (pads 1, 2, 4, 5) on the wrong pad.
+   */
+  const pinLabels = etichetteDeiPin(soup);
 
   const body = footprintJsx(soup, {}, "      ");
-  const code = `// Importato da KiCad footprint: ${base}.kicad_mod
+  const code = `// Importato da KiCad footprint: ${commentSafe(`${base}.kicad_mod`, 120)}
 export const ${name} = (props: any) => (
   <chip
     {...props}
@@ -58,7 +53,7 @@ export const ${name} = (props: any) => (
       <footprint>
 ${body}
       </footprint>
-    }${pinLabels ? `\n    pinLabels={{ ${pinLabels} }}` : ""}
+    }${pinLabels ? `\n    pinLabels={${pinLabels}}` : ""}
   />
 )
 `;
@@ -88,8 +83,14 @@ export function importKicadProject(
   const stats = converter.getStats();
   const warnings = converter.getWarnings();
 
-  const { fsMap, components, traces } = circuitJsonToProjectFiles(cj, {
+  const progetto = circuitJsonToProjectFiles(cj, {
     origine: `Importato da KiCad (${files.map((f) => f.path).join(", ")})`,
   });
-  return { fsMap, stats, warnings, components, traces };
+  return {
+    fsMap: progetto.fsMap,
+    stats,
+    warnings: [...warnings, ...progetto.warnings],
+    components: progetto.components,
+    traces: progetto.traces,
+  };
 }

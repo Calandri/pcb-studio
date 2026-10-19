@@ -252,24 +252,37 @@ export function schematicaNativa(
   return { perComponente, sezioni };
 }
 
+/** one side of a symbol, as tscircuit's schPinArrangement wants it */
+export interface LatoDisposto {
+  pins: string[];
+  direction: "top-to-bottom" | "left-to-right";
+}
+
+export type DisposizionePin = Partial<
+  Record<"leftSide" | "rightSide" | "topSide" | "bottomSide", LatoDisposto>
+>;
+
 /**
- * The pin arrangement as a JS object literal, ready to go inside a JSX
- * expression, or null when the symbol is not worth reproducing (too few pins:
- * the default symbol is better).
+ * The pin arrangement as DATA, or null when the symbol is not worth reproducing
+ * (too few pins: the default symbol is better).
+ *
+ * Data and not code: the pin names come from the file, and turning them into
+ * source text is the serializer's job (circuit-json-to-project.ts), which is the
+ * one place that knows how to write a string from a file into a program.
  */
-export function disposizionePin(lati: LatiDelSimbolo | undefined): string | null {
+export function disposizionePin(lati: LatiDelSimbolo | undefined): DisposizionePin | null {
   if (!lati || contaPin(lati) < MIN_PIN_PER_DISPORRE) return null;
-  const lato = (pins: string[], nome: string, verticale: boolean): string | null =>
-    pins.length
-      ? `${nome}: { pins: [${pins.map((p) => JSON.stringify(p)).join(", ")}], direction: "${
-          verticale ? "top-to-bottom" : "left-to-right"
-        }" }`
-      : null;
-  const parti = [
-    lato(lati.sinistra, "leftSide", true),
-    lato(lati.destra, "rightSide", true),
-    lato(lati.su, "topSide", false),
-    lato(lati.giu, "bottomSide", false),
-  ].filter((p): p is string => p !== null);
-  return parti.length ? `{ ${parti.join(", ")} }` : null;
+  const out: DisposizionePin = {};
+  const lato = (
+    chiave: keyof DisposizionePin,
+    pins: string[],
+    direction: LatoDisposto["direction"],
+  ) => {
+    if (pins.length) out[chiave] = { pins: pins.map(String), direction };
+  };
+  lato("leftSide", lati.sinistra, "top-to-bottom");
+  lato("rightSide", lati.destra, "top-to-bottom");
+  lato("topSide", lati.su, "left-to-right");
+  lato("bottomSide", lati.giu, "left-to-right");
+  return Object.keys(out).length ? out : null;
 }

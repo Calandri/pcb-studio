@@ -10,6 +10,13 @@
  * then edit like any other, not an opaque blob. That is why the footprints are
  * rebuilt inline from the pcb elements: the imported board keeps the pad
  * geometry it had, without guessing which library part it resembled.
+ *
+ * AND BECAUSE IT IS CODE, IT IS EXECUTED. main.tsx is evaluated on the server,
+ * so every string that comes from an imported file — a silkscreen text, a pin
+ * name, a manufacturer code, a file name — is attacker-controlled input landing
+ * in a program. None of it is ever pasted in raw: values go through jsLiteral()
+ * inside an expression container, comments through commentSafe(), and the few
+ * names written bare (designators, nets) are reduced to [A-Za-z0-9_] first.
  */
 import { disposizionePin, type LatiDelSimbolo } from "./altium-schematic";
 
@@ -22,6 +29,55 @@ const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 
 const r3 = (v: number): number => Number(v.toFixed(3));
+
+const norm360 = (a: number): number => ((a % 360) + 360) % 360;
+
+// ---------------------------------------------------------------------------
+// generated code is code: the only three ways a value from the file gets in
+// ---------------------------------------------------------------------------
+
+/**
+ * Any JSON-able value as a JavaScript expression, safe to put inside `{...}`.
+ *
+ * JSON is a subset of JavaScript, with two gaps that matter here: U+2028 and
+ * U+2029 are legal raw inside a JSON string and are LINE TERMINATORS to a
+ * JavaScript tokenizer older than ES2019 (and to every `//` comment), and
+ * `</script` or `<!--` inside a string still closes a script block if the code
+ * ever travels through HTML. Both are escaped; the value read back is the same.
+ *
+ * The one thing JSON cannot express safely in an object literal is a
+ * `__proto__` key, which sets the prototype instead of a property: it is
+ * dropped.
+ */
+export function jsLiteral(value: unknown): string {
+  const json =
+    JSON.stringify(value, (k, v) => (k === "__proto__" ? undefined : v)) ?? "undefined";
+  return json
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029")
+    .replace(/<(?=[/!])/g, "\\u003c");
+}
+
+/** a string from the file as a JavaScript string literal */
+export const jsStr = (value: unknown): string => jsLiteral(String(value ?? ""));
+
+/**
+ * Text that goes into a `//` comment.
+ *
+ * A line comment ends at the first line terminator, and JavaScript has four:
+ * \n, \r, U+2028 and U+2029. A file name or a datasheet URL carrying any of
+ * them ends the comment and turns the rest of the line into code. They become
+ * spaces, as does every other control character, `*\/` is broken up in case the
+ * text ever lands in a block comment, and the length is capped.
+ */
+export function commentSafe(value: unknown, max = 160): string {
+  const testo = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/\*\//g, "* /")
+    .replace(/\s+/g, " ")
+    .trim();
+  return testo.length > max ? `${testo.slice(0, Math.max(0, max - 3))}...` : testo;
+}
 
 const toPascalCase = (s: string): string => {
   const parts = s.replace(/[^A-Za-z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean);
@@ -37,6 +93,66 @@ const safeNet = (name: string): string => {
   const cleaned = name.replace(/[^A-Za-z0-9_]/g, "_").replace(/^(\d)/, "P$1");
   return NET_SAFE_RE.test(cleaned) ? cleaned : `N_${cleaned}`;
 };
+
+/**
+ * THE NAME EACH COMPONENT GETS IN THE PROJECT, decided once.
+ *
+ * A designator is cleaned to [A-Za-z0-9_] before it becomes a name, and two
+ * different designators can clean up to the same thing: `C-1` and `C_1` are both
+ * `C_1`. Written twice, tscircuit refuses the board ("Multiple immediate
+ * children found with name C_1") — or worse, a selector picks the wrong part.
+ * The second one gets a number and the import says so.
+ *
+ * A component with no name at all used to come out as `name=""`, and every
+ * connection to it was dropped without a word because its selector was empty.
+ * It gets `K<n>` instead, also said out loud. The named ones are placed first,
+ * so a real relay called K3 keeps its name and the nameless part takes another.
+ *
+ * Everything that writes a component name — main.tsx, the net names, the order
+ * codes added afterwards — reads it from here, so they cannot disagree.
+ */
+export interface NomiComponenti {
+  /** the name written in main.tsx, by source_component_id */
+  perId: Map<string, string>;
+  /** the same, by the designator as the file writes it (first holder wins) */
+  perDesignator: Map<string, string>;
+  avvisi: string[];
+}
+
+export function nomiDeiComponenti(cj: El[]): NomiComponenti {
+  const perId = new Map<string, string>();
+  const perDesignator = new Map<string, string>();
+  const avvisi: string[] = [];
+  const presi = new Set<string>();
+  const libero = (base: string): string => {
+    let nome = base;
+    for (let i = 2; presi.has(nome); i++) nome = `${base}_${i}`;
+    presi.add(nome);
+    return nome;
+  };
+  const componenti = cj.filter((el) => el.type === "source_component");
+  componenti.forEach((el, i) => {
+    const grezzo = String(el.name ?? "").trim();
+    if (!grezzo) return;
+    const base = safeRef(grezzo);
+    const nome = libero(base);
+    perId.set(String(el.source_component_id ?? `#${i}`), nome);
+    if (!perDesignator.has(grezzo)) perDesignator.set(grezzo, nome);
+    if (nome !== base) {
+      avvisi.push(
+        `il designator "${grezzo}" nel progetto diventerebbe ${base}, che e' gia' di un altro componente: chiamato ${nome}`,
+      );
+    }
+  });
+  componenti.forEach((el, i) => {
+    const id = String(el.source_component_id ?? `#${i}`);
+    if (perId.has(id)) return;
+    const nome = libero(`K${i + 1}`);
+    perId.set(id, nome);
+    avvisi.push(`un componente senza designator nel file: chiamato ${nome}`);
+  });
+  return { perId, perDesignator, avvisi };
+}
 
 /**
  * Net names that are legal AND still distinct.
@@ -64,11 +180,7 @@ function risolviNomiRete(cj: El[]): (raw: string) => string {
    * the number.
    */
   const DI_UN_COMPONENTE = "<questo nome e' di un componente>";
-  for (const el of cj) {
-    if (el.type !== "source_component") continue;
-    const nome = safeRef(String(el.name ?? ""));
-    if (nome) preso.set(nome, DI_UN_COMPONENTE);
-  }
+  for (const nome of nomiDeiComponenti(cj).perId.values()) preso.set(nome, DI_UN_COMPONENTE);
   for (const el of cj) {
     if (el.type !== "source_net") continue;
     const raw = String(el.name ?? "");
@@ -105,6 +217,8 @@ interface FootprintCtx {
    * board.
    */
   sotto?: boolean;
+  /** where to say what could not be written exactly */
+  avvisi?: string[];
 }
 
 function localize(x: number, y: number, ctx: FootprintCtx): { x: number; y: number } {
@@ -131,13 +245,237 @@ function localize(x: number, y: number, ctx: FootprintCtx): { x: number; y: numb
  * Inside a bottom component every layer is flipped: a pad written "top" comes
  * out on the bottom. Which is exactly what you want for a part's own pads, and
  * exactly what you must undo when writing the side the pad is really on.
+ *
+ * Only the two outer faces exist for pads and silkscreen: anything else the
+ * file says is read as top, so no string from the file reaches the code.
  */
-const faccia = (reale: string, ctx: FootprintCtx): string =>
-  ctx.sotto ? (reale === "bottom" ? "top" : "bottom") : reale;
+const faccia = (reale: unknown, ctx: FootprintCtx): "top" | "bottom" => {
+  const vera = String(reale ?? "top") === "bottom" ? "bottom" : "top";
+  return ctx.sotto ? (vera === "bottom" ? "top" : "bottom") : vera;
+};
+
+/**
+ * The angle of an element relative to its component, which is what tscircuit
+ * composes with the component's own rotation.
+ */
+const angoloLocale = (bordo: number, ctx: FootprintCtx): number =>
+  norm360(bordo - (ctx.rotationDeg ?? 0));
+
+/** the angle to write: underneath the board the mirror turns it into its supplement */
+const angoloScritto = (locale: number, ctx: FootprintCtx): number =>
+  ctx.sotto ? norm360(180 - locale) : locale;
+
+/**
+ * Quarter turns are written by swapping the sides, which every later pass
+ * understands without knowing anything about rotation; any other angle has to be
+ * stated.
+ */
+function quartoDiGiro(gradi: number): "dritto" | "traverso" | null {
+  const m = norm360(gradi) % 180;
+  if (m < 3 || m > 177) return "dritto";
+  if (Math.abs(m - 90) < 3) return "traverso";
+  return null;
+}
+
+/** a vector of the element's own frame, in the component's frame */
+function vettoreLocale(
+  ox: number,
+  oy: number,
+  locale: number,
+  ctx: FootprintCtx,
+): { x: number; y: number } {
+  const rad = (locale * Math.PI) / 180;
+  const x = ox * Math.cos(rad) - oy * Math.sin(rad);
+  const y = ox * Math.sin(rad) + oy * Math.cos(rad);
+  return { x: r3(ctx.sotto ? -x : x), y: r3(y) };
+}
 
 function portHintsOf(el: El): string[] {
-  const hints = (el.port_hints as string[] | undefined) ?? [];
-  return hints.map(String);
+  const hints = (el.port_hints as unknown[] | undefined) ?? [];
+  return Array.isArray(hints) ? hints.map(String) : [];
+}
+
+const positivo = (v: unknown): number | null => {
+  const n = num(v);
+  return n !== null && n > 0 ? n : null;
+};
+
+/**
+ * A plated hole, with the shape it has.
+ *
+ * Reducing every one to a round pad with a round hole was wrong for half the
+ * connectors that exist: the shell of a USB-C receptacle is held by SLOTS, a
+ * pin header often has a square pad for pin one, and both converters say so —
+ * `pill`/`oval` with their outer and hole sizes, `circular_hole_with_rect_pad`,
+ * `pill_hole_with_rect_pad`, `hole_with_polygon_pad`. Each becomes the
+ * `<platedhole shape=...>` tscircuit has for it.
+ *
+ * The rotation is handled like the pads': a quarter turn swaps the sides, any
+ * other angle is written as `pcbRotation`, which tscircuit composes with the
+ * component's. A shape nobody here knows becomes a round pad AND a line in the
+ * report, never a silent guess.
+ */
+function platedHoleJsx(
+  el: El,
+  ctx: FootprintCtx,
+  indent: string,
+  p: { x: number; y: number },
+  hints: string,
+  maskProp: string,
+): string {
+  const forma = String(el.shape ?? "circle");
+  const base = `portHints={${hints}} pcbX={${p.x}} pcbY={${p.y}}${maskProp}`;
+  const giro = (bordo: number) => {
+    const locale = angoloLocale(bordo, ctx);
+    const quarto = quartoDiGiro(locale);
+    return {
+      locale,
+      traverso: quarto === "traverso",
+      prop: quarto ? "" : ` pcbRotation={${r3(angoloScritto(locale, ctx))}}`,
+    };
+  };
+
+  if (forma === "oval" || forma === "pill") {
+    let ow = positivo(el.outer_width) ?? positivo(el.outer_diameter);
+    let oh = positivo(el.outer_height) ?? ow;
+    let hw = positivo(el.hole_width) ?? positivo(el.hole_diameter);
+    let hh = positivo(el.hole_height) ?? hw;
+    if (ow && oh && hw && hh) {
+      const g = giro(num(el.ccw_rotation) ?? 0);
+      if (g.traverso) [ow, oh, hw, hh] = [oh, ow, hh, hw];
+      return `${indent}<platedhole shape="${forma}" outerWidth={${r3(ow)}} outerHeight={${r3(oh)}} holeWidth={${r3(hw)}} holeHeight={${r3(hh)}}${g.prop} ${base} />`;
+    }
+  }
+
+  if (
+    forma === "circular_hole_with_rect_pad" ||
+    forma === "pill_hole_with_rect_pad" ||
+    forma === "rotated_pill_hole_with_rect_pad"
+  ) {
+    const w = positivo(el.rect_pad_width);
+    const h = positivo(el.rect_pad_height);
+    const rotRect = num(el.rect_ccw_rotation) ?? num(el.ccw_rotation) ?? 0;
+    const g = giro(rotRect);
+    const raggio = positivo(el.rect_border_radius);
+    const bordo = raggio ? ` rectBorderRadius={${r3(raggio)}}` : "";
+    const ox = num(el.hole_offset_x) ?? 0;
+    const oy = num(el.hole_offset_y) ?? 0;
+    /*
+     * The hole offset is a vector of the pad's own frame: with the pad written
+     * unrotated it is turned into the component's frame here, with the pad
+     * written rotated it stays where it is and tscircuit turns it.
+     */
+    const off = ox || oy
+      ? (() => {
+          const v = g.prop ? { x: r3(ox), y: r3(oy) } : vettoreLocale(ox, oy, g.locale, ctx);
+          return ` holeOffsetX={${v.x}} holeOffsetY={${v.y}}`;
+        })()
+      : "";
+    if (w && h) {
+      const [pw, ph] = g.traverso ? [h, w] : [w, h];
+      if (forma === "circular_hole_with_rect_pad") {
+        const d = positivo(el.hole_diameter);
+        if (d) {
+          return `${indent}<platedhole shape="circular_hole_with_rect_pad" holeDiameter={${r3(d)}} rectPadWidth={${r3(pw)}} rectPadHeight={${r3(ph)}}${bordo}${off}${g.prop} ${base} />`;
+        }
+      } else {
+        let hw = positivo(el.hole_width);
+        let hh = positivo(el.hole_height);
+        if (hw && hh) {
+          /* a slot turned against its own pad: only quarter turns can be said */
+          const relativo = norm360((num(el.hole_ccw_rotation) ?? rotRect) - rotRect);
+          const q = quartoDiGiro(relativo);
+          if (q === "traverso") [hw, hh] = [hh, hw];
+          if (q === null) {
+            ctx.avvisi?.push(
+              `un'asola ruotata di ${r3(relativo)} gradi rispetto al suo pad: scritta allineata al pad`,
+            );
+          }
+          if (g.traverso) [hw, hh] = [hh, hw];
+          return `${indent}<platedhole shape="pill_hole_with_rect_pad" holeWidth={${r3(hw)}} holeHeight={${r3(hh)}} rectPadWidth={${r3(pw)}} rectPadHeight={${r3(ph)}}${bordo}${off}${g.prop} ${base} />`;
+        }
+      }
+    }
+  }
+
+  if (forma === "hole_with_polygon_pad") {
+    /*
+     * The pad outline is relative to the hole and is NOT turned by tscircuit
+     * with the component, so it is written as the file states it.
+     */
+    const contorno = ((el.pad_outline as Array<Record<string, unknown>> | undefined) ?? [])
+      .map((q) => ({ x: num(q?.x), y: num(q?.y) }))
+      .filter((q): q is { x: number; y: number } => q.x !== null && q.y !== null);
+    const forme = ["circle", "oval", "pill", "rotated_pill"];
+    const foro = forme.includes(String(el.hole_shape)) ? String(el.hole_shape) : "circle";
+    const d = positivo(el.hole_diameter);
+    const hw = positivo(el.hole_width) ?? d;
+    const hh = positivo(el.hole_height) ?? hw;
+    if (contorno.length >= 3 && (foro === "circle" ? d : hw && hh)) {
+      const misure =
+        foro === "circle" ? `holeDiameter={${r3(d!)}}` : `holeWidth={${r3(hw!)}} holeHeight={${r3(hh!)}}`;
+      const punti = contorno.map((q) => `{x:${r3(q.x)},y:${r3(q.y)}}`).join(",");
+      return `${indent}<platedhole shape="hole_with_polygon_pad" holeShape="${foro}" ${misure} padOutline={[${punti}]} holeOffsetX={${r3(num(el.hole_offset_x) ?? 0)}} holeOffsetY={${r3(num(el.hole_offset_y) ?? 0)}} ${base} />`;
+    }
+  }
+
+  if (forma !== "circle") {
+    ctx.avvisi?.push(`un foro metallizzato di forma "${commentSafe(forma, 40)}" scritto come foro tondo`);
+  }
+  const hd = positivo(el.hole_diameter) ?? positivo(el.hole_width) ?? 0.8;
+  const od =
+    positivo(el.outer_diameter) ??
+    (Math.max(
+      num(el.outer_width) ?? 0,
+      num(el.outer_height) ?? 0,
+      num(el.rect_pad_width) ?? 0,
+      num(el.rect_pad_height) ?? 0,
+    ) ||
+      1.6);
+  return `${indent}<platedhole shape="circle" holeDiameter={${r3(hd)}} outerDiameter={${r3(od)}} ${base} />`;
+}
+
+/**
+ * A hole with no copper: round, square, or a slot.
+ *
+ * tscircuit does NOT turn a hole with its component — it reads its width and
+ * height as they are and only its own `pcbRotation` — so the sizes written are
+ * the board's, whatever part the hole sits in. A slot used to be dropped on the
+ * floor here (only `hole_diameter` was read, and a slot has none).
+ */
+function holeJsx(
+  el: El,
+  p: { x: number; y: number },
+  indent: string,
+  avvisi?: string[],
+): string | null {
+  const forma = String(el.hole_shape ?? el.shape ?? "circle");
+  if (forma === "circle" || forma === "square") {
+    const d = positivo(el.hole_diameter) ?? positivo(el.diameter);
+    if (!d) return null;
+    return forma === "square"
+      ? `${indent}<hole shape="rect" width={${r3(d)}} height={${r3(d)}} pcbX={${p.x}} pcbY={${p.y}} />`
+      : `${indent}<hole pcbX={${p.x}} pcbY={${p.y}} diameter={${r3(d)}} />`;
+  }
+  let w = positivo(el.hole_width) ?? positivo(el.width);
+  let h = positivo(el.hole_height) ?? positivo(el.height);
+  const tipo =
+    forma === "rotated_pill" ? "pill" : ["pill", "oval", "rect"].includes(forma) ? forma : null;
+  if (!w || !h || !tipo) {
+    const d = Math.min(w ?? Infinity, h ?? Infinity);
+    if (!Number.isFinite(d)) return null;
+    avvisi?.push(`un foro di forma "${commentSafe(forma, 40)}" scritto come foro tondo`);
+    return `${indent}<hole pcbX={${p.x}} pcbY={${p.y}} diameter={${r3(d)}} />`;
+  }
+  const rot = num(el.ccw_rotation) ?? 0;
+  const quarto = quartoDiGiro(rot);
+  if (quarto === "traverso") [w, h] = [h, w];
+  let rotProp = "";
+  if (quarto === null) {
+    if (tipo === "pill") rotProp = ` pcbRotation={${r3(norm360(rot))}}`;
+    else avvisi?.push(`un foro ${tipo} ruotato di ${r3(rot)} gradi: scritto dritto`);
+  }
+  return `${indent}<hole shape="${tipo}" width={${r3(w)}} height={${r3(h)}} pcbX={${p.x}} pcbY={${p.y}}${rotProp} />`;
 }
 
 function footprintJsx(elements: El[], ctx: FootprintCtx, indent: string): string {
@@ -145,19 +483,19 @@ function footprintJsx(elements: El[], ctx: FootprintCtx, indent: string): string
   for (const el of elements) {
     const x = num(el.x);
     const y = num(el.y);
+    /*
+     * The solder mask opening. Without it a pad is a rectangle of copper on a
+     * drawing; with it there is the ring of bare laminate the fab actually
+     * leaves, which is what a pad looks like on a board and in the CAD it came
+     * from.
+     */
+    const mask = num(el.soldermask_margin);
+    const maskProp = mask !== null && mask > 0 ? ` solderMaskMargin={${r3(mask)}}` : "";
     if (el.type === "pcb_smtpad" && x !== null && y !== null) {
       const p = localize(x, y, ctx);
-      const hints = JSON.stringify(portHintsOf(el));
+      const hints = jsLiteral(portHintsOf(el));
       const rot = num(el.ccw_rotation);
-      const layer = faccia(String(el.layer ?? "top"), ctx);
-      /*
-       * The solder mask opening. Without it a pad is a rectangle of copper on a
-       * drawing; with it there is the ring of bare laminate the fab actually
-       * leaves, which is what a pad looks like on a board and in the CAD it came
-       * from.
-       */
-      const mask = num(el.soldermask_margin);
-      const maskProp = mask !== null && mask > 0 ? ` solderMaskMargin={${r3(mask)}}` : "";
+      const layer = faccia(el.layer, ctx);
       /*
        * A ROUND pad is described by a radius, not by width and height: tscircuit
        * refuses `shape="circle"` without one, and the component fails to build
@@ -173,6 +511,27 @@ function footprintJsx(elements: El[], ctx: FootprintCtx, indent: string): string
       } else {
         const w = num(el.width) ?? (num(el.radius) ?? 0) * 2;
         const h = num(el.height) ?? (num(el.radius) ?? 0) * 2;
+        const locale = angoloLocale(rot ?? 0, ctx);
+        const quarto = quartoDiGiro(locale);
+        /*
+         * An OBROUND pad is a pill, and at a quarter turn tscircuit has one
+         * (`shape="pill"`, sides swapped like the rectangles'). At any other
+         * angle the rotated rectangle around it is written instead, and said.
+         */
+        const pillola = el.shape === "pill" || el.shape === "rotated_pill";
+        if (pillola && quarto && w > 0 && h > 0) {
+          const [pw, ph] = quarto === "traverso" ? [h, w] : [w, h];
+          const raggio = Math.min(num(el.radius) ?? Math.min(w, h) / 2, Math.min(w, h) / 2);
+          lines.push(
+            `${indent}<smtpad portHints={${hints}} shape="pill" width={${r3(pw)}} height={${r3(ph)}} radius={${r3(raggio)}} pcbX={${p.x}} pcbY={${p.y}} layer="${layer}"${maskProp} />`,
+          );
+          continue;
+        }
+        if (pillola) ctx.avvisi?.push("un pad ovale ruotato scritto come il rettangolo che lo contiene");
+        /* the corner of a rounded rectangle: an LQFP pin is one */
+        const angolo = num(el.rect_border_radius) ?? num(el.corner_radius);
+        const angoloProp =
+          angolo !== null && angolo > 0 ? ` cornerRadius={${r3(Math.min(angolo, Math.min(w, h) / 2))}}` : "";
         /*
          * A PAD TURNED ON ITS OWN.
          *
@@ -192,39 +551,29 @@ function footprintJsx(elements: El[], ctx: FootprintCtx, indent: string): string
          * the component's own is applied afterwards; and underneath the board it
          * is mirrored, which turns an angle into its supplement.
          */
-        const locale = ((((rot ?? 0) - (ctx.rotationDeg ?? 0)) % 360) + 360) % 360;
-        const mezzoGiro = locale % 180;
-        const dritto = mezzoGiro < 3 || mezzoGiro > 177;
-        const diTraverso = Math.abs(mezzoGiro - 90) < 3;
-        if (dritto || diTraverso) {
+        if (quarto) {
+          const diTraverso = quarto === "traverso";
           lines.push(
-            `${indent}<smtpad portHints={${hints}} shape="rect" width={${r3(diTraverso ? h : w)}} height={${r3(diTraverso ? w : h)}} pcbX={${p.x}} pcbY={${p.y}} layer="${layer}"${maskProp} />`,
+            `${indent}<smtpad portHints={${hints}} shape="rect" width={${r3(diTraverso ? h : w)}} height={${r3(diTraverso ? w : h)}}${angoloProp} pcbX={${p.x}} pcbY={${p.y}} layer="${layer}"${maskProp} />`,
           );
         } else {
-          const scritta = ctx.sotto ? (180 - locale + 360) % 360 : locale;
           lines.push(
-            `${indent}<smtpad portHints={${hints}} shape="rotated_rect" width={${r3(w)}} height={${r3(h)}} ccwRotation={${r3(scritta)}} pcbX={${p.x}} pcbY={${p.y}} layer="${layer}"${maskProp} />`,
+            `${indent}<smtpad portHints={${hints}} shape="rotated_rect" width={${r3(w)}} height={${r3(h)}}${angoloProp} ccwRotation={${r3(angoloScritto(locale, ctx))}} pcbX={${p.x}} pcbY={${p.y}} layer="${layer}"${maskProp} />`,
           );
         }
       }
     } else if (el.type === "pcb_plated_hole" && x !== null && y !== null) {
       const p = localize(x, y, ctx);
-      const hints = JSON.stringify(portHintsOf(el));
-      lines.push(
-        `${indent}<platedhole portHints={${hints}} pcbX={${p.x}} pcbY={${p.y}} holeDiameter={${r3(num(el.hole_diameter) ?? 0.8)}} outerDiameter={${r3(num(el.outer_diameter) ?? 1.6)}} />`,
-      );
+      lines.push(platedHoleJsx(el, ctx, indent, p, jsLiteral(portHintsOf(el)), maskProp));
     } else if (el.type === "pcb_hole" && x !== null && y !== null) {
-      const p = localize(x, y, ctx);
-      lines.push(
-        `${indent}<hole pcbX={${p.x}} pcbY={${p.y}} diameter={${r3(num(el.hole_diameter) ?? num(el.diameter) ?? 1)}} />`,
-      );
+      const riga = holeJsx(el, localize(x, y, ctx), indent, ctx.avvisi);
+      if (riga) lines.push(riga);
     } else if (el.type === "pcb_silkscreen_text" && x !== null && y !== null) {
       const p = localize(x, y, ctx);
-      const text = String(el.text ?? "").replace(/"/g, '\\"');
+      const text = String(el.text ?? "");
       if (text) {
-        const layer = faccia(String(el.layer ?? "top"), ctx);
         lines.push(
-          `${indent}<silkscreentext pcbX={${p.x}} pcbY={${p.y}} text="${text}" fontSize={${r3(num(el.font_size) ?? 1)}} layer="${layer}" />`,
+          `${indent}<silkscreentext pcbX={${p.x}} pcbY={${p.y}} text={${jsStr(text)}} fontSize={${r3(num(el.font_size) ?? 1)}} layer="${faccia(el.layer, ctx)}" />`,
         );
       }
     } else if (el.type === "pcb_silkscreen_path") {
@@ -235,13 +584,13 @@ function footprintJsx(elements: El[], ctx: FootprintCtx, indent: string): string
        * around every component.
        */
       const route = ((el.route as Array<Record<string, unknown>> | undefined) ?? [])
-        .map((p) => ({ x: num(p.x), y: num(p.y) }))
+        .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
         .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null)
         .map((p) => localize(p.x, p.y, ctx));
       if (route.length >= 2) {
         const punti = route.map((p) => `{x:${p.x},y:${p.y}}`).join(",");
         lines.push(
-          `${indent}<silkscreenpath route={[${punti}]} strokeWidth={${r3(num(el.stroke_width) ?? 0.1)}} layer="${faccia(String(el.layer ?? "top"), ctx)}" />`,
+          `${indent}<silkscreenpath route={[${punti}]} strokeWidth={${r3(num(el.stroke_width) ?? 0.1)}} layer="${faccia(el.layer, ctx)}" />`,
         );
       }
     } else if (el.type === "pcb_courtyard_rect") {
@@ -256,6 +605,73 @@ function footprintJsx(elements: El[], ctx: FootprintCtx, indent: string): string
   return lines.join("\n");
 }
 
+/**
+ * The pin labels of a reusable footprint: `pin<n>` for every pad NUMBERED n.
+ *
+ * It used to number the sorted pad names from one — `pin${i + 1}` — which is
+ * right only when the pads are 1..N with no gaps. A footprint with pads 1, 2,
+ * 4, 5 (a part with a pin removed) got pin3 = "4" and pin4 = "5": every label
+ * after the gap on the wrong pad. A pad named by a word (SH, EP, A1) is
+ * reached by its own name and needs no label.
+ */
+export function etichetteDeiPin(elements: El[]): string {
+  const etichette = new Map<string, string>();
+  for (const e of elements) {
+    for (const hint of portHintsOf(e)) {
+      if (!/^\d+$/.test(hint)) continue;
+      const chiave = `pin${Number(hint)}`;
+      if (!etichette.has(chiave)) etichette.set(chiave, hint);
+    }
+  }
+  const ordinate = [...etichette].sort((a, b) => Number(a[0].slice(3)) - Number(b[0].slice(3)));
+  return ordinate.length ? jsLiteral(Object.fromEntries(ordinate)) : "";
+}
+
+/**
+ * The board outline worth writing, or null when the rectangle says it all.
+ *
+ * Both converters hand over the outline the CAD drew, and what was written here
+ * was always the bounding rectangle: an L shaped board, a board with a notch for
+ * a connector, a round one, all came in as the rectangle around them — with
+ * copper poured and parts allowed where there is no board. tscircuit takes the
+ * polygon as `outline`; a plain rectangle stays width and height, which reads
+ * better and is the same board.
+ */
+export function contornoDaScrivere(
+  punti: unknown,
+): { punti: Array<{ x: number; y: number }>; larghezza: number; altezza: number } | null {
+  const grezzi = (Array.isArray(punti) ? punti : [])
+    .map((p) => ({ x: num((p as { x?: unknown })?.x), y: num((p as { y?: unknown })?.y) }))
+    .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null)
+    .map((p) => ({ x: r3(p.x), y: r3(p.y) }));
+  const puliti: Array<{ x: number; y: number }> = [];
+  for (const p of grezzi) {
+    const prima = puliti[puliti.length - 1];
+    if (!prima || prima.x !== p.x || prima.y !== p.y) puliti.push(p);
+  }
+  // the closing vertex repeats the first one
+  if (
+    puliti.length > 1 &&
+    puliti[0].x === puliti[puliti.length - 1].x &&
+    puliti[0].y === puliti[puliti.length - 1].y
+  ) {
+    puliti.pop();
+  }
+  if (puliti.length < 3) return null;
+  const xs = puliti.map((p) => p.x);
+  const ys = puliti.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  if (maxX - minX <= 0 || maxY - minY <= 0) return null;
+  const vicino = (a: number, b: number) => Math.abs(a - b) <= 0.01;
+  const soloAngoli = puliti.every(
+    (p) => (vicino(p.x, minX) || vicino(p.x, maxX)) && (vicino(p.y, minY) || vicino(p.y, maxY)),
+  );
+  if (soloAngoli) return null;
+  return { punti: puliti, larghezza: r3(maxX - minX), altezza: r3(maxY - minY) };
+}
 
 const FTYPE_ELEMENT: Record<string, string> = {
   simple_resistor: "resistor",
@@ -269,6 +685,30 @@ const FTYPE_ELEMENT: Record<string, string> = {
   simple_pinheader: "pinheader",
   simple_fuse: "fuse",
 };
+
+/**
+ * The value of a passive as the compiler reads it, or null.
+ *
+ * "10 kOhms" is a phrase, "10kohm" is a quantity: spaces out, plural out,
+ * a decimal comma becomes a point, and the European "4k7" becomes "4.7k". What
+ * is still not a number followed by a unit is NOT written: it used to go in as
+ * `resistance="..."` straight from the file, which is both a component that
+ * fails to build and a string nobody had checked inside the code.
+ */
+export function valoreLeggibile(grezzo: string | null | undefined): string | null {
+  let v = String(grezzo ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/ohms$/i, "ohm")
+    .replace(/farads?$/i, "F")
+    .replace(/^(\d+),(\d+)/, "$1.$2");
+  const europeo = /^(\d+)([RrKkMmGgpnuµ])(\d+)([A-Za-zµΩ]*)$/.exec(v);
+  if (europeo) {
+    const [, intero, unita, decimali, resto] = europeo;
+    v = `${intero}.${decimali}${/^[Rr]$/.test(unita) ? "" : unita}${resto}`;
+  }
+  return /^\d+(?:\.\d+)?[A-Za-zµΩ]{0,8}$/.test(v) ? v : null;
+}
 
 /**
  * What a component IS, beyond its geometry: the manufacturer code, the electrical
@@ -301,6 +741,10 @@ export interface ProjectFromCircuitJson {
   fsMap: Record<string, string>;
   components: number;
   traces: number;
+  /** what could not be written as the file has it */
+  warnings: string[];
+  /** the name each designator got in main.tsx: see nomiDeiComponenti */
+  nomi: Map<string, string>;
 }
 
 export function circuitJsonToProjectFiles(
@@ -309,7 +753,12 @@ export function circuitJsonToProjectFiles(
     origine: string;
     larghezzaMm?: number;
     altezzaMm?: number;
-    /** identity per component name: see ComponentIdentity */
+    /**
+     * The board outline, when the caller has a better one than the Circuit
+     * JSON's (Altium: arcs included). Otherwise pcb_board.outline is used.
+     */
+    contorno?: Array<{ x: number; y: number }>;
+    /** identity per component designator: see ComponentIdentity */
     identita?: Map<string, ComponentIdentity>;
     /** how many copper layers the board has: 4 when there are inner planes */
     strati?: number;
@@ -351,6 +800,7 @@ export function circuitJsonToProjectFiles(
     };
   },
 ): ProjectFromCircuitJson {
+  const warnings: string[] = [];
   const pcbComponentBySource = new Map<string, El>();
   for (const el of cj) {
     if (el.type === "pcb_component" && el.source_component_id) {
@@ -361,23 +811,31 @@ export function circuitJsonToProjectFiles(
   for (const el of cj) {
     if (el.type === "source_port") portById.set(String(el.source_port_id), el);
   }
-  const compNameById = new Map<string, string>();
-  for (const el of cj) {
-    if (el.type === "source_component") {
-      compNameById.set(String(el.source_component_id), String(el.name ?? "?"));
-    }
-  }
+  const nomi = nomiDeiComponenti(cj);
+  warnings.push(...nomi.avvisi);
 
   const nomeDiRete = risolviNomiRete(cj);
+  const avvisiForme: string[] = [];
 
   const componentLines: string[] = [];
   let compIndex = 0;
   for (const el of cj) {
     if (el.type !== "source_component") continue;
     compIndex++;
-    const sourceId = String(el.source_component_id);
+    const sourceId = String(el.source_component_id ?? `#${compIndex - 1}`);
     const pcb = pcbComponentBySource.get(sourceId);
-    const name = safeRef(String(el.name ?? `K${compIndex}`));
+    const grezzo = String(el.name ?? "").trim();
+    const name = nomi.perId.get(sourceId) ?? `K${compIndex}`;
+    /*
+     * What the caller knows about a part is keyed by the designator the FILE
+     * uses, which is not always the name written here (`C-1` becomes `C_1`).
+     * Only the first holder of a designator answers to it: a renamed duplicate
+     * is only looked up by its own new name.
+     */
+    const proprio = nomi.perDesignator.get(grezzo) === name;
+    const cerca = <T,>(m: Map<string, T> | undefined): T | undefined =>
+      m ? ((proprio ? m.get(grezzo) : undefined) ?? m.get(name)) : undefined;
+
     const ftype = String(el.ftype ?? "simple_chip");
     const center = (pcb?.center as { x?: number; y?: number } | undefined) ?? {};
     const cx = num(center.x) ?? 0;
@@ -394,26 +852,33 @@ export function circuitJsonToProjectFiles(
      * are on opposite faces.
      */
     const sotto = String(pcb?.layer ?? "top") === "bottom";
-    const pos = ` pcbX={${r3(cx)}} pcbY={${r3(cy)}}${rotation ? ` pcbRotation={${rotation}}` : ""}${sotto ? ` layer="bottom"` : ""}`;
+    const pos = ` pcbX={${r3(cx)}} pcbY={${r3(cy)}}${rotation ? ` pcbRotation={${r3(rotation)}}` : ""}${sotto ? ` layer="bottom"` : ""}`;
 
     // inline footprint from this component's pcb elements (real geometry)
-    const compEls = cj.filter((e) => e.pcb_component_id === pcb?.pcb_component_id);
+    const compEls = pcb ? cj.filter((e) => e.pcb_component_id === pcb.pcb_component_id) : [];
     const hasGeometry = compEls.some(
       (e) => e.type === "pcb_smtpad" || e.type === "pcb_plated_hole" || e.type === "pcb_hole",
     );
-    const nomeFootprint = opts.identita?.get(name)?.pattern;
+    const id = cerca(opts.identita);
+    const nomeFootprint = id?.pattern?.replace(/\s+/g, " ").trim();
+    const prima = avvisiForme.length;
     const footprint = hasGeometry
-      ? `\n    footprint={\n      <footprint${nomeFootprint ? ` name="${nomeFootprint.replace(/"/g, "&quot;")}"` : ""}>\n${footprintJsx(compEls, { cx, cy, rotationDeg: rotation, sotto }, "        ")}\n      </footprint>\n    }`
+      ? `\n    footprint={\n      <footprint${nomeFootprint ? ` name={${jsStr(nomeFootprint.slice(0, 120))}}` : ""}>\n${footprintJsx(compEls, { cx, cy, rotationDeg: rotation, sotto, avvisi: avvisiForme }, "        ")}\n      </footprint>\n    }`
       : "";
+    for (let i = prima; i < avvisiForme.length; i++) avvisiForme[i] = `${name}: ${avvisiForme[i]}`;
 
     // pin labels from source ports
-    const pinLabels = cj
-      .filter((e) => e.type === "source_port" && e.source_component_id === sourceId)
-      .map((e) => {
-        const pin = e.pin_number ? `pin${e.pin_number}` : String(e.name ?? "?");
-        return `${pin}: "${String(e.name ?? pin)}"`;
-      });
-    const labels = pinLabels.length ? `\n    pinLabels={{ ${pinLabels.join(", ")} }}` : "";
+    const porte = cj.filter((e) => e.type === "source_port" && e.source_component_id === sourceId);
+    const etichette: Record<string, string> = {};
+    for (const e of porte) {
+      const numero = e.pin_number ? String(e.pin_number) : "";
+      const pin = numero ? `pin${numero}` : String(e.name ?? "?");
+      if (pin in etichette || pin === "__proto__") continue;
+      etichette[pin] = String(e.name ?? pin);
+    }
+    const labels = Object.keys(etichette).length
+      ? `\n    pinLabels={${jsLiteral(etichette)}}`
+      : "";
 
     /*
      * WHAT THE PART IS, not just where its pads are.
@@ -423,19 +888,22 @@ export function circuitJsonToProjectFiles(
      * comes from the source CAD and is written here, so the imported project has
      * a BOM from minute one instead of ninety-eight anonymous chips.
      */
-    const corpo = opts.corpi3d?.get(name);
+    const corpo = cerca(opts.corpi3d);
+    const scatola = corpo?.scatola;
+    const misureScatola = scatola
+      ? [scatola.larghezza, scatola.profondita, scatola.altezza].map((v) => num(v))
+      : null;
     const cad = corpo?.url
-      ? ` cadModel={{ objUrl: "${corpo.url}" }}`
-      : corpo?.scatola
+      ? ` cadModel={{ objUrl: ${jsStr(corpo.url)} }}`
+      : misureScatola && misureScatola.every((v) => v !== null && v > 0)
         ? /*
            * No model in the file: a box of the declared height over the real
            * footprint. It says what it is (a placeholder) and it is worth having,
            * because the 3D view is where you find out whether the enclosure closes.
            */
-          ` cadModel={{ jscad: { type: "colorize", color: [0.24, 0.26, 0.25], shape: { type: "cuboid", size: [${corpo.scatola.larghezza}, ${corpo.scatola.profondita}, ${corpo.scatola.altezza}], center: [0, 0, ${r3(corpo.scatola.altezza / 2)}] } } }}`
+          ` cadModel={{ jscad: { type: "colorize", color: [0.24, 0.26, 0.25], shape: { type: "cuboid", size: [${misureScatola.map((v) => r3(v!)).join(", ")}], center: [0, 0, ${r3(misureScatola[2]! / 2)}] } } }}`
         : "";
 
-    const id = opts.identita?.get(name);
     const value = id?.valore ?? (el.display_value ? String(el.display_value) : null);
     // passive tags require their value prop (resistance/capacitance/...): when
     // the PCB carries no value, fall back to a chip with the real footprint
@@ -491,9 +959,6 @@ export function circuitJsonToProjectFiles(
      * non stanno nella forma, si scrive <chip>, che le etichette le accetta
      * tutte. Si perde il triangolo sullo schematico, si tiene la scheda.
      */
-    const quantePorte = cj.filter(
-      (e) => e.type === "source_port" && e.source_component_id === sourceId,
-    ).length;
     const massimoPin: Record<string, number> = {
       resistor: 2,
       capacitor: 2,
@@ -503,24 +968,21 @@ export function circuitJsonToProjectFiles(
       crystal: 2,
       fuse: 2,
     };
-    const troppePorte = (massimoPin[wantedTag] ?? Infinity) < quantePorte;
-    const tag = (requiredProp && !value) || troppePorte ? "chip" : wantedTag;
+    const troppePorte = (massimoPin[wantedTag] ?? Infinity) < porte.length;
     /*
-     * The value written the way the compiler reads it: "10 kOhms" is a phrase,
-     * "10kohm" is a quantity. Spaces out, plural out, and the unit lowercase —
-     * otherwise the part compiles with no value and the BOM has a hole exactly
-     * where the number was.
+     * The value written the way the compiler reads it (see valoreLeggibile). One
+     * that cannot be read is not written, and the part becomes a chip rather
+     * than a passive that fails to build.
      */
-    const valorePulito = (value ?? "")
-      .trim()
-      .replace(/\s+/g, "")
-      .replace(/ohms$/i, "ohm")
-      .replace(/farads?$/i, "F");
-    const valueProp = requiredProp && value ? ` ${requiredProp}="${valorePulito}"` : "";
-    const esc = (v: string) => v.replace(/"/g, "&quot;").replace(/\s+/g, " ").trim();
-    const mpnProp = id?.mpn ? ` manufacturerPartNumber="${esc(id.mpn)}"` : "";
+    const valoreScritto = requiredProp ? valoreLeggibile(value) : null;
+    const tag = (requiredProp && !valoreScritto) || troppePorte ? "chip" : wantedTag;
+    const valueProp = requiredProp && valoreScritto && tag !== "chip"
+      ? ` ${requiredProp}={${jsStr(valoreScritto)}}`
+      : "";
+    const pulito = (v: string) => v.replace(/\s+/g, " ").trim();
+    const mpnProp = id?.mpn ? ` manufacturerPartNumber={${jsStr(pulito(id.mpn).slice(0, 120))}}` : "";
     const descr = [id?.produttore, id?.descrizione].filter(Boolean).join(" - ");
-    const descrProp = descr ? ` description="${esc(descr).slice(0, 200)}"` : "";
+    const descrProp = descr ? ` description={${jsStr(pulito(descr).slice(0, 200))}}` : "";
 
     /*
      * WHERE THE PART SITS ON THE DRAWING, and how its symbol is built.
@@ -533,8 +995,8 @@ export function circuitJsonToProjectFiles(
      * the layout do its job inside it, which is the same thing the sheets of the
      * original schematic were.
      */
-    const disegno = opts.schematica?.perComponente.get(name);
-    const sezioneProp = disegno?.sezione ? ` schSectionName="${disegno.sezione}"` : "";
+    const disegno = cerca(opts.schematica?.perComponente);
+    const sezioneProp = disegno?.sezione ? ` schSectionName={${jsStr(disegno.sezione)}}` : "";
     /*
      * The sides of the symbol. tscircuit halves the pins left and right in pin
      * order, which on a 64 pin part is a column of sixty-four labels; the file
@@ -543,29 +1005,43 @@ export function circuitJsonToProjectFiles(
      * capacitor is better off with its own.
      */
     const disposizione = disposizionePin(disegno?.lati);
-    const pinProp = disposizione ? ` schPinArrangement={${disposizione}}` : "";
+    const pinProp = disposizione ? ` schPinArrangement={${jsLiteral(disposizione)}}` : "";
 
     componentLines.push(
       `    <${tag} name="${name}"${valueProp}${mpnProp}${descrProp}${pos}${sezioneProp}${pinProp}${cad}${footprint}${labels} />`,
     );
+  }
+  warnings.push(...avvisiForme.slice(0, 20));
+  if (avvisiForme.length > 20) {
+    warnings.push(`... e altri ${avvisiForme.length - 20} elementi scritti in forma approssimata`);
   }
 
   // connectivity: 2-port source traces become direct <trace>; larger nets get <net>
   const netLines: string[] = [];
   const traceLines: string[] = [];
   const namedNets = new Set<string>();
+  /*
+   * A port is reached by its name, which comes from the file. A name that cannot
+   * be a selector at all — spaces, quotes, `>` — is reached by its pin number
+   * instead, when it has one; whatever is written, it is a string literal.
+   */
+  const SELETTORE_IMPOSSIBILE = /[\s"'`\\<>,]/;
   const selectorOf = (sourcePortId: string): string | null => {
     const port = portById.get(sourcePortId);
     if (!port) return null;
-    const comp = compNameById.get(String(port.source_component_id ?? ""));
+    const comp = nomi.perId.get(String(port.source_component_id ?? ""));
     if (!comp) return null;
-    return `.${safeRef(comp)} > .${String(port.name ?? `pin${port.pin_number ?? "?"}`)}`;
+    const nome = String(port.name ?? "");
+    const numero = port.pin_number ? String(port.pin_number) : "";
+    const pin = nome && !SELETTORE_IMPOSSIBILE.test(nome) ? nome : numero ? `pin${numero}` : nome;
+    if (!pin) return null;
+    return `.${comp} > .${pin}`;
   };
 
   for (const el of cj) {
     if (el.type !== "source_trace") continue;
     const ports = ((el.connected_source_port_ids as string[] | undefined) ?? [])
-      .map(selectorOf)
+      .map((p) => selectorOf(String(p)))
       .filter((s): s is string => s !== null);
     if (ports.length < 2) continue;
     const netIds = (el.connected_source_net_ids as string[] | undefined) ?? [];
@@ -577,7 +1053,7 @@ export function circuitJsonToProjectFiles(
         })()
       : null;
     if (ports.length === 2 && !netName) {
-      traceLines.push(`    <trace from="${ports[0]}" to="${ports[1]}" />`);
+      traceLines.push(`    <trace from={${jsStr(ports[0])}} to={${jsStr(ports[1])}} />`);
     } else {
       const net = netName ? nomeDiRete(netName) : safeNet(`NET_${traceLines.length}`);
       if (!namedNets.has(net)) {
@@ -585,14 +1061,15 @@ export function circuitJsonToProjectFiles(
         netLines.push(`    <net name="${net}" />`);
       }
       for (const port of ports) {
-        traceLines.push(`    <trace from="${port}" to="net.${net}" />`);
+        traceLines.push(`    <trace from={${jsStr(port)}} to="net.${net}" />`);
       }
     }
   }
 
   const board = cj.find((el) => el.type === "pcb_board");
-  const bw = board ? (num(board.width) ?? 40) : 40;
-  const bh = board ? (num(board.height) ?? 30) : 30;
+  const contorno = contornoDaScrivere(opts.contorno ?? board?.outline);
+  const bw = contorno?.larghezza ?? (board ? (num(board.width) ?? 40) : 40);
+  const bh = contorno?.altezza ?? (board ? (num(board.height) ?? 30) : 30);
 
   /*
    * The silkscreen that belongs to no part — the board's name, a polarity mark,
@@ -601,6 +1078,7 @@ export function circuitJsonToProjectFiles(
    * dropping it would delete exactly the writing a person put there by hand.
    */
   const silkLines: string[] = [];
+  const diScheda: FootprintCtx = { avvisi: [] };
   for (const el of cj) {
     if (el.pcb_component_id) continue;
     /*
@@ -613,28 +1091,29 @@ export function circuitJsonToProjectFiles(
     if (el.type === "pcb_hole") {
       const x = num(el.x);
       const y = num(el.y);
-      const d = num(el.hole_diameter) ?? num(el.diameter);
-      if (x === null || y === null || !d) continue;
-      silkLines.push(`    <hole pcbX={${r3(x)}} pcbY={${r3(y)}} diameter={${r3(d)}} />`);
+      if (x === null || y === null) continue;
+      const riga = holeJsx(el, { x: r3(x), y: r3(y) }, "    ", diScheda.avvisi);
+      if (riga) silkLines.push(riga);
       continue;
     }
     if (el.type === "pcb_silkscreen_text") {
-      const text = String(el.text ?? "").replace(/"/g, '\\"');
+      const text = String(el.text ?? "");
       if (!text) continue;
       silkLines.push(
-        `    <silkscreentext pcbX={${r3(num(el.x) ?? 0)}} pcbY={${r3(num(el.y) ?? 0)}} text="${text}" fontSize={${r3(num(el.font_size) ?? 1)}} layer="${String(el.layer ?? "top")}" />`,
+        `    <silkscreentext pcbX={${r3(num(el.x) ?? 0)}} pcbY={${r3(num(el.y) ?? 0)}} text={${jsStr(text)}} fontSize={${r3(num(el.font_size) ?? 1)}} layer="${faccia(el.layer, diScheda)}" />`,
       );
     } else if (el.type === "pcb_silkscreen_path") {
       const route = ((el.route as Array<Record<string, unknown>> | undefined) ?? [])
-        .map((p) => ({ x: num(p.x), y: num(p.y) }))
+        .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
         .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null);
       if (route.length < 2) continue;
       const punti = route.map((p) => `{x:${r3(p.x)},y:${r3(p.y)}}`).join(",");
       silkLines.push(
-        `    <silkscreenpath route={[${punti}]} strokeWidth={${r3(num(el.stroke_width) ?? 0.1)}} layer="${String(el.layer ?? "top")}" />`,
+        `    <silkscreenpath route={[${punti}]} strokeWidth={${r3(num(el.stroke_width) ?? 0.1)}} layer="${faccia(el.layer, diScheda)}" />`,
       );
     }
   }
+  warnings.push(...(diScheda.avvisi ?? []).map((a) => `scheda: ${a}`));
 
   /*
    * The planes. A pour is not decoration: it is where the returns go, and on a
@@ -642,27 +1121,38 @@ export function circuitJsonToProjectFiles(
    * same thing the app builds on its own boards, so from here on the imported
    * board is treated like any other.
    */
-  const pourLines = (opts.piani ?? []).map((p) => {
-    /*
-     * With an outline the pour fills exactly the shape the file drew; without
-     * one it floods the face, which is what a ground plane does. Both are
-     * <copperpour>: the outline is a prop, and it is what makes a split plane
-     * representable at all.
-     */
-    /*
-     * `boardEdgeMargin={0}` is not decoration: without it the solver keeps its
-     * own 0.2mm back from the shape it is given, and an outline read off a file
-     * comes out 0.2mm smaller all the way round. Measured on this board's power
-     * layer: 563.01mm2 drawn, 468.23mm2 poured, 94.78mm2 missing — 17% of the
-     * layer, lost to a default. The margin exists to keep copper off the edge of
-     * the BOARD; here the edge is already where the CAD put it.
-     */
-    const contorno = p.contorno?.length
-      ? ` boardEdgeMargin={0} outline={[${p.contorno.map((q) => `{x:${r3(q.x)},y:${r3(q.y)}}`).join(",")}]}`
-      : "";
-    return `    <copperpour layer="${p.faccia}" connectsTo="net.${nomeDiRete(p.net)}"${contorno} />`;
-  });
-  const strati = opts.strati && opts.strati > 2 ? ` layers={${opts.strati}}` : "";
+  const STRATO_DI_RAME = /^(top|bottom|inner[1-8])$/;
+  const pourLines = (opts.piani ?? [])
+    .filter((p) => STRATO_DI_RAME.test(String(p.faccia)))
+    .map((p) => {
+      /*
+       * With an outline the pour fills exactly the shape the file drew; without
+       * one it floods the face, which is what a ground plane does. Both are
+       * <copperpour>: the outline is a prop, and it is what makes a split plane
+       * representable at all.
+       */
+      /*
+       * `boardEdgeMargin={0}` is not decoration: without it the solver keeps its
+       * own 0.2mm back from the shape it is given, and an outline read off a file
+       * comes out 0.2mm smaller all the way round. Measured on this board's power
+       * layer: 563.01mm2 drawn, 468.23mm2 poured, 94.78mm2 missing — 17% of the
+       * layer, lost to a default. The margin exists to keep copper off the edge of
+       * the BOARD; here the edge is already where the CAD put it.
+       */
+      const punti = (p.contorno ?? [])
+        .map((q) => ({ x: num(q?.x), y: num(q?.y) }))
+        .filter((q): q is { x: number; y: number } => q.x !== null && q.y !== null);
+      const contornoPiano = punti.length
+        ? ` boardEdgeMargin={0} outline={[${punti.map((q) => `{x:${r3(q.x)},y:${r3(q.y)}}`).join(",")}]}`
+        : "";
+      return `    <copperpour layer="${p.faccia}" connectsTo="net.${nomeDiRete(String(p.net))}"${contornoPiano} />`;
+    });
+  const strati = num(opts.strati);
+  const stratiProp =
+    strati !== null && [4, 6, 8, 10].includes(strati) ? ` layers={${strati}}` : "";
+  const outlineProp = contorno
+    ? ` outline={[${contorno.punti.map((q) => `{x:${q.x},y:${q.y}}`).join(",")}]}`
+    : "";
 
   /*
    * The frames and the titles of the blocks. `schSectionName` alone packs the
@@ -673,13 +1163,15 @@ export function circuitJsonToProjectFiles(
    */
   const sectionLines = (opts.schematica?.sezioni ?? []).map(
     (s) =>
-      `    <schematicsection name="${s.nome}" displayName="${s.titolo.replace(/"/g, "&quot;")}" />`,
+      `    <schematicsection name={${jsStr(s.nome)}} displayName={${jsStr(s.titolo)}} />`,
   );
 
-  const mainTsx = `// ${opts.origine}
+  const larghezza = num(opts.larghezzaMm) ?? bw;
+  const altezza = num(opts.altezzaMm) ?? bh;
+  const mainTsx = `// ${commentSafe(opts.origine, 300)}
 // ${componentLines.length} componenti, ${traceLines.length} connessioni
 export default () => (
-  <board width="${r3(opts.larghezzaMm ?? bw)}mm" height="${r3(opts.altezzaMm ?? bh)}mm"${strati} autorouter="auto_cloud">
+  <board width="${r3(larghezza)}mm" height="${r3(altezza)}mm"${outlineProp}${stratiProp} autorouter="auto_cloud">
 ${componentLines.join("\n")}${sectionLines.length ? `\n${sectionLines.join("\n")}` : ""}
 ${netLines.join("\n")}
 ${traceLines.join("\n")}${
@@ -693,8 +1185,10 @@ ${traceLines.join("\n")}${
     fsMap: { "main.tsx": mainTsx },
     components: componentLines.length,
     traces: traceLines.length,
+    warnings,
+    nomi: nomi.perDesignator,
   };
 }
 
-export { footprintJsx, portHintsOf, toPascalCase, safeRef, safeNet, risolviNomiRete, num, r3 };
+export { footprintJsx, holeJsx, portHintsOf, toPascalCase, safeRef, safeNet, risolviNomiRete, num, r3 };
 export type { El, FootprintCtx };
