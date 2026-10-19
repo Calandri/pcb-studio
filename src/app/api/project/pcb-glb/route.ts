@@ -62,6 +62,56 @@ async function conModelli(
   return circuitJson;
 }
 
+/** the model fields the converter loads from a URL */
+const CAMPI_MODELLO = [
+  "model_stl_url",
+  "model_obj_url",
+  "model_glb_url",
+  "model_gltf_url",
+  "model_step_url",
+  "model_wrl_url",
+];
+/** public CDNs that serve the library's own 3D models (EasyEDA imports point there) */
+const HOST_MODELLI = new Set(["modelcdn.tscircuit.com"]);
+
+/**
+ * THE CONVERTER FETCHES WHATEVER URL THE CIRCUIT NAMES, from the server.
+ *
+ * A `cadModel={{ objUrl: "http://169.254.169.254/..." }}` in the project code —
+ * which the agent and anyone with edit access write — became a request from
+ * our lambda to an address of the attacker's choosing (SSRF), and an absolute
+ * path became a file read (`file://`). So before converting, every model URL
+ * that is not a `data:` mesh (what conModelli makes of our own meshes) or an
+ * https URL on a known model CDN is dropped: the part shows as a box instead of
+ * as the mesh, which is the right price.
+ *
+ * `data:` only for OBJ and STL, which are geometry and nothing else. A glTF
+ * names its buffers by URL, and the converter fetches them: a glTF inside a
+ * `data:` URL would bring the same request back through the side door.
+ */
+function soloModelliSicuri(circuitJson: GltfCircuitJson): GltfCircuitJson {
+  for (const el of circuitJson as unknown as Array<Record<string, unknown>>) {
+    if (el.type !== "cad_component") continue;
+    for (const campo of CAMPI_MODELLO) {
+      const v = el[campo];
+      if (v === undefined || v === null) continue;
+      if (typeof v === "string" && modelloAmmesso(v, campo)) continue;
+      delete el[campo];
+    }
+  }
+  return circuitJson;
+}
+
+function modelloAmmesso(url: string, campo: string): boolean {
+  if (url.startsWith("data:")) return campo === "model_obj_url" || campo === "model_stl_url";
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && HOST_MODELLI.has(u.hostname) && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "default";
   const { ok } = await requireProjectAccess(projectId, "view");
@@ -69,13 +119,18 @@ export async function GET(req: Request): Promise<Response> {
 
   const fsMap = await withLibrary(await getProject(projectId));
   const hash = filesHash(fsMap);
-  const cacheKey = `${projectId}:${hash}`;
+  const compile = await getCompileCache(projectId).catch(() => null);
+  /*
+   * The key is the files AND the board they were drawn from: the same files
+   * can come with a new compile (a reroute, a recheck that moved nothing but
+   * re-poured the planes), and the model in memory would be the old board.
+   */
+  const cacheKey = `${projectId}:${hash}:${compile?.circuitJson?.length ? String(compile.createdAt) : "live"}`;
 
   const cached = glbCache.get(cacheKey);
   if (cached) return glbResponse(cached);
 
   let circuitJson: GltfCircuitJson;
-  const compile = await getCompileCache(projectId).catch(() => null);
   if (compile?.circuitJson?.length) {
     circuitJson = compile.circuitJson as GltfCircuitJson;
   } else {
@@ -92,7 +147,8 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   try {
-    const gltf = await convertCircuitJsonToGltf(await conModelli(circuitJson, projectId), {
+    // the circuit was parsed for this request only: stripping it touches nothing else
+    const gltf = await convertCircuitJsonToGltf(soloModelliSicuri(await conModelli(circuitJson, projectId)), {
       format: "glb",
       boardDrillQuality: "fast",
     });
