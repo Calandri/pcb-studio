@@ -7,8 +7,14 @@ export const maxDuration = 30;
 /**
  * Public endpoint for the feedback widget: validates the note and files it
  * as a GitHub issue. It is anonymous by design (the widget shows on the
- * landing too), so abuse control lives in lib/feedback: honeypot, per-IP
- * rate limit, labelled issues.
+ * landing too), so abuse control lives in lib/feedback: per-IP rate limit,
+ * labelled issues.
+ *
+ * No honeypot any more: a hidden field is filled by the browser's autofill
+ * too, and the real message it caught was answered "ok" and thrown away. On
+ * the 3Bee forms the same trap discarded real leads for weeks (removed
+ * everywhere on 2026-08-12). The field is still accepted, and ignored, so an
+ * older widget keeps working.
  */
 
 const Schema = z.object({
@@ -29,7 +35,7 @@ const Schema = z.object({
   pageTitle: z.string().max(120).optional(),
   userAgent: z.string().max(160).optional(),
   viewport: z.object({ width: z.number().int().max(10000), height: z.number().int().max(10000) }).optional(),
-  /** honeypot: humans never see this field, bots fill it */
+  /** the old honeypot field: accepted and ignored */
   website: z.string().optional(),
 });
 
@@ -38,12 +44,11 @@ export async function POST(req: Request): Promise<Response> {
   if (!parsed.success) {
     return Response.json({ error: "dati non validi: servono tipo, titolo e descrizione" }, { status: 400 });
   }
-  // chi compila il campo invisibile e' un bot: si finge successo e basta
-  if (parsed.data.website !== undefined && parsed.data.website !== "") {
-    return Response.json({ ok: true, number: 0, url: "" });
-  }
-
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+  // Vercel writes x-real-ip itself; x-forwarded-for can carry what the client sent
+  const ip =
+    req.headers.get("x-real-ip")?.trim() ||
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "local";
   try {
     const issue = await createFeedbackIssue(ip, parsed.data, new URL(req.url).origin);
     return Response.json({ ok: true, number: issue.number, url: issue.url });
@@ -61,7 +66,9 @@ export async function GET(req: Request): Promise<Response> {
   if (!shot) return new Response("not found", { status: 404 });
   return new Response(Buffer.from(shot.data, "base64"), {
     headers: {
-      "content-type": shot.contentType,
+      "content-type": "image/jpeg",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; sandbox",
       "cache-control": "public, max-age=31536000, immutable",
     },
   });

@@ -68,8 +68,12 @@ export async function GET(req: Request): Promise<Response> {
 
 function svgResponse(svg: string): Response {
   return new Response(svg, {
+    // an SVG opened as a page runs its scripts in our origin: these headers
+    // make it an image and nothing else, whatever text ended up inside
     headers: {
       "content-type": "image/svg+xml; charset=utf-8",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
       "cache-control": "private, max-age=30",
     },
   });

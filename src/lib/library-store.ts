@@ -156,34 +156,25 @@ export async function saveLibraryComponent(input: {
   await ensureLibraryColumns(sql);
 
   /*
-   * The upsert on ON CONFLICT (org_id, name) never fired: org_id is NULL for
-   * personal components, and in Postgres NULL does not collide with NULL, so
-   * the unique index never saw the conflict. Every save inserted a new row
-   * with version 1 and the read returned the oldest one: editing a library
-   * component was impossible, and the save answered "ok".
-   * Explicit update first, insert only if there was nothing to update.
+   * One statement. The old ON CONFLICT (org_id, name) never fired, because in
+   * Postgres NULL does not collide with NULL, and its replacement (UPDATE,
+   * then INSERT if nothing was updated) let two first saves of the same name
+   * both insert. The unique index on (COALESCE(org_id::text, ''), name) in
+   * db/schema.sql makes the shared library collide on its name.
    */
-  const updated = (await sql`
-    UPDATE library_components SET
-      description = ${input.description},
-      code = ${input.code},
-      source = ${input.source},
-      source_ref = ${input.sourceRef ?? null},
-      version = version + 1,
+  const rows = (await sql`
+    INSERT INTO library_components (name, description, code, source, source_ref)
+    VALUES (${input.name}, ${input.description}, ${input.code}, ${input.source},
+            ${input.sourceRef ?? null})
+    ON CONFLICT ((COALESCE(org_id::text, '')), name) DO UPDATE SET
+      description = EXCLUDED.description,
+      code = EXCLUDED.code,
+      source = EXCLUDED.source,
+      source_ref = EXCLUDED.source_ref,
+      version = library_components.version + 1,
       updated_at = now()
-    WHERE name = ${input.name} AND org_id IS NULL
     RETURNING id, version
   `) as Array<{ id: number; version: number }>;
-
-  const rows =
-    updated.length > 0
-      ? updated
-      : ((await sql`
-          INSERT INTO library_components (name, description, code, source, source_ref)
-          VALUES (${input.name}, ${input.description}, ${input.code}, ${input.source},
-                  ${input.sourceRef ?? null})
-          RETURNING id, version
-        `) as Array<{ id: number; version: number }>);
 
   const { id, version } = rows[0];
   await sql`
@@ -204,9 +195,18 @@ export async function saveLibraryComponent(input: {
  * seventeen identical capacitors on a board (on BAT_BS: 31 distinct codes out of
  * 98 components).
  */
+let datasheetMpnPromise: Promise<void> | null = null;
 async function ensureDatasheetMpn(sql: NonNullable<ReturnType<typeof db>>): Promise<void> {
-  await sql`ALTER TABLE datasheets ADD COLUMN IF NOT EXISTS mpn text`;
-  await sql`CREATE INDEX IF NOT EXISTS datasheets_mpn_idx ON datasheets (mpn)`;
+  // once per lambda, like the other lazy migrations: it ran two DDL
+  // statements, with their locks, on every save and every read
+  datasheetMpnPromise ??= sql`ALTER TABLE datasheets ADD COLUMN IF NOT EXISTS mpn text`
+    .then(() => sql`CREATE INDEX IF NOT EXISTS datasheets_mpn_idx ON datasheets (mpn)`)
+    .then(() => undefined)
+    .catch((err) => {
+      datasheetMpnPromise = null;
+      throw err;
+    });
+  await datasheetMpnPromise;
 }
 
 export async function saveDatasheet(input: {
@@ -221,10 +221,13 @@ export async function saveDatasheet(input: {
   const sql = db();
   if (!sql) throw new Error("database not configured");
   await ensureDatasheetMpn(sql);
+  // Postgres text cannot hold NUL, and PDF extraction produces it: the whole
+  // insert failed on one invisible character
+  const clean = (v: string) => v.replace(/\u0000/g, "");
   const rows = (await sql`
     INSERT INTO datasheets (project_id, title, source_url, text_content, pages, mpn)
-    VALUES (${input.projectId}, ${input.title}, ${input.sourceUrl},
-            ${input.text}, ${input.pages}, ${input.mpn ?? null})
+    VALUES (${input.projectId}, ${clean(input.title)}, ${input.sourceUrl},
+            ${clean(input.text)}, ${input.pages}, ${input.mpn ?? null})
     RETURNING id
   `) as Array<{ id: number }>;
   return { id: Number(rows[0].id) };

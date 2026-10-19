@@ -39,26 +39,32 @@ async function ensureTable(sql: NonNullable<ReturnType<typeof db>>): Promise<voi
   `;
 }
 
-/** true if this IP is over the hourly budget; the call is recorded either way */
-async function overLimit(ip: string): Promise<boolean> {
+/**
+ * Takes one slot of this IP's hourly budget, or returns null when it is spent.
+ * The slot is written BEFORE the work: counting only the finished submissions
+ * let a burst of parallel requests all see the budget still free.
+ */
+async function takeSlot(ip: string): Promise<{ id: string } | null | "no-db"> {
   const sql = db();
-  if (!sql) return false; // no DB: fail open, GitHub's own limits still apply
+  if (!sql) return "no-db"; // no DB: fail open, GitHub's own limits still apply
   await ensureTable(sql);
+  const [slot] = (await sql`
+    INSERT INTO feedback_submissions (ip) VALUES (${ip}) RETURNING id
+  `) as Array<{ id: string }>;
   const [row] = (await sql`
     SELECT count(*) AS n FROM feedback_submissions
     WHERE ip = ${ip} AND created_at > now() - interval '1 hour'
   `) as Array<{ n: string }>;
-  return Number(row.n) >= MAX_PER_IP_PER_HOUR;
+  return Number(row.n) > MAX_PER_IP_PER_HOUR ? null : { id: String(slot.id) };
 }
 
-async function record(ip: string, issueNumber: number | null): Promise<void> {
+async function record(slotId: string, issueNumber: number): Promise<void> {
   const sql = db();
   if (!sql) return;
   try {
-    await ensureTable(sql);
-    await sql`INSERT INTO feedback_submissions (ip, issue_number) VALUES (${ip}, ${issueNumber})`;
+    await sql`UPDATE feedback_submissions SET issue_number = ${issueNumber} WHERE id = ${slotId}`;
   } catch {
-    // losing the record only weakens the rate limit, not the submission
+    // losing the issue number only loses a cross-reference, not the submission
   }
 }
 
@@ -126,10 +132,16 @@ async function ensureShotTable(sql: NonNullable<ReturnType<typeof db>>): Promise
 
 const MAX_SHOT_BASE64 = 550_000; // ~400KB jpeg
 
+/** the bytes really are a JPEG (FF D8 FF): the GET serves them as image/jpeg */
+function isJpegBase64(base64: string): boolean {
+  const head = Buffer.from(base64.slice(0, 8), "base64");
+  return head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+}
+
 async function saveScreenshot(base64: string): Promise<string | null> {
   const sql = db();
   if (!sql) return null;
-  if (base64.length > MAX_SHOT_BASE64) return null;
+  if (base64.length > MAX_SHOT_BASE64 || !isJpegBase64(base64)) return null;
   try {
     await ensureShotTable(sql);
     const [row] = (await sql`
@@ -167,7 +179,8 @@ export async function createFeedbackIssue(
   input: FeedbackInput,
   origin: string,
 ): Promise<{ number: number; url: string }> {
-  if (await overLimit(ip)) {
+  const slot = await takeSlot(ip);
+  if (slot === null) {
     throw new Error("troppi messaggi di fila: riprova tra un po'");
   }
   await ensureLabels();
@@ -209,10 +222,13 @@ export async function createFeedbackIssue(
     }),
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`github HTTP ${res.status}: ${text.slice(0, 200)}`);
+    // the GitHub answer stays in the server log: the endpoint is anonymous,
+    // and upstream error bodies are not for whoever is on the other side
+    const text = await res.text().catch(() => "");
+    console.error(`[feedback] github HTTP ${res.status}: ${text.slice(0, 500)}`);
+    throw new Error("invio non riuscito: riprova tra qualche minuto");
   }
   const issue = (await res.json()) as { number: number; html_url: string };
-  await record(ip, issue.number);
+  if (slot !== "no-db") await record(slot.id, issue.number);
   return { number: issue.number, url: issue.html_url };
 }
