@@ -44,11 +44,14 @@ import {
   applyManualEditsToFsMap,
   countManualEdits,
   emptyManualEdits,
+  findOrphanEdits,
   injectManualEdits,
   parseManualEdits,
   readAttr,
   scanJsxTags,
   MANUAL_EDITS_PATH,
+  type ManualEdits,
+  type OrphanEdits,
 } from "./manual-edits";
 import { applyManualRoutes } from "./manual-routes";
 import { ricolaPiani, type EsitoRicolata } from "./pours-recompute";
@@ -64,7 +67,30 @@ const esitoColate = (e: EsitoRicolata): NonNullable<CompileSummary["pours"]> => 
   bricioleTolte: e.bricioleTolte,
   orfaneTolte: e.orfaneTolte,
   viaRiconosciute: e.viaRiconosciute,
+  colateSparite: e.colateSparite,
 });
+
+/**
+ * Orphan hand edits, said in the message too: the agent reads the message
+ * first, and an edit that acts on nothing is something it can fix (rename
+ * the pin back, or release the edit) only if it knows.
+ */
+function withOrphans(
+  summary: CompileSummary,
+  circuitJson: unknown[],
+  edits: ManualEdits,
+): OrphanEdits | undefined {
+  const orphans = findOrphanEdits(circuitJson, edits);
+  if (orphans.total === 0) return undefined;
+  const names = [
+    ...orphans.pcb_placements,
+    ...orphans.schematic_placements,
+    ...orphans.pcb_routes,
+    ...orphans.manual_trace_hints,
+  ].slice(0, 8);
+  summary.message = `${summary.message} ${orphans.total} modifiche a mano non trovano piu' il loro pezzo (${names.join(", ")}${orphans.total > names.length ? ", ..." : ""}).`;
+  return orphans;
+}
 import {
   analyzePlacement,
   emptyPlacementQuality,
@@ -164,6 +190,12 @@ export interface CompileSummary {
    */
   manualEdits: { schematic: number; pcb: number; traceHints: number; total: number };
   /**
+   * hand edits that point at something no longer on the board (a part the
+   * agent renamed or removed, a route between pads that are gone): they act
+   * on nothing, and the counter above still counted them as "held"
+   */
+  manualEditsOrphans?: OrphanEdits;
+  /**
    * fabrication rules chosen for THIS project (design-rules.json), with what
    * was wrong in the file when something was (broken JSON, values corrected)
    */
@@ -228,6 +260,8 @@ export interface CompileSummary {
     bricioleTolte: number;
     orfaneTolte: number;
     viaRiconosciute: number;
+    /** pours that lost every piece: they existed in the code and are not on the copper */
+    colateSparite?: string[];
   };
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{
@@ -642,6 +676,7 @@ export async function compileProject(
     const summary = await summarize(circuitJson, projectFsMap);
     summary.pours = rapportoColate;
     summary.manualEdits = manualEdits;
+    summary.manualEditsOrphans = withOrphans(summary, circuitJson, parsedManualEdits);
     if (placementReport) summary.placementReport = placementReport;
     const orfane = danglingTraces(circuitJson);
     summary.message = orfane === 0
@@ -977,6 +1012,7 @@ export async function compileProject(
   );
   summary.pours = rapportoColate;
   summary.manualEdits = manualEdits;
+  summary.manualEditsOrphans = withOrphans(summary, circuitJson, parsedManualEdits);
   /*
    * The router's internal phases are read from the solver at the end of the
    * run and end up in the same list as ours: the time accounting must be a

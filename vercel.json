@@ -1,7 +1,21 @@
 {
-  "regions": ["fra1"],
+  "regions": [
+    "fra1"
+  ],
   "functions": {
     "src/app/api/compile/route.ts": {
+      "memory": 3009
+    },
+    "src/app/api/agent/route.ts": {
+      "memory": 3009
+    },
+    "src/app/api/mcp/[transport]/route.ts": {
+      "memory": 3009
+    },
+    "src/app/api/reroute/route.ts": {
+      "memory": 3009
+    },
+    "src/app/api/import/altium/route.ts": {
       "memory": 3009
     }
   }

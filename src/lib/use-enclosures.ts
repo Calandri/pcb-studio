@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
+  CAD_UPLOAD_MAX_BYTES,
   cadExtension,
   parseCadFile,
 } from "./cad-import";
@@ -356,6 +357,19 @@ export function useEnclosures(
       const ext = cadExtension(file.name);
       if (!ext) {
         setImportErrors((e) => [...e, { name: file.name, message: "formato non supportato" }]);
+        return;
+      }
+      // the file travels as base64 in a JSON body, and Vercel refuses bodies
+      // over 4.5 MB: said here, before parsing, instead of a 413 after it
+      if (file.size > CAD_UPLOAD_MAX_BYTES) {
+        const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
+        setImportErrors((e) => [
+          ...e,
+          {
+            name: file.name,
+            message: `file troppo grande (${mb(file.size)} MB, massimo ${mb(CAD_UPLOAD_MAX_BYTES)} MB): semplifica il modello o esportalo in STL`,
+          },
+        ]);
         return;
       }
       setBusy(file.name);
