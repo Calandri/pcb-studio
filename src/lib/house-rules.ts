@@ -4,7 +4,7 @@
  * Circuit JSON: they can be verified without running a compilation.
  */
 import { DEFAULT_DESIGN_RULES } from "./design-rules";
-import { escapeOffAxisDeg } from "./drc";
+import { distanzaPuntoForma, escapeOffAxisDeg, ingombroForma, rameDelForo } from "./drc";
 import {
   insidePour,
   marginInsidePour,
@@ -23,6 +23,34 @@ export interface CircuitElement {
 
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
+
+/**
+ * A BEND IS A PLAIN WIRE POINT. The points inserted to straighten an escape or
+ * to bring a segment to 45 degrees used to be copies of a neighbour (`{...b}`):
+ * when the neighbour was a via the bend became a second, phantom via, and when
+ * it was a pad end it carried the pad's port id, so the route claimed to touch
+ * the pad twice. Only position, layer and width are copied: the rest belongs to
+ * the point it was copied from.
+ */
+function puntoDiPiega(
+  da: Record<string, unknown>,
+  verso: Record<string, unknown>,
+  x: number,
+  y: number,
+): Record<string, unknown> {
+  // the stretch lies on the wire's layer: a via has two, a wire one
+  const filo = da.route_type === "wire" ? da : verso.route_type === "wire" ? verso : da;
+  const layer =
+    filo.layer ?? (da.route_type === "via" ? da.to_layer : verso.from_layer) ?? da.layer;
+  const width = num(filo.width) ?? num(da.width) ?? num(verso.width);
+  return {
+    route_type: "wire",
+    x,
+    y,
+    ...(width !== null ? { width } : {}),
+    ...(layer !== undefined ? { layer } : {}),
+  };
+}
 
 /**
  * Copy of the circuit in which every trace leaves the pad STRAIGHT: where the
@@ -90,11 +118,12 @@ export function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElem
       const span = Math.abs(horizontal ? dx : dy);
       const stub = Math.min(MAX_STUB, Math.max(span * 0.4, 0.05));
 
-      const point = {
-        ...from,
-        x: horizontal ? x + Math.sign(dx) * stub : x,
-        y: horizontal ? y : y + Math.sign(dy) * stub,
-      };
+      const point = puntoDiPiega(
+        from,
+        to,
+        horizontal ? x + Math.sign(dx) * stub : x,
+        horizontal ? y : y + Math.sign(dy) * stub,
+      );
       next.splice(end === "start" ? 1 : next.length - 1, 0, point);
       changed = true;
     }
@@ -178,8 +207,8 @@ export function snapTo45(circuitJson: CircuitElement[]): CircuitElement[] {
       const gap = Math.abs(Math.abs(dx) - Math.abs(dy));
       const bend =
         Math.abs(dx) > Math.abs(dy)
-          ? { ...b, x: ax + Math.sign(dx) * gap, y: ay }
-          : { ...b, x: ax, y: ay + Math.sign(dy) * gap };
+          ? puntoDiPiega(a, b, ax + Math.sign(dx) * gap, ay)
+          : puntoDiPiega(a, b, ax, ay + Math.sign(dy) * gap);
       out.push(bend, b);
       changed = true;
     }
@@ -261,6 +290,16 @@ export function nudgeCrowdedVias(
   const padBoxes: Box[] = [];
   for (const el of circuitJson) {
     if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
+    if (el.type === "pcb_plated_hole") {
+      // a through hole measured by ITS shape: square pads and pills included
+      const forma = rameDelForo(el);
+      if (!forma) continue;
+      padBoxes.push({
+        ...ingombroForma(forma),
+        group: groupOfPort.get(String(el.pcb_port_id ?? "")) ?? "",
+      });
+      continue;
+    }
     const x = num(el.x);
     const y = num(el.y);
     if (x === null || y === null) continue;
@@ -753,14 +792,18 @@ export function stitchToPlanes(
           const gx = Math.max(Math.abs(px - ox) - ow / 2, 0);
           const gy = Math.max(Math.abs(py - oy) - oh / 2, 0);
           peggio = Math.min(peggio, Math.hypot(gx, gy) - raggioVia);
-        } else if (
-          other.type === "pcb_via" ||
-          other.type === "pcb_plated_hole" ||
-          other.type === "pcb_hole"
-        ) {
+        } else if (other.type === "pcb_plated_hole") {
+          const forma = rameDelForo(other);
+          if (!forma) continue;
+          peggio = Math.min(peggio, distanzaPuntoForma(forma, px, py) - raggioVia);
+        } else if (other.type === "pcb_via" || other.type === "pcb_hole") {
           const ox = num(other.x);
           const oy = num(other.y);
-          const d = num(other.outer_diameter) ?? num(other.outer_width) ?? rules.minViaDiameterMm;
+          const d =
+            num(other.outer_diameter) ??
+            num(other.hole_diameter) ??
+            num(other.outer_width) ??
+            rules.minViaDiameterMm;
           if (ox === null || oy === null) continue;
           peggio = Math.min(peggio, Math.hypot(ox - px, oy - py) - d / 2 - raggioVia);
         }
@@ -869,10 +912,26 @@ export function stitchToPlanes(
      * right where the signal passes. Only the traces of OTHER nets matter —
      * landing on the copper of one's own net is exactly the point.
      */
+    /*
+     * The ground wires are still on the board here — they go at the end, and
+     * only where every pad got its via — so a trace is named by its NET when
+     * we can tell it (netDiChiave, or the net its connection names), and the
+     * stitching of that same net does not treat its own copper as an obstacle.
+     */
+    const reteDiTraccia = new Map<string, string>();
+    for (const el of base) {
+      if (el.type !== "source_trace" || !el.source_trace_id) continue;
+      const reti = ((el.connected_source_net_ids as unknown[] | undefined) ?? []).map(String);
+      const suo = reti.find((r) => layersOfNet.has(r));
+      if (suo) reteDiTraccia.set(String(el.source_trace_id), suo);
+    }
     const segmenti: Array<{ ax: number; ay: number; bx: number; by: number; w: number; net: string }> = [];
     for (const el of [...base, ...added]) {
       if (el.type !== "pcb_trace") continue;
-      const net = String(el.subcircuit_connectivity_map_key ?? "");
+      const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+      const rete =
+        netDiChiave.get(chiave) ?? reteDiTraccia.get(String(el.source_trace_id ?? "")) ?? null;
+      const net = rete ? `net:${rete}` : chiave;
       const route = (el.route as Array<Record<string, unknown>> | undefined) ?? [];
       for (let i = 1; i < route.length; i++) {
         const ax = num(route[i - 1].x);
