@@ -58,6 +58,8 @@ export interface TraceSeg {
   traceId: string;
   /** connection name (display_name of the source_trace) */
   connectionName: string | null;
+  /** source_trace it implements: autorouted copper is named by the solver, this is stable */
+  sourceTraceId: string | null;
 }
 
 export interface Pad {
@@ -386,6 +388,7 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
               netKey: String(el.subcircuit_connectivity_map_key ?? ""),
               traceId: String(el.pcb_trace_id ?? ""),
               connectionName: el.connection_name ? String(el.connection_name) : null,
+              sourceTraceId: el.source_trace_id ? String(el.source_trace_id) : null,
             };
             scene.traces.push(current);
           }

@@ -74,6 +74,7 @@ export function RouteCanvas({
   const [selectedTrace, setSelectedTrace] = useState<{
     traceId: string;
     connectionName: string | null;
+    sourceTraceId: string | null;
   } | null>(null);
   const [deleting, setDeleting] = useState(false);
   /*
@@ -179,10 +180,14 @@ export function RouteCanvas({
 
   /** point-to-segment distance, to grab a trace by click */
   const traceAt = useCallback(
-    (p: { x: number; y: number }): { traceId: string; connectionName: string | null } | null => {
+    (p: {
+      x: number;
+      y: number;
+    }): { traceId: string; connectionName: string | null; sourceTraceId: string | null } | null => {
       if (!scene) return null;
       const slack = GRAB_PX / view.k;
-      let best: { traceId: string; connectionName: string | null } | null = null;
+      let best: { traceId: string; connectionName: string | null; sourceTraceId: string | null } | null =
+        null;
       let bestD = Infinity;
       for (const t of scene.traces) {
         if (!t.traceId) continue;
@@ -197,7 +202,7 @@ export function RouteCanvas({
           const tol = Math.max(slack, t.width / 2 + 0.1);
           if (d <= tol && d < bestD) {
             bestD = d;
-            best = { traceId: t.traceId, connectionName: t.connectionName };
+            best = { traceId: t.traceId, connectionName: t.connectionName, sourceTraceId: t.sourceTraceId };
           }
         }
       }
@@ -224,10 +229,15 @@ export function RouteCanvas({
           return;
         }
         const name = selectedTrace.connectionName;
+        const sourceTraceId = selectedTrace.sourceTraceId;
         setSelectedTrace(null);
-        if (redraw && name) {
-          // restart from the first pad of the connection just detached
-          const conn = model.connections.find((c) => c.name === name);
+        if (redraw && (name || sourceTraceId)) {
+          // restart from the first pad of the connection just detached. By the
+          // source trace first: autorouted copper carries the solver's name,
+          // which matches no connection, so "R" never found where to restart
+          const conn =
+            (sourceTraceId && model.connections.find((c) => c.sourceTraceId === sourceTraceId)) ||
+            model.connections.find((c) => c.name === name);
           const pad = conn
             ? model.pads.find((p) => conn.sourcePortIds.includes(p.sourcePortId))
             : null;
@@ -242,9 +252,9 @@ export function RouteCanvas({
                 { x: out.x, y: out.y, layer: start },
               ],
             });
-            setNote(`ridisegna ${name}: i pad bianchi sono la sua net`);
+            setNote(`ridisegna ${conn?.name ?? name ?? "la pista"}: i pad bianchi sono la sua net`);
           } else {
-            setNote(`staccata ${name}: ridisegnala partendo da un pad`);
+            setNote(`staccata ${name ?? "la pista"}: ridisegnala partendo da un pad`);
           }
         } else {
           setNote(
@@ -293,7 +303,9 @@ export function RouteCanvas({
         ...route45(last, landing).map((q) => ({ ...q, layer })),
         { x: pad.x, y: pad.y, layer },
       ];
-      onRoute({ connection: conn.name, width, points });
+      // the two pads too: they are the route's identity on the server, so a
+      // second branch from the same pad is a new route, not a replacement
+      onRoute({ connection: conn.name, from: draft.from.label, to: pad.label, width, points });
       setDraft(null);
       setNote(`instradato ${conn.name}`);
     },

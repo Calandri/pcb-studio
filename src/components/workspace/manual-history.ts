@@ -1,4 +1,5 @@
 import type { ManualEdits } from "@/lib/manual-edits";
+import { manualRouteKey } from "@/lib/manual-routes";
 
 /*
  * The pure half of the manual editor's bookkeeping: which pending edits were
@@ -24,14 +25,16 @@ export interface HistoryStep {
   after: ManualEdits;
 }
 
-type ListKey = keyof ManualEdits;
+/** the lists of the file; board_base is the server's bookkeeping, not an edit */
+type ListKey = Exclude<keyof ManualEdits, "board_base">;
 
 /** how the entries of each list are identified: the same thing the server replaces by */
 const KEY_OF: { [K in ListKey]: (item: ManualEdits[K][number]) => string } = {
   schematic_placements: (p) => p.selector,
   pcb_placements: (p) => p.selector,
   manual_trace_hints: (h) => h.pcb_port_selector,
-  pcb_routes: (r) => r.connection,
+  // the identity the server replaces by: the pad pair, not the connection
+  pcb_routes: (r) => manualRouteKey(r),
 };
 
 const LIST_LABEL: Record<ListKey, string> = {
@@ -55,9 +58,15 @@ function stable(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** fingerprint of a whole manual-edits file */
+/**
+ * Fingerprint of the edits in a file. board_base is left out: the server
+ * rewrites it on every save on a current board, and counting it would make
+ * every undo look like a conflict.
+ */
 export function fingerprintEdits(edits: ManualEdits): string {
-  return stable(edits);
+  const { board_base: _base, ...lists } = edits;
+  void _base;
+  return stable(lists);
 }
 
 export type RebaseResult =
@@ -81,15 +90,16 @@ export function rebaseManualEdits(
   to: ManualEdits,
 ): RebaseResult {
   const conflicts: string[] = [];
-  const out = {} as ManualEdits;
+  // the server's bookkeeping stays as the server holds it now
+  const out = (fresh.board_base ? { board_base: fresh.board_base } : {}) as ManualEdits;
   let changed = false;
 
   for (const list of Object.keys(KEY_OF) as ListKey[]) {
     const keyOf = KEY_OF[list] as (item: unknown) => string;
     const index = (items: readonly unknown[]) => new Map(items.map((i) => [keyOf(i), i]));
-    const fromMap = index(from[list]);
-    const toMap = index(to[list]);
-    const freshMap = index(fresh[list]);
+    const fromMap = index(from[list] ?? []);
+    const toMap = index(to[list] ?? []);
+    const freshMap = index(fresh[list] ?? []);
 
     // the entries the step touched: present on one side only, or different
     const touched = new Set<string>();
@@ -100,7 +110,7 @@ export function rebaseManualEdits(
     }
 
     const result: unknown[] = [];
-    for (const item of fresh[list]) {
+    for (const item of fresh[list] ?? []) {
       const k = keyOf(item);
       if (!touched.has(k)) {
         result.push(item);
@@ -119,8 +129,8 @@ export function rebaseManualEdits(
       // an entry the step removed and that is not on the server: it comes back
       if (now === undefined && target !== undefined) result.push(target);
     }
-    if (stable(result) !== stable(fresh[list])) changed = true;
-    (out as Record<ListKey, unknown[]>)[list] = result;
+    if (stable(result) !== stable(fresh[list] ?? [])) changed = true;
+    (out as unknown as Record<ListKey, unknown[]>)[list] = result;
   }
 
   if (conflicts.length > 0) return { ok: false, conflicts };

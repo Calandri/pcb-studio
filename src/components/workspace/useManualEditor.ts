@@ -7,7 +7,7 @@ import {
   type EditEvent,
   type ManualEdits,
 } from "@/lib/manual-edits";
-import type { ManualRoute } from "@/lib/manual-routes";
+import { manualRouteKey, type ManualRoute } from "@/lib/manual-routes";
 import {
   conflictMessage,
   rebaseManualEdits,
@@ -140,9 +140,11 @@ export function useManualEditor({
 
   const addRoute = useCallback((route: ManualRoute) => {
     if (busyRef.current) return;
-    // redrawing the same connection replaces the previous path:
-    // two traces on the same connection would be double copper
-    setRoutes((r) => [...r.filter((x) => x.connection !== route.connection), route]);
+    // redrawing the same pair of pads replaces the previous path: two traces
+    // between the same pads would be double copper. By connection it was
+    // wrong: two branches from one pad of a net share the connection name,
+    // and the second erased the first
+    setRoutes((r) => [...r.filter((x) => manualRouteKey(x) !== manualRouteKey(route)), route]);
   }, []);
 
   const addUnlink = useCallback((declared: string) => {
