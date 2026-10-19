@@ -2,6 +2,7 @@ import { requireProjectAccess } from "@/lib/acl";
 import {
   deleteEnclosure,
   ENCLOSURE_NAME_RE,
+  enclosureNameFrom,
   listEnclosures,
   saveEnclosure,
   updateEnclosure,
@@ -29,9 +30,15 @@ export async function POST(req: Request): Promise<Response> {
   const { ok } = await requireProjectAccess(projectId, "edit");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
-  const name = String(body?.name ?? "").trim();
+  const richiesto = String(body?.name ?? "").trim();
   const kind = String(body?.kind ?? "") as EnclosureKind;
   const source = String(body?.source ?? "");
+  /*
+   * An imported model is named after its file, and a file name is not chosen
+   * to fit the store: it is cleaned rather than refused after the browser has
+   * already parsed and uploaded it. The name actually stored is returned.
+   */
+  const name = kind === "import" ? enclosureNameFrom(richiesto) : richiesto;
   if (!ENCLOSURE_NAME_RE.test(name)) {
     return Response.json({ error: "nome non valido" }, { status: 400 });
   }
@@ -50,7 +57,7 @@ export async function POST(req: Request): Promise<Response> {
     transform: sanitizeTransform(body?.transform),
     visible: body?.visible !== false,
   });
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, name });
 }
 
 export async function PATCH(req: Request): Promise<Response> {

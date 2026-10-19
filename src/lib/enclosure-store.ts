@@ -21,6 +21,29 @@ export interface EnclosureRecord {
 
 export const ENCLOSURE_NAME_RE = /^[\w][\w .-]{0,62}$/;
 
+/**
+ * A name the store accepts, made from whatever name a file had.
+ *
+ * The browser names an imported model after its file (`file.name` minus the
+ * extension, cut at 60), and the store wants ENCLOSURE_NAME_RE: a file called
+ * "scocca (1).stl" or "coperchio più alto.stl" was parsed, checked,
+ * uploaded — and refused with "nome non valido" at the very end. It is
+ * cleaned instead: accents dropped, anything else outside the alphabet becomes
+ * an underscore, and an empty result becomes "modello".
+ */
+export function enclosureNameFrom(raw: string): string {
+  const pulito = String(raw ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w .-]+/g, "_")
+    .replace(/^[^\w]+/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 63)
+    .trim();
+  return ENCLOSURE_NAME_RE.test(pulito) ? pulito : "modello";
+}
+
 function db() {
   const url = process.env.DATABASE_URL;
   return url ? neon(url) : null;

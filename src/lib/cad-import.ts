@@ -9,6 +9,14 @@ import { meshDataFromGeometry, type MeshData } from "./mesh3d";
 
 export const CAD_IMPORT_EXTENSIONS = [".stl", ".obj", ".glb", ".gltf", ".step", ".stp"];
 export const CAD_IMPORT_MAX_BYTES = 15 * 1024 * 1024;
+/**
+ * What can actually be SAVED: the file travels as base64 inside a JSON body,
+ * which grows it by a third, and a request body on Vercel stops at 4.5 MB.
+ * Anything above this parses fine in the browser and then fails with a 413 on
+ * save. Exposed for the upload form; parseCadFile keeps the larger limit
+ * because it also re-reads files saved before.
+ */
+export const CAD_UPLOAD_MAX_BYTES = Math.floor((4.5 * 1024 * 1024 - 64 * 1024) * 0.75);
 
 export function cadExtension(fileName: string): string | null {
   const lower = fileName.toLowerCase();
@@ -32,7 +40,7 @@ export async function parseCadFile(fileName: string, buffer: ArrayBuffer): Promi
     case ".glb":
     case ".gltf": {
       const gltf = await new GLTFLoader().parseAsync(buffer, "");
-      return mergeObjectToMeshData(gltf.scene);
+      return gltfInMillimetri(mergeObjectToMeshData(gltf.scene));
     }
     case ".step":
     case ".stp":
@@ -40,6 +48,49 @@ export async function parseCadFile(fileName: string, buffer: ArrayBuffer): Promi
     default:
       throw new Error(`formato non gestito: ${ext}`);
   }
+}
+
+/**
+ * A glTF brought into the enclosure space: millimetres, Z up.
+ *
+ * The glTF specification fixes both: linear units are METRES and +Y is up. The
+ * enclosures here are millimetres with Z up (the same space as STEP), so a
+ * correctly exported 80mm box arrived 0.08 units wide — a speck — and lying on
+ * its back. It is turned (+90 degrees about X: Y becomes Z) and scaled by 1000.
+ *
+ * The one exception is a file that is plainly NOT in metres: something wider
+ * than ten "metres" is a model whose exporter wrote millimetres and called them
+ * metres, which happens. That one is only turned, and left at its size.
+ */
+export function gltfInMillimetri(mesh: MeshData): MeshData {
+  const p = mesh.positions;
+  let estensione = 0;
+  for (let asse = 0; asse < 3; asse++) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = asse; i < p.length; i += 3) {
+      if (p[i] < min) min = p[i];
+      if (p[i] > max) max = p[i];
+    }
+    if (max > min) estensione = Math.max(estensione, max - min);
+  }
+  const scala = estensione > 10 ? 1 : 1000;
+  const ruota = (v: number[] | undefined, fattore: number): number[] | undefined => {
+    if (!v) return undefined;
+    const out = new Array<number>(v.length);
+    for (let i = 0; i + 2 < v.length; i += 3) {
+      // `0 - x` and not `-x`: a negative zero would be the only difference
+      out[i] = v[i] * fattore;
+      out[i + 1] = 0 - v[i + 2] * fattore;
+      out[i + 2] = v[i + 1] * fattore;
+    }
+    return out;
+  };
+  return {
+    positions: ruota(p, scala)!,
+    normals: ruota(mesh.normals, 1),
+    indices: mesh.indices,
+  };
 }
 
 /** merges all the meshes of a three.js object into a single MeshData */
@@ -122,15 +173,23 @@ async function parseStep(buffer: ArrayBuffer): Promise<MeshData> {
     throw new Error("il file STEP non contiene solidi leggibili");
   }
 
+  /*
+   * Plain loops, never `push(...array)`: spreading a big mesh passes every
+   * coordinate as an argument of one call, and past a few hundred thousand of
+   * them the engine refuses ("Maximum call stack size exceeded") — a real STEP
+   * of an enclosure is easily that.
+   */
   const positions: number[] = [];
   const indices: number[] = [];
   for (const mesh of result.meshes) {
     const base = positions.length / 3;
-    positions.push(...Array.from(mesh.attributes.position.array));
+    const pos = mesh.attributes.position.array;
+    for (let i = 0; i < pos.length; i++) positions.push(pos[i]);
     if (mesh.index) {
-      indices.push(...Array.from(mesh.index.array, (i) => base + i));
+      const idx = mesh.index.array;
+      for (let i = 0; i < idx.length; i++) indices.push(base + idx[i]);
     } else {
-      const count = mesh.attributes.position.array.length / 3;
+      const count = pos.length / 3;
       for (let i = 0; i < count; i++) indices.push(base + i);
     }
   }

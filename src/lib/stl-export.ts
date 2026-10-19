@@ -6,7 +6,8 @@ import type { MeshData } from "./mesh3d";
  * the geom3.
  */
 export function meshesToStl(meshes: MeshData[], solidName: string): string {
-  const lines: string[] = [`solid ${solidName}`];
+  const nome = stlSolidName(solidName);
+  const lines: string[] = [`solid ${nome}`];
   for (const mesh of meshes) {
     const { positions } = mesh;
     const indices =
@@ -27,8 +28,26 @@ export function meshesToStl(meshes: MeshData[], solidName: string): string {
       );
     }
   }
-  lines.push(`endsolid ${solidName}`);
+  lines.push(`endsolid ${nome}`);
   return lines.join("\n");
+}
+
+/**
+ * The name on the `solid` line of an ASCII STL.
+ *
+ * It is free text in the format, and a reader takes everything up to the end
+ * of the line: a name carrying a newline (an enclosure is named after the file
+ * it was imported from) would start a line of its own — `facet normal ...` —
+ * inside the header, and a slicer would read geometry that is not there. So:
+ * letters, digits, dot, dash and underscore, at most 80 of them.
+ */
+export function stlSolidName(nome: string): string {
+  const pulito = String(nome ?? "")
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return pulito || "solid";
 }
 
 function faceNormal(p: number[], a: number, b: number, c: number): [number, number, number] {
