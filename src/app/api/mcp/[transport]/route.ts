@@ -290,14 +290,23 @@ function buildHandler(viewer: Viewer) {
             void savePreviewCircuit(projectId, p.circuitJson);
           },
         });
-        await saveCompileCache(
+        const salvataggio = await saveCompileCache(
           projectId,
           filesHash(fsMap),
           circuitJson,
           summary,
           CHECKS_ENGINE_VERSION,
-        ).catch(() => {});
-        return text(summary);
+        ).catch((err: unknown) => ({
+          saved: false,
+          reason: err instanceof Error ? err.message.slice(0, 200) : String(err),
+        }));
+        // a compile that is not the board on screen must say so: the agent
+        // would otherwise reason on a result the viewer never shows
+        return text(
+          salvataggio.saved
+            ? summary
+            : { ...(summary as object), saved: false, notSavedReason: salvataggio.reason ?? null },
+        );
       },
     );
 

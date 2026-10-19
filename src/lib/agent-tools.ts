@@ -764,13 +764,23 @@ async function runTool(
         };
       }
       const summary = summarizeCircuit(attempt.circuitJson as never, fsMap);
-      await saveCompileCache(
+      const cached = await saveCompileCache(
         projectId,
         cache.filesHash,
         attempt.circuitJson as never,
         summary,
         CHECKS_ENGINE_VERSION,
-      ).catch(() => {});
+      ).catch((err: unknown) => ({ saved: false, reason: describeError(err) }));
+      // the model must know when the zone it just improved is not the board
+      // that the viewer and the exports now see
+      if (!cached.saved) {
+        return {
+          result: {
+            ok: false,
+            error: `zone rerouted but not saved: ${cached.reason ?? "unknown reason"}`,
+          },
+        };
+      }
       return {
         result: {
           ok: true,

@@ -623,6 +623,23 @@ export async function getPreviewCircuit(
   }
 }
 
+/** only the time of the running compile's preview: what the page poll compares */
+export async function getPreviewAt(projectId: string): Promise<string | null> {
+  const sql = db();
+  if (!sql) return null;
+  try {
+    await ensureCompileCacheTable(sql);
+    const [row] = (await sql`
+      SELECT preview_at FROM project_compiles
+      WHERE project_id = ${projectId}
+        AND preview_circuit_json IS NOT NULL AND preview_at > created_at
+    `) as Array<{ preview_at: string }>;
+    return row ? String(row.preview_at) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getCompileCache(
   projectId: string,
 ): Promise<CompileCache | null> {

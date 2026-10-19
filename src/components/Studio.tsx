@@ -233,6 +233,8 @@ export function Studio({
   const compiledAtRef = useRef<string | null>(null);
   /** the first load has answered: before that the poll has nothing to compare */
   const circuitLoadedRef = useRef(false);
+  /** previewAt of the running-compile drawing on screen, if any */
+  const previewAtRef = useRef<string | null>(null);
 
   /**
    * Reloads the server-validated circuit (the one the exports are also born
@@ -488,14 +490,37 @@ export function Studio({
         if (!res.ok) return;
         const d = await res.json();
         const at = d?.compile?.createdAt ?? null;
-        if (!alive || !at || !circuitLoadedRef.current) return;
-        if (compiledAtRef.current === at) return;
-        reloading = true;
-        try {
-          await loadCircuit();
-          if (alive) void loadVariants();
-        } finally {
-          reloading = false;
+        const previewAt: string | null = d?.previewAt ?? null;
+        if (!alive || !circuitLoadedRef.current) return;
+        if (at && compiledAtRef.current !== at) {
+          reloading = true;
+          try {
+            previewAtRef.current = null;
+            await loadCircuit();
+            if (alive) void loadVariants();
+          } finally {
+            reloading = false;
+          }
+          return;
+        }
+        // a compile running elsewhere (the agent, Claude via MCP, another
+        // tab) has drawn something newer: show it while it works, the final
+        // board replaces it when it is saved
+        if (previewAt && previewAtRef.current !== previewAt) {
+          reloading = true;
+          try {
+            const request = ++circuitRequest.current;
+            const p = await fetch(`/api/project?projectId=${projectId}&preview=1`)
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null);
+            if (!alive || request !== circuitRequest.current) return;
+            if (p?.preview?.circuitJson) {
+              previewAtRef.current = previewAt;
+              setCircuitJson(p.preview.circuitJson as unknown[]);
+            }
+          } finally {
+            reloading = false;
+          }
         }
       } catch {
         // flaky network: try again on the next round

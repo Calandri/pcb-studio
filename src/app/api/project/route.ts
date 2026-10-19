@@ -4,6 +4,8 @@ import {
   filesHash,
   getChatMessages,
   getCompileCache,
+  getPreviewAt,
+  getPreviewCircuit,
   getProject,
 } from "@/lib/project-store";
 import { withLibrary } from "@/lib/agent-tools";
@@ -25,8 +27,11 @@ export async function GET(req: Request): Promise<Response> {
    * poter dire `stale`: e' il confronto ad avere senso, non la serializzazione.
    */
   if (url.searchParams.get("meta") === "1") {
-    const cache = await getCompileCache(projectId).catch(() => null);
-    if (!cache) return Response.json({ projectId, compile: null });
+    const [cache, previewAt] = await Promise.all([
+      getCompileCache(projectId).catch(() => null),
+      getPreviewAt(projectId),
+    ]);
+    if (!cache) return Response.json({ projectId, compile: null, previewAt });
     let stale = false;
     try {
       stale = cache.filesHash !== filesHash(await withLibrary(await getProject(projectId)));
@@ -43,7 +48,19 @@ export async function GET(req: Request): Promise<Response> {
         currentEngineVersion: CHECKS_ENGINE_VERSION,
         checksStale: cache.engineVersion < CHECKS_ENGINE_VERSION,
       },
+      // a compile is running somewhere (agent, MCP, another tab) and has
+      // drawn something newer than the saved board
+      previewAt,
     });
+  }
+
+  /*
+   * ?preview=1: the drawing of the compile still running. Previews used to
+   * overwrite the saved board itself; now they live apart (exports never see
+   * them) and the page fetches them only when the poll says one is newer.
+   */
+  if (url.searchParams.get("preview") === "1") {
+    return Response.json({ projectId, preview: await getPreviewCircuit(projectId) });
   }
 
   // ?circuit=1: also return the server-validated routed Circuit JSON so the
