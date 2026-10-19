@@ -239,7 +239,12 @@ export async function describeComponent(
   projectId: string,
   component: string,
   keys?: AgentKeyMap,
-): Promise<{ role: string; why: string } | null> {
+  opts: { signal?: AbortSignal } = {},
+): Promise<{
+  role: string;
+  why: string;
+  usage: { input_tokens: number; output_tokens: number };
+} | null> {
   const cache = await getCompileCache(projectId);
   if (!cache?.circuitJson) {
     throw new Error("nessuna scheda compilata: compila il progetto prima");
@@ -276,14 +281,19 @@ export async function describeComponent(
       ],
       messages: [{ role: "user", content: brief }],
     },
-    { keys },
+    // a one-shot, high-volume task: the cheap preset (3Bee model policy)
+    { keys, preset: "fast", signal: opts.signal },
   );
 
   const call = response.content.find(
     (b) => b.type === "tool_use" && b.name === "save_description",
   );
   if (!call || call.type !== "tool_use") {
-    throw new Error("il modello non ha prodotto una descrizione");
+    throw new Error(
+      response.stop_reason === "end_turn" || response.stop_reason === "tool_use"
+        ? "il modello non ha prodotto una descrizione"
+        : `il modello non ha prodotto una descrizione (si e' fermato per: ${response.stop_reason})`,
+    );
   }
   const input = (call.input ?? {}) as { role?: unknown; why?: unknown };
   const role = String(input.role ?? "").trim().slice(0, 120);
@@ -291,5 +301,5 @@ export async function describeComponent(
   if (!role || !why) throw new Error("descrizione vuota dal modello");
 
   await saveDescription(projectId, component, role, why);
-  return { role, why };
+  return { role, why, usage: response.usage };
 }

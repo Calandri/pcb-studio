@@ -1,4 +1,3 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import { fetchDatasheetFromUrl } from "./datasheet";
 import { importComponentFromLcsc } from "./easyeda-import";
 import {
@@ -35,16 +34,28 @@ import { rerouteZone } from "./rip-up";
 import { resolveDesignRules } from "./design-rules";
 import { scoreCircuit } from "./route-score";
 import { renderPcbPng, reviewLayout } from "./vision-review";
+import {
+  nudgeCrowdedVias,
+  snapTo45,
+  stitchToPlanes,
+  straightenPinEscapes,
+  widenThinTraces,
+} from "./house-rules";
+import { ricolaPiani } from "./pours-recompute";
+import type { ToolDefinition } from "./llm";
+import type { AgentKeyMap } from "./llm-keys";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
 const MAX_FILE_CHARS = 200_000;
+/** a datasheet read without `search` returns at most this much text */
+const DATASHEET_CHARS = 25_000;
 
 /**
  * Generic tool contract {name, args} -> {result}. No tool influences control
  * flow: the loop continues while the model calls tools and stops on final text
  * (LLM-first rule).
  */
-export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
+export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_files",
     description: "List the tscircuit .tsx files of the current project.",
@@ -316,11 +327,95 @@ export type ToolProgress = (event: {
   progress?: number;
 }) => void;
 
+/**
+ * What the caller knows about the run a tool call belongs to. All optional:
+ * the MCP server calls tools outside any run.
+ */
+export interface ToolContext {
+  /** BYOK keys of the viewer: tools that call a model (review_layout) pay with them */
+  keys?: AgentKeyMap;
+  /** the run was stopped (client gone): network calls give up */
+  signal?: AbortSignal;
+  /** epoch ms by which the run must be over: long tools size their budget on it */
+  deadline?: number;
+}
+
+const MAX_ERROR_CHARS = 500;
+/** below this, a whole-board compile cannot finish before the run is cut */
+const MIN_COMPILE_MS = 120_000;
+const MAX_COMPILE_MS = 540_000;
+
+/**
+ * Every tool goes through this door: whatever a tool throws (a DB blip, a
+ * parser crash, a malformed argument) comes back as `{error}`, a result the
+ * model can read and act on. Before, one exception ended the whole run.
+ */
 export async function executeTool(
   projectId: string,
   name: string,
   args: Record<string, unknown>,
   onProgress?: ToolProgress,
+  ctx: ToolContext = {},
+): Promise<ToolExecution> {
+  if (ctx.signal?.aborted) {
+    return { result: { error: `${name} not executed: the run was stopped` } };
+  }
+  const safeArgs =
+    args && typeof args === "object" && !Array.isArray(args) ? args : ({} as Record<string, unknown>);
+  try {
+    return await runTool(projectId, name, safeArgs, onProgress, ctx);
+  } catch (err) {
+    return { result: { error: `${name} failed: ${describeError(err)}` } };
+  }
+}
+
+/** an exception as text for the model; a driver message can carry a connection string */
+function describeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw
+    .replace(/\b[a-z][\w+.-]*:\/\/[^\s/@]+@/gi, "<redacted>@")
+    .slice(0, MAX_ERROR_CHARS);
+}
+
+/** a finite number from a number or a numeric string, else null */
+function toNumber(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+/** a positive integer id, else null: Number("abc") must not reach a query */
+function positiveInt(v: unknown): number | null {
+  const n = toNumber(v);
+  return n !== null && Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** stops waiting for a call that has no cancellation of its own */
+function untilAborted<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("the run was stopped"));
+    const onAbort = () => reject(new Error("the run was stopped"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+async function runTool(
+  projectId: string,
+  name: string,
+  args: Record<string, unknown>,
+  onProgress: ToolProgress | undefined,
+  ctx: ToolContext,
 ): Promise<ToolExecution> {
   const fsMap = await getProject(projectId);
 
@@ -358,11 +453,14 @@ export async function executeTool(
     }
 
     case "search_parts":
-      return { result: await searchParts(args) };
+      return { result: await searchParts(args, ctx.signal) };
 
     case "import_component_from_lcsc": {
       try {
-        const imported = await importComponentFromLcsc(String(args.lcsc ?? ""));
+        const imported = await untilAborted(
+          importComponentFromLcsc(String(args.lcsc ?? "")),
+          ctx.signal,
+        );
         const saved = await saveLibraryComponent({
           name: imported.name,
           description: `Imported from LCSC ${imported.lcsc}`,
@@ -431,16 +529,24 @@ export async function executeTool(
       return { result: { datasheets: await listDatasheets(projectId) } };
 
     case "read_datasheet": {
+      const id = positiveInt(args.id);
+      if (id === null) {
+        return {
+          result: {
+            error: `Invalid datasheet id "${String(args.id ?? "").slice(0, 40)}": ids are the numbers returned by list_datasheets`,
+          },
+        };
+      }
       // the project asking is the one that must own it: an id is not a permission
-      const sheet = await getDatasheetText(Number(args.id), projectId);
-      if (!sheet) return { result: { error: `Datasheet ${args.id} not found` } };
-      const search = args.search ? String(args.search) : null;
+      const sheet = await getDatasheetText(id, projectId);
+      if (!sheet) return { result: { error: `Datasheet ${id} not found` } };
+      const search = args.search ? String(args.search).slice(0, 200) : null;
       if (!search) {
         return {
           result: {
             title: sheet.title,
-            text: sheet.text.slice(0, 40_000),
-            truncated: sheet.text.length > 40_000,
+            text: sheet.text.slice(0, DATASHEET_CHARS),
+            truncated: sheet.text.length > DATASHEET_CHARS,
             hint: "Use the search argument to jump to a specific section of a long datasheet.",
           },
         };
@@ -456,7 +562,10 @@ export async function executeTool(
 
     case "fetch_datasheet_url": {
       try {
-        const fetched = await fetchDatasheetFromUrl(String(args.url ?? ""));
+        const fetched = await untilAborted(
+          fetchDatasheetFromUrl(String(args.url ?? "")),
+          ctx.signal,
+        );
         const saved = await saveDatasheet({
           projectId,
           title: String(args.title ?? fetched.title),
@@ -482,13 +591,29 @@ export async function executeTool(
       return { result: runSimulation(String(args.netlist ?? "")) };
 
     case "compile": {
+      /*
+       * The compile is CPU-bound and cannot be interrupted, so its budget is
+       * sized on the time the run has left: started too late, it would be cut
+       * by the platform half-way and leave nothing.
+       */
+      const left = ctx.deadline ? ctx.deadline - Date.now() : MAX_COMPILE_MS + 60_000;
+      if (left < MIN_COMPILE_MS) {
+        return {
+          result: {
+            error: `compile not started: this run has ${Math.max(0, Math.round(left / 1000))} s left, a compile needs at least ${MIN_COMPILE_MS / 1000} s`,
+          },
+        };
+      }
       const compileFsMap = await withLibrary(fsMap);
       // read the previous summary BEFORE overwriting the cache: the delta is
       // what tells the model whether the loop is converging or oscillating
       const previous = await getCompileCache(projectId).catch(() => null);
+      const retries = toNumber(args.retries);
+      const variantCount = toNumber(args.variants);
       const { summary, circuitJson, variants } = await compileProject(compileFsMap, {
-        retries: typeof args.retries === "number" ? args.retries : undefined,
-        variants: typeof args.variants === "number" ? args.variants : undefined,
+        retries: retries ?? undefined,
+        variants: variantCount ?? undefined,
+        budgetMs: Math.min(MAX_COMPILE_MS, left - 60_000),
         // the intermediate circuit does not pass through here: it weighs
         // megabytes and the agent channel carries text. Whoever looks takes it
         // from the periodic check.
@@ -512,7 +637,19 @@ export async function executeTool(
       // fetches ?circuit=1 as soon as it receives it, and on serverless a
       // fire-and-forget write could be frozen after the response
       const hash = filesHash(compileFsMap);
-      await saveCompileCache(projectId, hash, circuitJson, summary, CHECKS_ENGINE_VERSION).catch(() => {});
+      const cached = await saveCompileCache(projectId, hash, circuitJson, summary, CHECKS_ENGINE_VERSION).then(
+        (r) => r,
+        (err: unknown) => ({ saved: false, keptPrevious: false, error: describeError(err) }),
+      );
+      /*
+       * What the board in cache is now. It is what review_layout, reroute_zone,
+       * pick_variant and the export work on, so the model has to know when it
+       * is NOT this compile (routing failed and the previous board was kept,
+       * or the write failed).
+       */
+      if (!cached.saved) {
+        (summary as unknown as Record<string, unknown>).boardCache = cached;
+      }
       if (variants) {
         await saveRouteVariants(
           projectId,
@@ -539,7 +676,7 @@ export async function executeTool(
       }
       try {
         const png = renderPcbPng(cache.circuitJson as never);
-        const review = await reviewLayout(png);
+        const review = await reviewLayout(png, { keys: ctx.keys, signal: ctx.signal });
         return { result: review };
       } catch (err) {
         return {
@@ -566,12 +703,10 @@ export async function executeTool(
       if (!cache) {
         return { result: { error: "No compiled circuit yet: run compile first" } };
       }
-      const n = (v: unknown): number | null =>
-        typeof v === "number" && Number.isFinite(v) ? v : null;
-      const minX = n(args.minX);
-      const minY = n(args.minY);
-      const maxX = n(args.maxX);
-      const maxY = n(args.maxY);
+      const minX = toNumber(args.minX);
+      const minY = toNumber(args.minY);
+      const maxX = toNumber(args.maxX);
+      const maxY = toNumber(args.maxY);
       if (minX === null || minY === null || maxX === null || maxY === null) {
         return { result: { error: "minX, minY, maxX, maxY are required (mm, board center = 0,0)" } };
       }
@@ -651,9 +786,17 @@ export async function executeTool(
       };
     }
 
-    case "pick_variant": {      const sectionKey = String(args.section ?? "");
-      const label = String(args.variant ?? "");
-      const stored = await getRouteVariants(projectId);
+    case "pick_variant": {
+      const sectionKey = String(args.section ?? "").trim();
+      const label = String(args.variant ?? "").trim();
+      if (!sectionKey || !label) {
+        return { result: { error: "section and variant are both required" } };
+      }
+      const [stored, cache] = await Promise.all([
+        getRouteVariants(projectId),
+        getCompileCache(projectId),
+      ]);
+      if (!cache) return { result: { error: "No compiled circuit cached yet: run compile first" } };
       const section = stored.sections.find((s) => s.sectionKey === sectionKey);
       if (!section) {
         return {
@@ -670,43 +813,102 @@ export async function executeTool(
           },
         };
       }
-      const cache = await getCompileCache(projectId);
-      if (!cache) return { result: { error: "No compiled circuit cached yet" } };
-
-      // rebuild the assembled circuit: unroute all named sections, splice the
-      // stored picks with the newly chosen one
-      const namedSections = findSections(cache.circuitJson as never);
-      const base = unrouteSections(
-        cache.circuitJson as never,
-        new Set(namedSections.map((s) => s.subcircuitId)),
-      );
-      let assembled = base;
-      for (const storedSection of stored.sections) {
-        const sub = namedSections.find((ns) => ns.key === storedSection.sectionKey);
-        if (!sub) continue;
-        const pickLabel =
-          storedSection.sectionKey === sectionKey ? label : storedSection.pickedLabel;
-        const pick =
-          storedSection.candidates.find((c) => c.label === pickLabel) ??
-          storedSection.candidates[0];
-        if (pick) {
-          assembled = spliceTraces(
-            assembled,
-            sub.subcircuitId,
-            pick.traces as never,
-            `${storedSection.sectionKey}_${pick.label}`,
-          );
-        }
+      /*
+       * The candidates are copper computed for ONE version of the board. If
+       * the board in cache comes from another compile (a later one without
+       * variants, or a failed one that kept the previous board), splicing them
+       * would put traces where the pads no longer are.
+       */
+      if (!stored.filesHash || stored.filesHash !== cache.filesHash) {
+        return {
+          result: {
+            error:
+              "The stored variants belong to a different compile than the board in cache " +
+              `(variants ${stored.filesHash?.slice(0, 8) ?? "none"}, board ${cache.filesHash.slice(0, 8)}): ` +
+              "a compile with variants regenerates them for the current board.",
+          },
+        };
       }
-      await markVariantPicked(projectId, sectionKey, label).catch(() => {});
+      if (filesHash(await withLibrary(fsMap)) !== cache.filesHash) {
+        return {
+          result: {
+            error:
+              "The project sources changed after the last compile: the board in cache and its variants are out of date.",
+          },
+        };
+      }
+
+      const namedSections = findSections(cache.circuitJson as never);
+      const sub = namedSections.find((ns) => ns.key === sectionKey);
+      if (!sub) {
+        return {
+          result: { error: `Section "${sectionKey}" is not a named subcircuit of the compiled board` },
+        };
+      }
+      const projectRules = resolveDesignRules(fsMap);
+      const rules = projectRules.rules;
+      /*
+       * ONLY the chosen section is ripped up and re-spliced. Every other
+       * section keeps its copper exactly as the compile left it, including
+       * sections with no stored variants: before, all named sections were
+       * stripped and only those with a stored row got copper back.
+       */
+      const base = unrouteSections(cache.circuitJson as never, new Set([sub.subcircuitId]));
+      const spliced = spliceTraces(
+        base,
+        sub.subcircuitId,
+        candidate.traces as never,
+        `${sectionKey}_${candidate.label}`,
+        rules,
+      );
+      /*
+       * The same house rules the compile applies to its final copper, in the
+       * same order: plane stitching, via nudging, minimum width, straight pin
+       * escapes, 45-degree angles, then the planes poured again around the new
+       * copper. Without this the picked variant came back with raw solver
+       * geometry (thin traces, diagonal escapes) and pours drawn for the old one.
+       */
+      const tidy = snapTo45(
+        straightenPinEscapes(
+          widenThinTraces(
+            nudgeCrowdedVias(stitchToPlanes(spliced as never, rules), rules.minClearanceMm),
+            rules.minTraceWidthMm,
+          ),
+        ),
+      );
+      const poured = await ricolaPiani({
+        circuitJson: tidy as never,
+        clearanceMm: rules.pourClearanceMm ?? rules.minClearanceMm,
+        bordoMm: rules.minBoardEdgeClearanceMm,
+      }).catch(() => null);
+      const assembled = (poured?.circuitJson ?? tidy) as unknown[];
+
       const summary = summarizeCircuit(assembled, fsMap);
-      await saveCompileCache(projectId, cache.filesHash, assembled, summary, CHECKS_ENGINE_VERSION).catch(() => {});
+      const cached = await saveCompileCache(
+        projectId,
+        cache.filesHash,
+        assembled,
+        summary,
+        CHECKS_ENGINE_VERSION,
+      );
+      if (!cached.saved) {
+        return {
+          result: {
+            ok: false,
+            error: cached.keptPrevious
+              ? "The assembled board was not saved: the cache kept the previous, fully routed board."
+              : "The assembled board could not be saved.",
+          },
+        };
+      }
+      await markVariantPicked(projectId, sectionKey, label);
       return {
         result: {
           ok: true,
           message: `Section "${sectionKey}" now uses variant "${label}". ${summary.message}`,
           drcViolations: summary.drcViolations,
           unroutedConnections: summary.unroutedConnections,
+          ...(poured ? {} : { pours: "planes not re-poured: the pour pass failed" }),
         },
       };
     }
@@ -795,7 +997,7 @@ const JLCSEARCH_BASE = "https://jlcsearch.tscircuit.com";
  * Proxy to jlcsearch. Results are untrusted external data: only whitelisted
  * fields pass through, strings are truncated, nothing is interpreted.
  */
-async function searchParts(args: Record<string, unknown>): Promise<unknown> {
+async function searchParts(args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   const query = String(args.query ?? "").slice(0, 120);
   if (!query.trim()) return { error: "query is required" };
   const limit = Math.min(Math.max(Number(args.limit) || 8, 1), 20);
@@ -806,7 +1008,10 @@ async function searchParts(args: Record<string, unknown>): Promise<unknown> {
   if (args.package) url.searchParams.set("package", String(args.package).slice(0, 40));
 
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    const timeout = AbortSignal.timeout(10_000);
+    const res = await fetch(url, {
+      signal: signal && typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timeout]) : timeout,
+    });
     if (!res.ok) return { error: `jlcsearch HTTP ${res.status}` };
     const data = (await res.json()) as {
       components?: Array<Record<string, unknown>>;

@@ -7,7 +7,23 @@ export const runtime = "nodejs";
 /**
  * Copilot API keys (BYOK). Scope "user": only the user uses them. Scope
  * "org": the whole organization shares them — set by owners and admins.
+ *
+ * The only provider is OpenRouter (3Bee model policy: every model goes
+ * through an OpenRouter preset), so a key is an OpenRouter key.
  */
+
+const RETIRED_PROVIDERS = new Set(["glm", "gemini", "openai", "anthropic"]);
+
+function providerError(provider: string): Response {
+  return Response.json(
+    {
+      error: RETIRED_PROVIDERS.has(provider)
+        ? `le chiavi ${provider} non si usano piu': il copilota passa solo da OpenRouter, serve una chiave OpenRouter (sk-or-...)`
+        : `provider non valido: ${provider.slice(0, 40)}`,
+    },
+    { status: 400 },
+  );
+}
 
 export async function GET(): Promise<Response> {
   const viewer = await currentViewer();
@@ -33,11 +49,15 @@ export async function POST(req: Request): Promise<Response> {
   const key = String(body?.key ?? "").trim();
   const orgId = String(body?.orgId ?? "");
 
-  if (!LLM_PROVIDERS.includes(provider)) {
-    return Response.json({ error: `provider non valido: ${provider}` }, { status: 400 });
-  }
+  if (!LLM_PROVIDERS.includes(provider)) return providerError(provider);
   if (key.length < 16 || key.length > 200 || /\s/.test(key)) {
     return Response.json({ error: "chiave non valida" }, { status: 400 });
+  }
+  if (!key.startsWith("sk-or-")) {
+    return Response.json(
+      { error: "non sembra una chiave OpenRouter: le chiavi OpenRouter iniziano con sk-or-" },
+      { status: 400 },
+    );
   }
 
   let ownerId = viewer.userId;
@@ -52,7 +72,13 @@ export async function POST(req: Request): Promise<Response> {
     ownerId = orgId;
   }
 
-  await saveLlmKey(scope, ownerId, provider, key, viewer.email);
+  try {
+    await saveLlmKey(scope, ownerId, provider, key, viewer.email);
+  } catch (err) {
+    // the message never contains the key: it is about the server's setup
+    const message = err instanceof Error ? err.message : String(err);
+    return Response.json({ error: `impossibile salvare la chiave: ${message.slice(0, 200)}` }, { status: 500 });
+  }
   return Response.json({ ok: true });
 }
 
@@ -65,9 +91,7 @@ export async function DELETE(req: Request): Promise<Response> {
   const scope = url.searchParams.get("scope") === "org" ? "org" : "user";
   const orgId = String(url.searchParams.get("orgId") ?? "");
 
-  if (!LLM_PROVIDERS.includes(provider)) {
-    return Response.json({ error: `provider non valido: ${provider}` }, { status: 400 });
-  }
+  if (!LLM_PROVIDERS.includes(provider)) return providerError(provider);
 
   let ownerId = viewer.userId;
   if (scope === "org") {
