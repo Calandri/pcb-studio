@@ -5,14 +5,21 @@ import {
   stringifyExcellonDrill,
   stringifyGerberCommandLayers,
 } from "circuit-json-to-gerber";
-import { convertCircuitJsonToPickAndPlaceCsv } from "circuit-json-to-pnp-csv";
+import { convertCircuitJsonToPickAndPlaceRows } from "circuit-json-to-pnp-csv";
 import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
-import { bomToCsv, buildBom } from "@/lib/bom";
+import { bomToCsv, buildBom, pnpToCsv } from "@/lib/bom";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
-import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
+import { applyManualEditsToFsMap } from "@/lib/manual-edits";
+import {
+  filesHash,
+  getCompileCache,
+  getProject,
+  hasBoard,
+  isValidProjectId,
+} from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -20,14 +27,26 @@ export const maxDuration = 120;
 // Every exporter pins a slightly different circuit-json version (the layer
 // unions differ), so each call site casts to its own expected input type.
 type AnyCircuitJson = Parameters<typeof convertSoupToGerberCommands>[0];
-type PnpCircuitJson = Parameters<typeof convertCircuitJsonToPickAndPlaceCsv>[0];
+type PnpCircuitJson = Parameters<typeof convertCircuitJsonToPickAndPlaceRows>[0];
 type DrillCircuitJson = Parameters<typeof convertSoupToExcellonDrillCommands>[0]["circuitJson"];
 type SchematicCircuitJson = Parameters<typeof convertCircuitJsonToSchematicSvg>[0];
+
+const KINDS = new Set(["gerber", "bom", "bom-json", "pnp", "schematic"]);
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const projectId = url.searchParams.get("projectId") ?? "default";
   const kind = url.searchParams.get("kind");
+  // the id ends up in a Content-Disposition header: only ids the app can make
+  if (!isValidProjectId(projectId)) {
+    return Response.json({ error: "projectId non valido" }, { status: 400 });
+  }
+  if (!kind || !KINDS.has(kind)) {
+    return Response.json(
+      { error: "kind must be gerber | bom | bom-json | pnp | schematic" },
+      { status: 400 },
+    );
+  }
 
   const { ok } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
@@ -35,33 +54,58 @@ export async function GET(req: Request): Promise<Response> {
   const fsMap = await withLibrary(await getProject(projectId));
 
   // Gerber/BOM/PnP must come from the SAME routed circuit the agent validated:
-  // if the compile cache matches the current sources, use it instead of
-  // recompiling (autorouters are not deterministic — a fresh compile could
-  // route differently from what the user saw and what was DRC-checked).
+  // the compile cache, produced by the full compile (manual edits, our router,
+  // house rules, project design rules, pours, hand-drawn routes) and checked.
   /*
    * The BOM looks at the COMPONENTS, not the traces: if a saved compilation
    * exists it is used even when the files changed afterwards. Previously every
    * BOM view triggered a full compile with routing — minutes of waiting for a
    * table that was already there.
-   * Gerber and pick&place instead depend on the routed copper: those really
-   * do recompile.
    */
   const wantsComponentsOnly = kind === "bom" || kind === "bom-json";
+  const fabrication = kind === "gerber" || kind === "pnp";
 
   let circuitJson: AnyCircuitJson;
   const cache = await getCompileCache(projectId).catch(() => null);
-  // the cache is only valid if produced by the same sources AND the same
-  // checks: if the checks engine is newer, recompile — no Gerber from a
-  // stale verification
-  if (
-    cache &&
-    (wantsComponentsOnly ||
-      (cache.filesHash === filesHash(fsMap) && cache.engineVersion >= CHECKS_ENGINE_VERSION))
-  ) {
+  const cacheFresh =
+    !!cache &&
+    cache.filesHash === filesHash(fsMap) &&
+    cache.engineVersion >= CHECKS_ENGINE_VERSION &&
+    hasBoard(cache.circuitJson);
+  if (fabrication && !cacheFresh) {
+    /*
+     * NO FALLBACK FOR WHAT GOES TO THE FACTORY. It used to recompile here with
+     * the bare tscircuit pipeline: a board without the user's manual edits,
+     * without our router, the house rules, the project's design rules, the
+     * re-poured planes and the hand-drawn traces — a different board from the
+     * one on screen, never checked, shipped as Gerber. A board that cannot be
+     * exported as it was verified is not exported: it is recompiled first.
+     */
+    const motivo = !cache
+      ? "non c'e' una scheda compilata"
+      : !hasBoard(cache.circuitJson)
+        ? "l'ultima compilazione non ha prodotto una scheda"
+        : cache.filesHash !== filesHash(fsMap)
+          ? "i file sono cambiati dopo l'ultima compilazione"
+          : "la scheda e' stata verificata con controlli piu' vecchi";
+    return Response.json(
+      {
+        error: `ricompila la scheda prima di esportare: ${motivo}`,
+        reason: motivo,
+      },
+      { status: 409 },
+    );
+  }
+  const componentsInCache =
+    !!cache &&
+    (cache.circuitJson as Array<{ type?: unknown }>).some((el) => el?.type === "source_component");
+  if (cache && (cacheFresh || (wantsComponentsOnly && componentsInCache))) {
     circuitJson = cache.circuitJson as AnyCircuitJson;
   } else {
+    // BOM and schematic only: they depend on the parts, not on the copper. The
+    // manual edits still apply, so the schematic is the one the user arranged
     try {
-      circuitJson = (await runTscircuitCode(fsMap, {
+      circuitJson = (await runTscircuitCode(applyManualEditsToFsMap(fsMap), {
         mainComponentPath: "main.tsx",
       })) as AnyCircuitJson;
     } catch (err) {
@@ -83,8 +127,9 @@ export async function GET(req: Request): Promise<Response> {
         return Response.json({ rows: buildBom(circuitJson as never, fsMap) });
       }
       case "pnp": {
-        const csv = convertCircuitJsonToPickAndPlaceCsv(
-          circuitJson as unknown as PnpCircuitJson,
+        // the library's rows, our CSV: no formulas, rotations in [0, 360)
+        const csv = pnpToCsv(
+          convertCircuitJsonToPickAndPlaceRows(circuitJson as unknown as PnpCircuitJson),
         );
         return csvResponse(csv, "pnp.csv");
       }
