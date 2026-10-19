@@ -1,22 +1,29 @@
+import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { extractComponents } from "@/lib/inspect";
-import { getCompileCache, getProject } from "@/lib/project-store";
+import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
+import { untrustedDataSection } from "@/lib/system-prompt";
 
 export const runtime = "nodejs";
 
 /**
  * The command to paste into Claude.
  *
- * THIS ENDPOINT EXECUTES NOTHING. It produces text: a task, the context to
- * carry it out, and the constraints. There is no "if re-placing then call
- * this tool, then that one" branch: which tool to call and in which order is
- * decided by the model, which has them all (LLM-first rule). If tomorrow a better tool is added
- * to do the same thing, these commands will use it without being touched.
+ * THIS ENDPOINT EXECUTES NOTHING. It produces text: the goal the user picked,
+ * the constraints, and the state of the board as DATA. There is no recipe in
+ * it ("first call this tool, then that one"): which tool to call and in which
+ * order is decided by the model, which has them all (LLM-first rule). If
+ * tomorrow a better tool is added, these commands will use it without being
+ * touched.
  *
- * The context is taken from the LAST cached compilation rather than by
+ * Everything that comes from the project (names, values, DRC messages,
+ * descriptions) goes inside a fenced, nonce-marked data section: the external
+ * agent holds the user's token, and project text must never read to it as
+ * part of the request.
+ *
+ * The state is taken from the LAST cached compilation rather than by
  * recompiling: recompiling here would cost minutes before even handing the
- * command to the user, and the model will recompile anyway as soon as it
- * starts.
+ * command to the user, and the model will recompile anyway.
  */
 
 type Kind = "place" | "route";
@@ -24,8 +31,8 @@ type Scope = "all" | "selection";
 
 const mcpSetup = (origin: string) =>
   "Se non ce l'hai gia', collega PCB Studio come server MCP (cosi' lavora il modello che hai gia', niente chiavi API in piu'):\n" +
-  "1. genera un token personale in PCB Studio: Team → Accesso da agenti esterni (MCP)\n" +
-  `2. registra il server: \`claude mcp add --transport http pcb-studio ${origin}/api/mcp/mcp --header "Authorization: Bearer <il tuo token pcbs_...>"\`\n` +
+  "- il token personale si genera in PCB Studio: Team → Accesso da agenti esterni (MCP)\n" +
+  `- il server si registra con \`claude mcp add --transport http pcb-studio ${origin}/api/mcp/mcp --header "Authorization: Bearer <il tuo token pcbs_...>"\`\n` +
   "(vale per Claude Code e per qualsiasi client MCP: l'URL e' lo stesso, l'header anche)";
 
 export async function GET(req: Request): Promise<Response> {
@@ -35,11 +42,12 @@ export async function GET(req: Request): Promise<Response> {
   const scope: Scope = url.searchParams.get("scope") === "selection" ? "selection" : "all";
   const picked = (url.searchParams.get("components") ?? "")
     .split(",")
-    .map((s) => s.trim())
+    .map((s) => s.trim().slice(0, 60))
     .filter(Boolean)
     .slice(0, 80);
   const zone = parseZone(url.searchParams.get("zone"));
 
+  // also validates projectId: it is printed outside the data section
   const { ok } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
@@ -48,20 +56,37 @@ export async function GET(req: Request): Promise<Response> {
   const files = await getProject(projectId);
   const components = cache ? extractComponents(cache.circuitJson, files) : [];
   const byName = new Map(components.map((c) => [c.name, c]));
+  const upToDate = cache
+    ? cache.filesHash === filesHash(await withLibrary(files).catch(() => files))
+    : false;
+
+  const selectionPlace = scope === "selection" && kind === "place" && picked.length > 0;
+  const selectionRoute = scope === "selection" && kind === "route" && zone !== null;
 
   const lines: string[] = [
-    `# ${title(kind, scope)} sul progetto PCB "${projectId}"`,
+    `# ${title(kind, scope)} sul progetto PCB \`${projectId}\``,
     "",
     mcpSetup(url.origin),
     "",
-    `Lavora sul progetto \`${projectId}\` con gli strumenti di PCB Studio. Il progetto E' il codice tscircuit: leggilo con read_project, riscrivi i file interi con write_file, e verifica sempre con compile.`,
+    "## Contesto",
+    `- Il progetto \`${projectId}\` e' codice tscircuit: con gli strumenti di PCB Studio si legge (read_project), si riscrive a file interi (write_file) e si verifica (compile, che restituisce errori, connessioni aperte e violazioni).`,
+    "- Ogni chiamata compare in diretta nella pagina che l'utente ha aperto, e la scheda si aggiorna mentre lavori.",
+    "- Lo stato qui sotto viene dall'ultima compilazione salvata, non da una compilazione fatta adesso.",
+    "",
+    "## Obiettivo",
+    goal(kind, scope, selectionPlace, selectionRoute),
+    "",
+    "## Vincoli",
+    ...constraints(kind, selectionPlace, selectionRoute, zone),
     "",
   ];
 
-  // --- the starting state, so the model does not start from scratch
+  // --- the state, as data
+  const data: string[] = [];
   if (summary) {
-    lines.push(
-      "## Da dove parti",
+    data.push(
+      "stato:",
+      `- compilazione allineata ai sorgenti attuali: ${upToDate ? "si'" : "no (i file sono cambiati dopo)"}`,
       `- ultima compilazione: ${str(summary.message) || "senza messaggio"}`,
       `- piste instradate: ${num(summary.pcbTraces) ?? "?"}`,
       `- connessioni ancora aperte: ${arr(summary.unroutedConnections).length}`,
@@ -69,81 +94,45 @@ export async function GET(req: Request): Promise<Response> {
     );
     const drc = arr(summary.drcViolations);
     if (drc.length) {
-      lines.push("", "### Le violazioni da chiudere");
-      for (const v of drc.slice(0, 12)) lines.push(`- ${str((v as Record<string, unknown>).message)}`);
+      data.push("", "violazioni DRC (le prime 12):");
+      for (const v of drc.slice(0, 12)) data.push(`- ${str((v as Record<string, unknown>).message)}`);
       const hot = hotspots(drc);
       if (hot.length) {
-        lines.push(
+        data.push(
           "",
-          "Le violazioni non sono sparse: si concentrano in queste zone da 5mm (x, y del vertice in basso a sinistra, in mm, centro scheda = 0,0).",
+          "celle da 5mm con piu' violazioni (x, y del vertice in basso a sinistra, mm, centro scheda = 0,0):",
         );
-        for (const h of hot) {
-          lines.push(`- zona ${h.x}..${h.x + 5} , ${h.y}..${h.y + 5}: ${h.n} violazioni`);
-        }
+        for (const h of hot) data.push(`- ${h.x}..${h.x + 5} , ${h.y}..${h.y + 5}: ${h.n} violazioni`);
       }
     }
     const unrouted = arr(summary.unroutedConnections);
     if (unrouted.length) {
-      lines.push("", "### Connessioni non instradate");
-      for (const u of unrouted.slice(0, 25)) lines.push(`- ${str(u)}`);
+      data.push("", "connessioni non instradate (le prime 25):");
+      for (const u of unrouted.slice(0, 25)) data.push(`- ${str(u)}`);
     }
-    lines.push("");
   } else {
-    lines.push(
-      "## Da dove parti",
-      "Non c'e' una compilazione in cache: la prima cosa da fare e' `compile`, per vedere lo stato.",
-      "",
-    );
+    data.push("stato: nessuna compilazione salvata per questo progetto.");
   }
 
-  // --- the perimeter: everything, or only what the user has selected
-  if (scope === "selection" && kind === "place" && picked.length) {
-    lines.push(
-      "## Perimetro: SOLO questi componenti",
-      "L'utente ha selezionato questi componenti nel visualizzatore. Sposta SOLO questi. Ogni altro componente deve restare esattamente dove sta: se cambi un pcbX o un pcbY che non e' in questo elenco, hai sbagliato il lavoro.",
-      "",
-    );
+  if (selectionPlace) {
+    data.push("", "componenti selezionati dall'utente nel visualizzatore:");
     for (const name of picked) {
       const c = byName.get(name);
-      lines.push(
+      data.push(
         c
           ? `- ${c.name}${c.value ? ` (${c.value})` : ""}${c.tags ? ` [${c.tags}]` : ""}: ora a x=${c.x}, y=${c.y}` +
-            `${c.footprint ? `, ${c.footprint}` : ""}${c.nets.length ? `, reti: ${c.nets.join("/")}` : ""}` +
-            `${c.description ? `\n    ${c.description}` : ""}`
-          : `- ${name}`,
+              `${c.footprint ? `, ${c.footprint}` : ""}${c.nets.length ? `, reti: ${c.nets.join("/")}` : ""}` +
+              `${c.description ? `\n    descrizione: ${c.description}` : ""}`
+          : `- ${name} (non trovato nella compilazione salvata)`,
       );
     }
-    lines.push("");
     const box = boundsOf(picked, byName);
     if (box) {
-      lines.push(
-        `Occupano oggi il rettangolo da ${box.minX},${box.minY} a ${box.maxX},${box.maxY} (mm). Dopo averli spostati e ricompilato, se il rame di quell'area resta brutto puoi rifarlo da solo con \`reroute_zone\` su quel rettangolo allargato di un paio di millimetri, invece di ricompilare tutto.`,
-        "",
-      );
+      data.push("", `rettangolo occupato oggi dai selezionati (mm): da ${box.minX},${box.minY} a ${box.maxX},${box.maxY}`);
     }
   }
 
-  if (scope === "selection" && kind === "route" && zone) {
-    lines.push(
-      "## Perimetro: SOLO questa zona di rame",
-      `L'utente ha selezionato il rettangolo da ${zone.minX},${zone.minY} a ${zone.maxX},${zone.maxY} (mm, centro scheda = 0,0).`,
-      "",
-      `Usa \`reroute_zone\` con esattamente queste coordinate: strappa e rifa' SOLO le piste li' dentro, il resto della scheda non si tocca. Attenzione: vengono strappate solo le piste interamente contenute nel rettangolo, quindi se non succede niente allarga la zona.`,
-      "",
-      "Se `reroute_zone` risponde che non ha migliorato, non insistere con lo stesso rettangolo: il router e' deterministico e ridara' la stessa geometria. In quel caso il problema e' la densita', non il percorso: allontana i componenti di quell'area con write_file e ricompila.",
-      "",
-    );
-  }
-
-  // --- the actual task
-  lines.push("## Cosa ti chiedo", ...task(kind, scope), "");
-
-  lines.push(
-    "## Come lavorare",
-    "- Non fermarti al primo `compile`: guarda il risultato, correggi, ricompila. Hai finito quando gli errori sono zero e le violazioni DRC non scendono piu'.",
-    "- Ogni chiamata che fai compare in diretta nella pagina che l'utente ha aperta, e la scheda si aggiorna mentre lavori: puoi lavorare a lungo, ti sta guardando.",
-    "- Quando hai finito dimmi in due righe cosa hai cambiato e come sono cambiati i numeri (piste, connessioni aperte, violazioni DRC), non riassumermi il codice.",
-  );
+  lines.push(untrustedDataSection(data.join("\n")));
 
   return new Response(lines.join("\n"), {
     headers: { "content-type": "text/plain; charset=utf-8" },
@@ -157,37 +146,52 @@ function title(kind: Kind, scope: Scope): string {
   return scope === "all" ? "Re-instrada tutta la scheda" : "Re-instrada la zona selezionata";
 }
 
-function task(kind: Kind, scope: Scope): string[] {
+function goal(kind: Kind, scope: Scope, selectionPlace: boolean, selectionRoute: boolean): string {
   if (kind === "place") {
-    return [
-      scope === "all"
-        ? "Ridisponi il piazzamento dei componenti sulla scheda."
-        : "Ridisponi i componenti elencati sopra, e solo quelli.",
-      "",
-      "I criteri, in ordine di importanza:",
-      "1. Zero sovrapposizioni. Due componenti che si toccano fanno saltare del tutto l'autorouter, e la scheda risulta senza piste senza che sia colpa dello sbroglio.",
-      "2. Vicini quelli collegati fra loro. Una pista lunga il doppio della scheda vuol dire che il pezzo sta dalla parte sbagliata.",
-      "3. Aria dove il rame e' fitto. Le zone con piu' violazioni DRC sono zone dove non ci sta quello che deve passarci: allargale.",
-      "4. I condensatori di disaccoppiamento restano attaccati al piedino di alimentazione che servono, non spostarli via.",
-      "5. I connettori restano sul bordo, con il verso di innesto verso l'esterno.",
-      "",
-      "Muovi i componenti cambiando pcbX/pcbY nel codice con write_file, poi compile. Il piazzamento si giudica dai numeri della compilazione, non a occhio.",
-    ];
+    return selectionPlace
+      ? "Un piazzamento migliore dei componenti selezionati (elencati nei dati), con il resto della scheda com'e'."
+      : "Un piazzamento migliore dei componenti della scheda.";
   }
-  return [
-    scope === "all"
-      ? "Rifa' lo sbroglio della scheda e portalo in regola."
-      : "Rifa' il rame della zona selezionata e portalo in regola.",
-    "",
-    "L'obiettivo e' in quest'ordine: zero connessioni aperte, poi zero violazioni DRC, poi meno via e meno rame.",
-    "",
-    "Cosa funziona davvero, in ordine di resa:",
-    "1. `reroute_zone` sulle zone calde: costa secondi invece di minuti e non rimescola il rame che gia' va bene.",
-    "2. Allontanare i componenti dove le violazioni si concentrano. Se una zona rifatta non migliora, il problema e' la densita': li' non ci sta il rame che deve passarci, e nessun percorso lo risolve.",
-    "3. `compile` sull'intera scheda solo quando hai cambiato il piazzamento.",
-    "",
-    "Non abbassare le regole di fabbricazione per far sparire le violazioni: una scheda che passa il controllo perche' hai allentato il controllo non si produce lo stesso.",
-  ];
+  return selectionRoute
+    ? "Il rame della zona selezionata in regola, con il resto della scheda com'e'."
+    : scope === "all"
+      ? "Lo sbroglio della scheda in regola."
+      : "Lo sbroglio in regola.";
+}
+
+/** constraints and acceptance criteria, as statements: the plan is the model's */
+function constraints(
+  kind: Kind,
+  selectionPlace: boolean,
+  selectionRoute: boolean,
+  zone: { minX: number; minY: number; maxX: number; maxY: number } | null,
+): string[] {
+  const out: string[] = [];
+  if (selectionPlace) {
+    out.push(
+      "- Possono cambiare posizione SOLO i componenti selezionati. Ogni altro pcbX/pcbY resta esattamente com'e'.",
+    );
+  }
+  if (selectionRoute && zone) {
+    out.push(
+      `- Il rame si rifa' SOLO dentro il rettangolo da ${zone.minX},${zone.minY} a ${zone.maxX},${zone.maxY} (mm, centro scheda = 0,0); fuori non si tocca.`,
+    );
+  }
+  if (kind === "place") {
+    out.push(
+      "- Criteri di un buon piazzamento: nessuna sovrapposizione fra componenti (una sovrapposizione fa saltare l'autorouter); componenti collegati fra loro vicini; spazio dove le violazioni si addensano; condensatori di disaccoppiamento accanto al piedino di alimentazione che servono; connettori sul bordo, con l'innesto verso l'esterno.",
+      "- Il piazzamento si giudica dai numeri della compilazione.",
+    );
+  } else {
+    out.push(
+      "- Priorita' dello sbroglio: zero connessioni aperte, poi zero violazioni DRC, poi meno via e meno rame.",
+    );
+  }
+  out.push(
+    "- Le regole di fabbricazione del progetto non si allentano per far sparire le violazioni: una scheda che passa il controllo perche' il controllo e' stato allentato non si produce lo stesso.",
+    "- Risposta finale: in due righe cosa e' cambiato e come sono cambiati i numeri (piste, connessioni aperte, violazioni DRC), senza riassumere il codice.",
+  );
+  return out;
 }
 
 function parseZone(
@@ -231,7 +235,7 @@ function boundsOf(
 
 /**
  * The 5mm cells with the most violations. A list of sixty reports does not
- * say where to intervene; "the first three cells contain two thirds of them"
+ * say where they are; "the first three cells contain two thirds of them"
  * does.
  */
 function hotspots(violations: unknown[]): Array<{ x: number; y: number; n: number }> {
