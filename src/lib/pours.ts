@@ -9,6 +9,7 @@
  */
 
 import { eMassa } from "./net-roles";
+import { padGeometry, padHalfExtents } from "./pcb-route-model";
 
 export interface PourShape {
   /** the net the plane belongs to */
@@ -40,6 +41,18 @@ const asPoints = (v: unknown): Array<{ x: number; y: number }> => {
   return out;
 };
 
+/** bounding box of a ring, without spreading it on the stack */
+function bounds(points: Array<{ x: number; y: number }>): { minX: number; maxX: number; minY: number; maxY: number } {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, maxX, minY, maxY };
+}
+
 /** every pour on the board, with its geometry ready to be questioned */
 export function readPours(circuitJson: unknown[]): PourShape[] {
   const out: PourShape[] = [];
@@ -56,17 +69,15 @@ export function readPours(circuitJson: unknown[]): PourShape[] {
     const holes = (brep?.inner_rings ?? [])
       .map((r) => asPoints(r?.vertices))
       .filter((r) => r.length >= 3);
-    const xs = outer.map((p) => p.x);
-    const ys = outer.map((p) => p.y);
+    // a loop, not Math.min(...xs): an imported plane can have more vertices
+    // than the engine accepts as arguments, and the spread throws
+    const b = bounds(outer);
     out.push({
       net: String(raw.source_net_id ?? ""),
       layer: String(raw.layer ?? "inner1"),
       outer,
       holes,
-      minX: Math.min(...xs),
-      maxX: Math.max(...xs),
-      minY: Math.min(...ys),
-      maxY: Math.max(...ys),
+      ...b,
     });
   }
   return out;
@@ -382,25 +393,18 @@ export function padsOffPlane(
      * una cucitura per una cosa che non esiste. Che il file li dichiari cosi' e'
      * un fatto della scheda di partenza e si dice all'import, non qui.
      */
-    const misura =
-      (num(el.width) ?? 0) + (num(el.height) ?? 0) + (num(el.radius) ?? 0) * 2;
-    if (misura < 0.001) continue;
-    let x = num(el.x);
-    let y = num(el.y);
-    let hw = (num(el.width) ?? (num(el.radius) ?? 0) * 2) / 2;
-    let hh = (num(el.height) ?? (num(el.radius) ?? 0) * 2) / 2;
-    if (x === null || y === null) {
-      const pts = asPoints(el.points);
-      if (pts.length === 0) continue;
-      const minX = Math.min(...pts.map((p) => p.x));
-      const maxX = Math.max(...pts.map((p) => p.x));
-      const minY = Math.min(...pts.map((p) => p.y));
-      const maxY = Math.max(...pts.map((p) => p.y));
-      x = (minX + maxX) / 2;
-      y = (minY + maxY) / 2;
-      hw = (maxX - minX) / 2;
-      hh = (maxY - minY) / 2;
-    }
+    /*
+     * The pad's size from the reading every module shares. Summing only
+     * width, height and radius made every POLYGON pad "size zero" — the
+     * ground pads of a MEMS microphone are polygons — and they were skipped
+     * here as if they had no copper, so a ground pad off the plane was never
+     * reported.
+     */
+    const g = padGeometry(el);
+    if (!g || g.w + g.h < 0.001) continue;
+    const x = g.x;
+    const y = g.y;
+    const { hw, hh } = padHalfExtents(g);
     const layer = String(el.layer ?? "top");
     const immerso = pours.some((p) => p.net === net && p.layer === layer && insidePour(x, y, p));
     if (immerso) continue;

@@ -1,4 +1,5 @@
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
+import { padGeometry, padHalfExtents, pointsBounds } from "./pcb-route-model";
 
 /**
  * Quality of the PLACEMENT, i.e. of where the parts sit.
@@ -37,16 +38,22 @@ export interface PlacementQuality {
   /** pairs that touch: until this is zero the router does not start */
   overlaps: number;
   issues: PlacementIssue[];
+  /**
+   * How many FAILURES were found, all of them: `issues` is capped for the
+   * report, this is not. `routable` is decided on this number.
+   */
+  fails: number;
   /** true when nothing prevents routing */
   routable: boolean;
 }
 
 export function emptyPlacementQuality(): PlacementQuality {
-  return { components: 0, overlaps: 0, issues: [], routable: true };
+  return { components: 0, overlaps: 0, issues: [], fails: 0, routable: true };
 }
 
 type El = Record<string, unknown>;
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const fin = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 const round2 = (v: number): number => Math.round(v * 100) / 100;
 
@@ -99,21 +106,18 @@ function boxesOf(circuitJson: unknown[]): Box[] {
     portsOfComponent.set(cid, [...(portsOfComponent.get(cid) ?? []), sid]);
   }
 
+  /*
+   * The copper's extent on one axis, from the reading every module shares:
+   * a polygon pad has no x/y, a circle has only `radius`, a USB-C shell slot
+   * only outer_width/outer_height, a slot with a rect pad rect_pad_*. A pad
+   * with no geometry at all gives nothing, rather than a half-millimetre
+   * square at the origin.
+   */
   const span = (p: El, axis: "x" | "y"): number[] => {
-    const pts = p.points;
-    if (Array.isArray(pts) && pts.length) {
-      const v = (pts as Array<Record<string, unknown>>)
-        .map((q) => num(q[axis]))
-        .filter(Number.isFinite);
-      return v.length ? [Math.min(...v), Math.max(...v)] : [];
-    }
-    const c = p[axis];
-    if (typeof c !== "number" || !Number.isFinite(c)) return [];
-    const size =
-      axis === "x"
-        ? num(p.width ?? p.outer_width ?? p.hole_width ?? 0.5)
-        : num(p.height ?? p.outer_height ?? p.hole_height ?? 0.5);
-    return [c - size / 2, c + size / 2];
+    const g = padGeometry(p);
+    if (!g) return [];
+    const { hw, hh } = padHalfExtents(g);
+    return axis === "x" ? [g.x - hw, g.x + hw] : [g.y - hh, g.y + hh];
   };
 
   const out: Box[] = [];
@@ -129,19 +133,27 @@ function boxesOf(circuitJson: unknown[]): Box[] {
     const xs = pads.flatMap((p) => span(p, "x"));
     const ys = pads.flatMap((p) => span(p, "y"));
 
-    const court = els.find(
-      (e) =>
-        (e.type === "pcb_courtyard_rect" || e.type === "pcb_courtyard_outline") &&
-        e.pcb_component_id === cid,
-    );
-    if (court?.type === "pcb_courtyard_rect") {
-      const c = court.center as { x?: number; y?: number } | undefined;
-      xs.push(num(c?.x) - num(court.width) / 2, num(c?.x) + num(court.width) / 2);
-      ys.push(num(c?.y) - num(court.height) / 2, num(c?.y) + num(court.height) / 2);
-    } else if (court) {
-      for (const p of (court.outline ?? []) as Array<Record<string, unknown>>) {
-        xs.push(num(p.x));
-        ys.push(num(p.y));
+    /*
+     * Every courtyard of the part, and only with real coordinates: a rect
+     * with no centre used to count as one at (0,0), and stretched the part's
+     * box to the board origin.
+     */
+    for (const court of els) {
+      if (court.pcb_component_id !== cid) continue;
+      if (court.type === "pcb_courtyard_rect" || court.type === "pcb_courtyard_circle" || court.type === "pcb_courtyard_pill") {
+        const c = court.center as { x?: unknown; y?: unknown } | undefined;
+        const cx = fin(c?.x), cy = fin(c?.y);
+        const r = fin(court.radius);
+        const w = fin(court.width) ?? (r !== null ? 2 * r : null);
+        const h = fin(court.height) ?? (r !== null ? 2 * r : null);
+        if (cx === null || cy === null || w === null || h === null) continue;
+        xs.push(cx - w / 2, cx + w / 2);
+        ys.push(cy - h / 2, cy + h / 2);
+      } else if (court.type === "pcb_courtyard_outline" || court.type === "pcb_courtyard_polygon") {
+        const b = pointsBounds(court.type === "pcb_courtyard_outline" ? court.outline : court.points);
+        if (!b) continue;
+        xs.push(b.minX, b.maxX);
+        ys.push(b.minY, b.maxY);
       }
     }
     if (xs.length === 0 || ys.length === 0) continue;
@@ -153,8 +165,15 @@ function boxesOf(circuitJson: unknown[]): Box[] {
     const facce = new Set(pads.map((p) => str(p.layer) ?? "").filter(Boolean));
     const layer =
       str(comp.layer) ?? (facce.size === 1 ? [...facce][0] : "both");
-    const l = Math.min(...xs), r = Math.max(...xs);
-    const b = Math.min(...ys), t = Math.max(...ys);
+    let l = Infinity, r = -Infinity, b = Infinity, t = -Infinity;
+    for (const v of xs) {
+      if (v < l) l = v;
+      if (v > r) r = v;
+    }
+    for (const v of ys) {
+      if (v < b) b = v;
+      if (v > t) t = v;
+    }
     out.push({
       name: src?.name ?? cid,
       ftype: src?.ftype ?? null,
@@ -224,6 +243,13 @@ export function analyzePlacement(
   const issues: PlacementIssue[] = [];
   const clearance = rules.minClearanceMm;
   let overlaps = 0;
+  /*
+   * Failures are COUNTED apart from the list. The list stops at a few dozen
+   * entries, and courtyard warnings fill it first: a board with sixty
+   * harmless warnings and one real overlap came out "routable", because the
+   * failure never made it into the list `routable` was read from.
+   */
+  let fails = 0;
 
   // 1) who touches whom. The defect that blocks everything: the autorouter won't start.
   for (let i = 0; i < boxes.length; i++) {
@@ -252,6 +278,7 @@ export function analyzePlacement(
       const rameStretto = rameGap !== null && rameGap < clearance;
       if (!sovrapposti && !rameStretto) continue;
       overlaps++;
+      if (rameStretto) fails++;
       if (issues.length < 60) {
         /*
          * Two overlapping keep-out zones are a fault ONLY if the copper is also
@@ -286,7 +313,12 @@ export function analyzePlacement(
     for (const b of boxes) {
       const out =
         Math.max(left - (b.x - b.hw), (b.x + b.hw) - right, bottom - (b.y - b.hh), (b.y + b.hh) - top);
-      if (out <= 0.01 || issues.length >= 80) continue;
+      if (out <= 0.01) continue;
+      if (!isConnector(b) && issues.length >= 80) {
+        fails++;
+        continue;
+      }
+      if (issues.length >= 80) continue;
       /*
        * An edge connector MUST stick out: that is where the cable plugs in, or
        * in the case of a plug it is the board itself that inserts somewhere.
@@ -298,6 +330,7 @@ export function analyzePlacement(
        * component type, which is the information that survives.
        */
       const connector = isConnector(b);
+      if (!connector) fails++;
       issues.push({
         rule: "off_board",
         severity: connector ? "warn" : "fail",
@@ -373,6 +406,7 @@ export function analyzePlacement(
     components: boxes.length,
     overlaps,
     issues,
-    routable: !issues.some((i) => i.severity === "fail"),
+    fails,
+    routable: fails === 0,
   };
 }

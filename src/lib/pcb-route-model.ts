@@ -123,8 +123,10 @@ export function buildRouteModel(circuitJson: unknown[] | null): PcbRouteModel {
   const componentCenter = new Map<string, { x: number; y: number }>();
   for (const c of by("pcb_component")) {
     const id = str(c.pcb_component_id);
-    const center = c.center as { x?: number; y?: number } | undefined;
-    if (id) componentCenter.set(id, { x: num(center?.x), y: num(center?.y) });
+    const center = c.center as { x?: unknown; y?: unknown } | undefined;
+    const cx = fin(center?.x), cy = fin(center?.y);
+    // a missing centre is not (0,0): the escape would point at the origin
+    if (id && cx !== null && cy !== null) componentCenter.set(id, { x: cx, y: cy });
   }
 
   const pads: RoutePad[] = [];
@@ -134,8 +136,17 @@ export function buildRouteModel(circuitJson: unknown[] | null): PcbRouteModel {
     const port = pcbPortById.get(pcbPortId);
     const sourcePortId = port ? str(port.source_port_id) : null;
     if (!sourcePortId) return;
-    const w = num(e.width ?? e.outer_width ?? e.hole_diameter ?? 0.6);
-    const h = num(e.height ?? e.outer_height ?? e.hole_diameter ?? 0.6);
+    /*
+     * The shape decides where the copper is, and every shape says it its own
+     * way. Reading only x/y and width/height put the polygon ground pads of a
+     * MEMS microphone at (0,0) — they have no x/y, only vertices — and gave a
+     * circle with only `radius`, or a USB-C shell hole with only
+     * outer_width/outer_height, the size of a default 0.6mm square. A pad
+     * without any geometry is skipped: targeting the origin is worse than not
+     * offering the pad at all.
+     */
+    const g = padGeometry(e);
+    if (!g) return;
     /*
      * Pad coordinates are rounded HERE, at the source. They arrive from the
      * Circuit JSON with fifteen decimals: the escape point is rounded to the
@@ -144,7 +155,7 @@ export function buildRouteModel(circuitJson: unknown[] | null): PcbRouteModel {
      * Nobody notices half a micrometer of pad displacement; a segment at
      * 0.004 degrees, yes.
      */
-    const x = round3(num(e.x)), y = round3(num(e.y));
+    const x = round3(g.x), y = round3(g.y);
     const center = componentCenter.get(String(e.pcb_component_id ?? ""));
     // escape from the side farthest from the body: on the axis where the
     // offset is largest, because that is the edge the pad faces outward from
@@ -158,9 +169,9 @@ export function buildRouteModel(circuitJson: unknown[] | null): PcbRouteModel {
     pads.push({
       id: String(e.pcb_smtpad_id ?? e.pcb_plated_hole_id ?? pcbPortId),
       x, y,
-      hw: Math.max(w, 0.2) / 2,
-      hh: Math.max(h, 0.2) / 2,
-      rot: typeof e.ccw_rotation === "number" && Number.isFinite(e.ccw_rotation) ? e.ccw_rotation : 0,
+      hw: Math.max(g.w, 0.2) / 2,
+      hh: Math.max(g.h, 0.2) / 2,
+      rot: g.rot,
       escape,
       layer: through ? "all" : String(e.layer ?? "top"),
       pcbPortId, sourcePortId,
@@ -192,7 +203,7 @@ export function buildRouteModel(circuitJson: unknown[] | null): PcbRouteModel {
     const name = nameByTraceId.get(String(t.source_trace_id ?? ""));
     if (!name || routedByConnection.has(name)) continue;
     const points = ((Array.isArray(t.route) ? t.route : []) as El[])
-      .filter((p) => p.route_type !== "via")
+      .filter((p) => p.route_type !== "via" && fin(p.x) !== null && fin(p.y) !== null)
       .map((p) => ({ x: num(p.x), y: num(p.y), layer: String(p.layer ?? "top") }));
     if (points.length > 1) {
       routedByConnection.set(name, { pcbTraceId: String(t.pcb_trace_id), points });
@@ -208,6 +219,12 @@ export function buildRouteModel(circuitJson: unknown[] | null): PcbRouteModel {
  * two pads are on the same net but no <trace> names them both, fall back to
  * the first connection of that net touching the starting pad, because on the
  * copper that net is a single node anyway.
+ *
+ * The connection is only the ANCHOR of the copper, not its identity: two
+ * branches drawn from one pad fall back to the same connection, and keyed by
+ * it the second erased the first. A drawn route is identified by its two pads
+ * (manualRouteKey in manual-routes.ts); see isDirectConnection for telling a
+ * route that replaces a connection from one that adds a branch to its net.
  */
 export function findConnection(
   model: PcbRouteModel,
@@ -226,6 +243,11 @@ export function findConnection(
     );
   }
   return null;
+}
+
+/** true when the connection names BOTH pads: a route between them replaces its copper */
+export function isDirectConnection(conn: RouteConnection, from: RoutePad, to: RoutePad): boolean {
+  return conn.sourcePortIds.includes(from.sourcePortId) && conn.sourcePortIds.includes(to.sourcePortId);
 }
 
 /**
@@ -323,3 +345,179 @@ export function dirFromPad(
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+// ---------------------------------------------------------------------------
+// Pad geometry, the one reading every module shares
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a pad's copper is and how big it is, whatever its shape.
+ *
+ * Circuit JSON describes a pad in a different way for every shape, and each
+ * module used to read the two or three fields it happened to know:
+ *   - smtpad rect / rotated_rect / pill / rotated_pill: x, y, width, height
+ *     (+ ccw_rotation for the rotated ones);
+ *   - smtpad circle: x, y, radius;
+ *   - smtpad polygon: only `points`, in board coordinates, no x/y at all;
+ *   - plated hole circle: outer_diameter (hole_diameter as last resort);
+ *   - plated hole oval / pill: outer_width, outer_height, ccw_rotation;
+ *   - plated hole *_with_rect_pad: rect_pad_width/height, rect_ccw_rotation;
+ *   - plated hole hole_with_polygon_pad: pad_outline RELATIVE to x/y;
+ *   - pcb_hole: hole_diameter, or hole_width/hole_height.
+ * w/h are the sides BEFORE rotation; `rot` is the rotation in degrees
+ * counterclockwise. null when the element carries no usable geometry: a pad
+ * placed at (0,0) because its x was missing is worse than no pad.
+ */
+export interface PadGeometry {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rot: number;
+}
+
+const fin = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** bounding box of a list of points, without spreading huge arrays on the stack */
+export function pointsBounds(
+  points: unknown,
+): { minX: number; maxX: number; minY: number; maxY: number } | null {
+  if (!Array.isArray(points)) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points as Array<{ x?: unknown; y?: unknown }>) {
+    const x = fin(p?.x), y = fin(p?.y);
+    if (x === null || y === null) continue;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return Number.isFinite(minX) ? { minX, maxX, minY, maxY } : null;
+}
+
+export function padGeometry(e: Record<string, unknown>): PadGeometry | null {
+  const shape = typeof e.shape === "string" ? e.shape : "";
+  const x0 = fin(e.x), y0 = fin(e.y);
+
+  // vertices in board coordinates: a polygon smtpad
+  if (Array.isArray(e.points) && e.points.length > 0) {
+    const b = pointsBounds(e.points);
+    if (b) {
+      return {
+        x: (b.minX + b.maxX) / 2,
+        y: (b.minY + b.maxY) / 2,
+        w: b.maxX - b.minX,
+        h: b.maxY - b.minY,
+        rot: 0,
+      };
+    }
+  }
+  if (x0 === null || y0 === null) return null;
+
+  // vertices relative to x/y: a plated hole with a polygon pad
+  if (Array.isArray(e.pad_outline) && e.pad_outline.length > 0) {
+    const b = pointsBounds(e.pad_outline);
+    if (b) {
+      return {
+        x: x0 + (b.minX + b.maxX) / 2,
+        y: y0 + (b.minY + b.maxY) / 2,
+        w: b.maxX - b.minX,
+        h: b.maxY - b.minY,
+        rot: fin(e.ccw_rotation) ?? 0,
+      };
+    }
+  }
+
+  const rectW = fin(e.rect_pad_width), rectH = fin(e.rect_pad_height);
+  if (rectW !== null && rectH !== null) {
+    return { x: x0, y: y0, w: rectW, h: rectH, rot: fin(e.rect_ccw_rotation) ?? 0 };
+  }
+  const outerW = fin(e.outer_width), outerH = fin(e.outer_height);
+  if (outerW !== null && outerH !== null) {
+    return { x: x0, y: y0, w: outerW, h: outerH, rot: fin(e.ccw_rotation) ?? 0 };
+  }
+  const width = fin(e.width), height = fin(e.height);
+  if (width !== null && height !== null) {
+    return { x: x0, y: y0, w: width, h: height, rot: fin(e.ccw_rotation) ?? 0 };
+  }
+  const radius = fin(e.radius);
+  if (shape === "circle" && radius !== null) {
+    return { x: x0, y: y0, w: radius * 2, h: radius * 2, rot: 0 };
+  }
+  const diameter = fin(e.outer_diameter) ?? fin(e.diameter) ?? (radius !== null ? radius * 2 : null);
+  if (diameter !== null) return { x: x0, y: y0, w: diameter, h: diameter, rot: 0 };
+  const holeW = fin(e.hole_width), holeH = fin(e.hole_height);
+  if (holeW !== null && holeH !== null) {
+    return { x: x0, y: y0, w: holeW, h: holeH, rot: fin(e.ccw_rotation) ?? fin(e.hole_ccw_rotation) ?? 0 };
+  }
+  const hole = fin(e.hole_diameter);
+  if (hole !== null) return { x: x0, y: y0, w: hole, h: hole, rot: 0 };
+  return null;
+}
+
+/** half sides of the axis-aligned box around a (possibly rotated) pad */
+export function padHalfExtents(g: PadGeometry): { hw: number; hh: number } {
+  const r = (((g.rot % 360) + 360) % 360) * (Math.PI / 180);
+  const c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r));
+  // a quarter turn must come out exact, not 1e-16 off
+  const cc = c < 1e-9 ? 0 : c, ss = s < 1e-9 ? 0 : s;
+  return { hw: (g.w * cc + g.h * ss) / 2, hh: (g.w * ss + g.h * cc) / 2 };
+}
+
+/**
+ * The origin of the frame a component's pcbX/pcbY are measured in.
+ *
+ * pcbX/pcbY — and so `display_offset_x/y` and every saved placement — are
+ * relative to the PARENT GROUP, while centres, pads and the viewer's events
+ * are in board coordinates. Verified on @tscircuit/core 0.0.1512: a resistor
+ * with pcbX={2} inside <group pcbX={10}> has display_offset_x 2 and centre 12,
+ * and the group's `anchor_position` is the frame origin (absolute, nested
+ * groups included). Treating board coordinates as parent-relative wrote 12
+ * into a pcbX that the group then shifted by 10 again.
+ */
+export function parentFrameOffset(
+  elements: unknown[],
+  component: Record<string, unknown>,
+): { x: number; y: number } {
+  const groupId =
+    (typeof component.positioned_relative_to_pcb_group_id === "string" &&
+      component.positioned_relative_to_pcb_group_id) ||
+    (typeof component.pcb_group_id === "string" && component.pcb_group_id) ||
+    null;
+  if (!groupId) return { x: 0, y: 0 };
+  const groups = new Map<string, Record<string, unknown>>();
+  for (const el of elements as Array<Record<string, unknown>>) {
+    if (el?.type === "pcb_group" && typeof el.pcb_group_id === "string") groups.set(el.pcb_group_id, el);
+  }
+  const g = groups.get(groupId);
+  if (!g) return { x: 0, y: 0 };
+  const anchor = g.anchor_position as { x?: unknown; y?: unknown } | undefined;
+  const ax = fin(anchor?.x), ay = fin(anchor?.y);
+  if (ax !== null && ay !== null) return { x: ax, y: ay };
+  // no anchor written: walk the chain of explicit group offsets
+  let x = 0, y = 0;
+  const seen = new Set<string>();
+  let cur: Record<string, unknown> | undefined = g;
+  while (cur && !seen.has(String(cur.pcb_group_id))) {
+    seen.add(String(cur.pcb_group_id));
+    x += parseLength(cur.display_offset_x) ?? 0;
+    y += parseLength(cur.display_offset_y) ?? 0;
+    const parent: unknown = cur.positioned_relative_to_pcb_group_id;
+    cur = typeof parent === "string" ? groups.get(parent) : undefined;
+  }
+  return { x, y };
+}
+
+/** a length written as a number or as "10mm" / "1cm" / "20mil" / "0.1in" */
+export function parseLength(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v !== "string") return null;
+  const m = /^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*(mm|cm|um|µm|mils?|in|inch|inches)?\s*$/i.exec(v);
+  if (!m) return null;
+  const n = Number.parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const unit = (m[2] ?? "mm").toLowerCase();
+  const scale =
+    unit === "cm" ? 10 : unit === "um" || unit === "µm" ? 0.001 : unit.startsWith("mil") ? 0.0254 : unit.startsWith("in") ? 25.4 : 1;
+  return n * scale;
+}

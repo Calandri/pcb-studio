@@ -56,6 +56,12 @@ export interface EsitoRicolata {
   orfaneTolte: number;
   /** vias of the pour's own net the solver would have carved around */
   viaRiconosciute: number;
+  /**
+   * Pours that came out with NO piece left: every fragment was a splinter or
+   * an empty scrap. They disappear from the board, and this says which, so
+   * the summary can report a plane that is gone instead of losing it silently.
+   */
+  colateSparite: string[];
 }
 
 const area = (v: Array<{ x: number; y: number }>): number => {
@@ -68,26 +74,65 @@ const area = (v: Array<{ x: number; y: number }>): number => {
   return Math.abs(s / 2);
 };
 
+/** a rectangle turned around its centre, grown by a margin, as four corners */
+function rettangoloRuotato(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  gradi: number,
+  margine: number,
+): Array<{ x: number; y: number }> {
+  const rad = (gradi * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const a = w / 2 + margine;
+  const b = h / 2 + margine;
+  return [
+    [-a, -b],
+    [a, -b],
+    [a, b],
+    [-a, b],
+  ].map(([dx, dy]) => ({ x: x + dx * cos - dy * sin, y: y + dx * sin + dy * cos }));
+}
+
+/** a rectangle turned by a multiple of 180° is the same rectangle */
+const senzaGiro = (gradi: number): boolean => Math.abs(((gradi % 180) + 180) % 180) < 1e-6;
+
+/** whether a through element lives on this face: its `layers`, or all of them */
+function suFaccia(el: El, faccia: string): boolean {
+  const layers = el.layers;
+  if (!Array.isArray(layers) || layers.length === 0) return true;
+  return layers.some((l) => (typeof l === "string" ? l : (l as { name?: unknown })?.name) === faccia);
+}
+
 /**
  * THE PADS THE SOLVER CANNOT READ.
  *
- * Its converter knows four shapes — rect, circle, pill, rotated_pill — and this
- * board has ninety pads that are `rotated_rect`: every component the designer
- * turned, which on a real board is most of them. They are not obstacles for the
- * pour, they are NOTHING: the plane flows straight over the pins of a
- * microcontroller sitting at 45 degrees, and what you see on screen is copper
- * touching the pads.
- *
- * The solver does understand a POLYGON obstacle, so the rotated rectangle is
- * handed to it as its four corners. Only for pads of ANOTHER net: a pad on the
- * pour's own net has to touch the plane, which is the point of a plane.
+ * Its converter knows a handful of shapes — smtpad rect, circle, pill,
+ * rotated_pill; plated hole circle and circular_hole_with_rect_pad; round
+ * pcb_hole — and everything else is NOTHING to it: the plane flows straight
+ * over it. Measured on real boards and on the next one:
+ *   - `rotated_rect` smtpads: every component the designer turned (ninety on
+ *     one board), the pins of a microcontroller at 45 degrees;
+ *   - POLYGON smtpads: the ground pads of the MEMS microphones;
+ *   - oval / pill plated holes: the shell of a USB-C receptacle;
+ *   - pill_hole_with_rect_pad, rotated_pill_hole_with_rect_pad,
+ *     hole_with_polygon_pad; and a circular_hole_with_rect_pad turned by a
+ *     quarter, whose rectangle the converter reads unturned;
+ *   - non-round pcb_hole: the slots of a connector, copper over a drill.
+ * Each is handed over in a shape the solver does subtract. Only for pads of
+ * ANOTHER net: a pad on the pour's own net has to touch the plane, which is
+ * the point of a plane. Holes have no net and are always cut around.
  *
  * One catch, read in its source: a polygon obstacle is subtracted with margin
- * ZERO unless its key says hole or cutout (dist/index.js:440). Copper flush
- * against a pad is still a defect, so the rectangle handed over is the pad
- * already grown by the project's clearance.
+ * ZERO unless its key says hole or cutout (dist/index.js:440). Rectangles are
+ * therefore handed over already grown by the project's clearance; a polygon
+ * pad, whose outline cannot be grown by hand without getting concave corners
+ * wrong, goes with a `cutout:` key, so the solver offsets it itself; a pill
+ * goes as a pill, which the solver grows by the pad margin.
  */
-function padRuotati(
+export function padRuotati(
   circuitJson: El[],
   faccia: string,
   netDellaColata: string,
@@ -102,38 +147,103 @@ function padRuotati(
   serviti: Map<string, string>,
 ): Array<Record<string, unknown>> {
   const fuori: Array<Record<string, unknown>> = [];
+  const poligono = (id: string, points: Array<{ x: number; y: number }>, chiave = `unconnected:${id}`) =>
+    fuori.push({ shape: "polygon", padId: id, layer: faccia, connectivityKey: chiave, points });
   for (const el of circuitJson) {
-    if (el.type !== "pcb_smtpad" || String(el.layer ?? "") !== faccia) continue;
-    if (el.shape !== "rotated_rect") continue;
+    const shape = String(el.shape ?? "");
     const x = num(el.x);
     const y = num(el.y);
-    const w = num(el.width);
-    const h = num(el.height);
-    if (x === null || y === null || w === null || h === null) continue;
-    // its own net: the plane must reach it, not avoid it
-    if (serviti.get(String(el.pcb_port_id ?? "")) === netDellaColata) continue;
-    const rad = ((num(el.ccw_rotation) ?? 0) * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const a = w / 2 + margineMm;
-    const b = h / 2 + margineMm;
-    const points = [
-      [-a, -b],
-      [a, -b],
-      [a, b],
-      [-a, b],
-    ].map(([dx, dy]) => ({ x: x + dx * cos - dy * sin, y: y + dx * sin + dy * cos }));
-    fuori.push({
-      shape: "polygon",
-      padId: String(el.pcb_smtpad_id ?? ""),
-      layer: faccia,
-      /*
-       * A key of its own: the solver subtracts whatever does not carry the
-       * pour's key, and these must be subtracted.
-       */
-      connectivityKey: `unconnected:${String(el.pcb_smtpad_id ?? "")}`,
-      points,
-    });
+
+    if (el.type === "pcb_smtpad") {
+      if (String(el.layer ?? "") !== faccia) continue;
+      // its own net: the plane must reach it, not avoid it
+      if (serviti.get(String(el.pcb_port_id ?? "")) === netDellaColata) continue;
+      const id = String(el.pcb_smtpad_id ?? "");
+      if (shape === "rotated_rect") {
+        const w = num(el.width);
+        const h = num(el.height);
+        if (x === null || y === null || w === null || h === null) continue;
+        poligono(id, rettangoloRuotato(x, y, w, h, num(el.ccw_rotation) ?? 0, margineMm));
+      } else if (shape === "polygon") {
+        const punti = ((el.points as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [])
+          .map((p) => ({ x: num(p.x), y: num(p.y) }))
+          .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null);
+        if (punti.length < 3) continue;
+        poligono(id, punti, `cutout:pad_${id}`);
+      }
+      continue;
+    }
+
+    if (el.type === "pcb_plated_hole") {
+      if (!suFaccia(el, faccia)) continue;
+      if (serviti.get(String(el.pcb_port_id ?? "")) === netDellaColata) continue;
+      if (x === null || y === null) continue;
+      const id = String(el.pcb_plated_hole_id ?? "");
+      if (shape === "oval" || shape === "pill") {
+        const w = num(el.outer_width);
+        const h = num(el.outer_height);
+        if (w === null || h === null) continue;
+        fuori.push({
+          shape: "pill",
+          padId: id,
+          layer: faccia,
+          connectivityKey: `unconnected-plated-hole:${id}`,
+          x,
+          y,
+          width: w,
+          height: h,
+          radius: Math.min(w, h) / 2,
+          ccwRotation: num(el.ccw_rotation) ?? 0,
+        });
+      } else if (
+        shape === "pill_hole_with_rect_pad" ||
+        shape === "rotated_pill_hole_with_rect_pad" ||
+        (shape === "circular_hole_with_rect_pad" && !senzaGiro(num(el.rect_ccw_rotation) ?? 0))
+      ) {
+        const w = num(el.rect_pad_width);
+        const h = num(el.rect_pad_height);
+        if (w === null || h === null) continue;
+        poligono(id, rettangoloRuotato(x, y, w, h, num(el.rect_ccw_rotation) ?? 0, margineMm));
+      } else if (shape === "hole_with_polygon_pad") {
+        const rot = ((num(el.ccw_rotation) ?? 0) * Math.PI) / 180;
+        const cos = Math.cos(rot);
+        const sin = Math.sin(rot);
+        const punti = ((el.pad_outline as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [])
+          .map((p) => ({ x: num(p.x), y: num(p.y) }))
+          .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null)
+          // the outline is relative to the hole's position
+          .map((p) => ({ x: x + p.x * cos - p.y * sin, y: y + p.x * sin + p.y * cos }));
+        if (punti.length < 3) continue;
+        poligono(id, punti, `cutout:pad_${id}`);
+      }
+      continue;
+    }
+
+    if (el.type === "pcb_hole") {
+      const holeShape = String(el.hole_shape ?? "");
+      if (holeShape === "circle" || x === null || y === null) continue;
+      const id = String(el.pcb_hole_id ?? "");
+      const w = num(el.hole_width) ?? num(el.hole_diameter);
+      const h = num(el.hole_height) ?? num(el.hole_diameter);
+      if (w === null || h === null) continue;
+      if (holeShape === "pill" || holeShape === "oval" || holeShape === "rotated_pill") {
+        fuori.push({
+          shape: "pill",
+          padId: id,
+          layer: faccia,
+          connectivityKey: `hole:${id}`,
+          x,
+          y,
+          width: w,
+          height: h,
+          radius: Math.min(w, h) / 2,
+          ccwRotation: num(el.ccw_rotation) ?? 0,
+        });
+      } else {
+        // rect and square slots: a box, cut around by the hole margin
+        poligono(id, rettangoloRuotato(x, y, w, h, 0, margineMm));
+      }
+    }
   }
   return fuori;
 }
@@ -246,7 +356,7 @@ function dentro(x: number, y: number, anello: Array<{ x: number; y: number }>): 
  * nor cutout on purpose: a polygon obstacle with such a key is subtracted
  * exactly as given, which is what a measured band has to be.
  */
-function bandaDelBordo(
+export function bandaDelBordo(
   circuitJson: El[],
   faccia: string,
   bordoMm: number,
@@ -259,9 +369,19 @@ function bandaDelBordo(
   const cy = num(centro.y) ?? 0;
   const w = num(board.width);
   const h = num(board.height);
-  const contorno = Array.isArray(board.outline)
-    ? (board.outline as Array<{ x?: number; y?: number }>)
-        .map((p) => ({ x: num(p.x) ?? 0, y: num(p.y) ?? 0 }))
+  /*
+   * The drawn outline when it IS one — three real points at least. An empty
+   * `outline: []` (what an export with no custom shape leaves) used to win
+   * over width/height and give no band at all, and a point with a missing
+   * coordinate went to 0.
+   */
+  const disegnato = Array.isArray(board.outline)
+    ? (board.outline as Array<{ x?: unknown; y?: unknown }>)
+        .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
+        .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null)
+    : [];
+  const contorno = disegnato.length >= 3
+    ? disegnato
     : w !== null && h !== null
       ? [
           { x: cx - w / 2, y: cy - h / 2 },
@@ -380,7 +500,7 @@ export async function ricolaPiani({
 }): Promise<EsitoRicolata> {
   const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
   if (pours.length === 0) {
-    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0, colateScavate: 0, bricioleTolte: 0, orfaneTolte: 0, viaRiconosciute: 0 };
+    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0, colateScavate: 0, bricioleTolte: 0, orfaneTolte: 0, viaRiconosciute: 0, colateSparite: [] };
   }
 
   await initializeManifoldGeometry();
@@ -411,6 +531,9 @@ export async function ricolaPiani({
   let briciole = 0;
   let orfane = 0;
   let riconosciute = 0;
+  const sparite: string[] = [];
+  /** pieces already named per original pour: ids stay unique across its fragments */
+  const pezziDi = new Map<string, number>();
 
   for (const pour of pours) {
     const brep = pour.brep_shape as { outer_ring?: Anello; inner_rings?: Anello[] } | undefined;
@@ -478,7 +601,14 @@ export async function ricolaPiani({
     }
 
     ricolate++;
-    forme.forEach((forma, i) => {
+    /*
+     * The id of the pour as the FILE has it: a second run on an already
+     * re-poured board used to name its pieces `_r0_r0`, then `_r0_r0_r0`,
+     * and nothing downstream recognised them as the same plane.
+     */
+    const radice = String(pour.pcb_copper_pour_id ?? "").replace(/(_r\d+)+$/, "");
+    let tenuti = 0;
+    forme.forEach((forma) => {
       /*
        * The splinters go in the bin. Cutting a plane with booleans leaves
        * shapes of a thousandth of a square millimetre — 97 of this board's 203,
@@ -510,12 +640,16 @@ export async function ricolaPiani({
         }
       }
       areaDopo += suaArea;
+      tenuti++;
+      const n = pezziDi.get(radice) ?? 0;
+      pezziDi.set(radice, n + 1);
       nuovi.push({
         ...pour,
-        pcb_copper_pour_id: `${String(pour.pcb_copper_pour_id)}_r${i}`,
+        pcb_copper_pour_id: `${radice}_r${n}`,
         brep_shape: forma,
       });
     });
+    if (tenuti === 0) sparite.push(radice || String(pour.pcb_copper_pour_id ?? ""));
   }
 
   return {
@@ -528,6 +662,7 @@ export async function ricolaPiani({
     bricioleTolte: briciole,
     orfaneTolte: orfane,
     viaRiconosciute: riconosciute,
+    colateSparite: sparite,
   };
 }
 
