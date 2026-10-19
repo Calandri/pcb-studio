@@ -2,7 +2,7 @@ import { requireProjectAccess } from "@/lib/acl";
 import { summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
-import { getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
+import { getCompileCache, getProject, hasBoard, saveCompileCache } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -36,6 +36,17 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
+  /*
+   * A cache with no board is a failed compile, not a board: re-evaluated it
+   * came out with zero violations of every kind — all green on nothing.
+   */
+  if (!hasBoard(cache.circuitJson)) {
+    return Response.json(
+      { error: "la compilazione in cache non contiene una scheda: ricompila il progetto" },
+      { status: 409 },
+    );
+  }
+
   try {
     /*
      * WITH THE SOURCES. summarizeCircuit reads the footprint of each component
@@ -48,15 +59,23 @@ export async function POST(req: Request): Promise<Response> {
       cache.circuitJson,
       await withLibrary(await getProject(projectId)),
     );
-    await saveCompileCache(
+    /*
+     * Only over the row that was read: a compile that finished while this
+     * recheck ran has saved a newer board, and the old one re-evaluated must
+     * not take its place.
+     */
+    const salvataggio = await saveCompileCache(
       projectId,
       cache.filesHash,
       cache.circuitJson,
       summary,
       CHECKS_ENGINE_VERSION,
-    ).catch(() => {});
+      { ifUnchangedSince: { filesHash: cache.filesHash, createdAt: cache.createdAt } },
+    ).catch(() => ({ saved: false, reason: "salvataggio fallito" }));
     return Response.json({
       ok: true,
+      saved: salvataggio.saved,
+      ...(!salvataggio.saved && "reason" in salvataggio ? { reason: salvataggio.reason } : {}),
       engineVersion: CHECKS_ENGINE_VERSION,
       previousEngineVersion: cache.engineVersion,
       summary,

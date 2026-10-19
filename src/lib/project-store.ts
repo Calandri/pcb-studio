@@ -388,6 +388,14 @@ async function ensureCompileCacheTable(
       () =>
         sql`ALTER TABLE project_compiles ADD COLUMN IF NOT EXISTS engine_version int NOT NULL DEFAULT 0`,
     )
+    // the half-routed drawings live apart from the board: see savePreviewCircuit
+    .then(
+      () =>
+        sql`ALTER TABLE project_compiles ADD COLUMN IF NOT EXISTS preview_circuit_json jsonb`,
+    )
+    .then(
+      () => sql`ALTER TABLE project_compiles ADD COLUMN IF NOT EXISTS preview_at timestamptz`,
+    )
     .then(() => undefined)
     .catch((err) => {
       compileCacheDdlPromise = null;
@@ -414,64 +422,204 @@ function routingFailed(summary: unknown): boolean {
   return Array.isArray(errors) && errors.some((e) => e?.type === "pcb_autorouting_error");
 }
 
+/**
+ * A compile that produced NO BOARD: a syntax error in the sources, an
+ * exception in the compiler. Its circuit is `[]`, and saved over a good row it
+ * became the board everyone saw — and the one /api/export turned into empty
+ * Gerbers. It is not a board: it is a failure, and failures are reported, not
+ * stored in place of the last thing that worked.
+ */
+export function compileBroken(circuitJson: unknown[], summary: unknown): boolean {
+  const errors = (summary as { errors?: Array<{ type?: string }> } | null)?.errors;
+  if (Array.isArray(errors) && errors.some((e) => e?.type === "compile_exception")) return true;
+  return !hasBoard(circuitJson);
+}
+
+/** whether a Circuit JSON carries a board at all */
+export function hasBoard(circuitJson: unknown): boolean {
+  return (
+    Array.isArray(circuitJson) &&
+    circuitJson.some((el) => (el as { type?: unknown } | null)?.type === "pcb_board")
+  );
+}
+
+export interface SaveCompileResult {
+  saved: boolean;
+  /** the row already in cache was kept: the new result was worse than it */
+  keptPrevious?: boolean;
+  /** why it was not saved, in Italian, ready to be shown */
+  reason?: string;
+}
+
 export async function saveCompileCache(
   projectId: string,
   hash: string,
   circuitJson: unknown[],
   summary: unknown,
   engineVersion = 0,
-): Promise<{ saved: boolean; keptPrevious?: boolean }> {
+  opts: {
+    /**
+     * Save only if the row is still the one read at `createdAt` with this hash.
+     * For whoever RE-EVALUATES a cached board (recheck): if a compile has saved
+     * a newer board in the meantime, re-evaluating the old one must not put it
+     * back.
+     */
+    ifUnchangedSince?: { filesHash: string; createdAt: unknown };
+  } = {},
+): Promise<SaveCompileResult> {
   const sql = db();
   if (!sql) return { saved: false };
   await ensureCompileCacheTable(sql);
+
+  // the preview of a compile that is not being saved must not stay on screen
+  const dropPreview = () =>
+    sql`
+      UPDATE project_compiles SET preview_circuit_json = NULL, preview_at = NULL
+      WHERE project_id = ${projectId}
+    `.catch(() => {});
+
+  if (compileBroken(circuitJson, summary)) {
+    // a cheap question, not the whole row: is there a board in cache?
+    const [row] = (await sql`
+      SELECT circuit_json @> '[{"type":"pcb_board"}]'::jsonb AS has_board
+      FROM project_compiles WHERE project_id = ${projectId}
+    `.catch(() => [])) as Array<{ has_board: boolean }>;
+    if (row?.has_board) {
+      await dropPreview();
+      return {
+        saved: false,
+        keptPrevious: true,
+        reason:
+          "la compilazione non ha prodotto una scheda: resta salvata l'ultima buona, e non corrisponde a questi file finche' l'errore non e' corretto",
+      };
+    }
+  }
 
   if (routingFailed(summary)) {
     const previous = await getCompileCache(projectId).catch(() => null);
     const previousOk =
       previous && !routingFailed(previous.summary) &&
       (previous.summary as { ok?: boolean } | null)?.ok === true;
-    if (previousOk) return { saved: false, keptPrevious: true };
+    if (previousOk) {
+      await dropPreview();
+      return {
+        saved: false,
+        keptPrevious: true,
+        reason: "lo sbroglio e' fallito: resta salvata l'ultima scheda buona",
+      };
+    }
   }
 
+  const json = JSON.stringify(circuitJson);
+  const sintesi = JSON.stringify(summary);
+  const condizione = opts.ifUnchangedSince;
+  if (condizione) {
+    const quando =
+      condizione.createdAt instanceof Date
+        ? condizione.createdAt.toISOString()
+        : String(condizione.createdAt);
+    /*
+     * The row is replaced only if it is still the one that was read. The
+     * millisecond of slack is the precision a JS Date keeps of a timestamptz:
+     * without it the row just read would look newer than itself.
+     */
+    const rows = (await sql`
+      INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version)
+      VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion})
+      ON CONFLICT (project_id)
+      DO UPDATE SET files_hash = EXCLUDED.files_hash,
+                    circuit_json = EXCLUDED.circuit_json,
+                    summary = EXCLUDED.summary,
+                    engine_version = EXCLUDED.engine_version,
+                    preview_circuit_json = NULL,
+                    preview_at = NULL,
+                    created_at = now()
+      WHERE project_compiles.files_hash = ${condizione.filesHash}
+        AND project_compiles.created_at < ${quando}::timestamptz + interval '1 millisecond'
+      RETURNING project_id
+    `) as Array<{ project_id: string }>;
+    return rows.length > 0
+      ? { saved: true }
+      : {
+          saved: false,
+          keptPrevious: true,
+          reason: "nel frattempo e' stata salvata una scheda piu' recente: non la sovrascrivo",
+        };
+  }
+
+  // the final save wins over any preview still in flight: it clears it
   await sql`
     INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version)
-    VALUES (${projectId}, ${hash}, ${JSON.stringify(circuitJson)}::jsonb,
-            ${JSON.stringify(summary)}::jsonb, ${engineVersion})
+    VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion})
     ON CONFLICT (project_id)
     DO UPDATE SET files_hash = EXCLUDED.files_hash,
                   circuit_json = EXCLUDED.circuit_json,
                   summary = EXCLUDED.summary,
                   engine_version = EXCLUDED.engine_version,
+                  preview_circuit_json = NULL,
+                  preview_at = NULL,
                   created_at = now()
   `;
   return { saved: true };
 }
 
 /**
- * Updates ONLY the drawing, leaving the summary and hash alone.
+ * Stores the HALF-ROUTED drawing, apart from the board.
  *
  * This is what lets you watch the board take shape: during a long compile the
  * copper forms in stages, and anyone with the page open can watch it instead
- * of staring at the previous drawing for eight minutes. The summary is NOT
- * touched: it is only coherent when the compile is finished, and showing
- * "ready for the factory" percentages computed halfway through would be worse
- * than showing nothing.
+ * of staring at the previous drawing for eight minutes.
+ *
+ * It used to be written INTO `circuit_json`, the column the exports read, with
+ * the old hash and the old summary: for the length of a compile the Gerber of
+ * the project was a board halfway through routing, certified by the checks of
+ * the previous one. And since previews are fire-and-forget, one could land
+ * after the final save and replace the finished board with a half-done one.
+ *
+ * Now it has its own columns, which only getPreviewCircuit reads. It carries
+ * the moment it was ISSUED, and it is written only if no final save happened
+ * after that moment: the final save clears it, and a preview that arrives late
+ * finds the row newer than itself and is dropped.
  */
 export async function savePreviewCircuit(
   projectId: string,
   circuitJson: unknown[],
 ): Promise<void> {
+  const emessa = new Date().toISOString();
   const sql = db();
   if (!sql) return;
   try {
     await ensureCompileCacheTable(sql);
     await sql`
       UPDATE project_compiles
-      SET circuit_json = ${JSON.stringify(circuitJson)}::jsonb, created_at = now()
-      WHERE project_id = ${projectId}
+      SET preview_circuit_json = ${JSON.stringify(circuitJson)}::jsonb,
+          preview_at = ${emessa}::timestamptz
+      WHERE project_id = ${projectId} AND created_at < ${emessa}::timestamptz
     `;
   } catch {
     // the preview is an extra: if it fails, the compile goes on
+  }
+}
+
+/**
+ * The drawing of a compile still running, when there is one newer than the
+ * saved board. Never a source for exports: it has no checks behind it.
+ */
+export async function getPreviewCircuit(
+  projectId: string,
+): Promise<{ circuitJson: unknown[]; previewAt: string } | null> {
+  const sql = db();
+  if (!sql) return null;
+  try {
+    await ensureCompileCacheTable(sql);
+    const [row] = (await sql`
+      SELECT preview_circuit_json, preview_at FROM project_compiles
+      WHERE project_id = ${projectId}
+        AND preview_circuit_json IS NOT NULL AND preview_at > created_at
+    `) as Array<{ preview_circuit_json: unknown[]; preview_at: string }>;
+    return row ? { circuitJson: row.preview_circuit_json, previewAt: row.preview_at } : null;
+  } catch {
+    return null;
   }
 }
 

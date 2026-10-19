@@ -103,13 +103,24 @@ export async function POST(req: Request): Promise<Response> {
         });
         mark("compileProject", t0);
         const hash = filesHash(fsMap);
-        await saveCompileCache(
+        /*
+         * A compile that produced no board is NOT saved over the last good one
+         * (see saveCompileCache): it is said, so whoever is watching knows the
+         * board on screen is the previous one and why.
+         */
+        const salvataggio = await saveCompileCache(
           projectId,
           hash,
           circuitJson,
           summary,
           CHECKS_ENGINE_VERSION,
-        ).catch(() => {});
+        ).catch((err) => ({
+          saved: false,
+          reason: `salvataggio fallito: ${err instanceof Error ? err.message : String(err)}`,
+        }));
+        if (!salvataggio.saved && "reason" in salvataggio && salvataggio.reason) {
+          summary.message += ` (${salvataggio.reason})`;
+        }
         if (variants) {
           await saveRouteVariants(
             projectId,
@@ -126,7 +137,7 @@ export async function POST(req: Request): Promise<Response> {
             })),
           ).catch(() => {});
         }
-        send("fine", { ok: summary.ok, summary });
+        send("fine", { ok: summary.ok, summary, saved: salvataggio.saved });
       } catch (err) {
         send("errore", { error: err instanceof Error ? err.message : String(err) });
       } finally {
