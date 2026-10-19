@@ -54,6 +54,7 @@ import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
  */
 
 import { ePotenza } from "./net-roles";
+import { padGeometry, padHalfExtents, parentFrameOffset, parseLength, pointsBounds } from "./pcb-route-model";
 
 export interface PlacementViolation {
   a: string;
@@ -264,6 +265,8 @@ interface Pad {
    * the other component's centre, which is not what gets routed.
    */
   net: string;
+  /** the pcb_port it implements: how a power pin is found again after the chip moved */
+  portId: string;
 }
 
 /**
@@ -306,6 +309,19 @@ interface Item {
    */
   ox0: number;
   oy0: number;
+  /**
+   * Origin of the frame pcbX/pcbY are measured in: the parent group's. The
+   * placer works in board coordinates and writes parent-relative ones; see
+   * parentFrameOffset.
+   */
+  gx: number;
+  gy: number;
+  /**
+   * A decoupling capacitor seated on its chip's pin travels WITH the chip: the
+   * offset from the chip's centre is what was decided, not the absolute spot.
+   * Locked on its own, it stayed behind every time the solver moved the chip.
+   */
+  rider?: { host: Item; dx: number; dy: number };
   /**
    * Rotation IMPOSED by the magnet, in degrees counterclockwise (0/90/180/270),
    * on top of the one the part already had. A magnet does not only pull, it
@@ -377,17 +393,22 @@ function daScrivere(it: Item): Placement | null {
   const spostato = Math.hypot(it.x - it.x0, it.y - it.y0);
   const girato = it.rot % 360 !== 0;
   if (spostato < EMIT_EPS && !girato) return null;
-  // the footprint offset, as it was compiled
-  const dx = it.x0 - it.ox0;
-  const dy = it.y0 - it.oy0;
+  /*
+   * The footprint offset, as it was compiled: centre minus ABSOLUTE origin.
+   * ox0 is relative to the parent group, so the group's own origin is taken
+   * out first — rotating it along with the footprint offset moved a turned
+   * part inside a group by the group's offset rotated.
+   */
+  const dx = it.x0 - (it.ox0 + it.gx);
+  const dy = it.y0 - (it.oy0 + it.gy);
   const rad = (it.rot * Math.PI) / 180;
   const rx = dx * Math.cos(rad) - dy * Math.sin(rad);
   const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
   return {
     name: it.name,
     center: {
-      x: Math.round((it.x - rx) * 1000) / 1000,
-      y: Math.round((it.y - ry) * 1000) / 1000,
+      x: Math.round((it.x - rx - it.gx) * 1000) / 1000,
+      y: Math.round((it.y - ry - it.gy) * 1000) / 1000,
     },
     deltaMm: Math.round(spostato * 100) / 100,
     ...(girato ? { rotation: ((it.r0 + it.rot) % 360 + 360) % 360 } : {}),
@@ -399,29 +420,6 @@ const halfH = (it: Item): number => Math.max(it.top, it.bottom);
 
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
-
-/**
- * The center of a pad that does not declare one.
- *
- * Some footprints describe pads as POLYGONS — a list of vertices — and those
- * carry neither x nor y. Everything that reads coordinates skips them: the
- * clearance check, the placement, the autorouter. They are pads you can see
- * on the drawing but that do not exist for the tools, and that is how the
- * four ground pads of a microphone used to disappear without anyone saying
- * so. The center is derived from the vertices: it is an honest
- * approximation, and worth far more than a hole in the data.
- */
-function centroDaVertici(el: { points?: unknown }): { x: number; y: number } | null {
-  const punti = el.points as Array<{ x?: unknown; y?: unknown }> | undefined;
-  if (!Array.isArray(punti) || punti.length === 0) return null;
-  const xs = punti.map((p) => (typeof p.x === "number" ? p.x : NaN)).filter(Number.isFinite);
-  const ys = punti.map((p) => (typeof p.y === "number" ? p.y : NaN)).filter(Number.isFinite);
-  if (xs.length === 0 || ys.length === 0) return null;
-  return {
-    x: (Math.min(...xs) + Math.max(...xs)) / 2,
-    y: (Math.min(...ys) + Math.max(...ys)) / 2,
-  };
-}
 
 const GRID = 0.05;
 const snap = (v: number): number => Math.round(v / GRID) * GRID;
@@ -464,45 +462,31 @@ function readItems(circuitJson: unknown[], locked: Set<string>, escape: number):
     if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
     const owner = String(el.pcb_component_id ?? "");
     if (!owner) continue;
-    // a polygonal pad does not declare a center: it is derived from the
-    // vertices, so it stops being invisible to everything
-    const centro = centroDaVertici(el as { points?: unknown });
-    const x = num(el.x) ?? centro?.x ?? null;
-    const y = num(el.y) ?? centro?.y ?? null;
-    if (x === null || y === null) continue;
     /*
-     * A pad is measured in four different ways depending on its shape: rect
+     * A pad is measured in many different ways depending on its shape: rect
      * has width/height, circle has radius, a through hole has
-     * outer_width/height or outer_diameter. Reading only one means treating
-     * the others as dimensionless points: those were exactly the round test
-     * points that ended up on top of the capacitors without anyone noticing.
+     * outer_width/height or outer_diameter, a slot with a rect pad has
+     * rect_pad_*, a polygon has only its vertices. Reading only one means
+     * treating the others as dimensionless points: those were exactly the
+     * round test points that ended up on top of the capacitors without anyone
+     * noticing. The reading is the one every module shares (padGeometry), and
+     * a pad turned at an angle counts with the box around it.
      */
-    const diameter = num(el.outer_diameter) ?? num(el.diameter);
-    const radius = num(el.radius);
-    let w = num(el.width) ?? num(el.outer_width) ?? diameter ?? (radius !== null ? radius * 2 : 0);
-    let h = num(el.height) ?? num(el.outer_height) ?? diameter ?? (radius !== null ? radius * 2 : 0);
-    // polygon pads: the size lives in the vertices, and without this branch a
-    // shaped pad (the pins of certain connectors) counted as a point
-    const points = el.points as Array<{ x?: unknown; y?: unknown }> | undefined;
-    if ((w <= 0 || h <= 0) && Array.isArray(points) && points.length > 0) {
-      const xs = points.map((p) => num(p.x)).filter((v): v is number => v !== null);
-      const ys = points.map((p) => num(p.y)).filter((v): v is number => v !== null);
-      if (xs.length > 0 && ys.length > 0) {
-        w = Math.max(...xs) - Math.min(...xs);
-        h = Math.max(...ys) - Math.min(...ys);
-      }
-    }
-    if (w <= 0 || h <= 0) continue;
+    const g = padGeometry(el);
+    if (!g) continue;
+    const { hw, hh } = padHalfExtents(g);
+    if (hw <= 0 || hh <= 0) continue;
     const list = padsByComponent.get(owner) ?? [];
     // a through hole lives on all layers: treated as "everywhere"
     const layer = el.type === "pcb_plated_hole" ? "*" : String(el.layer ?? "top");
     list.push({
-      dx: x,
-      dy: y,
-      hw: w / 2,
-      hh: h / 2,
+      dx: g.x,
+      dy: g.y,
+      hw,
+      hh,
       layer,
       net: netOfPad.get(String(el.pcb_port_id ?? "")) ?? "",
+      portId: String(el.pcb_port_id ?? ""),
     });
     padsByComponent.set(owner, list);
   }
@@ -536,12 +520,21 @@ function readItems(circuitJson: unknown[], locked: Set<string>, escape: number):
       if (cx === null || cy === null || w === null || h === null) continue;
       growCourtyard(owner, cx - w / 2, cy - h / 2);
       growCourtyard(owner, cx + w / 2, cy + h / 2);
-    } else if (el.type === "pcb_courtyard_outline") {
-      for (const p of (el.outline as Array<{ x?: unknown; y?: unknown }> | undefined) ?? []) {
-        const px = num(p.x);
-        const py = num(p.y);
-        if (px !== null && py !== null) growCourtyard(owner, px, py);
-      }
+    } else if (el.type === "pcb_courtyard_outline" || el.type === "pcb_courtyard_polygon") {
+      const b = pointsBounds(el.type === "pcb_courtyard_outline" ? el.outline : el.points);
+      if (!b) continue;
+      growCourtyard(owner, b.minX, b.minY);
+      growCourtyard(owner, b.maxX, b.maxY);
+    } else if (el.type === "pcb_courtyard_circle" || el.type === "pcb_courtyard_pill") {
+      const center = (el.center as { x?: unknown; y?: unknown } | undefined) ?? {};
+      const cx = num(center.x);
+      const cy = num(center.y);
+      const r = num(el.radius);
+      const w = num(el.width) ?? (r !== null ? r * 2 : null);
+      const h = num(el.height) ?? (r !== null ? r * 2 : null);
+      if (cx === null || cy === null || w === null || h === null) continue;
+      growCourtyard(owner, cx - w / 2, cy - h / 2);
+      growCourtyard(owner, cx + w / 2, cy + h / 2);
     }
   }
 
@@ -554,6 +547,7 @@ function readItems(circuitJson: unknown[], locked: Set<string>, escape: number):
     const cy = num(center.y);
     if (!id || cx === null || cy === null) continue;
     const meta = names.get(String(el.source_component_id ?? "")) ?? { name: id, ftype: "" };
+    const frame = parentFrameOffset(elements, el);
     const pads = (padsByComponent.get(id) ?? []).map((p) => ({
       ...p,
       dx: p.dx - cx,
@@ -581,8 +575,16 @@ function readItems(circuitJson: unknown[], locked: Set<string>, escape: number):
       y: cy,
       x0: cx,
       y0: cy,
-      ox0: num(el.display_offset_x) ?? cx,
-      oy0: num(el.display_offset_y) ?? cy,
+      /*
+       * Without a requested origin (a part laid out by its group) the best
+       * stand-in is its centre — in the PARENT's frame, like pcbX: written in
+       * board coordinates inside <group pcbX={10}> it came back ten
+       * millimetres further at the next compile.
+       */
+      ox0: parseLength(el.display_offset_x) ?? cx - frame.x,
+      oy0: parseLength(el.display_offset_y) ?? cy - frame.y,
+      gx: frame.x,
+      gy: frame.y,
       rot: 0,
       r0: num(el.rotation) ?? 0,
       pads,
@@ -896,11 +898,14 @@ function separate(
   movable?: Set<number>,
 ): boolean {
   for (let pass = 0; pass < passes; pass++) {
+    followHosts(items);
     let touched = false;
     for (let i = 0; i < items.length; i++) {
       for (let j = i + 1; j < items.length; j++) {
         const a = items[i];
         const b = items[j];
+        // a capacitor and the chip it rides never push each other apart
+        if (a.rider?.host === b || b.rider?.host === a) continue;
         const freeA = !a.locked && (!movable || movable.has(i));
         const freeB = !b.locked && (!movable || movable.has(j));
         if (!freeA && !freeB) continue;
@@ -1074,6 +1079,8 @@ function score(
   board: { x: number; y: number; w: number; h: number } | null,
   margin: number,
 ): PlacementScore {
+  // seated capacitors are judged where their chip has taken them
+  followHosts(items);
   return {
     violations:
       violations(items, clearance).length +
@@ -1586,6 +1593,7 @@ export function placeComponents(
     if (opts.magnetToPins) {
       report.magnetSteps = magnetToPins(items, ctx, {
         skipNets: new Set(opts.magnetSkipNets ?? planeNetKeys(circuitJson)),
+        deadline,
       });
     }
     separate(items, clearance + GRID, board, margin);
@@ -1638,10 +1646,17 @@ export function placeComponents(
    * it is the other parts that must arrange themselves around it.
    */
   for (const it of items) {
-    if (wired.padOfCapacitor.has(it.name)) {
-      it.locked = true;
-      report.decouplingPlaced += 1;
-    }
+    const pad = wired.padOfCapacitor.get(it.name);
+    if (!pad) continue;
+    /*
+     * Locked against the solver's forces, but tied to its chip: it moves when
+     * the chip moves, by exactly the chip's displacement. Locked alone it was
+     * left on an empty spot of the board as soon as the chip was pulled away.
+     */
+    const host = items.find((x) => x.id === pad.ownerId);
+    if (host && host !== it) it.rider = { host, dx: it.x - host.x, dy: it.y - host.y };
+    it.locked = true;
+    report.decouplingPlaced += 1;
   }
 
   const startPositions = items.map((i) => ({ x: i.x, y: i.y }));
@@ -1901,12 +1916,38 @@ export function placeComponents(
 /** the nearest power pad a capacitor can lean against */
 interface PowerPad {
   ownerId: string;
-  x: number;
-  y: number;
+  /**
+   * The chip pad it is, by pcb_port. Its position is ALWAYS read through the
+   * chip (powerPadAt): it used to be stored as the absolute x/y of the
+   * compiled board and compared with the chip's CURRENT centre, so as soon as
+   * the chip had moved every capacitor was seated next to where the pin used
+   * to be.
+   */
+  portId: string;
   hw: number;
   hh: number;
   /** how many capacitors have already been assigned to it */
   taken: number;
+}
+
+/** where a power pad is now: the chip's centre plus the pad's offset on it */
+function powerPadAt(pad: PowerPad, owner: Item): { x: number; y: number } {
+  const p = owner.pads.find((q) => q.portId === pad.portId);
+  return p ? { x: owner.x + p.dx, y: owner.y + p.dy } : { x: owner.x, y: owner.y };
+}
+
+/**
+ * Seated capacitors follow their chip. Called before every judgement of an
+ * arrangement (score) and every separation pass, so whatever moved the chip —
+ * the pull, the separation, a shuffle, the squeeze — the capacitor is
+ * measured where it really is: on the pin it was seated on.
+ */
+function followHosts(items: Item[]): void {
+  for (const it of items) {
+    if (!it.rider) continue;
+    it.x = it.rider.host.x + it.rider.dx;
+    it.y = it.rider.host.y + it.rider.dy;
+  }
 }
 
 /*
@@ -1993,14 +2034,11 @@ function wiredPowerPads(
     const item = byId.get(owner);
     if (!item || !isChip(item, tags)) continue;
     const portId = String(el.pcb_port_id ?? "");
-    if (!powerPortIds.has(portId)) continue;
-    const x = num(el.x);
-    const y = num(el.y);
-    if (x === null || y === null) continue;
-    const radius = num(el.radius);
-    const w = num(el.width) ?? num(el.outer_width) ?? (radius ?? 0) * 2;
-    const h = num(el.height) ?? num(el.outer_height) ?? (radius ?? 0) * 2;
-    const pad: PowerPad = { ownerId: owner, x, y, hw: w / 2, hh: h / 2, taken: 0 };
+    if (!portId || !powerPortIds.has(portId)) continue;
+    if (padByPortId.has(portId)) continue;
+    const own = item.pads.find((q) => q.portId === portId);
+    if (!own) continue;
+    const pad: PowerPad = { ownerId: owner, portId, hw: own.hw, hh: own.hh, taken: 0 };
     powerPads.set(owner, [...(powerPads.get(owner) ?? []), pad]);
     padByPortId.set(portId, pad);
   }
@@ -2072,6 +2110,8 @@ function pullDecouplingToPins(
   }
 
   // the chips' power pads, the ones a capacitor leans against
+  const powerPortSet = new Set<string>();
+  for (const [src, pcb] of pcbPortOfSource) if (netOfPort.has(src)) powerPortSet.add(pcb);
   const powerPads = new Map<string, PowerPad[]>();
   for (const el of elements) {
     if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
@@ -2079,18 +2119,12 @@ function pullDecouplingToPins(
     const item = byId.get(owner);
     if (!item || !isChip(item)) continue; // only the actives
     const portId = String(el.pcb_port_id ?? "");
-    const isPower = [...pcbPortOfSource.entries()].some(
-      ([src, pcb]) => pcb === portId && netOfPort.has(src),
-    );
-    if (!isPower) continue;
-    const x = num(el.x);
-    const y = num(el.y);
-    if (x === null || y === null) continue;
-    const radius = num(el.radius);
-    const w = num(el.width) ?? num(el.outer_width) ?? (radius ?? 0) * 2;
-    const h = num(el.height) ?? num(el.outer_height) ?? (radius ?? 0) * 2;
+    if (!portId || !powerPortSet.has(portId)) continue;
+    const own = item.pads.find((q) => q.portId === portId);
+    if (!own) continue;
     const list = powerPads.get(owner) ?? [];
-    list.push({ ownerId: owner, x, y, hw: w / 2, hh: h / 2, taken: 0 });
+    if (list.some((q) => q.portId === portId)) continue;
+    list.push({ ownerId: owner, portId, hw: own.hw, hh: own.hh, taken: 0 });
     powerPads.set(owner, list);
   }
   if (powerPads.size === 0) return 0;
@@ -2113,16 +2147,7 @@ function pullDecouplingToPins(
    */
   const padOfCapacitor = new Map<string, PowerPad>();
   const padByPortId = new Map<string, PowerPad>();
-  for (const el of elements) {
-    if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
-    const owner = String(el.pcb_component_id ?? "");
-    const list = powerPads.get(owner);
-    if (!list) continue;
-    const x = num(el.x);
-    const y = num(el.y);
-    const found = list.find((p) => p.x === x && p.y === y);
-    if (found) padByPortId.set(String(el.pcb_port_id ?? ""), found);
-  }
+  for (const list of powerPads.values()) for (const p of list) padByPortId.set(p.portId, p);
   const ownerOfPcbPort = new Map<string, string>();
   for (const el of elements) {
     if (el.type !== "pcb_port" || !el.pcb_port_id) continue;
@@ -2178,15 +2203,18 @@ function pullDecouplingToPins(
      * the pin — do we fall back on the nearest free pin, which is a guess
      * but better than nothing.
      */
+    const chip = byId.get(chipId!)!;
     const wired = padOfCapacitor.get(item.name);
     if (!wired) {
-      pads.sort(
-        (a, b) =>
-          a.taken - b.taken ||
-          Math.hypot(a.x - item.x, a.y - item.y) - Math.hypot(b.x - item.x, b.y - item.y),
-      );
+      const dist = (q: PowerPad) => {
+        const at = powerPadAt(q, chip);
+        return Math.hypot(at.x - item.x, at.y - item.y);
+      };
+      pads.sort((a, b) => a.taken - b.taken || dist(a) - dist(b));
     }
     const pad = wired ?? pads[0];
+    const host = byId.get(pad.ownerId) ?? chip;
+    const at = powerPadAt(pad, host);
     const wasX = item.x;
     const wasY = item.y;
 
@@ -2198,21 +2226,20 @@ function pullDecouplingToPins(
      * of, and in line with it. This way the connection is a short straight
      * stretch, which is all that matters for a decoupling.
      */
-    const chip = byId.get(chipId!)!;
     const half = Math.max(item.left, item.right, item.top, item.bottom);
     const gap = ctx.clearance + half;
-    const dx = pad.x - chip.x;
-    const dy = pad.y - chip.y;
+    const dx = at.x - host.x;
+    const dy = at.y - host.y;
     const spots =
       Math.abs(dx) >= Math.abs(dy)
         ? [
             // the pin faces right or left: the exit is sideways
-            { x: chip.x + (dx >= 0 ? chip.cRight + gap : -chip.cLeft - gap), y: pad.y },
-            { x: chip.x + (dx >= 0 ? chip.cRight + gap : -chip.cLeft - gap) + (dx >= 0 ? half : -half), y: pad.y },
+            { x: host.x + (dx >= 0 ? host.cRight + gap : -host.cLeft - gap), y: at.y },
+            { x: host.x + (dx >= 0 ? host.cRight + gap : -host.cLeft - gap) + (dx >= 0 ? half : -half), y: at.y },
           ]
         : [
-            { x: pad.x, y: chip.y + (dy >= 0 ? chip.cTop + gap : -chip.cBottom - gap) },
-            { x: pad.x, y: chip.y + (dy >= 0 ? chip.cTop + gap : -chip.cBottom - gap) + (dy >= 0 ? half : -half) },
+            { x: at.x, y: host.y + (dy >= 0 ? host.cTop + gap : -host.cBottom - gap) },
+            { x: at.x, y: host.y + (dy >= 0 ? host.cTop + gap : -host.cBottom - gap) + (dy >= 0 ? half : -half) },
           ];
     let placed = false;
     for (const spot of spots) {
@@ -2317,9 +2344,11 @@ function alignNeighbours(
 function magnetToPins(
   items: Item[],
   ctx: { clearance: number; board: { x: number; y: number; w: number; h: number } | null; margin: number },
-  opts: { passes?: number; step?: number; skipNets?: Set<string> } = {},
+  opts: { passes?: number; step?: number; skipNets?: Set<string>; deadline?: number } = {},
 ): number {
   const passes = opts.passes ?? 60;
+  // the run's budget holds here too: sixty passes on a big board are minutes
+  const deadline = opts.deadline ?? Infinity;
   const step = opts.step ?? 0.25;
   const skip = opts.skipNets ?? new Set<string>();
 
@@ -2339,9 +2368,11 @@ function magnetToPins(
 
   let mosse = 0;
   for (let pass = 0; pass < passes; pass++) {
+    if (Date.now() > deadline) break;
     rebuild();
     let cambiato = false;
     for (let i = 0; i < items.length; i++) {
+      if (Date.now() > deadline) break;
       const it = items[i];
       if (it.locked) continue;
       let fx = 0;
@@ -2425,6 +2456,14 @@ function violationsOf(items: Item[], index: number, clearance: number): Placemen
     if (j === index) continue;
     const b = items[j];
     if (!canCollide(a, b)) continue;
+    /*
+     * The same box prefilter violations() has: the footprints (pads, escape
+     * room and courtyard together) cannot be closer than the clearance, so
+     * nothing below can fire. Without it the magnet compared every pad of the
+     * part against every pad of the board at every step.
+     */
+    if (Math.abs(a.x - b.x) > halfW(a) + halfW(b) + clearance) continue;
+    if (Math.abs(a.y - b.y) > halfH(a) + halfH(b) + clearance) continue;
     const gapX = Math.max(a.x - a.cLeft - (b.x + b.cRight), b.x - b.cLeft - (a.x + a.cRight));
     const gapY = Math.max(a.y - a.cBottom - (b.y + b.cTop), b.y - b.cBottom - (a.y + a.cTop));
     if (gapX < 0 && gapY < 0) {
@@ -2486,17 +2525,35 @@ function ruotaItem(it: Item, gradi: number): void {
       p.hw = p.hh;
       p.hh = hw;
     }
-    const { left, right, top, bottom, cLeft, cRight, cTop, cBottom } = it;
-    it.left = bottom;
-    it.bottom = right;
-    it.right = top;
-    it.top = left;
-    it.cLeft = cBottom;
-    it.cBottom = cRight;
-    it.cRight = cTop;
-    it.cTop = cLeft;
+    /*
+     * The extents turn the SAME way as the pads. Under (x, y) -> (-y, x) what
+     * stuck out to the right now sticks out on top, the top goes left, the
+     * left goes down and the bottom goes right. This used to turn them the
+     * other way, clockwise: an asymmetric part (pads on one side) got its
+     * footprint on the wrong side of its own pads, and the clearance checks
+     * compared an outline the part did not have.
+     */
+    Object.assign(it, rotateExtentsCcw(it));
+    const c = rotateExtentsCcw({ left: it.cLeft, right: it.cRight, bottom: it.cBottom, top: it.cTop });
+    it.cLeft = c.left;
+    it.cRight = c.right;
+    it.cBottom = c.bottom;
+    it.cTop = c.top;
   }
   it.rot = (it.rot + g) % 360;
+}
+
+/** how far a part sticks out of its centre on each side */
+export interface Extents {
+  left: number;
+  right: number;
+  bottom: number;
+  top: number;
+}
+
+/** the extents after a quarter turn counterclockwise, the way the pads turn: (x, y) -> (-y, x) */
+export function rotateExtentsCcw(e: Extents): Extents {
+  return { left: e.top, bottom: e.left, right: e.bottom, top: e.right };
 }
 
 /** how hard the pins pull: the sum of the distances to the nearest pad of the same net */
@@ -2698,20 +2755,23 @@ function layoutBlock(
 
   // 2. the capacitors on the pin they are connected to: it is the block's
   //    tightest constraint, so it is served first
-  const chip = plan.chip !== null ? items[plan.chip] : null;
   const rest: number[] = [];
   for (const i of plan.members) {
     if (i === plan.chip) continue;
     const it = items[i];
     const pad = padOfCapacitor.get(it.name);
+    // the chip the pin belongs to, which is not always the block's own
+    const chip = pad ? items.find((x) => x.id === pad.ownerId) : undefined;
     if (!pad || !chip) {
       rest.push(i);
       continue;
     }
+    // where the pin is NOW: the chip may just have been moved to fit
+    const at = powerPadAt(pad, chip);
     const half = Math.max(it.left, it.right, it.top, it.bottom);
     const gap = clearance + half;
-    const dx = pad.x - chip.x;
-    const dy = pad.y - chip.y;
+    const dx = at.x - chip.x;
+    const dy = at.y - chip.y;
     // outside the chip's outline, on the pin's side and in line with it;
     // if taken, slide along that side, never changing sides
     const along = Math.abs(dx) >= Math.abs(dy) ? "y" : "x";
@@ -2734,8 +2794,8 @@ function layoutBlock(
         : chip.y + (dy >= 0 ? -chip.cBottom - gap : chip.cTop + gap);
     let done = false;
     const spots: Array<{ x: number; y: number }> = [
-      along === "y" ? { x: fixed, y: pad.y } : { x: pad.x, y: fixed },
-      along === "y" ? { x: opposite, y: pad.y } : { x: pad.x, y: opposite },
+      along === "y" ? { x: fixed, y: at.y } : { x: at.x, y: fixed },
+      along === "y" ? { x: opposite, y: at.y } : { x: at.x, y: opposite },
     ];
     for (const spot of spots) {
       if (free(i, snap(spot.x), snap(spot.y))) {
@@ -2746,8 +2806,8 @@ function layoutBlock(
     for (let step = 1; step <= 24 && !done; step++) {
       for (const dir of [1, -1]) {
         const slide = dir * step * 0.5;
-        const x = along === "y" ? fixed : pad.x + slide;
-        const y = along === "y" ? pad.y + slide : fixed;
+        const x = along === "y" ? fixed : at.x + slide;
+        const y = along === "y" ? at.y + slide : fixed;
         if (free(i, snap(x), snap(y))) {
           done = true;
           break;
