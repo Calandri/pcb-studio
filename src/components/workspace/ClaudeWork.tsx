@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ActivityEvent } from "@/lib/activity-store";
 import type { InspectComponent } from "@/lib/inspect";
 import type { BoardZone, SelectMode } from "../board/BoardCanvas";
+import { readSseStream } from "../sse-stream";
+import { RETRY_BASE_MS, isRetryableStatus, mergeActivity, nextBackoff } from "./activity-feed";
 
 /**
  * "Work with Claude": you pick the job, copy the command, and from here you
@@ -57,7 +59,7 @@ export function ClaudeWork({
   const [copied, setCopied] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const events = useActivity(projectId);
+  const { events, stopped } = useActivity(projectId);
 
   const nameOf = useCallback(
     (id: string) => parts.find((p) => p.id === id)?.name ?? id,
@@ -199,7 +201,7 @@ export function ClaudeWork({
         )}
 
         <Group title="Cosa sta facendo">
-          <Feed events={events} />
+          <Feed events={events} stopped={stopped} />
         </Group>
       </div>
     </aside>
@@ -212,66 +214,110 @@ export function ClaudeWork({
  * It reconnects by itself, resuming from the last seen id: a work session
  * outlives a single connection, and starting from scratch would reprint
  * everything from the beginning.
+ *
+ * It is read with fetch and not with EventSource because EventSource hides the
+ * status of a refused connection: on a 401 or a 403 it retried every 1.2
+ * seconds for as long as the tab stayed open. Here a refusal that will not
+ * change stops the stream and says why, and a failure that may pass waits
+ * longer at every attempt.
  */
-function useActivity(projectId: string): ActivityEvent[] {
+function useActivity(projectId: string): { events: ActivityEvent[]; stopped: string | null } {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [stopped, setStopped] = useState<string | null>(null);
   const cursor = useRef(0);
 
-  useEffect(() => {
-    let stopped = false;
-    let source: EventSource | null = null;
-    let retry: ReturnType<typeof setTimeout> | null = null;
+  // another project: its feed starts empty (fixed during render, not in an effect)
+  const [feedOf, setFeedOf] = useState(projectId);
+  if (feedOf !== projectId) {
+    setFeedOf(projectId);
+    setEvents([]);
+    setStopped(null);
+  }
 
-    const connect = () => {
-      if (stopped) return;
-      source = new EventSource(
-        `/api/activity?projectId=${encodeURIComponent(projectId)}&since=${cursor.current}`,
-      );
-      source.addEventListener("attivita", (e) => {
-        try {
-          const data = JSON.parse((e as MessageEvent).data) as {
-            events: ActivityEvent[];
-            cursor: number;
-          };
-          cursor.current = data.cursor;
+  useEffect(() => {
+    let alive = true;
+    let attempt = 0;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
+    cursor.current = 0;
+
+    const later = (ms: number) => {
+      if (alive) retry = setTimeout(() => void connect(), ms);
+    };
+
+    const connect = async () => {
+      if (!alive) return;
+      let res: Response;
+      try {
+        res = await fetch(
+          `/api/activity?projectId=${encodeURIComponent(projectId)}&since=${cursor.current}`,
+          { signal: controller.signal, headers: { accept: "text/event-stream" } },
+        );
+      } catch {
+        later(nextBackoff(attempt++));
+        return;
+      }
+      if (!res.ok || !res.body) {
+        if (!isRetryableStatus(res.status)) {
+          if (alive) {
+            setStopped(
+              res.status === 401
+                ? "sessione scaduta: ricarica la pagina per rivedere il flusso"
+                : res.status === 403
+                  ? "non hai accesso al flusso di questo progetto"
+                  : `flusso non disponibile (errore ${res.status})`,
+            );
+          }
+          return;
+        }
+        later(nextBackoff(attempt++));
+        return;
+      }
+      let heard = false;
+      try {
+        await readSseStream(res.body, (event, data) => {
+          // something arrived: the stream is healthy, the next drop starts short
+          heard = true;
+          attempt = 0;
+          const d = data as { events?: ActivityEvent[]; cursor?: number };
+          if (typeof d.cursor === "number") cursor.current = Math.max(cursor.current, d.cursor);
           // keep a short queue: the viewer wants the latest moves, and a
           // list that grows forever ends up making the page stutter
-          setEvents((prev) => [...prev, ...data.events].slice(-120));
-        } catch {
-          // a malformed event must not break the stream
-        }
-      });
-      source.addEventListener("battito", (e) => {
-        try {
-          cursor.current = (JSON.parse((e as MessageEvent).data) as { cursor: number }).cursor;
-        } catch {
-          // nothing to do
-        }
-      });
-      source.onerror = () => {
-        source?.close();
+          if (event === "attivita" && Array.isArray(d.events)) {
+            const batch = d.events;
+            setEvents((prev) => mergeActivity(prev, batch));
+          }
+        });
         // the stream has a limited life by construction: its end is not a
-        // failure, just reopen it and resume from the id you had
-        if (!stopped) retry = setTimeout(connect, 1200);
-      };
+        // failure, just reopen it and resume from the id you had. A stream
+        // that closed without saying anything is not healthy, though: it
+        // backs off like a failure instead of spinning every second.
+        later(heard ? RETRY_BASE_MS : nextBackoff(attempt++));
+      } catch {
+        later(nextBackoff(attempt++));
+      }
     };
-    connect();
+    void connect();
 
     return () => {
-      stopped = true;
+      alive = false;
+      controller.abort();
       if (retry) clearTimeout(retry);
-      source?.close();
     };
   }, [projectId]);
 
-  return events;
+  return { events, stopped };
 }
 
-function Feed({ events }: { events: ActivityEvent[] }) {
+function Feed({ events, stopped }: { events: ActivityEvent[]; stopped: string | null }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "nearest" });
   }, [events.length]);
+
+  if (stopped && events.length === 0) {
+    return <p className="text-[11px] leading-[1.5] text-[#FFB4AB]">Flusso fermo: {stopped}.</p>;
+  }
 
   if (events.length === 0) {
     return (
@@ -311,6 +357,9 @@ function Feed({ events }: { events: ActivityEvent[] }) {
           </div>
         </div>
       ))}
+      {stopped && (
+        <p className="text-[11px] leading-[1.5] text-[#FFB4AB]">Flusso fermo: {stopped}.</p>
+      )}
       <div ref={endRef} />
     </div>
   );
