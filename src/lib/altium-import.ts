@@ -1,8 +1,10 @@
+import { Worker } from "node:worker_threads";
 import {
   circuitJsonToProjectFiles,
+  commentSafe,
   type ComponentIdentity,
+  etichetteDeiPin,
   footprintJsx,
-  portHintsOf,
   risolviNomiRete,
   toPascalCase,
   type El,
@@ -15,6 +17,7 @@ import { schematicaNativa, type FoglioAltium } from "./altium-schematic";
 import {
   contornoNativo,
   footprintDaNativo,
+  formaDelPad,
   inventario,
   leggiStrati,
   MIL,
@@ -86,6 +89,8 @@ export interface ImportedAltiumProject {
   routes: ManualRoute[];
   components: number;
   traces: number;
+  /** the name each designator got in main.tsx (`C-1` is written `C_1`) */
+  nomi: Map<string, string>;
   warnings: string[];
   stats: Record<string, number | undefined>;
 }
@@ -94,48 +99,253 @@ export interface ImportedAltiumComponent {
   name: string;
   code: string;
   pads: number;
+  /**
+   * False when the pad names could not be read from the file and the pads are
+   * numbered in file order: the pinout is a guess, and the library says so.
+   */
+  piedinaturaVerificata?: boolean;
+}
+
+/**
+ * THE LIMITS OF ONE FILE READ.
+ *
+ * An Altium file is a container of zlib streams (3D models, images, layer
+ * stack data) and the toolkit inflates them with no ceiling on the output: a
+ * few kilobytes of a crafted stream expand into gigabytes, on the thread that
+ * serves every other request of the instance. The toolkit exposes no hook to
+ * cap it, so the file is read in a worker with three limits of its own:
+ *
+ *  - time: a file that takes this long is not a board, it is a problem, and
+ *    the worker is terminated;
+ *  - heap: V8's own limit for the worker (strings, objects, the native model);
+ *  - buffers: `resourceLimits` does NOT cover typed arrays — measured, a
+ *    worker capped at 256 MB of heap allocates and fills 1.5 GB of Uint8Array
+ *    without a word — so every Uint8Array/ArrayBuffer of 64 KB or more created
+ *    in the worker is counted, and past the budget the read is refused.
+ *
+ * The numbers are generous on purpose: the largest real project seen, BAT_BS,
+ * is 5.8 MB across twelve files and nowhere near them.
+ */
+export interface LimitiLettura {
+  tempoMs: number;
+  heapMb: number;
+  bufferMb: number;
+}
+
+export const LIMITI_LETTURA: LimitiLettura = { tempoMs: 120_000, heapMb: 1024, bufferMb: 768 };
+
+/**
+ * The guard installed in the worker BEFORE anything else is loaded.
+ *
+ * The inflater (fflate) takes `Uint8Array` from the global scope once, when its
+ * module is evaluated, and allocates every output buffer through it. Replacing
+ * the global with a Proxy that counts what it constructs is therefore enough to
+ * see every buffer the decompression asks for; a Proxy and not a subclass,
+ * because `instanceof` and `Uint8Array.from` keep working on a Proxy exactly as
+ * on the original. It only exists inside the worker's own isolate.
+ *
+ * Once over budget, every further large allocation throws, and the read is
+ * reported as refused even if the toolkit swallowed the error and carried on
+ * (it does, for 3D model payloads: it falls back to the raw bytes).
+ */
+const PRELUDIO_LETTORE = `
+const { parentPort, workerData } = require("node:worker_threads");
+const LIMITE = workerData.limiteBuffer;
+const SOGLIA = 64 * 1024;
+let allocati = 0;
+let superato = false;
+const misura = (a) => {
+  if (typeof a === "number") return a;
+  if (!a || typeof a !== "object") return 0;
+  if (a instanceof ArrayBuffer) return 0;
+  if (typeof SharedArrayBuffer !== "undefined" && a instanceof SharedArrayBuffer) return 0;
+  return typeof a.length === "number" ? a.length : 0;
+};
+const sorvegliato = (Originale) => new Proxy(Originale, {
+  construct(target, args, newTarget) {
+    const n = misura(args[0]);
+    if (n >= SOGLIA) {
+      allocati += n;
+      if (allocati > LIMITE) {
+        superato = true;
+        throw new RangeError("budget di memoria del lettore superato");
+      }
+    }
+    return Reflect.construct(target, args, newTarget);
+  },
+});
+globalThis.Uint8Array = sorvegliato(Uint8Array);
+globalThis.ArrayBuffer = sorvegliato(ArrayBuffer);
+`;
+
+/** what a read in the worker hands back, or why it did not */
+type EsitoLettore<T> =
+  | { ok: true; valore: T }
+  | { ok: false; errore: string; moduloMancante?: boolean; superato?: boolean };
+
+/**
+ * Runs `corpo` — an async function body of OUR code, never of the file's — in a
+ * worker with the limits above. The data travels in `workerData.dati`, by
+ * structured clone, so the caller keeps its own copy.
+ */
+export function eseguiLimitato<T>(
+  corpo: string,
+  dati: Record<string, unknown>,
+  limiti: LimitiLettura = LIMITI_LETTURA,
+): Promise<EsitoLettore<T>> {
+  const codice = `${PRELUDIO_LETTORE}
+(async () => { ${corpo} })().then(
+  (valore) => parentPort.postMessage(
+    superato
+      ? { ok: false, superato: true, errore: "budget di memoria del lettore superato" }
+      : { ok: true, valore },
+  ),
+  (err) => parentPort.postMessage({
+    ok: false,
+    superato,
+    moduloMancante: Boolean(err && err.moduloMancante),
+    errore: String((err && err.message) || err),
+  }),
+);
+`;
+  return new Promise((resolve) => {
+    let finito = false;
+    const fine = (esito: EsitoLettore<T>) => {
+      if (finito) return;
+      finito = true;
+      clearTimeout(timer);
+      void worker.terminate();
+      resolve(esito);
+    };
+    const worker = new Worker(codice, {
+      eval: true,
+      workerData: { dati, limiteBuffer: limiti.bufferMb * 1024 * 1024 },
+      resourceLimits: {
+        maxOldGenerationSizeMb: limiti.heapMb,
+        maxYoungGenerationSizeMb: Math.min(64, Math.max(16, Math.round(limiti.heapMb / 16))),
+      },
+    });
+    const timer = setTimeout(
+      () =>
+        fine({
+          ok: false,
+          errore: `lettura interrotta dopo ${Math.round(limiti.tempoMs / 1000)} secondi`,
+        }),
+      limiti.tempoMs,
+    );
+    worker.on("message", (m: EsitoLettore<T>) => fine(m));
+    worker.on("error", (err: Error & { code?: string }) =>
+      fine({
+        ok: false,
+        superato: err.code === "ERR_WORKER_OUT_OF_MEMORY",
+        errore:
+          err.code === "ERR_WORKER_OUT_OF_MEMORY"
+            ? `il file chiede piu' di ${limiti.heapMb} MB di memoria per essere letto`
+            : err.message,
+      }),
+    );
+    worker.on("exit", (codiceUscita) =>
+      fine({ ok: false, errore: `il lettore si e' fermato (codice ${codiceUscita})` }),
+    );
+  });
+}
+
+/** the parse itself, as it runs inside the worker */
+const CORPO_PARSE_ALTIUM = `
+let Parser;
+try {
+  ({ Parser } = await import("altium-toolkit"));
+} catch (err) {
+  const e = new Error("altium-toolkit non caricabile nel lettore: " + ((err && err.message) || err));
+  e.moduloMancante = true;
+  throw e;
+}
+const { nome, dati } = workerData.dati;
+const doc = Parser.parse(
+  { fileName: nome, data: dati },
+  { worker: false, extensions: ["altium.native-model"] },
+);
+return {
+  model: Array.isArray(doc.model) ? doc.model : [],
+  native: (doc.extensions && doc.extensions.altium && doc.extensions.altium.native) || {},
+  diagnostics: (doc.diagnostics || []).map((d) => ({
+    severity: d && d.severity,
+    message: String((d && d.message) || ""),
+  })),
+};
+`;
+
+interface Letto {
+  model: El[];
+  native: Record<string, unknown>;
+  diagnostics: Array<{ severity?: string; message?: string }>;
+}
+
+/** the old way, on the calling thread: only when the worker cannot load the parser */
+async function parseInLinea(file: AltiumFile): Promise<Letto> {
+  const { Parser } = await import("altium-toolkit");
+  const doc = Parser.parse(
+    { fileName: file.path, data: file.data },
+    { worker: false, extensions: ["altium.native-model"] },
+  ) as {
+    model?: unknown;
+    extensions?: { altium?: { native?: Record<string, unknown> } };
+    diagnostics?: Array<{ severity?: string; message?: string }>;
+  };
+  return {
+    model: Array.isArray(doc.model) ? (doc.model as El[]) : [],
+    native: doc.extensions?.altium?.native ?? {},
+    diagnostics: doc.diagnostics ?? [],
+  };
 }
 
 /**
  * Parses one file and returns its Circuit JSON plus whatever the toolkit had to
  * say about it. Failures do not throw: a project can have five files and one
  * unreadable, and losing the other four for it would be the wrong trade.
+ *
+ * The parse runs in the limited worker (see LIMITI_LETTURA). A file refused for
+ * the limits is a warning like any unreadable file; only if the worker cannot
+ * load the parser at all — a deployment problem, not something a file can
+ * cause — the read falls back to the calling thread, and the report says the
+ * protection was not active.
  */
 async function parseOne(
   file: AltiumFile,
 ): Promise<{ model: El[]; native: Record<string, unknown>; warnings: string[] }> {
-  const { Parser } = await import("altium-toolkit");
+  const warnings: string[] = [];
+  let letto: Letto | null = null;
   try {
-    const doc = Parser.parse(
-      { fileName: file.path, data: file.data },
-      /*
-       * The NATIVE model too, and this is not a detail: the canonical Circuit
-       * JSON carries geometry and nothing else, while what a part IS — value,
-       * manufacturer code, maker, datasheet link, supplier codes — lives only in
-       * the native tree. Parsing without it means importing a board and throwing
-       * away its bill of materials. On BAT_BS: 98 part numbers, 82 datasheet
-       * links, 83 manufacturers, all discarded before anyone could see them.
-       */
-      { worker: false, extensions: ["altium.native-model"] },
-    ) as {
-      model?: unknown;
-      extensions?: { altium?: { native?: Record<string, unknown> } };
-      diagnostics?: Array<{ severity?: string; message?: string }>;
-    };
-    const model = Array.isArray(doc.model) ? (doc.model as El[]) : [];
-    const native = doc.extensions?.altium?.native ?? {};
-    const warnings = (doc.diagnostics ?? [])
+    const esito = await eseguiLimitato<Letto>(CORPO_PARSE_ALTIUM, {
+      nome: file.path,
+      dati: file.data,
+    });
+    if (esito.ok) {
+      letto = esito.valore;
+    } else if (esito.moduloMancante) {
+      console.error(`[altium-import] lettore isolato non disponibile: ${esito.errore}`);
+      warnings.push(
+        `${file.path}: letto senza i limiti di memoria e di tempo (il lettore isolato non si e' avviato)`,
+      );
+      letto = await parseInLinea(file);
+    } else {
+      warnings.push(
+        esito.superato
+          ? `${file.path}: rifiutato, si espande oltre i limiti di memoria di una lettura (${esito.errore})`
+          : `${file.path}: ${esito.errore}`,
+      );
+    }
+  } catch (err) {
+    warnings.push(`${file.path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!letto) return { model: [], native: {}, warnings };
+  warnings.push(
+    ...(letto.diagnostics ?? [])
       .filter((d) => d?.severity !== "info")
       .map((d) => `${file.path}: ${String(d?.message ?? "")}`)
-      .filter((w) => w.trim().length > 0);
-    return { model, native, warnings };
-  } catch (err) {
-    return {
-      model: [],
-      native: {},
-      warnings: [`${file.path}: ${err instanceof Error ? err.message : String(err)}`],
-    };
-  }
+      .filter((w) => w.trim().length > 0),
+  );
+  return { model: letto.model, native: letto.native, warnings };
 }
 
 /**
@@ -315,6 +525,14 @@ function retiDaiPad(
    * of a microphone and travel with it.
    */
   liberi: Set<string>;
+  /**
+   * The SHAPE of the pads the flattened model got wrong, by pad id: every
+   * plated hole (slots, obround and square pads) and the SMD pads it turned
+   * into circles. See formaDelPad.
+   */
+  forme: Map<string, Record<string, unknown>>;
+  /** what the shapes could not say exactly, counted by kind */
+  avvisiForme: Map<string, number>;
 } {
   const nomi = nomiDelleReti(pcb);
   const nativi = Array.isArray(pcb.pads) ? (pcb.pads as Array<Record<string, unknown>>) : [];
@@ -368,6 +586,8 @@ function retiDaiPad(
   const nomiPad = new Map<string, string>();
   const nomiPorte = new Map<string, string>();
   const liberi = new Set<string>();
+  const forme = new Map<string, Record<string, unknown>>();
+  const avvisiForme = new Map<string, number>();
   const nomiDaiRecord = nomiDeiPad(pcb);
   const perIndiceNativo = indiciDeiComponenti(pcb);
   let agganciati = 0;
@@ -427,6 +647,23 @@ function retiDaiPad(
       const q = t(x, y);
       liberi.add(`${Math.round(q.x * 100)},${Math.round(q.y * 100)}`);
     }
+    /*
+     * THE SHAPE, from the record. A plated hole always takes it (the flattened
+     * model has no slots and turns obround pads into discs); an SMD pad only
+     * when the flattened model made a circle of something that is not one.
+     */
+    if (idPad && trovato) {
+      const forma = formaDelPad(p);
+      const piatto = trovato.el;
+      const daCorreggere =
+        piatto.type === "pcb_plated_hole" ||
+        (piatto.type === "pcb_smtpad" && piatto.shape === "circle" && forma?.campi.shape !== "circle");
+      if (forma && daCorreggere) {
+        forme.set(idPad, forma.campi);
+        if (forma.avviso) avvisiForme.set(forma.avviso, (avvisiForme.get(forma.avviso) ?? 0) + 1);
+      }
+    }
+
     const nomePad = (nomiDaiRecord[indice] ?? "").trim();
     if (idPad && nomePad) {
       nomiPad.set(idPad, nomePad);
@@ -483,6 +720,8 @@ function retiDaiPad(
     nomiPad,
     nomiPorte,
     liberi,
+    forme,
+    avvisiForme,
   };
 }
 
@@ -735,7 +974,9 @@ export async function importAltiumProject(
    * schematic sheets: C1 counted once per file that mentions it. The designator
    * is what identifies a part on a board — it is why it is printed on the silk.
    */
-  const perDesignator = new Map<string, string>();
+  const perDesignator = new Map<string, { id: string; file: string }>();
+  /** designators a single file declares twice: the second part is lost, and that is said */
+  const ripetuti = new Map<string, Set<string>>();
   /** the native model of the BOARD: the only one that carries layers and nets */
   let scheda: Record<string, unknown> | null = null;
   /**
@@ -841,8 +1082,25 @@ export async function importAltiumProject(
       if (el.type === "source_component") {
         const nome = String(el.name ?? "").trim();
         if (nome) {
-          if (perDesignator.has(nome)) continue;
-          perDesignator.set(nome, String(el.source_component_id ?? ""));
+          const primo = perDesignator.get(nome);
+          if (primo) {
+            /*
+             * The same designator from another file is the same part (the
+             * schematic's R1 and the board's R1). The same designator twice in
+             * ONE file is two parts, and the second one does not make it in.
+             */
+            if (
+              primo.file === file.path &&
+              altiumExtension(file.path) === ".pcbdoc" &&
+              primo.id !== String(el.source_component_id ?? "")
+            ) {
+              const gia = ripetuti.get(file.path) ?? new Set<string>();
+              gia.add(nome);
+              ripetuti.set(file.path, gia);
+            }
+            continue;
+          }
+          perDesignator.set(nome, { id: String(el.source_component_id ?? ""), file: file.path });
         }
       }
       const id = String(el[`${el.type}_id`] ?? "");
@@ -870,6 +1128,12 @@ export async function importAltiumProject(
    * the canonical model is kept only for what it does well — components, pads
    * and ports.
    */
+  for (const [path, nomi] of ripetuti) {
+    warnings.push(
+      `${path} dichiara piu' di un componente con lo stesso designator (${[...nomi].slice(0, 12).join(", ")}${nomi.size > 12 ? ", ..." : ""}): importato solo il primo di ciascuno, gli altri e i loro pad mancano dal progetto`,
+    );
+  }
+
   const nativo = scheda ? costruisciDaNativo(scheda, merged, opts.traceWidthMm ?? 0.25) : null;
   if (nativo) warnings.push(...nativo.warnings);
 
@@ -927,9 +1191,11 @@ export async function importAltiumProject(
           const faccia = nativo.facceDeiPad.get(id);
           const margine = nativo.marginiDeiPad.get(id);
           const nome = nativo.nomiDeiPad.get(id);
-          return faccia || margine !== undefined || nome
+          const forma = nativo.formeDeiPad.get(id);
+          return faccia || margine !== undefined || nome || forma
             ? {
                 ...el,
+                ...(forma ?? {}),
                 ...(faccia ? { layer: faccia } : {}),
                 ...(margine !== undefined ? { soldermask_margin: margine } : {}),
                 ...(nome ? { port_hints: [nome] } : {}),
@@ -983,16 +1249,19 @@ export async function importAltiumProject(
     ? schematicaNativa(disegni, nomiSullaScheda)
     : undefined;
 
-  const { fsMap, components, traces } = circuitJsonToProjectFiles(conRete, {
+  const progetto = circuitJsonToProjectFiles(conRete, {
     // the ORDERED names: the board is identical whatever order they were
     // uploaded in, and the header must say so too
     origine: `Importato da Altium (${ordinati.map((f) => f.path).join(", ")})`,
+    contorno: nativo?.contorno.length ? nativo.contorno : undefined,
     identita,
     strati: nativo?.strati,
     piani: nativo?.piani.map((p) => ({ faccia: p.faccia, net: p.net, contorno: p.contorno })),
     corpi3d: corpi3d.size ? corpi3d : undefined,
     schematica,
   });
+  const { fsMap, components, traces } = progetto;
+  warnings.push(...progetto.warnings);
   const routes = nativo ? nativo.routes : copperAsRoutes(conRete, opts.traceWidthMm ?? 0.25);
   /*
    * The board's own fabrication rules travel with it: a board drawn to six mil
@@ -1068,6 +1337,7 @@ export async function importAltiumProject(
     routes,
     components,
     traces,
+    nomi: progetto.nomi,
     warnings,
     stats: {
       elementi: conRete.length,
@@ -1255,11 +1525,16 @@ function costruisciDaNativo(
   nomiDellePorte: Map<string, string>;
   /** positions (hundredths of a mm) of the pads the file gives to no component */
   padLiberi: Set<string>;
+  /** the real shape of the pads the flattened model got wrong, by pad id */
+  formeDeiPad: Map<string, Record<string, unknown>>;
+  /** the board outline, arcs followed, in board millimetres */
+  contorno: Array<{ x: number; y: number }>;
   warnings: string[];
   stats: Record<string, number | undefined>;
 } {
   const warnings: string[] = [];
-  const strati = leggiStrati(pcb);
+  // throws StratiNonSupportati on a board with more inner layers than four faces hold
+  const strati = leggiStrati(pcb, warnings);
 
   /*
    * The board's centre, and with it the shift that brings everything to the
@@ -1347,6 +1622,7 @@ function costruisciDaNativo(
   }));
 
   const reti = retiDaiPad(pcb, merged, strati, t);
+  for (const [avviso, quante] of reti.avvisiForme) warnings.push(`${quante} pad: ${avviso}`);
 
   /** how many copper layers the board has: the ones the stack declares */
   const facceRame = new Set<Layer>();
@@ -1460,6 +1736,8 @@ function costruisciDaNativo(
     nomiDeiPad: reti.nomiPad,
     nomiDellePorte: reti.nomiPorte,
     padLiberi: reti.liberi,
+    formeDeiPad: reti.forme,
+    contorno,
     warnings,
     stats: {
       rame_tracce: rame.tracce,
@@ -1476,6 +1754,7 @@ function costruisciDaNativo(
       pad_rimessi_sotto: reti.padRigirati,
       pad_con_maschera: reti.margini.size,
       pin_con_nome_vero: reti.nomiPorte.size,
+      pad_con_forma_dal_file: reti.forme.size,
       strati_rame: facceRame.size,
       contorno_vertici: contorno.length,
     },
@@ -1526,17 +1805,30 @@ export async function importAltiumFootprints(
    * the board reads it.
    */
   const silkPerDesignator = new Map<string, El[]>();
+  /*
+   * THE REAL PAD NAMES AND SHAPES, from the same join the board import uses
+   * (retiDaiPad). The flattened model names every pad with a global counter —
+   * the first pin of the microcontroller is 22 — and a footprint promoted to
+   * the library with those names is a pinout nobody can use. Same for the
+   * shapes: an obround pad must not come back as a disc.
+   */
+  let nomiVeri = new Map<string, string>();
+  let formeVere = new Map<string, Record<string, unknown>>();
   if (scheda) {
-    const strati = leggiStrati(scheda);
+    const strati = leggiStrati(scheda, warnings);
     const board = merged.find((el) => el.type === "pcb_board");
     const centro = (board?.center as { x?: number; y?: number } | undefined) ?? {};
     const dx = num(centro.x) ?? 0;
     const dy = num(centro.y) ?? 0;
+    const t: Trasforma = (xMil, yMil) => ({ x: xMil * MIL - dx, y: yMil * MIL - dy });
+    const reti = retiDaiPad(scheda, merged, strati, t);
+    nomiVeri = reti.nomiPad;
+    formeVere = reti.forme;
     const perIndice = indiciDeiComponenti(scheda);
     const silk = serigrafiaNativa(
       scheda,
       strati,
-      (xMil, yMil) => ({ x: xMil * MIL - dx, y: yMil * MIL - dy }),
+      t,
       (i) => perIndice.get(i),
       () => undefined,
     );
@@ -1574,32 +1866,35 @@ export async function importAltiumFootprints(
 
   const visti = new Set<string>();
   const out: ImportedAltiumComponent[] = [];
+  const avvisiForme: string[] = [];
   for (const el of cj) {
     if (el.type !== "pcb_component") continue;
     const sourceId = String(el.source_component_id ?? "");
     const fpName = footprintDi.get(sourceId);
     if (!fpName || visti.has(fpName)) continue;
 
-    const elements = perComponente.get(String(el.pcb_component_id ?? "")) ?? [];
+    const elements = (perComponente.get(String(el.pcb_component_id ?? "")) ?? []).map((e) => {
+      const idPad = String(e.pcb_smtpad_id ?? e.pcb_plated_hole_id ?? "");
+      const nome = idPad ? nomiVeri.get(idPad) : undefined;
+      const forma = idPad ? formeVere.get(idPad) : undefined;
+      return nome || forma ? { ...e, ...(forma ?? {}), ...(nome ? { port_hints: [nome] } : {}) } : e;
+    });
     const pads = elements.filter(
       (e) => e.type === "pcb_smtpad" || e.type === "pcb_plated_hole" || e.type === "pcb_hole",
     ).length;
     if (pads === 0) continue;
     visti.add(fpName);
+    /* every copper pad named by the file, or the pinout is said to be unverified */
+    const verificata = elements
+      .filter((e) => e.type === "pcb_smtpad" || e.type === "pcb_plated_hole")
+      .every((e) => nomiVeri.has(String(e.pcb_smtpad_id ?? e.pcb_plated_hole_id ?? "")));
 
     const centro = (el.center as { x?: number; y?: number } | undefined) ?? {};
     const designator = nomeDi.get(sourceId) ?? "";
     const id = identita.get(designator);
     const nome = toPascalCase(`${opts.prefisso ?? ""}${fpName}`);
 
-    const pinNumbers = new Set<string>();
-    for (const e of elements) {
-      for (const hint of portHintsOf(e)) if (hint) pinNumbers.add(hint);
-    }
-    const pinLabels = [...pinNumbers]
-      .sort((a, b) => (Number(a) || 0) - (Number(b) || 0))
-      .map((n, i) => `pin${i + 1}: "${n}"`)
-      .join(", ");
+    const pinLabels = etichetteDeiPin(elements);
 
     /*
      * A footprint taken from a BOTTOM component is written the way it will be
@@ -1617,20 +1912,25 @@ export async function importAltiumFootprints(
         cy: num(centro.y) ?? 0,
         rotationDeg: num(el.rotation) ?? 0,
         sotto,
+        avvisi: avvisiForme,
       },
       "      ",
     );
+    for (const a of avvisiForme.splice(0)) warnings.push(`footprint ${fpName}: ${a}`);
     const provenienza = [
-      `// Importato da Altium: footprint "${fpName}"`,
-      id?.mpn ? `// visto su ${designator} (${id.mpn}${id.produttore ? `, ${id.produttore}` : ""})` : `// visto su ${designator}`,
-      id?.datasheetUrl ? `// datasheet: ${id.datasheetUrl}` : "",
+      `// Importato da Altium: footprint "${commentSafe(fpName, 80)}"`,
+      id?.mpn
+        ? `// visto su ${commentSafe(designator, 40)} (${commentSafe(`${id.mpn}${id.produttore ? `, ${id.produttore}` : ""}`, 120)})`
+        : `// visto su ${commentSafe(designator, 40)}`,
+      id?.datasheetUrl ? `// datasheet: ${commentSafe(id.datasheetUrl, 300)}` : "",
     ]
       .filter(Boolean)
       .join("\n");
     out.push({
       name: nome,
       pads,
-      code: `${provenienza}
+      piedinaturaVerificata: verificata,
+      code: `${provenienza}${verificata ? "" : "\n// PIEDINATURA NON VERIFICATA: alcuni pad non hanno un nome leggibile nel file"}
 export const ${nome} = (props: any) => (
   <chip
     {...props}
@@ -1638,7 +1938,7 @@ export const ${nome} = (props: any) => (
       <footprint>
 ${body}
       </footprint>
-    }${pinLabels ? `\n    pinLabels={{ ${pinLabels} }}` : ""}
+    }${pinLabels ? `\n    pinLabels={${pinLabels}}` : ""}
   />
 )
 `,
@@ -1646,6 +1946,7 @@ ${body}
   }
   return { components: out, warnings };
 }
+
 
 /**
  * .PcbLib / .SchLib -> one library component per footprint, with the pads where
@@ -1689,12 +1990,19 @@ export async function importAltiumLibrary(
     const name = toPascalCase(raw);
     if (visti.has(name)) continue;
 
-    const elements = footprintDaNativo(fp, strati) as unknown as El[];
+    const letto = footprintDaNativo(fp, strati);
+    const elements = letto.elementi as unknown as El[];
     const pads = elements.filter(
       (e) => e.type === "pcb_smtpad" || e.type === "pcb_plated_hole",
     ).length;
     if (pads === 0) continue;
     visti.add(name);
+    for (const a of letto.avvisi) warnings.push(`${file.path}: ${raw}, ${a}`);
+    if (!letto.nomiVerificati) {
+      warnings.push(
+        `${file.path}: ${raw}, nomi dei pad non leggibili dal file: numerati nell'ordine del file, piedinatura da verificare`,
+      );
+    }
 
     // a footprint can carry zero-size pads: placeholders Altium keeps and no
     // fab can build. They are left out, and the numbering of the others stays
@@ -1703,22 +2011,24 @@ export async function importAltiumLibrary(
       warnings.push(`${file.path}: ${raw}, ${dichiarati - pads} pad senza dimensioni ignorati`);
     }
 
-    const pinLabels = elements
-      .flatMap((e) => portHintsOf(e))
-      .filter((h) => /^\d+$/.test(h))
-      .sort((a, b) => Number(a) - Number(b))
-      .map((n) => `pin${n}: "${n}"`)
-      .join(", ");
+    const pinLabels = etichetteDeiPin(elements);
 
     const descrizione = String(
       (fp.parameters as Record<string, unknown> | undefined)?.DESCRIPTION ?? params.description ?? "",
     ).trim();
-    const body = footprintJsx(elements, { cx: 0, cy: 0 }, "      ");
+    const avvisiForme: string[] = [];
+    const body = footprintJsx(elements, { cx: 0, cy: 0, avvisi: avvisiForme }, "      ");
+    for (const a of avvisiForme) warnings.push(`${file.path}: ${raw}, ${a}`);
     components.push({
       name,
       pads,
-      code: `// Importato da Altium: ${file.path} (${raw})
-${descrizione ? `// ${descrizione.replace(/[\r\n]+/g, " ").slice(0, 120)}\n` : ""}// i pad sono numerati nell'ordine del file: la .PcbLib non scrive i nomi dei pin
+      piedinaturaVerificata: letto.nomiVerificati,
+      code: `// Importato da Altium: ${commentSafe(file.path, 120)} (${commentSafe(raw, 80)})
+${descrizione ? `// ${commentSafe(descrizione, 120)}\n` : ""}${
+        letto.nomiVerificati
+          ? "// i nomi dei pad sono quelli scritti nella .PcbLib"
+          : "// PIEDINATURA NON VERIFICATA: i nomi dei pad non si leggono dal file, sono numerati nell'ordine in cui la .PcbLib li elenca"
+      }
 export const ${name} = (props: any) => (
   <chip
     {...props}
@@ -1726,7 +2036,7 @@ export const ${name} = (props: any) => (
       <footprint>
 ${body}
       </footprint>
-    }${pinLabels ? `\n    pinLabels={{ ${pinLabels} }}` : ""}
+    }${pinLabels ? `\n    pinLabels={${pinLabels}}` : ""}
   />
 )
 `,

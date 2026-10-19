@@ -60,8 +60,43 @@ const arr = (v: unknown): Array<Record<string, unknown>> =>
 
 const NON_RAME = /overlay|paste|solder|dielectric|mechanical|courtyard|assembly|designator|drill|keep.?out|3d body|component center|multi.?layer/i;
 
+/**
+ * A board with more copper layers than the import can represent.
+ *
+ * The app knows four faces (top, inner1, inner2, bottom). A six layer board
+ * used to be squashed onto them in silence: the third and fourth inner layer
+ * landed on inner2 together, and two nets that run one above the other on the
+ * real board became copper on the same face — shorts that exist only in the
+ * project. Refusing is the honest answer; see leggiStrati.
+ */
+export class StratiNonSupportati extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StratiNonSupportati";
+  }
+}
+
+/** the layer ids that carry something: copper drawn on them, or a via ending there */
+function stratiOccupati(pcb: Record<string, unknown>): Set<number> {
+  const occupati = new Set<number>();
+  for (const lista of [pcb.tracks, pcb.arcs, pcb.fills, pcb.regions, pcb.texts, pcb.pads]) {
+    for (const el of arr(lista)) {
+      const id = num(el.layerId);
+      if (id !== null) occupati.add(id);
+    }
+  }
+  for (const v of arr(pcb.vias)) {
+    for (const id of [num(v.layerStartId), num(v.layerEndId)]) if (id !== null) occupati.add(id);
+  }
+  return occupati;
+}
+
 /** what each layer id is, read from the stack and from the primitive names */
-export function leggiStrati(pcb: Record<string, unknown>): Map<number, Strato> {
+export function leggiStrati(
+  pcb: Record<string, unknown>,
+  /** where to say that empty layers were left out */
+  avvisi?: string[],
+): Map<number, Strato> {
   const out = new Map<number, Strato>();
 
   /*
@@ -71,17 +106,53 @@ export function leggiStrati(pcb: Record<string, unknown>): Map<number, Strato> {
    * the first copper layer top, the last bottom, and the ones in between inner1
    * and inner2 — the four faces tscircuit knows.
    */
-  const rame: Array<{ id: number; nome: string }> = [];
+  const rame: Array<{ id: number; nome: string; piano: boolean }> = [];
   for (const l of arr(pcb.layers)) {
     const nome = String(l.name ?? "").trim();
     const id = num(l.legacyLayerId);
     if (!nome || id === null || NON_RAME.test(nome)) continue;
-    rame.push({ id, nome });
+    /*
+     * An internal plane is NEGATIVE copper: the whole layer is metal and the
+     * file only draws where it is not, so it can look empty and be the ground of
+     * the board. Altium numbers them 39 to 54.
+     */
+    const piano = (id >= 39 && id <= 54) || /plane/i.test(nome) || /plane/i.test(String(l.kind ?? ""));
+    rame.push({ id, nome, piano });
+  }
+
+  /*
+   * MORE THAN FOUR COPPER LAYERS.
+   *
+   * Only the inner layers that carry something count: a stack declared with
+   * six layers where two inner ones are empty is a four layer board, and those
+   * two are left out and said. When more than two inner layers are in use the
+   * import stops with a message, instead of merging them into one face.
+   */
+  let usati = rame;
+  if (rame.length > 4) {
+    const occupati = stratiOccupati(pcb);
+    const interni = rame.slice(1, -1);
+    const pieni = interni.filter((r) => r.piano || occupati.has(r.id));
+    if (pieni.length > 2) {
+      throw new StratiNonSupportati(
+        `la scheda ha ${rame.length} strati di rame e ${pieni.length} strati interni usati ` +
+          `(${pieni.map((r) => r.nome).join(", ")}): l'import ne gestisce al massimo quattro, ` +
+          `top, due interni e bottom. Unirli metterebbe sullo stesso strato reti che sulla scheda ` +
+          `vera stanno una sopra l'altra, cioe' cortocircuiti che non esistono. La scheda non e' ` +
+          `stata importata.`,
+      );
+    }
+    usati = [rame[0], ...pieni, rame[rame.length - 1]];
+    const vuoti = interni.filter((r) => !pieni.includes(r));
+    avvisi?.push(
+      `la scheda dichiara ${rame.length} strati di rame e ne usa ${usati.length}: ` +
+        `lasciati fuori gli strati interni vuoti ${vuoti.map((r) => r.nome).join(", ")}`,
+    );
   }
   const facce: Layer[] = ["top", "inner1", "inner2", "bottom"];
-  rame.forEach((r, i) => {
+  usati.forEach((r, i) => {
     const faccia: Layer =
-      i === 0 ? "top" : i === rame.length - 1 ? "bottom" : (facce[Math.min(i, 2)] ?? "inner2");
+      i === 0 ? "top" : i === usati.length - 1 ? "bottom" : (facce[Math.min(i, 2)] ?? "inner2");
     out.set(r.id, {
       genere: "rame",
       faccia,
@@ -164,17 +235,163 @@ export function nomiDeiPad(pcb: Record<string, unknown>): string[] {
   const grezzi = arr(pcb.rawRecords).filter((r) =>
     /Pads6\/Data/.test(String(r.registryId ?? "")),
   );
-  return grezzi.map((r) => {
-    const b64 = String(r.rawBase64 ?? "");
-    if (!b64) return "";
-    const buf = Buffer.from(b64, "base64");
-    // 0x02 is the pad record; anything else is not one and is left alone
-    if (buf.length < 7 || buf.readUInt8(0) !== 2) return "";
-    const blocco = buf.readUInt32LE(1);
-    const len = buf.readUInt8(5);
-    if (len + 1 > blocco || 6 + len > buf.length) return "";
-    return buf.subarray(6, 6 + len).toString("latin1").trim();
-  });
+  return grezzi.map((r) => nomeDaRecordPad(String(r.rawBase64 ?? "")));
+}
+
+/**
+ * The name at the head of one raw pad record: one byte of type (0x02), a four
+ * byte block length, one byte of string length, then the name. Empty when the
+ * record is not a pad or does not hold together.
+ */
+export function nomeDaRecordPad(b64: string): string {
+  if (!b64) return "";
+  const buf = Buffer.from(b64, "base64");
+  // 0x02 is the pad record; anything else is not one and is left alone
+  if (buf.length < 7 || buf.readUInt8(0) !== 2) return "";
+  const blocco = buf.readUInt32LE(1);
+  const len = buf.readUInt8(5);
+  if (len + 1 > blocco || 6 + len > buf.length) return "";
+  return buf
+    .subarray(6, 6 + len)
+    .toString("latin1")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
+}
+
+/**
+ * THE PAD NAMES OF A LIBRARY FOOTPRINT, read where they are written.
+ *
+ * A .PcbLib footprint keeps its pads in the same record format as a board, and
+ * the toolkit hands over the raw records of each footprint next to the parsed
+ * pads, one record per pad and in the same order. So the names come from the
+ * same place nomiDeiPad reads them on a board.
+ *
+ * Null whenever the two lists do not line up one to one or a name is missing:
+ * then the pads are numbered in file order, and the component says that its
+ * pinout was not verified — a plausible and wrong pinout is the worst kind.
+ */
+export function nomiDeiPadDiLibreria(fp: Record<string, unknown>): string[] | null {
+  const pads = arr(fp.pads);
+  if (pads.length === 0) return null;
+  const record = arr(fp.rawRecords).filter(
+    (r) => r.parsed === true && (String(r.family ?? "") === "pads" || String(r.type ?? "") === "pad"),
+  );
+  if (record.length !== pads.length) return null;
+  const nomi = record.map((r) => nomeDaRecordPad(String(r.rawBase64 ?? "")));
+  return nomi.every(Boolean) ? nomi : null;
+}
+
+/** a quarter turn, seen from a pad's own frame */
+function quarto(gradi: number): "dritto" | "traverso" | null {
+  const m = (((gradi % 180) + 180) % 180);
+  if (m < 3 || m > 177) return "dritto";
+  if (Math.abs(m - 90) < 3) return "traverso";
+  return null;
+}
+
+/**
+ * THE SHAPE OF A PAD, as the native record states it, in Circuit JSON terms:
+ * millimetres, board rotation.
+ *
+ * The flattened model reads the shape by NAME, and gets two of four wrong:
+ * Altium calls an obround pad "round" (a round pad with different sides is a
+ * stadium), and "rounded-rectangle" contains the word "round" too. Both came in
+ * as circles as large as the longest side — an LQFP pin of 1.5 x 0.3mm became a
+ * disc 1.5mm across, touching its neighbours. And a plated hole lost its SLOT:
+ * the shell of a USB-C receptacle is held by slots, which came in as round
+ * holes in round pads.
+ *
+ * Here: rectangular, rounded-rectangle (with its corner) and octagonal (written
+ * as its rectangle, and said) become rectangles; round becomes a circle when its
+ * sides are equal and a pill when they are not; a slot (hole shape 2, longer
+ * than its width) becomes a pill hole along the pad's axis. A slot turned at an
+ * angle other than a quarter turn cannot be written and stays round, said.
+ */
+export function formaDelPad(
+  p: Record<string, unknown>,
+): { campi: Record<string, unknown>; avviso?: string } | null {
+  const w = (num(p.sizeTopX) ?? 0) * MIL;
+  const h = (num(p.sizeTopY) ?? 0) * MIL;
+  const d = (num(p.holeDiameter) ?? 0) * MIL;
+  const nome = String(p.shapeTopName ?? "");
+  if (w <= 0 || h <= 0) return null;
+  const tondo = nome === "round";
+  const rettangolo =
+    nome === "rectangular" || nome === "rounded-rectangle" || nome === "octagonal";
+  if (!tondo && !rettangolo) return null;
+  const rot = num(p.rotation) ?? 0;
+  const lato = Math.min(w, h);
+  const angolo =
+    nome === "rounded-rectangle" && p.hasRoundedRect !== false
+      ? Math.min(lato / 2, (lato * (num(p.cornerRadiusTop) ?? 0)) / 100)
+      : 0;
+  const bordo = angolo > 0 ? { rect_border_radius: r4(angolo) } : {};
+  let avviso = nome === "octagonal" ? "pad ottagonale scritto come il suo rettangolo" : undefined;
+
+  if (d <= 0) {
+    if (rettangolo) {
+      return { campi: { shape: "rect", width: r4(w), height: r4(h), ccw_rotation: rot, ...bordo }, avviso };
+    }
+    if (Math.abs(w - h) < 1e-6) return { campi: { shape: "circle", radius: r4(w / 2) } };
+    return {
+      campi: { shape: "pill", width: r4(w), height: r4(h), radius: r4(lato / 2), ccw_rotation: rot },
+    };
+  }
+
+  // the hole: round, or a slot along the pad's own axis
+  let hw = d;
+  let hh = d;
+  const lunghezza = (num(p.holeSlotLength) ?? 0) * MIL;
+  if (Number(p.holeShape) === 2 && lunghezza > d) {
+    const verso = quarto(num(p.holeRotation) ?? 0);
+    if (verso === "dritto") hw = lunghezza;
+    else if (verso === "traverso") hh = lunghezza;
+    else avviso = `asola ruotata di ${r3(num(p.holeRotation) ?? 0)} gradi sul suo pad: scritta come foro tondo`;
+  } else if (Number(p.holeShape) === 1) {
+    avviso = "foro quadrato scritto come foro tondo";
+  }
+  const asola = Math.abs(hw - hh) > 1e-6;
+  if (rettangolo) {
+    return {
+      campi: asola
+        ? {
+            shape: "pill_hole_with_rect_pad",
+            hole_shape: "pill",
+            pad_shape: "rect",
+            hole_width: r4(hw),
+            hole_height: r4(hh),
+            rect_pad_width: r4(w),
+            rect_pad_height: r4(h),
+            rect_ccw_rotation: rot,
+            ...bordo,
+          }
+        : {
+            shape: "circular_hole_with_rect_pad",
+            hole_shape: "circle",
+            pad_shape: "rect",
+            hole_diameter: r4(d),
+            rect_pad_width: r4(w),
+            rect_pad_height: r4(h),
+            rect_ccw_rotation: rot,
+            ...bordo,
+          },
+      avviso,
+    };
+  }
+  if (!asola && Math.abs(w - h) < 1e-6) {
+    return { campi: { shape: "circle", outer_diameter: r4(w), hole_diameter: r4(d) }, avviso };
+  }
+  return {
+    campi: {
+      shape: "pill",
+      outer_width: r4(w),
+      outer_height: r4(h),
+      hole_width: r4(hw),
+      hole_height: r4(hh),
+      ccw_rotation: rot,
+    },
+    avviso,
+  };
 }
 
 /** the name of each net, by index */
@@ -1330,52 +1547,57 @@ export interface PrimitivaFootprint {
  * three components with nothing in them. Here the primitives are read where they
  * live.
  *
- * The pads have no number in the file: Altium keeps the order and not the name.
- * They are numbered in that order, which is the only thing the file says, and the
- * generated code says so — a pinout invented in silence would be worse than no
- * footprint at all.
+ * THE PAD NAMES. They are in the raw records of the footprint (see
+ * nomiDeiPadDiLibreria) and are read from there; when they cannot be read the
+ * pads are numbered in file order, and `nomiVerificati` is false so that the
+ * component can say its pinout was NOT verified — a pinout invented in silence
+ * would be worse than no footprint at all.
+ *
+ * The shape of each pad is the one the record states (see formaDelPad):
+ * obround pads, rounded rectangles and slotted holes included.
  */
 export function footprintDaNativo(
   fp: Record<string, unknown>,
   strati: Map<number, Strato>,
-): PrimitivaFootprint[] {
+): { elementi: PrimitivaFootprint[]; nomiVerificati: boolean; avvisi: string[] } {
   const out: PrimitivaFootprint[] = [];
+  const avvisi: string[] = [];
   let n = 0;
+  const nomi = nomiDeiPadDiLibreria(fp);
 
   for (const [i, p] of arr(fp.pads).entries()) {
     const x = num(p.x);
     const y = num(p.y);
     if (x === null || y === null) continue;
-    const w = (num(p.sizeTopX) ?? 0) * MIL;
-    const h = (num(p.sizeTopY) ?? 0) * MIL;
     const foro = (num(p.holeDiameter) ?? 0) * MIL;
-    const hints = [String(i + 1)];
+    const hints = [nomi?.[i] || String(i + 1)];
+    const forma = formaDelPad(p);
+    if (forma?.avviso) avvisi.push(`pad ${hints[0]}: ${forma.avviso}`);
     if (foro > 0) {
       out.push({
         type: "pcb_plated_hole",
         pcb_plated_hole_id: `lib_ph_${n++}`,
         x: r3(x * MIL),
         y: r3(y * MIL),
-        hole_diameter: r3(foro),
-        outer_diameter: r3(Math.max(w, h) || foro * 2),
         port_hints: hints,
+        ...(forma?.campi ?? {
+          shape: "circle",
+          hole_diameter: r3(foro),
+          outer_diameter: r3(foro * 2),
+        }),
       });
       continue;
     }
-    if (w <= 0 || h <= 0) continue;
+    if (!forma) continue;
     const s = strati.get(num(p.layerId) ?? -1);
-    const tondo = String(p.shapeTopName ?? "").startsWith("round") && Math.abs(w - h) < 1e-6;
     out.push({
       type: "pcb_smtpad",
       pcb_smtpad_id: `lib_pad_${n++}`,
       x: r3(x * MIL),
       y: r3(y * MIL),
-      layer: s?.faccia ?? "top",
+      layer: s?.faccia === "bottom" ? "bottom" : "top",
       port_hints: hints,
-      ...(tondo
-        ? { shape: "circle", radius: r3(w / 2) }
-        : { shape: "rect", width: r3(w), height: r3(h) }),
-      ...(num(p.rotation) ? { ccw_rotation: num(p.rotation) } : {}),
+      ...forma.campi,
     });
   }
 
@@ -1409,7 +1631,7 @@ export function footprintDaNativo(
       stroke_width: r3(Math.max(0.05, (num(ar.width) ?? 4) * MIL)),
     });
   }
-  return out;
+  return { elementi: out, nomiVerificati: nomi !== null, avvisi };
 }
 
 /**
@@ -1686,19 +1908,62 @@ export function regoleNative(pcb: Record<string, unknown>): {
   };
 }
 
-/** the board outline as the file draws it, in millimetres from the centre */
+/**
+ * The board outline as the file draws it, in millimetres from the centre.
+ *
+ * The ARCS of the outline are followed, not cut across: a board with rounded
+ * corners, or a round one, is a sequence of arc segments, and reading only
+ * their end points turned every corner into a chamfer and a round board into a
+ * polygon of a handful of sides. The way round is the one whose sweep matches
+ * the arc's own declared angles.
+ */
 export function contornoNativo(
   pcb: Record<string, unknown>,
   t: Trasforma,
 ): Array<{ x: number; y: number }> {
   const outline = (pcb.boardOutline ?? {}) as Record<string, unknown>;
   const punti: Array<{ x: number; y: number }> = [];
+  const metti = (xMil: number, yMil: number) => {
+    const p = t(xMil, yMil);
+    punti.push({ x: r3(p.x), y: r3(p.y) });
+  };
+  const PASSO = Math.PI / 18; // ten degrees: under what a router or a fab notices
   for (const s of arr(outline.segments)) {
     const x = num(s.x1);
     const y = num(s.y1);
     if (x === null || y === null) continue;
-    const p = t(x, y);
-    punti.push({ x: r3(p.x), y: r3(p.y) });
+    metti(x, y);
+    if (String(s.type ?? "") !== "arc") continue;
+    const x2 = num(s.x2);
+    const y2 = num(s.y2);
+    const cx = num(s.cx);
+    const cy = num(s.cy);
+    if (x2 === null || y2 === null || cx === null || cy === null) continue;
+    const r = num(s.radius) ?? Math.hypot(x - cx, y - cy);
+    if (!(r > 0)) continue;
+    const giro = 2 * Math.PI;
+    const a1 = Math.atan2(y - cy, x - cx);
+    const a2 = Math.atan2(y2 - cy, x2 - cx);
+    const versoAntiorario = (((a2 - a1) % giro) + giro) % giro;
+    const dichiarata =
+      (((((num(s.endAngle) ?? 0) - (num(s.startAngle) ?? 0)) % 360) + 360) % 360) * (Math.PI / 180);
+    let ampiezza: number;
+    if (versoAntiorario < 1e-9) {
+      // the same point at both ends: a whole circle, or nothing
+      if (dichiarata > 1e-9 || Math.abs(x - x2) + Math.abs(y - y2) < 1e-9) ampiezza = giro;
+      else continue;
+    } else {
+      const orario = giro - versoAntiorario;
+      ampiezza =
+        Math.abs(versoAntiorario - dichiarata) <= Math.abs(orario - dichiarata)
+          ? versoAntiorario
+          : -orario;
+    }
+    const passi = Math.ceil(Math.abs(ampiezza) / PASSO);
+    for (let i = 1; i < passi; i++) {
+      const a = a1 + (ampiezza * i) / passi;
+      metti(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    }
   }
   return punti;
 }

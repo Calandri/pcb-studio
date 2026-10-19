@@ -31,6 +31,32 @@ const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 const r3 = (v: number): number => Number(v.toFixed(3));
 
+/**
+ * HOW MUCH 3D AN IMPORT MAY CARRY.
+ *
+ * Every model is a STEP the file embeds, tessellated here by a CAD kernel on
+ * the request thread and stored as text: with no ceiling, a file with a
+ * thousand models, or one model of a million faces, is minutes of CPU and
+ * hundreds of megabytes in the database. BAT_BS has 23 models, the biggest
+ * 1.5 MB of STEP. Past these the part keeps its box (or nothing) and the import
+ * says which.
+ */
+export const LIMITI_3D = {
+  /** distinct models (model + orientation) tessellated per import */
+  modelli: 120,
+  /** STEP text of one model */
+  stepByte: 10 * 1024 * 1024,
+  /** triangles of one model, and of all of them together */
+  triangoliModello: 250_000,
+  triangoliTotali: 1_500_000,
+  /** wall time spent tessellating, all models together */
+  tempoMs: 90_000,
+};
+
+/** a designator as it can appear in a line of an OBJ file: one line, short */
+const perObj = (v: string): string =>
+  v.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, " ").slice(0, 60);
+
 export interface Modello3D {
   /** file name, unique per model plus orientation */
   nome: string;
@@ -94,6 +120,7 @@ const norm360 = (a: number): number => ((a % 360) + 360) % 360;
  */
 export async function modelli3dNativi(
   pcb: Record<string, unknown>,
+  limiti: typeof LIMITI_3D = LIMITI_3D,
 ): Promise<Bodies3DResult> {
   const out: Bodies3DResult = { modelli: [], corpi: [], warnings: [] };
   const bodies = Array.isArray(pcb.componentBodies)
@@ -221,26 +248,63 @@ export async function modelli3dNativi(
       }>;
     };
   }>;
-  const occt = await occtimportjs();
+  /* the kernel is started on the first model actually read, and restarted after a failure */
+  let occt: Awaited<ReturnType<typeof occtimportjs>> | null = null;
 
   let n = 0;
+  let triangoliTotali = 0;
+  let tessellati = 0;
+  const inizio = Date.now();
+  /** the parts whose model was skipped for the limits: they fall back to a box below */
+  const saltati: string[] = [];
+  const salta = (g: { designator: string[] }) => saltati.push(...g.designator);
   for (const [, g] of gruppiRot) {
     const m = perId.get(g.modelId);
     const testo = String(m?.payloadText ?? "");
     if (!testo) continue;
+    if (tessellati >= limiti.modelli || Date.now() - inizio > limiti.tempoMs) {
+      salta(g);
+      continue;
+    }
+    if (testo.length > limiti.stepByte) {
+      out.warnings.push(
+        `modello 3D di ${g.designator[0]} non letto: ${(testo.length / 1024 / 1024).toFixed(1)} MB di STEP, oltre il limite di ${(limiti.stepByte / 1024 / 1024).toFixed(1)} MB`,
+      );
+      salta(g);
+      continue;
+    }
+    tessellati++;
     let letto: ReturnType<Awaited<ReturnType<typeof occtimportjs>>["ReadStepFile"]>;
     try {
+      occt ??= await occtimportjs();
       letto = occt.ReadStepFile(new Uint8Array(Buffer.from(testo, "utf8")), null);
     } catch (err) {
       out.warnings.push(
         `modello 3D di ${g.designator[0]} illeggibile: ${err instanceof Error ? err.message : String(err)}`,
       );
+      /*
+       * A WebAssembly module that threw (an abort, memory exhausted) is not
+       * guaranteed to be in a usable state: the next model starts a fresh one.
+       */
+      occt = null;
       continue;
     }
     if (!letto.success || letto.meshes.length === 0) {
       out.warnings.push(`modello 3D di ${g.designator[0]} senza geometria`);
       continue;
     }
+    const triangoli = letto.meshes.reduce(
+      (somma, mesh) => somma + Math.floor((mesh.index?.array?.length ?? 0) / 3),
+      0,
+    );
+    if (triangoli > limiti.triangoliModello || triangoliTotali + triangoli > limiti.triangoliTotali) {
+      out.warnings.push(
+        `modello 3D di ${g.designator[0]} non importato: ${triangoli} triangoli, oltre il limite (${limiti.triangoliModello} per modello, ${limiti.triangoliTotali} in tutto)`,
+      );
+      salta(g);
+      continue;
+    }
+    triangoliTotali += triangoli;
 
     /* rotate, measure, then drop it onto the board surface */
     const punti: Array<[number, number, number]> = [];
@@ -267,7 +331,7 @@ export async function modelli3dNativi(
     const rgb = [1, 3, 5].map((i) => Number.parseInt(g.colore.slice(i, i + 2), 16) / 255);
     const colore = rgb.every((v) => Number.isFinite(v)) ? rgb : [0.5, 0.5, 0.5];
     const righe: string[] = [
-      `# ${g.designator.join(", ")} - modello STEP incorporato nel file Altium`,
+      `# ${perObj(g.designator.slice(0, 20).join(", "))} - modello STEP incorporato nel file Altium`,
       `# ruotato (${g.rx}, ${g.ry}, ${g.rz}) e appoggiato sulla scheda`,
     ];
     for (const p of punti) {
@@ -301,6 +365,11 @@ export async function modelli3dNativi(
    * not parts, and the height Altium carries for them is inherited nonsense (one
    * fiducial claims 12.8mm).
    */
+  if (saltati.length > 0) {
+    out.warnings.push(
+      `${saltati.length} componenti senza il loro modello 3D per i limiti dell'importazione (${limiti.modelli} modelli, ${Math.round(limiti.tempoMs / 1000)} secondi): disegnati come scatola dove il file da' un'altezza`,
+    );
+  }
   const conCorpo = new Set(out.corpi.map((c) => c.designator));
   for (const g of gruppi) {
     const des = String(g.designator ?? "").trim();
