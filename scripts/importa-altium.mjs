@@ -96,6 +96,17 @@ if (daLeggere.length === 0) {
   console.error(`nessun file Altium trovato (cerco ${ESTENSIONI.join(", ")})`);
   process.exit(1);
 }
+/*
+ * Gli stessi limiti dell'endpoint, detti prima di caricare: 60 file e 120 MB
+ * in tutto una volta decompressi (src/app/api/import/altium/route.ts).
+ */
+const MAX_FILE = 60;
+if (daLeggere.length > MAX_FILE) {
+  console.error(
+    `${daLeggere.length} file: l'import ne accetta al massimo ${MAX_FILE} per volta (il .PcbDoc con i suoi .SchDoc basta)`,
+  );
+  process.exit(1);
+}
 
 /*
  * I file salgono COMPRESSI. Non per risparmiare: il corpo di una richiesta su

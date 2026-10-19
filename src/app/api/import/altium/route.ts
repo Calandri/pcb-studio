@@ -5,9 +5,16 @@ import {
   altiumExtension,
 } from "@/lib/altium-import";
 import { importaAltium } from "@/lib/altium-pipeline";
-import { claimProject, currentViewer, projectAccess, requireProjectAccess } from "@/lib/acl";
+import {
+  claimProject,
+  currentViewer,
+  projectAccess,
+  requireProjectAccess,
+  type Viewer,
+} from "@/lib/acl";
 import { resolveApiToken } from "@/lib/api-tokens";
 import { listUserOrganizations } from "@/lib/org-store";
+import { createProject, isValidProjectId } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -18,6 +25,14 @@ export const maxDuration = 300;
  * one the format needs, not the one inherited from the other importer.
  */
 const MAX_FILE_BYTES = 40 * 1024 * 1024;
+/*
+ * And a ceiling on the whole upload, decompressed. Each file is capped, but a
+ * request can carry many of them: a hundred gzipped files of a few kilobytes
+ * each, every one inflating to the per-file cap, is four gigabytes in memory.
+ * BAT_BS is twelve files and 5.8 MB.
+ */
+const MAX_TOTAL_BYTES = 120 * 1024 * 1024;
+const MAX_FILES = 60;
 
 /**
  * A file may arrive GZIPPED, named `<nome>.gz`.
@@ -30,9 +45,13 @@ const MAX_FILE_BYTES = 40 * 1024 * 1024;
  * The decompressed size is capped: an upload is untrusted input, and a few
  * kilobytes of zeros expand into gigabytes if nobody is counting.
  */
-function scompatta(nome: string, dati: ArrayBuffer): { path: string; data: ArrayBuffer } {
+function scompatta(
+  nome: string,
+  dati: ArrayBuffer,
+  massimo: number = MAX_FILE_BYTES,
+): { path: string; data: ArrayBuffer } {
   if (!/\.gz$/i.test(nome)) return { path: nome, data: dati };
-  const uscita = gunzipSync(Buffer.from(dati), { maxOutputLength: MAX_FILE_BYTES });
+  const uscita = gunzipSync(Buffer.from(dati), { maxOutputLength: Math.min(MAX_FILE_BYTES, massimo) });
   return {
     path: nome.replace(/\.gz$/i, ""),
     data: uscita.buffer.slice(uscita.byteOffset, uscita.byteOffset + uscita.byteLength) as ArrayBuffer,
@@ -42,6 +61,9 @@ function scompatta(nome: string, dati: ArrayBuffer): { path: string; data: Array
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
 }
+
+/** the caller may not write the project: a 403, not a failed import */
+class AccessoNegato extends Error {}
 
 /**
  * Altium import: multipart with one or more files.
@@ -73,17 +95,35 @@ export async function POST(req: Request): Promise<Response> {
   if (!form) return jsonError("multipart form data required", 400);
 
   const files: Array<{ path: string; data: ArrayBuffer }> = [];
-  for (const entry of form.getAll("file")) {
-    if (!(entry instanceof File)) continue;
+  const entries = form.getAll("file").filter((e): e is File => e instanceof File);
+  if (entries.length > MAX_FILES) {
+    return jsonError(`troppi file (massimo ${MAX_FILES} per importazione)`, 413);
+  }
+  let totale = 0;
+  for (const entry of entries) {
     if (entry.size > MAX_FILE_BYTES) {
       return jsonError(
         `file "${entry.name}" troppo grande (massimo ${MAX_FILE_BYTES / 1024 / 1024}MB)`,
         413,
       );
     }
+    const troppo = () =>
+      jsonError(
+        `importazione troppo grande: piu' di ${MAX_TOTAL_BYTES / 1024 / 1024}MB in tutto una volta decompressa`,
+        413,
+      );
+    const resto = MAX_TOTAL_BYTES - totale;
+    if (resto <= 0) return troppo();
     try {
-      files.push(scompatta(entry.name, await entry.arrayBuffer()));
+      const file = scompatta(entry.name, await entry.arrayBuffer(), resto);
+      totale += file.data.byteLength;
+      if (totale > MAX_TOTAL_BYTES) return troppo();
+      files.push(file);
     } catch (err) {
+      // the inflater stops at the cap with a RangeError: that is "too big", not "unreadable"
+      if (err instanceof RangeError || (err as { code?: string })?.code === "ERR_BUFFER_TOO_LARGE") {
+        return jsonError(`file "${entry.name}" troppo grande una volta decompresso`, 413);
+      }
       return jsonError(
         `file "${entry.name}" illeggibile: ${err instanceof Error ? err.message : String(err)}`,
         400,
@@ -106,9 +146,32 @@ export async function POST(req: Request): Promise<Response> {
    */
   const richiesto = form.get("projectId");
   const projectId = typeof richiesto === "string" && richiesto.trim() ? richiesto.trim() : undefined;
+  if (projectId && !isValidProjectId(projectId)) {
+    return jsonError("identificativo di progetto non valido", 400);
+  }
+
+  const orgs = await listUserOrganizations(viewer.userId).catch(() => []);
+  const orgId = orgs[0]?.id ?? null;
+  /*
+   * An explicit project is CLAIMED first: created in the caller's name if it
+   * does not exist, left alone if it does. Then the access check runs on the
+   * row that is really there — so a project somebody else created a moment ago
+   * is refused, and re-importing over an existing board (which overwrites its
+   * main.tsx and its manual edits) needs edit rights on it.
+   */
+  const assicuraScrittura = async (id: string, chi: Viewer): Promise<void> => {
+    await claimProject(id, chi, orgId);
+    if ((await projectAccess(id, chi)) !== "edit") {
+      throw new AccessoNegato(`nessun permesso di scrittura su ${id}`);
+    }
+  };
   if (projectId) {
-    const livello = await projectAccess(projectId, viewer);
-    if (livello !== "edit") return jsonError(`nessun permesso di scrittura su ${projectId}`, 403);
+    try {
+      await assicuraScrittura(projectId, viewer);
+    } catch (err) {
+      if (err instanceof AccessoNegato) return jsonError(err.message, 403);
+      throw err;
+    }
   }
 
   /*
@@ -120,15 +183,25 @@ export async function POST(req: Request): Promise<Response> {
   const senza = (campo: string) => form.get(campo) !== null;
 
   try {
-    const orgs = await listUserOrganizations(viewer.userId);
     const report = await importaAltium({
       files,
       projectId,
       conDatasheet: !senza("senzaDatasheet"),
       conFootprint: !senza("senzaFootprint"),
       compila: !senza("senzaCompilare"),
-      onProjectCreated: async (creato) => {
-        if (!projectId) await claimProject(creato, viewer, orgs[0]?.id ?? null);
+      preparaProgetto: async (id, nuovo) => {
+        if (!nuovo) return assicuraScrittura(id, viewer);
+        /*
+         * A generated id must be a NEW project: if the random suffix ever
+         * lands on an existing one, that is somebody's board, and the import
+         * stops instead of writing over it.
+         */
+        const creato = await createProject(id, {
+          userId: viewer.userId,
+          orgId,
+          name: null,
+        });
+        if (!creato) throw new Error(`il progetto ${id} esiste gia': ripeti l'importazione`);
       },
     });
 
@@ -155,6 +228,7 @@ export async function POST(req: Request): Promise<Response> {
       warnings: report.warnings.slice(0, 50),
     });
   } catch (err) {
+    if (err instanceof AccessoNegato) return jsonError(err.message, 403);
     return jsonError(
       `import da Altium fallito: ${err instanceof Error ? err.message : String(err)}`,
       422,

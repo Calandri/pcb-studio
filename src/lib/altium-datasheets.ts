@@ -38,9 +38,60 @@ import { datasheetMpns, saveDatasheet } from "./library-store";
  * manufacturer code into an LCSC code, and LCSC keeps a copy of the datasheet on
  * its own servers. Same source the app already uses for stock and prices.
  */
+/**
+ * A supplier code as LCSC writes it, from whatever the search answered.
+ *
+ * The answer is somebody else's JSON and the code ends up INSIDE main.tsx, as a
+ * prop: a positive integer, and nothing else, becomes `C<number>`.
+ */
+export function codiceLcsc(valore: unknown): string | null {
+  const testo = typeof valore === "number" ? String(valore) : typeof valore === "string" ? valore.trim() : "";
+  const m = /^C?(\d{1,12})$/i.exec(testo);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isSafeInteger(n) && n > 0 ? `C${n}` : null;
+}
+
+/** a part code reduced to what identifies it: upper case, letters and digits */
+const normalizza = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/**
+ * WHICH SEARCH RESULT IS THE PART, if any.
+ *
+ * Only the SAME code counts as the part: equal once punctuation and case are
+ * gone ("SPH0641LU4H-1" and "SPH0641LU4H1" are the same string). A result that
+ * merely starts with the code — "LM358D" for "LM358", "SPH0641LU4H-1" for
+ * "SPH0641LU4H" — is a RELATIVE: often the same die in another package, often
+ * not. It is returned as approximate, so that it can lend its datasheet (a
+ * family datasheet is better than none, and it is labelled) but never its order
+ * code, which would put a different part on the bill of materials with full
+ * confidence. The old rule accepted any two extra characters as the same part.
+ */
+export function sceltaLcsc(
+  mpn: string,
+  risultati: Array<{ lcsc?: unknown; mfr?: unknown }>,
+): { codice: string; mfr: string; approssimato: boolean } | null {
+  const cercato = normalizza(mpn);
+  if (!cercato) return null;
+  let parente: { codice: string; mfr: string; approssimato: boolean } | null = null;
+  for (const c of risultati) {
+    const codice = codiceLcsc(c?.lcsc);
+    const mfr = String(c?.mfr ?? "");
+    const suo = normalizza(mfr);
+    if (!codice || !suo) continue;
+    if (suo === cercato) return { codice, mfr, approssimato: false };
+    const lungo = suo.length > cercato.length ? suo : cercato;
+    const corto = suo.length > cercato.length ? cercato : suo;
+    if (!parente && corto.length >= 4 && lungo.startsWith(corto) && lungo.length - corto.length <= 2) {
+      parente = { codice, mfr, approssimato: true };
+    }
+  }
+  return parente;
+}
+
 async function cercaSuLcsc(
   mpn: string,
-): Promise<{ codice: string; datasheet: string | null } | null> {
+): Promise<{ codice: string; mfr: string; approssimato: boolean; datasheet: string | null } | null> {
   try {
     const ricerca = new URL("https://jlcsearch.tscircuit.com/api/search");
     ricerca.searchParams.set("q", mpn);
@@ -53,36 +104,22 @@ async function cercaSuLcsc(
     ricerca.searchParams.set("limit", "8");
     const res = await fetch(ricerca, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
-    const dati = (await res.json()) as { components?: Array<{ lcsc?: number; mfr?: string }> };
-    /*
-     * Deve essere la STESSA parte, non una che le somiglia. Uguale a meno della
-     * punteggiatura, oppure lo stesso codice con un suffisso di al massimo due
-     * caratteri (il microfono e' "SPH0641LU4H" e su LCSC "SPH0641LU4H-1"): oltre
-     * quella soglia si rischia di attaccare al progetto il datasheet di un altro
-     * componente, che e' peggio di non averlo.
-     */
-    const pulisci = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const cercato = pulisci(mpn);
-    const primo = (dati.components ?? []).find((c) => {
-      if (!c?.lcsc) return false;
-      const suo = pulisci(String(c.mfr ?? ""));
-      if (!suo) return false;
-      if (suo === cercato) return true;
-      const lungo = suo.length > cercato.length ? suo : cercato;
-      const corto = suo.length > cercato.length ? cercato : suo;
-      return lungo.startsWith(corto) && lungo.length - corto.length <= 2;
-    });
-    if (!primo?.lcsc) return null;
-    const codice = `C${primo.lcsc}`;
+    const dati = (await res.json()) as { components?: unknown };
+    const scelta = sceltaLcsc(
+      mpn,
+      Array.isArray(dati?.components) ? (dati.components as Array<{ lcsc?: unknown; mfr?: unknown }>) : [],
+    );
+    if (!scelta) return null;
+    const { codice } = scelta;
 
     const pagina = await fetch(`https://www.lcsc.com/product-detail/${codice}.html`, {
       signal: AbortSignal.timeout(15_000),
       headers: { "User-Agent": "pcb-studio/1.0" },
     });
-    if (!pagina.ok) return { codice, datasheet: null };
+    if (!pagina.ok) return { ...scelta, datasheet: null };
     const html = await pagina.text();
-    const m = /https:\/\/datasheet\.lcsc\.com\/[^"' ]+\.pdf/i.exec(html);
-    return { codice, datasheet: m ? m[0] : null };
+    const m = /https:\/\/datasheet\.lcsc\.com\/[^"' <>\\]+\.pdf/i.exec(html);
+    return { ...scelta, datasheet: m ? m[0] : null };
   } catch {
     return null;
   }
@@ -97,13 +134,17 @@ async function cercaSuLcsc(
  * the code was already being run, for the datasheet, and the code thrown away.
  *
  * One search per distinct part, six at a time, and only for parts that have a
- * manufacturer number to search by. Whoever does not match exactly (see the rule
- * in cercaSuLcsc) keeps no code at all rather than somebody else's.
+ * manufacturer number to search by. Whoever does not match exactly (see
+ * sceltaLcsc) keeps no code at all rather than somebody else's, and is listed
+ * in `approssimati` so the import can say which parts need a person.
+ *
+ * `codici` is keyed by the designator AS THE FILE WRITES IT, like `identita`;
+ * the caller translates to the names main.tsx uses.
  */
 export async function codiciLcsc(
   identita: Map<string, ComponentIdentity>,
   onProgress?: (fatti: number, totale: number, mpn: string) => void,
-): Promise<Map<string, string>> {
+): Promise<{ codici: Map<string, string>; approssimati: Array<{ mpn: string; trovato: string }> }> {
   const perMpn = new Map<string, string[]>();
   for (const [designator, id] of identita) {
     const mpn = (id.mpn ?? "").trim();
@@ -112,6 +153,7 @@ export async function codiciLcsc(
   }
   const lista = [...perMpn];
   const out = new Map<string, string>();
+  const approssimati: Array<{ mpn: string; trovato: string }> = [];
   let fatti = 0;
   const PARALLELE = 6;
   for (let i = 0; i < lista.length; i += PARALLELE) {
@@ -121,11 +163,15 @@ export async function codiciLcsc(
         onProgress?.(fatti++, lista.length, mpn);
         const trovato = await cercaSuLcsc(mpn).catch(() => null);
         if (!trovato) return;
+        if (trovato.approssimato) {
+          approssimati.push({ mpn, trovato: trovato.mfr });
+          return;
+        }
         for (const d of designators) out.set(d, trovato.codice);
       }),
     );
   }
-  return out;
+  return { codici: out, approssimati };
 }
 
 export interface DatasheetImportResult {
@@ -191,7 +237,9 @@ export async function importDatasheetsForIdentities({
   };
 
   let fatti = 0;
-  for (const [mpn, { url, titolo }] of daFare) {
+  for (const [mpn, voce] of daFare) {
+    const { url } = voce;
+    let { titolo } = voce;
     onProgress?.(fatti++, daFare.length, mpn);
     let usato = url;
     try {
@@ -201,11 +249,19 @@ export async function importDatasheetsForIdentities({
         pdf = await fetchDatasheetFromUrl(url);
       } catch (primoErrore) {
         // the link in the file is dead: the part is looked up by code
-        const ripiego = (await cercaSuLcsc(mpn))?.datasheet;
+        const lcsc = await cercaSuLcsc(mpn);
+        const ripiego = lcsc?.datasheet;
         if (!ripiego) throw primoErrore;
         usato = ripiego;
         pdf = await fetchDatasheetFromUrl(ripiego);
         out.da_lcsc++;
+        /*
+         * A relative's datasheet is labelled as such: whoever reads it later
+         * (a person or the agent) must know it was found by resemblance.
+         */
+        if (lcsc?.approssimato) {
+          titolo = `${titolo} (datasheet di ${lcsc.mfr}, trovato per somiglianza: da verificare)`.slice(0, 260);
+        }
       }
       await saveDatasheet({
         projectId,

@@ -13,6 +13,7 @@ import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { saveLibraryComponent } from "./library-store";
 import { saveProjectModel } from "./model-store";
 import { emptyManualEdits, MANUAL_EDITS_PATH, serializeManualEdits } from "./manual-edits";
+import { jsStr } from "./circuit-json-to-project";
 import { filesHash, getProject, saveCompileCache, writeProjectFile } from "./project-store";
 
 /**
@@ -67,8 +68,17 @@ export interface AltiumImportOptions {
   files: AltiumFile[];
   /** the project to write into: by default a new one, never an existing board */
   projectId?: string;
-  /** called after the project row exists, to give it an owner */
-  onProjectCreated?: (projectId: string) => Promise<void>;
+  /**
+   * Makes the project exist WITH ITS OWNER and checks the caller may write it,
+   * BEFORE the first file is written; throws otherwise. `nuovo` says the id was
+   * generated here: such a project must not exist yet, and if it does, that is
+   * somebody's board and must not be written over.
+   *
+   * It used to be a callback run AFTER the writes, which no longer works —
+   * writing into a project that does not exist fails — and which never ran at
+   * all for an explicit projectId, so a project created that way had no owner.
+   */
+  preparaProgetto: (projectId: string, nuovo: boolean) => Promise<void>;
   conDatasheet?: boolean;
   conFootprint?: boolean;
   /** compile and store the result, so the project opens already drawn */
@@ -87,7 +97,7 @@ const slug = (nome: string): string =>
 export async function importaAltium({
   files,
   projectId,
-  onProjectCreated,
+  preparaProgetto,
   conDatasheet = true,
   conFootprint = true,
   compila = true,
@@ -129,7 +139,10 @@ export async function importaAltium({
     for (const c of imported.components) {
       const saved = await saveLibraryComponent({
         name: c.name,
-        description: `Footprint dalla libreria Altium ${lib.path} (${c.pads} pad)`,
+        // a pinout numbered by file order is said where the library shows it
+        description: `Footprint dalla libreria Altium ${lib.path} (${c.pads} pad)${
+          c.piedinaturaVerificata === false ? ", piedinatura non verificata" : ""
+        }`,
         code: c.code,
         source: "altium",
         sourceRef: lib.path,
@@ -164,7 +177,8 @@ export async function importaAltium({
   report.stats = imported.stats;
 
   passo(`scrivo il progetto ${id}`);
-  await getProject(id); // creates the project row
+  // the row and its owner first, and the right to write it: then the files
+  await preparaProgetto(id, !projectId);
   for (const [path, content] of Object.entries(imported.fsMap)) {
     await writeProjectFile(id, path, content);
   }
@@ -178,7 +192,6 @@ export async function importaAltium({
     MANUAL_EDITS_PATH,
     serializeManualEdits({ ...emptyManualEdits(), pcb_routes: imported.routes }),
   );
-  await onProjectCreated?.(id);
 
   /*
    * The meshes, one row each. They are written before the compile because the GLB
@@ -223,7 +236,9 @@ export async function importaAltium({
     for (const c of footprints?.components ?? []) {
       const saved = await saveLibraryComponent({
         name: c.name,
-        description: `Footprint importato da ${docs[0].path} (${c.pads} pad)`,
+        description: `Footprint importato da ${docs[0].path} (${c.pads} pad)${
+          c.piedinaturaVerificata === false ? ", piedinatura non verificata" : ""
+        }`,
         code: c.code,
         source: "altium",
         sourceRef: docs[0].path,
@@ -245,17 +260,35 @@ export async function importaAltium({
    */
   if (conDatasheet) {
     passo("codici LCSC");
-    const codici = await codiciLcsc(imported.identita, (fatti, totale, mpn) =>
+    const trovati = await codiciLcsc(imported.identita, (fatti, totale, mpn) =>
       passo(`codice ${fatti + 1}/${totale}: ${mpn}`),
-    ).catch(() => new Map<string, string>());
+    ).catch(() => ({ codici: new Map<string, string>(), approssimati: [] }));
+    /*
+     * The codes come back by designator as the FILE writes it, and main.tsx
+     * names a part by its cleaned name (`C-1` is `C_1`): matching one against
+     * the other silently lost the code of every part whose designator was not
+     * already clean.
+     */
+    const codici = new Map<string, string>();
+    for (const [designator, codice] of trovati.codici) {
+      codici.set(imported.nomi.get(designator) ?? designator, codice);
+    }
+    if (trovati.approssimati.length > 0) {
+      report.warnings.push(
+        `${trovati.approssimati.length} parti trovate su LCSC solo per somiglianza, codice d'ordine NON scritto: ${trovati.approssimati
+          .slice(0, 10)
+          .map((a) => `${a.mpn} -> ${a.trovato}`)
+          .join(", ")}${trovati.approssimati.length > 10 ? ", ..." : ""}`,
+      );
+    }
     if (codici.size > 0) {
       const main = imported.fsMap["main.tsx"] ?? "";
       const conCodici = main.replace(
-        /<(\w+) name="([^"]+)"/g,
+        /<(\w+) name="([A-Za-z0-9_]+)"/g,
         (tutto, tag: string, nome: string) => {
           const codice = codici.get(nome);
           if (!codice || tag.toLowerCase() === "net") return tutto;
-          return `<${tag} name="${nome}" supplierPartNumbers={{ jlcpcb: ["${codice}"] }}`;
+          return `<${tag} name="${nome}" supplierPartNumbers={{ jlcpcb: [${jsStr(codice)}] }}`;
         },
       );
       if (conCodici !== main) {

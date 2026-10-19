@@ -1,13 +1,16 @@
 import { importKicadFootprint, importKicadProject } from "@/lib/kicad-import";
-import { claimProject, currentViewer, requireProjectAccess } from "@/lib/acl";
+import { currentViewer, requireProjectAccess } from "@/lib/acl";
 import { listUserOrganizations } from "@/lib/org-store";
 import { saveLibraryComponent } from "@/lib/library-store";
-import { getProject, writeProjectFile } from "@/lib/project-store";
+import { createProject, writeProjectFile } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** a project is a board and its sheets, a library a handful of footprints */
+const MAX_FILES = 40;
+const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
@@ -19,8 +22,7 @@ function jsonError(message: string, status: number): Response {
  * - a .kicad_pcb (optionally with its .kicad_sch) -> becomes a NEW project
  *   (kicad-<name>-<suffix>) owned by the caller, never overwrites existing work
  *
- * Altium: no open converter — export from Altium, open in KiCad (it imports
- * .SchDoc/.PcbDoc natively), save as KiCad and upload here.
+ * Altium files have their own endpoint: /api/import/altium.
  */
 export async function POST(req: Request): Promise<Response> {
   const viewer = await currentViewer();
@@ -30,10 +32,16 @@ export async function POST(req: Request): Promise<Response> {
   if (!form) return jsonError("multipart form data required", 400);
 
   const files: Array<{ path: string; content: string }> = [];
-  for (const entry of form.getAll("file")) {
-    if (!(entry instanceof File)) continue;
+  const entries = form.getAll("file").filter((e): e is File => e instanceof File);
+  if (entries.length > MAX_FILES) return jsonError(`too many files (max ${MAX_FILES})`, 413);
+  let total = 0;
+  for (const entry of entries) {
     if (entry.size > MAX_FILE_BYTES) {
       return jsonError(`file "${entry.name}" too large (max ${MAX_FILE_BYTES / 1024 / 1024}MB)`, 413);
+    }
+    total += entry.size;
+    if (total > MAX_TOTAL_BYTES) {
+      return jsonError(`upload too large (max ${MAX_TOTAL_BYTES / 1024 / 1024}MB in total)`, 413);
     }
     files.push({ path: entry.name, content: await entry.text() });
   }
@@ -64,7 +72,12 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     // pcb (+sch) -> new project
-    let project: { id: string; components: number; traces: number } | null = null;
+    let project: {
+      id: string;
+      components: number;
+      traces: number;
+      warnings: string[];
+    } | null = null;
     if (pcbs.length === 1) {
       const imported = importKicadProject([...pcbs, ...schs]);
       const base = pcbs[0].path
@@ -73,14 +86,34 @@ export async function POST(req: Request): Promise<Response> {
         .replace(/^-+|-+$/g, "")
         .slice(0, 40)
         .toLowerCase();
-      const projectId = `kicad-${base || "board"}-${Math.random().toString(36).slice(2, 7)}`;
-      await getProject(projectId); // creates the project row
+      /*
+       * The project is CREATED, with its owner, before a single file is
+       * written: reading no longer creates rows, and writing into a project
+       * that does not exist fails. A new id is never an existing project — if
+       * the random suffix ever lands on one, another suffix is drawn instead of
+       * writing over somebody's board.
+       */
+      const orgs = await listUserOrganizations(viewer.userId);
+      let projectId: string | null = null;
+      for (let tentativo = 0; tentativo < 5 && !projectId; tentativo++) {
+        const candidato = `kicad-${base || "board"}-${Math.random().toString(36).slice(2, 7)}`;
+        const creato = await createProject(candidato, {
+          userId: viewer.userId,
+          orgId: orgs[0]?.id ?? null,
+          name: pcbs[0].path.replace(/\.kicad_pcb$/i, "").slice(0, 120) || null,
+        });
+        if (creato) projectId = candidato;
+      }
+      if (!projectId) return jsonError("could not allocate a project id, try again", 503);
       for (const [path, content] of Object.entries(imported.fsMap)) {
         await writeProjectFile(projectId, path, content);
       }
-      const orgs = await listUserOrganizations(viewer.userId);
-      await claimProject(projectId, viewer, orgs[0]?.id ?? null);
-      project = { id: projectId, components: imported.components, traces: imported.traces };
+      project = {
+        id: projectId,
+        components: imported.components,
+        traces: imported.traces,
+        warnings: imported.warnings.map(String).slice(0, 50),
+      };
     }
 
     if (components.length === 0 && !project) {
