@@ -24,6 +24,8 @@ jobs:
 
       - run: pnpm lint
 
+      - run: pnpm test
+
       - run: pnpm build
         env:
           # the build must pass without real secrets; Next only needs these to exist

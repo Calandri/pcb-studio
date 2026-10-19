@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "importa:altium": "node scripts/importa-altium.mjs"
+    "importa:altium": "node scripts/importa-altium.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -90,7 +91,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.11",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "5.0.5"
   },
   "pnpm": {
     "overrides": {
