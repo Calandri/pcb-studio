@@ -14,7 +14,6 @@
     "db:migrate": "node scripts/db-migrate.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
     "@auth/neon-adapter": "^1.11.3",
     "@aws-sdk/client-ses": "^3.1095.0",
     "@jscad/modeling": "2.13.0",
