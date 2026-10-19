@@ -32,7 +32,6 @@ export function FeedbackWidget() {
   const [kind, setKind] = useState<Kind>("feedback");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [website, setWebsite] = useState(""); // honeypot
   const [selection, setSelection] = useState<SelectorResult | null>(null);
   const [attachShot, setAttachShot] = useState(true);
   /** the screenshot was asked for and did not make it: said, not hidden */
@@ -89,7 +88,6 @@ export function FeedbackWidget() {
           viewport: { width: window.innerWidth, height: window.innerHeight },
           screenshotBase64,
           component: selection?.component ?? undefined,
-          website,
         }),
       });
       const d = await res.json().catch(() => ({}));
@@ -277,17 +275,6 @@ export function FeedbackWidget() {
                   alleghi i dati riservati vengono coperti.
                 </p>
               )}
-
-              {/* honeypot: invisibile agli umani, i bot lo compilano */}
-              <input
-                value={website}
-                onChange={(e) => setWebsite(e.target.value)}
-                type="text"
-                tabIndex={-1}
-                autoComplete="off"
-                aria-hidden="true"
-                className="pointer-events-none absolute -left-[9999px] h-0 w-0 opacity-0"
-              />
 
               {error && <p className="text-[11.5px] text-danger">{error}</p>}
 
