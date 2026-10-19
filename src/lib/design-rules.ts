@@ -209,6 +209,12 @@ export interface ProjectRules {
   rules: DesignRules;
   label: string;
   isCustom: boolean;
+  /**
+   * What was wrong with the file and what was done about it: a broken JSON
+   * that fell back to JLCPCB, a value outside the limits, a target below its
+   * minimum. Absent when the file was fine.
+   */
+  warnings?: string[];
 }
 
 const LIMITS: Record<
@@ -233,16 +239,27 @@ const LIMITS: Record<
  * An out-of-range value is not a preference, it is a typo that would produce
  * an unsellable board or a DRC that stops reporting anything: clamp it back
  * within the limits instead of trusting it.
+ *
+ * And the values are checked AGAINST EACH OTHER, because each one can be within
+ * its limits and the set still make no sense: a target width below the minimum
+ * (the router would aim at a trace the DRC rejects), a via whose hole is as wide
+ * as its pad (no copper ring left at all). Every correction is written in
+ * `avvisi`, so it is said instead of silently applied.
  */
-function clampRules(input: Partial<DesignRules> | undefined): DesignRules {
+function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = []): DesignRules {
   const out = { ...DEFAULT_DESIGN_RULES };
-  if (!input) return out;
+  if (!input || typeof input !== "object") return out;
   type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm">;
   for (const key of Object.keys(LIMITS) as Numeriche[]) {
     const v = input[key];
-    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      avvisi.push(`${key}: valore non numerico (${JSON.stringify(v)}), uso ${out[key] ?? "il valore di base"}`);
+      continue;
+    }
     const { min, max } = LIMITS[key];
     out[key] = Math.min(max, Math.max(min, v));
+    if (out[key] !== v) avvisi.push(`${key}: ${v} e' fuori dai limiti ${min}-${max}, portato a ${out[key]}`);
   }
   /*
    * The pair distances, kept only where they say something: a pair asking for
@@ -254,29 +271,72 @@ function clampRules(input: Partial<DesignRules> | undefined): DesignRules {
     const v = input.clearanceByPairMm?.[chiave];
     if (typeof v !== "number" || !Number.isFinite(v)) continue;
     coppie[chiave] = Math.min(2, Math.max(0.01, v));
+    if (coppie[chiave] !== v) avvisi.push(`distanza ${chiave}: ${v} portata a ${coppie[chiave]}`);
   }
   if (Object.keys(coppie).length > 0) out.clearanceByPairMm = coppie;
+
+  // --- the values against each other
+  if (out.targetTraceWidthMm < out.minTraceWidthMm) {
+    avvisi.push(
+      `targetTraceWidthMm ${out.targetTraceWidthMm} e' sotto il minimo ${out.minTraceWidthMm}: portato al minimo`,
+    );
+    out.targetTraceWidthMm = out.minTraceWidthMm;
+  }
+  if (out.targetClearanceMm < out.minClearanceMm) {
+    avvisi.push(
+      `targetClearanceMm ${out.targetClearanceMm} e' sotto il minimo ${out.minClearanceMm}: portato al minimo`,
+    );
+    out.targetClearanceMm = out.minClearanceMm;
+  }
+  // a via needs copper around its hole: at least five hundredths per side
+  const anelloMinimo = 0.1;
+  if (out.minViaDiameterMm < out.minViaHoleMm + anelloMinimo) {
+    const prima = out.minViaDiameterMm;
+    out.minViaDiameterMm = Number(
+      Math.min(LIMITS.minViaDiameterMm.max, out.minViaHoleMm + anelloMinimo).toFixed(3),
+    );
+    avvisi.push(
+      `minViaDiameterMm ${prima} non lascia rame attorno al foro da ${out.minViaHoleMm}mm: portato a ${out.minViaDiameterMm}`,
+    );
+  }
+  if (out.pourClearanceMm !== undefined && out.pourClearanceMm < out.minClearanceMm) {
+    avvisi.push(
+      `pourClearanceMm ${out.pourClearanceMm} e' sotto la distanza minima ${out.minClearanceMm}: portata al minimo`,
+    );
+    out.pourClearanceMm = out.minClearanceMm;
+  }
   return out;
 }
 
 /** reads a project's rules from its file map */
 export function resolveDesignRules(fsMap: Record<string, string>): ProjectRules {
-  const fallback: ProjectRules = {
+  const fallback = (avviso?: string): ProjectRules => ({
     preset: FAB_RULESETS[0].key,
     rules: FAB_RULESETS[0].rules,
     label: FAB_RULESETS[0].label,
     isCustom: false,
-  };
+    ...(avviso ? { warnings: [avviso] } : {}),
+  });
   const raw = fsMap[DESIGN_RULES_PATH];
-  if (!raw) return fallback;
+  if (!raw) return fallback();
 
+  /*
+   * A BROKEN FILE IS SAID, not swallowed. It used to fall back to JLCPCB in
+   * silence: whoever had chosen a coarser manufacturer and mistyped one comma
+   * got a board routed and checked against minimums their factory cannot make,
+   * with every check green.
+   */
   let data: unknown;
   try {
     data = JSON.parse(raw);
-  } catch {
-    return fallback;
+  } catch (err) {
+    return fallback(
+      `${DESIGN_RULES_PATH} non e' un JSON valido (${err instanceof Error ? err.message : String(err)}): uso ${FAB_RULESETS[0].label}`,
+    );
   }
-  if (typeof data !== "object" || data === null) return fallback;
+  if (typeof data !== "object" || data === null) {
+    return fallback(`${DESIGN_RULES_PATH} non contiene un oggetto: uso ${FAB_RULESETS[0].label}`);
+  }
   const obj = data as { preset?: unknown; rules?: unknown };
 
   const preset = typeof obj.preset === "string" ? obj.preset : "";
@@ -285,14 +345,21 @@ export function resolveDesignRules(fsMap: Record<string, string>): ProjectRules 
     return { preset: known.key, rules: known.rules, label: known.label, isCustom: false };
   }
   if (preset === "custom") {
+    const avvisi: string[] = [];
     return {
       preset: "custom",
-      rules: clampRules(obj.rules as Partial<DesignRules>),
+      rules: clampRules(obj.rules as Partial<DesignRules>, avvisi),
       label: "Regole personalizzate",
       isCustom: true,
+      ...(avvisi.length > 0 ? { warnings: avvisi } : {}),
     };
   }
-  return fallback;
+  return fallback(
+    `${DESIGN_RULES_PATH}: preset ${JSON.stringify(obj.preset ?? null)} sconosciuto (ammessi: ${[
+      ...FAB_RULESETS.map((r) => r.key),
+      "custom",
+    ].join(", ")}): uso ${FAB_RULESETS[0].label}`,
+  );
 }
 
 export function serializeDesignRules(projectRules: ProjectRules): string {
@@ -311,10 +378,12 @@ export function buildProjectRules(
   if (known) {
     return { preset: known.key, rules: known.rules, label: known.label, isCustom: false };
   }
+  const avvisi: string[] = [];
   return {
     preset: "custom",
-    rules: clampRules(custom),
+    rules: clampRules(custom, avvisi),
     label: "Regole personalizzate",
     isCustom: true,
+    ...(avvisi.length > 0 ? { warnings: avvisi } : {}),
   };
 }

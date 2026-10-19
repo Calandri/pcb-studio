@@ -56,6 +56,13 @@ export interface EsitoGruppo {
   scartoMm: number;
   dentro: boolean;
   misure: Array<{ net: string; lunghezzaMm: number; pezzi: number }>;
+  /**
+   * Le reti del gruppo che non si sono potute misurare: "assente" se la scheda
+   * non ha una rete con quel nome (scritto male, o rinominata), "senza_rame" se
+   * c'e' ma non ha ancora una pista. Un gruppo con una rete mancante non e'
+   * appaiato: non si sa quanto e' lunga.
+   */
+  mancanti: Array<{ net: string; motivo: "assente" | "senza_rame" }>;
 }
 
 /** il file del progetto, che non deve fermare niente se e' rotto o assente */
@@ -116,10 +123,13 @@ function lunghezzePerRete(circuitJson: El[]): {
   lunghezza: Map<string, number>;
   pezzi: Map<string, number>;
   stessoSegnale: Insieme;
+  nomi: Set<string>;
 } {
   const nomeDiChiave = new Map<string, string>();
+  const nomi = new Set<string>();
   for (const el of circuitJson) {
     if (el.type !== "source_net") continue;
+    if (el.name) nomi.add(String(el.name));
     const k = String(el.subcircuit_connectivity_map_key ?? "");
     if (k) nomeDiChiave.set(k, String(el.name ?? ""));
   }
@@ -208,19 +218,24 @@ function lunghezzePerRete(circuitJson: El[]): {
     for (let i = 1; i < reti.length; i++) stessoSegnale.unisci(reti[0], reti[i]);
   }
 
-  return { lunghezza, pezzi, stessoSegnale };
+  return { lunghezza, pezzi, stessoSegnale, nomi };
 }
 
 /**
  * Il conto, gruppo per gruppo: quanto sono lunghe le reti e quanto differiscono.
- * Un gruppo con meno di due reti che hanno rame non dice niente e resta fuori.
+ *
+ * UNA RETE CHE NON SI MISURA NON PASSA IN SILENZIO. Prima una rete scritta male
+ * nel file, o non ancora instradata, semplicemente non entrava nel conto: con le
+ * altre due in tolleranza il gruppo risultava appaiato, e un bus con un filo
+ * mancante passava il controllo. Ora la rete mancante e' detta per nome, e il
+ * gruppo non e' "dentro" finche' non si misura tutta.
  */
 export function controllaLunghezze(
   circuitJson: El[],
   gruppi: GruppoLunghezza[],
 ): EsitoGruppo[] {
   if (gruppi.length === 0) return [];
-  const { lunghezza, pezzi, stessoSegnale } = lunghezzePerRete(circuitJson);
+  const { lunghezza, pezzi, stessoSegnale, nomi } = lunghezzePerRete(circuitJson);
   const fuori: EsitoGruppo[] = [];
 
   for (const g of gruppi) {
@@ -237,17 +252,23 @@ export function controllaLunghezze(
         pezzi: (prima?.pezzi ?? 0) + (pezzi.get(net) ?? 0),
       });
     }
+    // senza rame vuol dire senza rame anche per i pezzi ricuciti dal net tie
+    const mancanti: EsitoGruppo["mancanti"] = g.reti
+      .filter((net) => !lunghezza.has(net) && !perSegnale.has(stessoSegnale.radice(net)))
+      .map((net) => ({ net, motivo: nomi.has(net) ? ("senza_rame" as const) : ("assente" as const) }));
     const misure = [...perSegnale.values()]
       .map((m) => ({ net: m.net, lunghezzaMm: Number(m.L.toFixed(2)), pezzi: m.pezzi }))
       .sort((a, b) => b.lunghezzaMm - a.lunghezzaMm);
-    if (misure.length < 2) continue;
-    const scarto = misure[0].lunghezzaMm - misure[misure.length - 1].lunghezzaMm;
+    if (misure.length < 2 && mancanti.length === 0) continue;
+    const scarto =
+      misure.length >= 2 ? misure[0].lunghezzaMm - misure[misure.length - 1].lunghezzaMm : 0;
     fuori.push({
       gruppo: g.nome,
       tolleranzaMm: g.tolleranzaMm,
       scartoMm: Number(scarto.toFixed(2)),
-      dentro: scarto <= g.tolleranzaMm + 1e-9,
+      dentro: mancanti.length === 0 && scarto <= g.tolleranzaMm + 1e-9,
       misure,
+      mancanti,
     });
   }
   return fuori;
