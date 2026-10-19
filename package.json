@@ -10,7 +10,8 @@
     "start": "next start",
     "lint": "eslint",
     "importa:altium": "node scripts/importa-altium.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:migrate": "node scripts/db-migrate.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

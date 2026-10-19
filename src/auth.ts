@@ -3,6 +3,7 @@ import { Pool } from "@neondatabase/serverless";
 import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import Google from "next-auth/providers/google";
+import { isEmailAllowed } from "@/lib/access-list";
 import { ensureUserOrganization } from "@/lib/org-store";
 
 // Sender must be an identity verified on the SES account in use.
@@ -91,6 +92,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
     pages: { signIn: "/login", verifyRequest: "/login?sent=1" },
     session: { strategy: "database", maxAge: 30 * 24 * 60 * 60 },
     callbacks: {
+      // runs BEFORE the magic link is sent too (email.verificationRequest):
+      // an address outside the list gets no email at all
+      async signIn({ user }) {
+        return isEmailAllowed(user.email);
+      },
       async session({ session, user }) {
         if (session.user) session.user.id = user.id;
         return session;

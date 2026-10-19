@@ -194,12 +194,39 @@ export async function inviteToOrg(
     return { joined: true };
   }
 
+  // lowercase: the invite is consumed at first login by comparing emails
   await sql`
     INSERT INTO organization_invites (org_id, email, role, invited_by)
-    VALUES (${orgId}, ${email}, ${role}, ${invitedBy})
+    VALUES (${orgId}, ${email.toLowerCase()}, ${role}, ${invitedBy})
     ON CONFLICT (org_id, email) DO UPDATE SET role = EXCLUDED.role
   `;
   return { joined: false };
+}
+
+const RANK: Record<OrgRole, number> = { member: 1, admin: 2, owner: 3 };
+
+/** Is `a` at least as high as `b` in the organization? */
+export function roleAtLeast(a: OrgRole | null, b: OrgRole): boolean {
+  return a !== null && RANK[a] >= RANK[b];
+}
+
+/** Role of an existing member, looked up by email (null: not a member). */
+export async function getOrgRoleByEmail(orgId: string, email: string): Promise<OrgRole | null> {
+  const sql = db();
+  const rows = (await sql`
+    SELECT m.role FROM organization_members m JOIN users u ON u.id = m.user_id
+    WHERE m.org_id = ${orgId} AND lower(u.email) = lower(${email}) LIMIT 1
+  `) as Array<{ role: OrgRole }>;
+  return rows[0]?.role ?? null;
+}
+
+export async function countOrgOwners(orgId: string): Promise<number> {
+  const sql = db();
+  const [row] = (await sql`
+    SELECT count(*)::int AS n FROM organization_members
+    WHERE org_id = ${orgId} AND role = 'owner'
+  `) as Array<{ n: number }>;
+  return row?.n ?? 0;
 }
 
 export async function removeOrgMember(orgId: string, userId: string): Promise<void> {

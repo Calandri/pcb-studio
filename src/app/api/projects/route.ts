@@ -1,15 +1,17 @@
 import { z } from "zod";
-import { claimProject, currentViewer, listAccessibleProjects } from "@/lib/acl";
+import { currentViewer, listAccessibleProjects } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { listUserOrganizations } from "@/lib/org-store";
-import { getCheckStatusByProject, getProject } from "@/lib/project-store";
+import { createProject, getCheckStatusByProject, isValidProjectId } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 
 const CreateSchema = z.object({
+  // the same rule as the database CHECK: an id the create route accepted
+  // and the store then refused made the first write fail
   id: z
     .string()
-    .regex(/^[\w-]{1,64}$/, "id: only letters, digits, - and _"),
+    .refine(isValidProjectId, "id: starts with a letter or digit, then letters, digits, - and _ (max 60)"),
   orgId: z.string().uuid().optional(),
 });
 
@@ -48,7 +50,9 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: "not a member of that organization" }, { status: 403 });
   }
 
-  await getProject(parsed.data.id); // creates the project with the demo content
-  await claimProject(parsed.data.id, viewer, orgId);
+  const created = await createProject(parsed.data.id, { userId: viewer.userId, orgId });
+  if (!created) {
+    return Response.json({ error: "a project with this id already exists" }, { status: 409 });
+  }
   return Response.json({ id: parsed.data.id, orgId });
 }

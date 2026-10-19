@@ -1,13 +1,16 @@
 import { z } from "zod";
 import { currentViewer } from "@/lib/acl";
 import {
+  countOrgOwners,
   createOrganization,
+  getOrgRoleByEmail,
   getUserRoleInOrg,
   inviteToOrg,
   listOrgInvites,
   listOrgMembers,
   listUserOrganizations,
   removeOrgMember,
+  roleAtLeast,
 } from "@/lib/org-store";
 
 export const runtime = "nodejs";
@@ -63,13 +66,36 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: "forbidden: admin role required" }, { status: 403 });
   }
 
+  /*
+   * Nobody acts above their own rank. An admin used to be able to grant
+   * "owner" (to themselves through a second account, too), demote the owner
+   * with a fresh invite to the owner's email, or remove the owner outright:
+   * three ways to take the organization away from whoever created it.
+   */
   if (body.action === "invite") {
+    if (!roleAtLeast(role, body.role)) {
+      return Response.json({ error: "forbidden: only an owner can grant the owner role" }, { status: 403 });
+    }
+    const current = await getOrgRoleByEmail(body.orgId, body.email);
+    if (current && !roleAtLeast(role, current)) {
+      return Response.json({ error: "forbidden: only an owner can change an owner's role" }, { status: 403 });
+    }
+    if (current === "owner" && body.role !== "owner" && (await countOrgOwners(body.orgId)) <= 1) {
+      return Response.json({ error: "the organization must keep at least one owner" }, { status: 400 });
+    }
     const result = await inviteToOrg(body.orgId, body.email, body.role, viewer.userId);
     return Response.json({ ok: true, ...result, members: await listOrgMembers(body.orgId) });
   }
 
   if (body.userId === viewer.userId) {
     return Response.json({ error: "cannot remove yourself" }, { status: 400 });
+  }
+  const target = await getUserRoleInOrg(body.userId, body.orgId);
+  if (target && !roleAtLeast(role, target)) {
+    return Response.json({ error: "forbidden: only an owner can remove an owner" }, { status: 403 });
+  }
+  if (target === "owner" && (await countOrgOwners(body.orgId)) <= 1) {
+    return Response.json({ error: "the organization must keep at least one owner" }, { status: 400 });
   }
   await removeOrgMember(body.orgId, body.userId);
   return Response.json({ ok: true, members: await listOrgMembers(body.orgId) });

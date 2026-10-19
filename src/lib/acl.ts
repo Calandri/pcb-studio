@@ -1,7 +1,10 @@
 import { neon } from "@neondatabase/serverless";
 import { auth } from "@/auth";
+import { isEmailAllowed } from "./access-list";
 import { resolveApiToken } from "./api-tokens";
+import { getUserRoleInOrg, listUserOrganizations } from "./org-store";
 import type { ProjectRole, ProjectSummary } from "./org-store";
+import { createProject, isValidProjectId } from "./project-store";
 
 export interface Viewer {
   userId: string;
@@ -21,45 +24,84 @@ export async function currentViewer(): Promise<Viewer | null> {
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) return null;
+  // taking an address off the list closes its open sessions too
+  if (!isEmailAllowed(session.user?.email)) return null;
   return { userId, email: session.user?.email ?? "" };
 }
 
+interface ProjectRow {
+  org_id: string | null;
+  created_by: string | null;
+  visibility: string;
+}
+
+async function readProjectRow(projectId: string): Promise<ProjectRow | null> {
+  const sql = db();
+  const rows = (await sql`
+    SELECT org_id, created_by, visibility FROM projects WHERE id = ${projectId} LIMIT 1
+  `) as ProjectRow[];
+  return rows[0] ?? null;
+}
+
 /**
- * A user's access level on a project. A project without an org (legacy,
- * created before auth) stays accessible to every authenticated user: no data
- * is retroactively hidden from its authors.
+ * A user's access level on a project.
+ *
+ * A project that does not exist yet is "edit" for a signed-in user: writing
+ * to it creates it in their name (requireProjectAccess, claimProject). A row
+ * without an owner is NOT open to everyone any more: it used to be "edit" for
+ * every signed-in user, and every read created one.
  */
 export async function projectAccess(
   projectId: string,
   viewer: Viewer | null,
 ): Promise<AccessLevel> {
-  const sql = db();
-  const rows = (await sql`
-    SELECT org_id, created_by, visibility FROM projects WHERE id = ${projectId} LIMIT 1
-  `) as Array<{ org_id: string | null; created_by: string | null; visibility: string }>;
+  if (!isValidProjectId(projectId)) return "none";
+  const project = await readProjectRow(projectId);
+  if (!project) return viewer ? "edit" : "none";
+  return accessOnRow(projectId, project, viewer);
+}
 
-  // project not created yet: any authenticated user can create it
-  if (rows.length === 0) return viewer ? "edit" : "none";
-
-  const project = rows[0];
-  if (project.org_id === null) return viewer ? "edit" : "none";
+async function accessOnRow(
+  projectId: string,
+  project: ProjectRow,
+  viewer: Viewer | null,
+): Promise<AccessLevel> {
   if (!viewer) return project.visibility === "link" ? "view" : "none";
   if (project.created_by === viewer.userId) return "edit";
 
-  const member = (await sql`
-    SELECT role FROM organization_members
-    WHERE org_id = ${project.org_id} AND user_id = ${viewer.userId} LIMIT 1
-  `) as Array<{ role: string }>;
+  const sql = db();
+  const member = project.org_id
+    ? ((await sql`
+        SELECT role FROM organization_members
+        WHERE org_id = ${project.org_id} AND user_id = ${viewer.userId} LIMIT 1
+      `) as Array<{ role: string }>)
+    : [];
   if (member.length > 0 && project.visibility !== "private") return "edit";
-  if (member.length > 0 && project.visibility === "private") {
-    // private: only the author and whoever has an explicit share
-    const shared = await explicitShare(projectId, viewer.userId);
-    return shared ?? "none";
-  }
 
+  // private: only the author and whoever has an explicit share
   const shared = await explicitShare(projectId, viewer.userId);
   if (shared) return shared;
+  if (member.length > 0) return "none";
   return project.visibility === "link" ? "view" : "none";
+}
+
+/** The organization a new project lands in when none is given: the first one. */
+async function defaultOrgId(userId: string): Promise<string | null> {
+  const orgs = await listUserOrganizations(userId).catch(() => []);
+  return orgs[0]?.id ?? null;
+}
+
+/**
+ * Edit access on a project that does not exist yet means creating it: here,
+ * owner included, before the caller writes anything. Without this the first
+ * write created an ownerless row.
+ */
+async function createIfMissing(projectId: string, viewer: Viewer): Promise<void> {
+  if (await readProjectRow(projectId)) return;
+  await createProject(projectId, {
+    userId: viewer.userId,
+    orgId: await defaultOrgId(viewer.userId),
+  });
 }
 
 async function explicitShare(
@@ -92,7 +134,9 @@ export async function accessoDaRichiesta(
   const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
   const viewer = bearer ? await resolveApiToken(bearer) : await currentViewer();
   const level = await projectAccess(projectId, viewer);
-  return need === "view" ? level !== "none" : level === "edit";
+  const ok = need === "view" ? level !== "none" : level === "edit";
+  if (ok && need === "edit" && viewer) await createIfMissing(projectId, viewer);
+  return ok;
 }
 
 export async function requireProjectAccess(
@@ -102,7 +146,23 @@ export async function requireProjectAccess(
   const viewer = await currentViewer();
   const level = await projectAccess(projectId, viewer);
   const ok = need === "view" ? level !== "none" : level === "edit";
+  if (ok && need === "edit" && viewer) await createIfMissing(projectId, viewer);
   return { viewer, ok };
+}
+
+/**
+ * Who may change who sees a project (visibility, shares): its author, or an
+ * owner/admin of its organization. An editor can change the board, not open
+ * it to the world.
+ */
+export async function canManageProject(projectId: string, viewer: Viewer | null): Promise<boolean> {
+  if (!viewer) return false;
+  const project = await readProjectRow(projectId);
+  if (!project) return false;
+  if (project.created_by === viewer.userId) return true;
+  if (!project.org_id) return false;
+  const role = await getUserRoleInOrg(viewer.userId, project.org_id);
+  return role === "owner" || role === "admin";
 }
 
 /** Projects visible to the user: their own, their org's, or shared with them. */
@@ -125,7 +185,6 @@ export async function listAccessibleProjects(
     WHERE p.created_by = ${viewer.userId}
        OR s.user_id IS NOT NULL
        OR (m.user_id IS NOT NULL AND p.visibility <> 'private')
-       OR p.org_id IS NULL
     ORDER BY p.updated_at DESC
     LIMIT 200
   `) as Array<Record<string, unknown>>;
@@ -141,19 +200,22 @@ export async function listAccessibleProjects(
   }));
 }
 
-/** Assigns owner and organization to a newly created project. */
+/**
+ * Makes sure the project exists and belongs to someone: creates it in the
+ * viewer's name (in `orgId`, or their first organization) if it is missing.
+ * An existing project is left as it is: the old COALESCE handed a project
+ * nobody had claimed yet to whoever asked first.
+ */
 export async function claimProject(
   projectId: string,
   viewer: Viewer,
   orgId: string | null,
 ): Promise<void> {
-  const sql = db();
-  await sql`
-    UPDATE projects
-    SET created_by = COALESCE(created_by, ${viewer.userId}),
-        org_id = COALESCE(org_id, ${orgId})
-    WHERE id = ${projectId}
-  `;
+  if (await readProjectRow(projectId)) return;
+  await createProject(projectId, {
+    userId: viewer.userId,
+    orgId: orgId ?? (await defaultOrgId(viewer.userId)),
+  });
 }
 
 export async function shareProject(

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
+import { isEmailAllowed } from "./access-list";
 
 /**
  * Personal tokens for MCP access.
@@ -86,6 +87,8 @@ export async function resolveApiToken(
     WHERE t.token_hash = ${hash(token)} LIMIT 1
   `) as Array<{ id: string; user_id: string; email: string }>;
   if (rows.length === 0) return null;
+  // the token is worth as much as its user: off the list, it stops working
+  if (!isEmailAllowed(rows[0].email)) return null;
 
   void sql`UPDATE api_tokens SET last_used_at = now() WHERE id = ${rows[0].id}`.catch(
     () => {},

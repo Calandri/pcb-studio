@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  canManageProject,
   getProjectVisibility,
   listProjectShares,
   requireProjectAccess,
@@ -28,14 +29,24 @@ export async function GET(req: Request): Promise<Response> {
   });
 }
 
-/** Sharing with a user, removal, or visibility change: requires edit access. */
+/**
+ * Sharing with a user, removal, or visibility change: only the author or an
+ * owner/admin of the organization. Edit access alone used to be enough, so a
+ * collaborator could make the project public.
+ */
 export async function POST(req: Request): Promise<Response> {
   const parsed = ShareSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "invalid body" }, { status: 400 });
   const { projectId, email, role, visibility, removeUserId } = parsed.data;
 
-  const { ok } = await requireProjectAccess(projectId, "edit");
+  const { viewer, ok } = await requireProjectAccess(projectId, "edit");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  if (!(await canManageProject(projectId, viewer))) {
+    return Response.json(
+      { error: "forbidden: only the author or an organization admin can change sharing" },
+      { status: 403 },
+    );
+  }
 
   if (visibility) await setProjectVisibility(projectId, visibility);
   if (removeUserId) await unshareProject(projectId, removeUserId);

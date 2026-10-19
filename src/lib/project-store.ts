@@ -89,11 +89,9 @@ function memChats(): Map<string, ChatMessage[]> {
 }
 
 /**
- * A valid project identifier: letters, digits, dashes. Needed because
- * reading CREATES the project if it does not exist (that is how you open a
- * new project by typing a name in the URL): without a check, a malformed
- * address like ?project=- leaves behind an ownerless ghost project that
- * then shows up in everyone's list.
+ * A valid project identifier: letters, digits, dashes. The same rule is a
+ * CHECK on the projects table (db/schema.sql), so the database refuses what
+ * the code would refuse.
  */
 const PROJECT_ID_RE = /^[a-z0-9][a-z0-9_-]{0,59}$/i;
 
@@ -101,6 +99,13 @@ export function isValidProjectId(id: string): boolean {
   return PROJECT_ID_RE.test(id);
 }
 
+/**
+ * The files of a project. READING CREATES NOTHING: a project that does not
+ * exist yet shows the example board and leaves no row behind. It used to
+ * insert the project on the first read, without an owner, and an ownerless
+ * project was editable by every signed-in user and ended up in everyone's
+ * list. Projects are created only by createProject, owner included.
+ */
 export async function getProject(projectId: string): Promise<FsMap> {
   const sql = db();
   if (!sql) {
@@ -113,24 +118,62 @@ export async function getProject(projectId: string): Promise<FsMap> {
     SELECT path, content FROM project_files WHERE project_id = ${projectId}
   `) as Array<{ path: string; content: string }>;
 
-  if (rows.length === 0) {
-    // a malformed identifier creates nothing: the example project is shown
-    // and nothing more, so the list stays clean
-    if (!isValidProjectId(projectId)) return { "main.tsx": DEMO_MAIN };
-    await sql`
-      INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
-    `;
-    await sql`
-      INSERT INTO project_files (project_id, path, content)
-      VALUES (${projectId}, 'main.tsx', ${DEMO_MAIN})
-      ON CONFLICT (project_id, path) DO NOTHING
-    `;
-    return { "main.tsx": DEMO_MAIN };
-  }
-
+  if (rows.length === 0) return { "main.tsx": DEMO_MAIN };
   return Object.fromEntries(rows.map((r) => [r.path, r.content]));
 }
 
+export async function projectExists(projectId: string): Promise<boolean> {
+  const sql = db();
+  if (!sql) return memProjects().has(projectId);
+  const rows = (await sql`SELECT 1 FROM projects WHERE id = ${projectId} LIMIT 1`) as unknown[];
+  return rows.length > 0;
+}
+
+/**
+ * Creates the project with its owner in one statement, plus the example
+ * main.tsx. Returns false if the id already existed: an existing project is
+ * never reassigned (the old claim with COALESCE handed an unclaimed project
+ * to whoever asked first).
+ */
+export async function createProject(
+  projectId: string,
+  owner: { userId: string; orgId: string | null; name?: string | null },
+): Promise<boolean> {
+  if (!isValidProjectId(projectId)) {
+    throw new Error(`Identificativo di progetto non valido: "${projectId}"`);
+  }
+  const sql = db();
+  if (!sql) {
+    const store = memProjects();
+    if (store.has(projectId)) return false;
+    store.set(projectId, { "main.tsx": DEMO_MAIN });
+    return true;
+  }
+  const created = (await sql`
+    INSERT INTO projects (id, name, created_by, org_id)
+    VALUES (${projectId}, ${owner.name ?? null}, ${owner.userId}, ${owner.orgId})
+    ON CONFLICT (id) DO NOTHING
+    RETURNING id
+  `) as unknown[];
+  if (created.length === 0) return false;
+  await sql`
+    INSERT INTO project_files (project_id, path, content)
+    VALUES (${projectId}, 'main.tsx', ${DEMO_MAIN})
+    ON CONFLICT (project_id, path) DO NOTHING
+  `;
+  return true;
+}
+
+/** Postgres foreign_key_violation: the project row is missing */
+function missingProject(err: unknown, projectId: string): Error | null {
+  if ((err as { code?: string })?.code !== "23503") return null;
+  return new Error(`Il progetto "${projectId}" non esiste: va creato prima di scriverci`);
+}
+
+/**
+ * Writes a file, last write wins. For read-modify-write of a file that
+ * someone else may be changing at the same time use updateProjectFile.
+ */
 export async function writeProjectFile(
   projectId: string,
   path: string,
@@ -148,16 +191,115 @@ export async function writeProjectFile(
   if (!isValidProjectId(projectId)) {
     throw new Error(`Identificativo di progetto non valido: "${projectId}"`);
   }
-  await sql`
-    INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
-  `;
-  await sql`
-    INSERT INTO project_files (project_id, path, content)
-    VALUES (${projectId}, ${path}, ${content})
-    ON CONFLICT (project_id, path)
-    DO UPDATE SET content = EXCLUDED.content, updated_at = now()
-  `;
+  try {
+    await sql`
+      INSERT INTO project_files (project_id, path, content)
+      VALUES (${projectId}, ${path}, ${content})
+      ON CONFLICT (project_id, path)
+      DO UPDATE SET content = EXCLUDED.content,
+                    version = project_files.version + 1,
+                    updated_at = now()
+    `;
+  } catch (err) {
+    throw missingProject(err, projectId) ?? err;
+  }
   await sql`UPDATE projects SET updated_at = now() WHERE id = ${projectId}`;
+}
+
+export interface VersionedFile {
+  content: string;
+  version: number;
+}
+
+export async function getProjectFile(
+  projectId: string,
+  path: string,
+): Promise<VersionedFile | null> {
+  const sql = db();
+  if (!sql) {
+    const content = memProjects().get(projectId)?.[path];
+    return content === undefined ? null : { content, version: 0 };
+  }
+  const rows = (await sql`
+    SELECT content, version FROM project_files
+    WHERE project_id = ${projectId} AND path = ${path} LIMIT 1
+  `) as Array<{ content: string; version: number }>;
+  return rows[0] ? { content: rows[0].content, version: Number(rows[0].version) } : null;
+}
+
+/**
+ * Writes only if the file is still at `expected` (null = the file must not
+ * exist yet). False means someone else wrote it in between: re-read and retry.
+ */
+export async function writeProjectFileIfVersion(
+  projectId: string,
+  path: string,
+  content: string,
+  expected: number | null,
+): Promise<boolean> {
+  const sql = db();
+  if (!sql) {
+    await writeProjectFile(projectId, path, content);
+    return true;
+  }
+  if (!isValidProjectId(projectId)) {
+    throw new Error(`Identificativo di progetto non valido: "${projectId}"`);
+  }
+  let rows: unknown[];
+  try {
+    rows = (
+      expected === null
+        ? await sql`
+            INSERT INTO project_files (project_id, path, content)
+            VALUES (${projectId}, ${path}, ${content})
+            ON CONFLICT (project_id, path) DO NOTHING
+            RETURNING version
+          `
+        : await sql`
+            UPDATE project_files
+            SET content = ${content}, version = version + 1, updated_at = now()
+            WHERE project_id = ${projectId} AND path = ${path} AND version = ${expected}
+            RETURNING version
+          `
+    ) as unknown[];
+  } catch (err) {
+    throw missingProject(err, projectId) ?? err;
+  }
+  if (rows.length === 0) return false;
+  await sql`UPDATE projects SET updated_at = now() WHERE id = ${projectId}`;
+  return true;
+}
+
+/**
+ * Read-modify-write of one file that cannot lose a concurrent update.
+ *
+ * Every editor route used to read the whole file, change it and write it
+ * back: two saves close together (two quick moves, a drag during a route
+ * save, the agent rewriting main.tsx while a wire is drawn in the schematic)
+ * read the same state and the second erased the first, silently. Here the
+ * write succeeds only on the version that was read; on conflict `change` runs
+ * again on the fresh content. `change` returns null when there is nothing to
+ * write, and must not have side effects: it can run more than once.
+ */
+export async function updateProjectFile(
+  projectId: string,
+  path: string,
+  change: (current: string | null) => string | null | Promise<string | null>,
+  attempts = 5,
+): Promise<{ written: boolean; content: string | null }> {
+  for (let i = 0; i < attempts; i++) {
+    const current = await getProjectFile(projectId, path);
+    const next = await change(current?.content ?? null);
+    if (next === null || next === current?.content) {
+      return { written: false, content: current?.content ?? null };
+    }
+    if (await writeProjectFileIfVersion(projectId, path, next, current?.version ?? null)) {
+      return { written: true, content: next };
+    }
+  }
+  throw new Error(
+    `"${path}" e' stato modificato da un altro salvataggio mentre lo scrivevo: riprova`,
+  );
 }
 
 export async function getChatMessages(
@@ -232,13 +374,14 @@ export async function appendChatMessage(
     return;
   }
 
-  await sql`
-    INSERT INTO projects (id) VALUES (${projectId}) ON CONFLICT (id) DO NOTHING
-  `;
-  await sql`
-    INSERT INTO chat_messages (project_id, role, content)
-    VALUES (${projectId}, ${role}, ${content})
-  `;
+  try {
+    await sql`
+      INSERT INTO chat_messages (project_id, role, content)
+      VALUES (${projectId}, ${role}, ${content})
+    `;
+  } catch (err) {
+    throw missingProject(err, projectId) ?? err;
+  }
 }
 
 // ---------------------------------------------------------------------------
