@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isTypingTarget } from "./keyboard";
 
 /**
  * Canvas view (schematic and routing): pan, zoom and framing.
@@ -114,10 +115,8 @@ export function useCanvasView({
   }, [ref, zoomAt]);
 
   useEffect(() => {
-    const isTyping = (t: EventTarget | null) =>
-      t instanceof HTMLElement && /^(INPUT|TEXTAREA)$/.test(t.tagName);
     const down = (e: KeyboardEvent) => {
-      if (isTyping(e.target)) return;
+      if (isTypingTarget(e)) return;
       if (e.key === "z" || e.key === "Z") {
         if (!e.metaKey && !e.ctrlKey) setZoomKey(true);
         return;

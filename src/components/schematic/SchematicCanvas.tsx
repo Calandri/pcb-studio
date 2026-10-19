@@ -9,6 +9,7 @@ import {
 } from "@/lib/schematic-model";
 import type { EditEvent } from "@/lib/manual-edits";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
+import { schematicOffsetsFromPending } from "./pending-offsets";
 
 /**
  * The schematic sheet, drawn here instead of by @tscircuit/schematic-viewer.
@@ -24,6 +25,9 @@ import { MarqueeStyle, useCanvasView } from "../canvas-view";
  */
 
 const GRID = 0.2; // pin pitch: the grid that makes sense to snap to
+
+/** stable default: a fresh [] at every render would recompute the offsets each time */
+const NO_EVENTS: EditEvent[] = [];
 
 const COLORS = {
   sheet: "#0A121C",
@@ -45,6 +49,7 @@ export function SchematicCanvas({
   mode,
   pinnedNames,
   onEditEvent,
+  pendingEvents = NO_EVENTS,
   resetKey = 0,
   onSelect,
   pendingLinks = [],
@@ -58,6 +63,8 @@ export function SchematicCanvas({
   /** components already pinned by hand: they are shown, otherwise you can't tell what is locked */
   pinnedNames: Set<string>;
   onEditEvent: (event: EditEvent) => void;
+  /** the moves not yet applied: the symbols are drawn where they say */
+  pendingEvents?: EditEvent[];
   /** changes to undo: clears drags not yet saved */
   resetKey?: number;
   onSelect?: (name: string | null) => void;
@@ -78,8 +85,20 @@ export function SchematicCanvas({
   const [hoverNets, setHoverNets] = useState<Set<string> | null>(null);
   const [hoverName, setHoverName] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  /** preview offsets applied, by schematic component id */
-  const [offsets, setOffsets] = useState<Record<string, { dx: number; dy: number }>>({});
+  /*
+   * Preview offsets, by schematic component id: the pending moves (derived,
+   * see pending-offsets.ts) plus the drag in progress, which is the only thing
+   * this canvas holds on its own.
+   */
+  const [dragOffsets, setDragOffsets] = useState<Record<string, { dx: number; dy: number }>>({});
+  const committedOffsets = useMemo(
+    () => schematicOffsetsFromPending(model.nodes, pendingEvents),
+    [model, pendingEvents],
+  );
+  const offsets = useMemo(
+    () => ({ ...committedOffsets, ...dragOffsets }),
+    [committedOffsets, dragOffsets],
+  );
   const [snap, setSnap] = useState(true);
   const pan = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
   const drag = useRef<{
@@ -95,13 +114,14 @@ export function SchematicCanvas({
   /** mouse position in drawing units, for the link rubber band */
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
 
-  // Undoing or recompiling clears the preview drags. Fixed during render
+  // Undoing or recompiling clears a drag left half-way. Fixed during render
   // instead of in an effect: this way the old drawing with the old offsets
-  // never shows for a single frame.
+  // never shows for a single frame. The pending moves need no reset: they
+  // follow the pending list by themselves.
   const [lastReset, setLastReset] = useState(resetKey);
   if (lastReset !== resetKey) {
     setLastReset(resetKey);
-    setOffsets({});
+    setDragOffsets({});
   }
 
   useEffect(() => {
@@ -259,12 +279,12 @@ export function SchematicCanvas({
           dx = Math.round(dx / GRID) * GRID;
           dy = Math.round(dy / GRID) * GRID;
         }
-        const next: Record<string, { dx: number; dy: number }> = { ...offsets };
+        const next: Record<string, { dx: number; dy: number }> = {};
         for (const id of drag.current.ids) {
           const base = drag.current.origin[id];
           next[id] = { dx: base.dx + dx, dy: base.dy + dy };
         }
-        setOffsets(next);
+        setDragOffsets(next);
         return;
       }
       if (pan.current) {
@@ -274,7 +294,7 @@ export function SchematicCanvas({
       }
       if (linkFromRef.current) setCursor(toWorld(e.clientX, e.clientY));
     },
-    [toWorld, snap, offsets, marqueeMove, setView],
+    [toWorld, snap, marqueeMove, setView],
   );
 
   const endDrag = useCallback(() => {
@@ -285,9 +305,11 @@ export function SchematicCanvas({
     setPanning(false);
     setDragging(false);
     if (!d) return;
+    // the drop becomes a pending move, and from there the offset is derived
+    setDragOffsets({});
     for (const id of d.ids) {
       const node = model.nodes.find((n) => n.id === id);
-      const off = offsets[id];
+      const off = dragOffsets[id];
       if (!node || !off) continue;
       const base = d.origin[id];
       if (Math.abs(off.dx - base.dx) < 1e-6 && Math.abs(off.dy - base.dy) < 1e-6) continue;
@@ -302,7 +324,7 @@ export function SchematicCanvas({
         },
       });
     }
-  }, [model, offsets, onEditEvent, marqueeUp]);
+  }, [model, dragOffsets, onEditEvent, marqueeUp]);
 
   if (model.nodes.length === 0) {
     return (

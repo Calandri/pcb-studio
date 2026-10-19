@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
+import { isTypingTarget } from "../keyboard";
 import {
   LAYER_COLOR,
   PAD_COLOR,
@@ -46,6 +47,14 @@ export interface MoveOverride {
 /** standard grid pitches (mil): 0,635 = 25mil, 1,27 = 50mil, 2,54 = 100mil */
 const GRID_OPTIONS = [0.25, 0.635, 1.27, 2.54];
 const GRID_DEFAULT = 0.635;
+/*
+ * Zoom limits in pixels per millimeter, the same for the framing and for the
+ * wheel. The framing allowed 0.1 and the wheel stopped at 1: on a board too big
+ * to fit at 1 px/mm the first wheel tick JUMPED in instead of zooming out, and
+ * there was no way back to the whole board except the framing button.
+ */
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 400;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const snap = (v: number, on: boolean, grid: number) =>
   on ? r3(Math.round(v / grid) * grid) : r3(v);
@@ -157,7 +166,7 @@ export function BoardCanvas({
       (size.w - margin * 2) / scene.board.width,
       (size.h - margin * 2) / scene.board.height,
     );
-    setView({ x: size.w / 2, y: size.h / 2, k: Math.max(k, 0.1) });
+    setView({ x: size.w / 2, y: size.h / 2, k: Math.min(ZOOM_MAX, Math.max(k, ZOOM_MIN)) });
   }, [scene, size]);
 
   // the board is framed when the project changes or when the container changes
@@ -171,7 +180,7 @@ export function BoardCanvas({
 
   const zoomAt = useCallback((px: number, py: number, factor: number) => {
     setView((v) => {
-      const k = Math.min(400, Math.max(1, v.k * factor));
+      const k = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.k * factor));
       // the point under the cursor stays still
       return {
         k,
@@ -459,8 +468,7 @@ export function BoardCanvas({
   useEffect(() => {
     if (mode !== "move" || !scene) return;
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && /^(INPUT|TEXTAREA)$/.test(t.tagName)) return;
+      if (isTypingTarget(e)) return;
       if (e.key === "Escape") {
         onPickComponent?.(null);
         return;

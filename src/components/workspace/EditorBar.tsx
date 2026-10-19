@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isTypingTarget } from "../keyboard";
 import type { ManualEditor } from "./useManualEditor";
 
 /**
@@ -16,6 +17,8 @@ export function EditorBar({
   scope,
   stale = false,
   onRecompile,
+  recompileBusy = false,
+  warning = null,
 }: {
   editor: ManualEditor;
   /** on the schematic you only move things: traces are a copper affair */
@@ -29,6 +32,10 @@ export function EditorBar({
    */
   stale?: boolean;
   onRecompile?: () => void;
+  /** a compilation, a mass action or the agent is already working on the board */
+  recompileBusy?: boolean;
+  /** something the person must know before applying, e.g. the board changed under the edits */
+  warning?: string | null;
 }) {
   const { mode, setMode, counts, busy, canUndo, canRedo, error, dirty, links, unlinks } =
     editor;
@@ -38,8 +45,7 @@ export function EditorBar({
   // keyboard shortcuts: without these "undo" is not undo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
+      if (isTypingTarget(e)) return;
       if (stale) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "z") {
@@ -194,12 +200,19 @@ export function EditorBar({
             <button
               type="button"
               onClick={onRecompile}
+              disabled={recompileBusy}
               title="Rilegge i file e mostra la scheda attuale: le piste restano le tue"
-              className="rounded-[7px] bg-[#E3B341] px-2.5 py-[5px] text-[11px] font-semibold text-ink transition-colors hover:bg-[#F0C24E]"
+              className="rounded-[7px] bg-[#E3B341] px-2.5 py-[5px] text-[11px] font-semibold text-ink transition-colors hover:bg-[#F0C24E] disabled:opacity-50"
             >
-              Aggiorna
+              {recompileBusy ? "In corso..." : "Aggiorna"}
             </button>
           )}
+        </div>
+      )}
+
+      {!stale && warning && dirty > 0 && (
+        <div className="flex max-w-[min(560px,92vw)] items-start gap-2 rounded-[10px] border border-[#4A3A1F] bg-[rgba(24,18,8,0.92)] px-3 py-1.5 backdrop-blur">
+          <span className="text-[11px] leading-snug text-[#E3B341]">{warning}</span>
         </div>
       )}
 

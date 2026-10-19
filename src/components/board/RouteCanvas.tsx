@@ -12,6 +12,7 @@ import {
 } from "@/lib/pcb-route-model";
 import type { ManualRoute } from "@/lib/manual-routes";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
+import { isTypingTarget } from "../keyboard";
 import { LAYER_COLOR, PAD_COLOR, LAYER_ORDER, buildScene, type LayerId } from "./render";
 
 /**
@@ -75,6 +76,12 @@ export function RouteCanvas({
     connectionName: string | null;
   } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  /*
+   * Detaching a trace writes to the saved board at once, and there is no undo
+   * for it: one stray Backspace used to erase copper for good. So the key now
+   * ARMS the deletion and the same key a second time performs it.
+   */
+  const [armed, setArmed] = useState<{ traceId: string; redraw: boolean } | null>(null);
   const pan = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
   const [panning, setPanning] = useState(false);
 
@@ -204,14 +211,16 @@ export function RouteCanvas({
     async (redraw: boolean) => {
       if (!selectedTrace || !projectId || deleting) return;
       setDeleting(true);
+      setArmed(null);
       try {
-        const r = await fetch("/api/trace", {
+        const res = await fetch("/api/trace", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ projectId, pcbTraceId: selectedTrace.traceId, action: "delete" }),
-        }).then((res) => res.json());
-        if (!r?.ok) {
-          setNote(`non riesco a staccarla: ${r?.error ?? "errore"}`);
+        });
+        const r = await res.json().catch(() => null);
+        if (!res.ok || !r?.ok) {
+          setNote(`non riesco a staccarla: ${r?.error ?? `errore ${res.status}`}`);
           return;
         }
         const name = selectedTrace.connectionName;
@@ -243,6 +252,11 @@ export function RouteCanvas({
           );
         }
         onChanged?.();
+      } catch (err) {
+        // the network gave up: the trace is still there, and that must be said
+        setNote(
+          `non riesco a staccarla: ${err instanceof Error ? err.message : "rete non raggiungibile"}`,
+        );
       } finally {
         setDeleting(false);
       }
@@ -288,19 +302,33 @@ export function RouteCanvas({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && /^(INPUT|TEXTAREA)$/.test(t.tagName)) return;
-      if (e.key === "Escape") { setDraft(null); setSelectedTrace(null); setNote(null); return; }
-      // with a trace selected: Del detaches it, R detaches and redraws it
+      if (isTypingTarget(e)) return;
+      if (e.key === "Escape") {
+        setDraft(null);
+        setSelectedTrace(null);
+        setArmed(null);
+        setNote(null);
+        return;
+      }
+      // with a trace selected: Del detaches it, R detaches and redraws it,
+      // each one only when pressed the second time
       if (selectedTrace && !draft) {
-        if (e.key === "Backspace" || e.key === "Delete") {
+        const del = e.key === "Backspace" || e.key === "Delete";
+        const redraw = e.key === "r" || e.key === "R";
+        if (del || redraw) {
           e.preventDefault();
-          void deleteSelected(false);
-          return;
-        }
-        if (e.key === "r" || e.key === "R") {
-          e.preventDefault();
-          void deleteSelected(true);
+          if (deleting) return;
+          if (armed?.traceId === selectedTrace.traceId && armed.redraw === redraw) {
+            void deleteSelected(redraw);
+            return;
+          }
+          setArmed({ traceId: selectedTrace.traceId, redraw });
+          const name = selectedTrace.connectionName ?? "la pista";
+          setNote(
+            redraw
+              ? `premi di nuovo R per staccare ${name} e ridisegnarla: si toglie subito dalla scheda salvata (Esc annulla)`
+              : `premi di nuovo Canc per staccare ${name}: si toglie subito dalla scheda salvata (Esc annulla)`,
+          );
           return;
         }
       }
@@ -322,7 +350,7 @@ export function RouteCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [draft, layer, selectedTrace, deleteSelected]);
+  }, [draft, layer, selectedTrace, deleteSelected, armed, deleting]);
 
   if (!scene) {
     return (
@@ -356,14 +384,16 @@ export function RouteCanvas({
             // no pad: maybe a trace to select, otherwise deselect
             const hit = traceAt(p);
             setSelectedTrace(hit);
+            setArmed(null);
             setNote(
               hit
-                ? `${hit.connectionName ?? "pista"} selezionata: Canc la stacca, R la ridisegna`
+                ? `${hit.connectionName ?? "pista"} selezionata: Canc due volte la stacca, R due volte la ridisegna`
                 : "parti da un pad: e' li' che la pista deve attaccarsi",
             );
             return;
           }
           setSelectedTrace(null);
+          setArmed(null);
           const start: LayerId = pad.layer === "all" ? layer : (pad.layer as LayerId);
           setLayer(start);
           // you exit the pad straight before you can turn: it is the house rule
@@ -580,7 +610,7 @@ export function RouteCanvas({
       </div>
 
       <div className="pointer-events-none absolute bottom-4 left-4 max-w-[520px] rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3 py-1.5 text-[11px] leading-relaxed text-muted backdrop-blur">
-        {note ? <span className="text-brand">{note}</span> : "Clicca un pad per partire, poi clicca per ogni angolo e chiudi su un altro pad. I pad BIANCHI sono la tua stessa net: la pista puo' chiudere solo li'. Clicca una pista esistente per selezionarla e staccarla (Canc) o ridisegnarla (R)."}
+        {note ? <span className="text-brand">{note}</span> : "Clicca un pad per partire, poi clicca per ogni angolo e chiudi su un altro pad. I pad BIANCHI sono la tua stessa net: la pista puo' chiudere solo li'. Clicca una pista esistente per selezionarla e staccarla (Canc due volte) o ridisegnarla (R due volte)."}
         <span className="ml-2 text-faint">
           1-4 cambia strato e lascia una via · Backspace toglie l&apos;ultimo angolo · Esc annulla ·
           Shift trascina la vista · + e - zoom, 0 inquadra tutto, Z e trascina per un&apos;area
