@@ -437,6 +437,9 @@ export async function compileProject(
    * agent. This is what lets the agent rewrite main.tsx as many times as it
    * wants without erasing the human's placement work.
    */
+  // a copy, never the caller's map: whoever hashes it afterwards must hash
+  // the project files, not what the runner added to them
+  projectFsMap = { ...projectFsMap };
   let fsMap = applyManualEditsToFsMap(projectFsMap);
   const parsedManualEdits = parseManualEdits(projectFsMap[MANUAL_EDITS_PATH]);
   const manualEdits = countManualEdits(parsedManualEdits);

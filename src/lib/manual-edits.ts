@@ -823,7 +823,10 @@ export function applyManualEditsToFsMap(
   fsMap: Record<string, string>,
 ): Record<string, string> {
   const raw = fsMap[MANUAL_EDITS_PATH];
-  if (!raw) return fsMap;
+  // always a copy: the tscircuit runner adds entrypoint.tsx to the map it is
+  // given, and with the caller's own object that file ended up in the hash
+  // of the "current" sources, so a board compiled a second ago looked stale
+  if (!raw) return { ...fsMap };
   const edits = parseManualEdits(raw);
   const rest = { ...fsMap };
   delete rest[MANUAL_EDITS_PATH];
