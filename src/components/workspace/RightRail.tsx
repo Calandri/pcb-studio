@@ -55,6 +55,7 @@ export function RightRail({
   onShowOnBoard,
   onRecompile,
   recompiling,
+  blocked = false,
   enclosures,
 }: {
   tab: BoardTab;
@@ -66,6 +67,8 @@ export function RightRail({
   onShowOnBoard: (preset: string) => void;
   onRecompile: () => void;
   recompiling: boolean;
+  /** another job (mass action, the agent) is working on the board: no recompile now */
+  blocked?: boolean;
   /** enclosure designer (3D tab only) */
   enclosures: EnclosuresApi | null;
 }) {
@@ -83,6 +86,7 @@ export function RightRail({
       onShowOnBoard={onShowOnBoard}
       onRecompile={onRecompile}
       recompiling={recompiling}
+      blocked={blocked}
     />
   );
 }
@@ -96,6 +100,7 @@ function BoardRail({
   onShowOnBoard,
   onRecompile,
   recompiling,
+  blocked,
 }: {
   tab: BoardTab;
   report: BoardReport;
@@ -105,6 +110,7 @@ function BoardRail({
   onShowOnBoard: (preset: string) => void;
   onRecompile: () => void;
   recompiling: boolean;
+  blocked: boolean;
 }) {
   const cost = estimateCost(report);
   const [open, setOpen] = useState<string | null>(null);
@@ -122,7 +128,7 @@ function BoardRail({
           <button
             type="button"
             onClick={onRecompile}
-            disabled={recompiling}
+            disabled={recompiling || blocked}
             title="Ricompila e risbroglia la scheda"
             className="flex min-w-0 items-center gap-1.5 rounded-md border border-line-strong px-2 py-1 font-mono text-[10px] whitespace-nowrap text-[#8A9C96] transition-colors hover:border-brand hover:text-brand disabled:text-[#42544F]"
           >
@@ -229,7 +235,7 @@ function BoardRail({
             <button
               type="button"
               onClick={onRecompile}
-              disabled={recompiling}
+              disabled={recompiling || blocked}
               className="rounded-lg border border-line-strong px-2.5 py-1.5 text-[11px] font-semibold text-[#C7D6D1] transition-colors hover:border-[#3A5A50] disabled:text-faint"
             >
               {recompiling ? "Aggiorno..." : "Aggiorna lo sbroglio"}

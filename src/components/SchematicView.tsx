@@ -16,6 +16,7 @@ export function SchematicView({
   mode,
   saved,
   onEditEvent,
+  pendingEvents,
   resetKey,
   onSelect,
   pendingLinks,
@@ -27,6 +28,8 @@ export function SchematicView({
   mode: "view" | "move" | "route" | "link";
   saved: ManualEdits;
   onEditEvent: (event: EditEvent) => void;
+  /** the moves not yet applied, drawn where they put the symbols */
+  pendingEvents: EditEvent[];
   resetKey: number;
   onSelect?: (name: string | null) => void;
   pendingLinks: PendingLink[];
@@ -45,6 +48,7 @@ export function SchematicView({
       mode={mode}
       pinnedNames={pinnedNames}
       onEditEvent={onEditEvent}
+      pendingEvents={pendingEvents}
       resetKey={resetKey}
       onSelect={onSelect}
       pendingLinks={pendingLinks}

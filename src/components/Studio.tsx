@@ -25,6 +25,8 @@ import { ClaudeWork } from "./workspace/ClaudeWork";
 import { RightRail, type ErcSummary } from "./workspace/RightRail";
 import { MassEdit, type MassAction } from "./workspace/MassEdit";
 import { useEnclosures } from "@/lib/use-enclosures";
+import { readSseStream } from "./sse-stream";
+import { ViewerBoundary } from "./ViewerBoundary";
 
 const RunFrame = dynamic(
   () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
@@ -219,17 +221,34 @@ export function Studio({
     [projectId],
   );
 
+  /*
+   * Every load of the circuit takes a number, and only the answer to the LAST
+   * one asked lands on the board. Loads overlap all the time (the poll, the
+   * end of a compile, an agent's tool result) and the network does not answer
+   * in order: an older poll arriving after a fresh compile put yesterday's
+   * board back on screen.
+   */
+  const circuitRequest = useRef(0);
+  /** createdAt of the compilation on screen: the poll compares against it */
+  const compiledAtRef = useRef<string | null>(null);
+  /** the first load has answered: before that the poll has nothing to compare */
+  const circuitLoadedRef = useRef(false);
+
   /**
    * Reloads the server-validated circuit (the one the exports are also born
    * from). WARNING: ?circuit=1 is a separate endpoint that answers ONLY with
    * the compiled circuit, no files or messages: it must be asked separately.
    */
   const loadCircuit = useCallback(async () => {
+    const request = ++circuitRequest.current;
     const d = await fetch(`/api/project?projectId=${projectId}&circuit=1`)
-      .then((r) => r.json())
+      .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
+    if (request !== circuitRequest.current) return;
+    circuitLoadedRef.current = true;
     setCircuitChecked(true);
     if (!d?.compile?.circuitJson) return;
+    compiledAtRef.current = d.compile.createdAt ?? null;
     setCircuitJson(d.compile.circuitJson as unknown[]);
     setSummary(d.compile.summary ?? null);
     setCircuitStale(Boolean(d.compile.stale));
@@ -273,6 +292,30 @@ export function Studio({
     if (d?.sections) setVariantSections(d.sections);
   }, [projectId]);
 
+  /*
+   * One job on the board at a time: a compile, a mass action, or the agent's
+   * turn. Nothing stopped "Ricompila" from starting while a mass action or the
+   * agent was already rewriting the same board, and the two results landed on
+   * top of each other in whatever order they finished. Refs, not state: the
+   * check must see a job started in this very frame.
+   */
+  const boardJobRef = useRef<string | null>(null);
+  const agentTurnRef = useRef(false);
+  const claimBoard = useCallback((what: string): boolean => {
+    if (boardJobRef.current || agentTurnRef.current) {
+      const who = boardJobRef.current
+        ? `c'e' gia' un lavoro in corso sulla scheda (${boardJobRef.current})`
+        : "il copilota sta lavorando sulla scheda";
+      setChat((c) => [
+        ...c,
+        { kind: "tool", name: what, ok: false, detail: `${who}: riprova quando ha finito` },
+      ]);
+      return false;
+    }
+    boardJobRef.current = what;
+    return true;
+  }, []);
+
   /**
    * Recompiles and re-routes without going through a chat turn.
    *
@@ -280,62 +323,60 @@ export function Studio({
    * it is doing and, when it has a new drawing, puts it on the board right
    * away. Before, you only saw a stopwatch climbing for eight minutes, and
    * there was no way to tell whether it was working or dead.
+   *
+   * Success needs the final "fine" event. A stream that just closes (the
+   * function hit its maximum duration, the network dropped) used to count as
+   * a finished compile, and nothing told the person it had stopped half-way.
    */
-  const recompile = useCallback(async () => {
+  const runCompile = useCallback(async () => {
     setRecompiling(true);
     setRecompileSec(0);
     setRecompileStep("Comincio");
+    // a load still on its way must not land on top of the live drawing
+    circuitRequest.current++;
     try {
       const res = await fetch("/api/compile", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ projectId }),
       });
-      if (!res.body) throw new Error("nessuna risposta dal compilatore");
+      if (!res.ok || !res.body) {
+        const d = await res.json().catch(() => null);
+        throw new Error(d?.error ?? `nessuna risposta dal compilatore (HTTP ${res.status})`);
+      }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        // events are separated by a blank line: the last piece may be cut
-        // in half and must be set aside for the next round
-        const chunks = buffer.split("\n\n");
-        buffer = chunks.pop() ?? "";
-        for (const chunk of chunks) {
-          const event = /^event: (.+)$/m.exec(chunk)?.[1];
-          const raw = chunk
-            .split("\n")
-            .filter((l) => l.startsWith("data: "))
-            .map((l) => l.slice(6))
-            .join("");
-          if (!event || !raw) continue;
-          let data: {
-            step?: string;
-            detail?: string;
-            progress?: number;
-            circuitJson?: unknown[];
-            error?: string;
-            summary?: Parameters<typeof buildBoardReport>[1];
-          };
-          try {
-            data = JSON.parse(raw);
-          } catch {
-            continue;
-          }
-          if (event === "passo") {
-            setRecompileStep(data.detail ? `${data.step} — ${data.detail}` : (data.step ?? ""));
-            setRecompileProgress(typeof data.progress === "number" ? data.progress : null);
-            // the board updates while it works: that is the whole point of this
-            if (data.circuitJson) setCircuitJson(data.circuitJson);
-          } else if (event === "errore" && data.error) {
-            setChat((c) => [...c, { kind: "error", text: String(data.error) }]);
-          } else if (event === "fine" && data.summary) {
-            setSummary(data.summary);
-          }
+      let finished = false;
+      let failed = false;
+      await readSseStream(res.body, (event, raw) => {
+        const data = raw as {
+          step?: string;
+          detail?: string;
+          progress?: number;
+          circuitJson?: unknown[];
+          error?: string;
+          summary?: Parameters<typeof buildBoardReport>[1];
+        };
+        if (event === "passo") {
+          setRecompileStep(data.detail ? `${data.step} — ${data.detail}` : (data.step ?? ""));
+          setRecompileProgress(typeof data.progress === "number" ? data.progress : null);
+          // the board updates while it works: that is the whole point of this
+          if (Array.isArray(data.circuitJson)) setCircuitJson(data.circuitJson);
+        } else if (event === "errore") {
+          failed = true;
+          if (data.error) setChat((c) => [...c, { kind: "error", text: String(data.error) }]);
+        } else if (event === "fine") {
+          finished = true;
+          if (data.summary) setSummary(data.summary);
         }
+      });
+      if (!finished && !failed) {
+        setChat((c) => [
+          ...c,
+          {
+            kind: "error",
+            text: "La compilazione è stata interrotta prima della fine (durata massima o rete). Quello che era già salvato resta: premi di nuovo «Ricompila» per riprendere.",
+          },
+        ]);
       }
       await loadCircuit();
       await loadVariants();
@@ -350,6 +391,15 @@ export function Studio({
       setRecompileProgress(null);
     }
   }, [projectId, loadCircuit, loadVariants]);
+
+  const recompile = useCallback(async () => {
+    if (!claimBoard("ricompila")) return;
+    try {
+      await runCompile();
+    } finally {
+      boardJobRef.current = null;
+    }
+  }, [claimBoard, runCompile]);
 
   /**
    * Redoes only the ground. Moving a component or a trace by hand leaves the
@@ -421,38 +471,48 @@ export function Studio({
    * nothing saying so. Here we check every five seconds whether the
    * compiled circuit on the server has changed, and if so we reload it.
    *
-   * We look at createdAt and not the content: it is one line of response
-   * instead of a few megabytes of Circuit JSON, and it changes exactly when
-   * needed.
+   * We look at createdAt and not the content: the poll asks ?meta=1, one line
+   * of response, and the few megabytes of Circuit JSON are downloaded only
+   * when createdAt really changed. It used to ask ?circuit=1, i.e. the whole
+   * board every five seconds for as long as the tab stayed open. A hidden tab
+   * does not poll at all, and checks again the moment it comes back.
    */
-  const compiledAtRef = useRef<string | null>(null);
   useEffect(() => {
     if (recompiling) return;
     let alive = true;
+    let reloading = false;
     const check = async () => {
+      if (document.hidden || reloading) return;
       try {
-        const d = await fetch(`/api/project?projectId=${projectId}&circuit=1`)
-          .then((r) => r.json());
+        const res = await fetch(`/api/project?projectId=${projectId}&meta=1`);
+        if (!res.ok) return;
+        const d = await res.json();
         const at = d?.compile?.createdAt ?? null;
-        if (!alive || !at) return;
-        if (compiledAtRef.current && compiledAtRef.current !== at) {
-          setCircuitJson(d.compile.circuitJson as unknown[]);
-          setSummary(d.compile.summary ?? null);
-          setCircuitStale(Boolean(d.compile.stale));
-          void loadVariants();
+        if (!alive || !at || !circuitLoadedRef.current) return;
+        if (compiledAtRef.current === at) return;
+        reloading = true;
+        try {
+          await loadCircuit();
+          if (alive) void loadVariants();
+        } finally {
+          reloading = false;
         }
-        compiledAtRef.current = at;
       } catch {
         // flaky network: try again on the next round
       }
     };
     void check();
     const id = setInterval(check, 5000);
+    const onVisible = () => {
+      if (!document.hidden) void check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [projectId, recompiling, loadVariants]);
+  }, [projectId, recompiling, loadCircuit, loadVariants]);
 
   /*
    * Manual editor. Applying an edit means writing it to manual-edits.json
@@ -503,6 +563,40 @@ export function Studio({
   }, [projectId, loadCircuit]);
 
   const editor = useManualEditor({ projectId, onApplied: onManualEditApplied });
+
+  /*
+   * The board changed under edits not applied yet: a compile from elsewhere,
+   * the agent, a recompile. The pending moves were drawn on the PREVIOUS board,
+   * and the server applies them as displacements on whatever it holds now, so
+   * a part the agent has moved in the meantime lands somewhere else than where
+   * it was dropped. Not fixable silently: it is said, before "Applica".
+   * Our own apply reloads the board while busy, and does not count.
+   * Fixed during render, not in an effect, like the other derived resets here.
+   */
+  const [seenCircuit, setSeenCircuit] = useState<unknown[] | null>(null);
+  const [swappedUnderEdits, setSwappedUnderEdits] = useState(false);
+  if (seenCircuit !== circuitJson) {
+    setSeenCircuit(circuitJson);
+    if (seenCircuit && circuitJson && editor.dirty > 0 && !editor.busy) setSwappedUnderEdits(true);
+  }
+  if (swappedUnderEdits && editor.dirty === 0) setSwappedUnderEdits(false);
+
+  /*
+   * Moves, links and traces not applied live only in this tab: closing it,
+   * reloading or navigating away threw them away without a word. While there
+   * is something pending, the browser asks first.
+   */
+  const leavingRef = useRef(false);
+  useEffect(() => {
+    if (editor.dirty === 0) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (leavingRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [editor.dirty]);
 
   /*
    * The names of the parts chosen on the board. The selection arrives as
@@ -567,11 +661,12 @@ export function Studio({
         fissa: "Fisso le posizioni",
         sblocca: "Sblocco le posizioni",
       };
+      if (!claimBoard(nomi[action].toLowerCase())) return;
       setMassBusy(nomi[action]);
       setMassSeconds(0);
       try {
         if (action === "ricompila") {
-          await recompile();
+          await runCompile();
           return;
         }
         if (action === "massa") {
@@ -624,66 +719,56 @@ export function Studio({
             only: soli,
           }),
         });
-        if (!res.body) throw new Error("nessuna risposta dal server");
+        if (!res.ok || !res.body) {
+          const e = await res.json().catch(() => null);
+          throw new Error(e?.error ?? `nessuna risposta dal server (HTTP ${res.status})`);
+        }
 
         // event stream: "passo" = avanzamento (la scheda si aggiorna da sola
-        // via preview, qui si vede la fase), "fine" = risultato
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
+        // via preview, qui si vede la fase), "fine" = risultato. Senza "fine"
+        // ne' "errore" lo stream si e' solo chiuso: non e' un successo.
         let d: Record<string, unknown> = {};
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const chunks = buffer.split("\n\n");
-          buffer = chunks.pop() ?? "";
-          for (const chunk of chunks) {
-            const event = /^event: (.+)$/m.exec(chunk)?.[1];
-            const raw = chunk
-              .split("\n")
-              .filter((l) => l.startsWith("data: "))
-              .map((l) => l.slice(6))
-              .join("");
-            if (!event || !raw) continue;
-            let data: Record<string, unknown>;
-            try {
-              data = JSON.parse(raw);
-            } catch {
-              continue;
-            }
-            if (event === "passo") {
-              setMassBusy(`${nomi[action]}${data.detail ? ` — ${String(data.detail)}` : ""}`);
-            } else if (event === "piano") {
-              /*
-               * The section plan is the model's REASONING, not a progress bar:
-               * it goes into the chat, where it stays and can be read again. It
-               * is the difference between "it moved my parts" and "it moved
-               * them there, and here is why".
-               */
-              const sezioni = Array.isArray(data.sezioni) ? (data.sezioni as Array<Record<string, unknown>>) : [];
-              setChat((c) => [
-                ...c,
-                {
-                  kind: "assistant" as const,
-                  text: [
-                  `**Pianta della scheda** (${String(data.provider ?? "modello")}${Number(data.tentativi) > 1 ? `, ${Number(data.tentativi)} tentativi` : ""})`,
-                  "",
-                  String(data.ragionamento ?? ""),
-                  "",
-                  ...sezioni.map(
-                    (s) =>
-                      `- **${String(s.nome)}** — ${(Number(s.maxX) - Number(s.minX)).toFixed(1)}x${(Number(s.maxY) - Number(s.minY)).toFixed(1)}mm: ${String(s.perche ?? "")}`,
-                  ),
-                  ].join("\n"),
-                },
-              ]);
-            } else if (event === "fine") {
-              d = data;
-            } else if (event === "errore") {
-              d = { error: data.error ?? "errore sconosciuto" };
-            }
+        let finished = false;
+        await readSseStream(res.body, (event, raw) => {
+          const data = raw as Record<string, unknown>;
+          if (event === "passo") {
+            setMassBusy(`${nomi[action]}${data.detail ? ` — ${String(data.detail)}` : ""}`);
+          } else if (event === "piano") {
+            /*
+             * The section plan is the model's REASONING, not a progress bar:
+             * it goes into the chat, where it stays and can be read again. It
+             * is the difference between "it moved my parts" and "it moved
+             * them there, and here is why".
+             */
+            const sezioni = Array.isArray(data.sezioni) ? (data.sezioni as Array<Record<string, unknown>>) : [];
+            setChat((c) => [
+              ...c,
+              {
+                kind: "assistant" as const,
+                text: [
+                `**Pianta della scheda** (${String(data.provider ?? "modello")}${Number(data.tentativi) > 1 ? `, ${Number(data.tentativi)} tentativi` : ""})`,
+                "",
+                String(data.ragionamento ?? ""),
+                "",
+                ...sezioni.map(
+                  (s) =>
+                    `- **${String(s.nome)}** — ${(Number(s.maxX) - Number(s.minX)).toFixed(1)}x${(Number(s.maxY) - Number(s.minY)).toFixed(1)}mm: ${String(s.perche ?? "")}`,
+                ),
+                ].join("\n"),
+              },
+            ]);
+          } else if (event === "fine") {
+            finished = true;
+            d = data;
+          } else if (event === "errore") {
+            finished = true;
+            d = { error: data.error ?? "errore sconosciuto" };
           }
+        });
+        if (!finished) {
+          d = {
+            error: `«${nomi[action]}» è stato interrotto prima della fine (durata massima o rete). Quello che era già salvato resta: rilancialo per riprendere.`,
+          };
         }
         setChat((c) => [
           ...c,
@@ -707,9 +792,10 @@ export function Studio({
         ]);
       } finally {
         setMassBusy("");
+        boardJobRef.current = null;
       }
     },
-    [projectId, selectedNames, recompile, recomputeGround, loadCircuit],
+    [projectId, selectedNames, claimBoard, runCompile, recomputeGround, loadCircuit],
   );
 
   /** "aggiorna, rame intatto": same gesture as "ricompila" — geometry fresh
@@ -848,10 +934,18 @@ export function Studio({
       );
   }, [projectId, loadCircuit]);
 
-  const report = useMemo<BoardReport>(
-    () => buildBoardReport(circuitJson, summary),
-    [circuitJson, summary],
-  );
+  /*
+   * Computed here, above every boundary: a throw on an odd Circuit JSON would
+   * take the whole studio down, so it degrades to the empty report instead.
+   */
+  const report = useMemo<BoardReport>(() => {
+    try {
+      return buildBoardReport(circuitJson, summary);
+    } catch (err) {
+      console.error("resoconto della scheda non calcolato:", err);
+      return buildBoardReport(null, null);
+    }
+  }, [circuitJson, summary]);
 
   // enclosure designer: record from the server + compiled meshes for the 3D canvas
   const enclosures = useEnclosures(projectId, report.widthMm, report.heightMm);
@@ -882,7 +976,14 @@ export function Studio({
   const parts = useMemo(() => {
     // the sources are needed: description/tags/domain live only in the code,
     // tscircuit accepts them but does not carry them into the Circuit JSON
-    const base = extractComponents(circuitJson, fsMap ?? {});
+    let base: ReturnType<typeof extractComponents>;
+    try {
+      base = extractComponents(circuitJson, fsMap ?? {});
+    } catch (err) {
+      // same reason as the report: above the boundaries, an empty list beats a blank page
+      console.error("componenti non letti dal circuito:", err);
+      base = [];
+    }
     // the model's descriptions (datasheet + connections) cover the heuristic
     for (const p of base) {
       const d = partDesc[p.name];
@@ -1060,7 +1161,25 @@ export function Studio({
               ok: true,
             },
           ]);
-          // open the imported project
+          // open the imported project, unless that throws away work not applied
+          if (
+            editor.dirty > 0 &&
+            !window.confirm(
+              `Hai ${editor.dirty} modifiche non applicate su questa scheda: aprendo il progetto importato andranno perse. Lo apro lo stesso?`,
+            )
+          ) {
+            setChat((c) => [
+              ...c,
+              {
+                kind: "tool",
+                name: altium ? "altium" : "kicad",
+                ok: true,
+                detail: `progetto ${d.project.id} pronto: aprilo dai progetti quando hai applicato o scartato le modifiche`,
+              },
+            ]);
+            return;
+          }
+          leavingRef.current = true;
           const url = new URL(window.location.href);
           url.searchParams.set("project", d.project.id);
           window.location.href = url.toString();
@@ -1074,7 +1193,7 @@ export function Studio({
         setUploading(false);
       }
     },
-    [refreshLibrary],
+    [refreshLibrary, editor.dirty],
   );
 
   const send = useCallback(async () => {
@@ -1082,10 +1201,14 @@ export function Studio({
     if (!text || status !== "idle") return;
     setInput("");
     setChat((c) => [...c, { kind: "user", text }]);
+    const historyBefore = historyRef.current.length;
     historyRef.current.push({ role: "user", content: text });
     setStatus("thinking");
+    agentTurnRef.current = true;
 
     let assistantText = "";
+    /** the server accepted the turn and the stream opened */
+    let started = false;
     try {
       const res = await fetch("/api/agent", {
         method: "POST",
@@ -1093,90 +1216,91 @@ export function Studio({
         body: JSON.stringify({ projectId, history: historyRef.current }),
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      started = true;
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
       let completed = false;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let sep: number;
-        while ((sep = buffer.indexOf("\n\n")) >= 0) {
-          const raw = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          const event = /^event: (.+)$/m.exec(raw)?.[1];
-          const dataLine = /^data: (.+)$/m.exec(raw)?.[1];
-          if (!event || !dataLine) continue;
-          const data = JSON.parse(dataLine);
+      await readSseStream(res.body, (event, raw) => {
+        const data = raw as {
+          provider?: unknown;
+          text?: string;
+          name?: string;
+          args?: Record<string, unknown>;
+          result?: { ok?: boolean; message?: string };
+          path?: string;
+          content?: string;
+          message?: string;
+        };
 
-          if (event === "provider") {
-            // knowing WHO answered matters: the models do not behave the same
-            // and one may have taken over because the first was out of service
-            setChat((c) => [
-              ...c,
-              { kind: "tool", name: "modello", detail: String(data.provider), ok: true },
-            ]);
-          } else if (event === "assistant_text") {
-            assistantText += (assistantText ? "\n\n" : "") + data.text;
-            setChat((c) => [...c, { kind: "assistant", text: data.text }]);
-            setStatus("thinking");
-          } else if (event === "tool_call") {
-            setStatus("tool");
-            setChat((c) => [
-              ...c,
-              { kind: "tool", name: toolLabel(data.name), detail: toolDetail(data.name, data.args) },
-            ]);
-          } else if (event === "tool_result") {
-            if (data.name === "library_save" || data.name === "import_component_from_lcsc") {
-              void refreshLibrary();
-            }
-            setStatus("thinking");
-            if (data.name === "compile") {
-              setChat((c) => {
-                const copy = [...c];
-                for (let i = copy.length - 1; i >= 0; i--) {
-                  const item = copy[i];
-                  if (
-                    item.kind === "tool" &&
-                    item.name === toolLabel("compile") &&
-                    item.ok === undefined
-                  ) {
-                    copy[i] = {
-                      ...item,
-                      ok: data.result?.ok,
-                      detail: data.result?.message ?? item.detail,
-                    };
-                    break;
-                  }
+        if (event === "provider") {
+          // knowing WHO answered matters: the models do not behave the same
+          // and one may have taken over because the first was out of service
+          setChat((c) => [
+            ...c,
+            { kind: "tool", name: "modello", detail: String(data.provider), ok: true },
+          ]);
+        } else if (event === "assistant_text") {
+          const piece = String(data.text ?? "");
+          assistantText += (assistantText ? "\n\n" : "") + piece;
+          setChat((c) => [...c, { kind: "assistant", text: piece }]);
+          setStatus("thinking");
+        } else if (event === "tool_call") {
+          const name = String(data.name ?? "");
+          setStatus("tool");
+          setChat((c) => [
+            ...c,
+            { kind: "tool", name: toolLabel(name), detail: toolDetail(name, data.args ?? {}) },
+          ]);
+        } else if (event === "tool_result") {
+          if (data.name === "library_save" || data.name === "import_component_from_lcsc") {
+            void refreshLibrary();
+          }
+          setStatus("thinking");
+          if (data.name === "compile") {
+            setChat((c) => {
+              const copy = [...c];
+              for (let i = copy.length - 1; i >= 0; i--) {
+                const item = copy[i];
+                if (
+                  item.kind === "tool" &&
+                  item.name === toolLabel("compile") &&
+                  item.ok === undefined
+                ) {
+                  copy[i] = {
+                    ...item,
+                    ok: data.result?.ok,
+                    detail: data.result?.message ?? item.detail,
+                  };
+                  break;
                 }
-                return copy;
-              });
-              // render the server-validated routing (same circuit json the
-              // export endpoints will use), not a fresh browser re-route
-              if (data.result?.ok) {
-                void loadCircuit();
-                void loadVariants();
               }
-            }
-            if (data.name === "pick_variant" && data.result?.ok) {
+              return copy;
+            });
+            // render the server-validated routing (same circuit json the
+            // export endpoints will use), not a fresh browser re-route
+            if (data.result?.ok) {
               void loadCircuit();
               void loadVariants();
             }
-            if (data.name === "enclosure_save" && data.result?.ok) {
-              void enclosures.reload();
-            }
-          } else if (event === "file_changed") {
-            setFsMap((m) => ({ ...(m ?? {}), [data.path]: data.content }));
-            setCircuitStale(true);
-          } else if (event === "done") {
-            completed = true;
-          } else if (event === "error") {
-            setChat((c) => [...c, { kind: "error", text: data.message }]);
           }
+          if (data.name === "pick_variant" && data.result?.ok) {
+            void loadCircuit();
+            void loadVariants();
+          }
+          if (data.name === "enclosure_save" && data.result?.ok) {
+            void enclosures.reload();
+          }
+        } else if (event === "file_changed") {
+          if (typeof data.path === "string" && typeof data.content === "string") {
+            const { path, content } = data;
+            setFsMap((m) => ({ ...(m ?? {}), [path]: content }));
+          }
+          setCircuitStale(true);
+        } else if (event === "done") {
+          completed = true;
+        } else if (event === "error") {
+          setChat((c) => [...c, { kind: "error", text: String(data.message ?? "errore") }]);
         }
-      }
+      });
       if (!completed) {
         // the stream closed without an end signal: the function was
         // interrupted (usually for max duration). The work already done is saved.
@@ -1194,13 +1318,35 @@ export function Studio({
         { kind: "error", text: err instanceof Error ? err.message : String(err) },
       ]);
     } finally {
-      if (assistantText) historyRef.current.push({ role: "assistant", content: assistantText });
+      agentTurnRef.current = false;
+      /*
+       * The history must alternate user / assistant. A failed turn used to
+       * leave its user message behind, and the next one sent two in a row.
+       * Never started (refused, offline): the request is taken back and its
+       * text goes back in the box. Started but cut before any text: the
+       * model's turn is recorded as interrupted, so that "continua" still
+       * knows what it is continuing.
+       */
+      if (assistantText) {
+        historyRef.current.push({ role: "assistant", content: assistantText });
+      } else if (!started) {
+        historyRef.current.splice(historyBefore);
+        setInput((current) => current || text);
+      } else {
+        historyRef.current.push({
+          role: "assistant",
+          content: "(turno interrotto prima di una risposta: le modifiche gia' applicate sono salvate)",
+        });
+      }
       setStatus("idle");
     }
   }, [input, status, projectId, refreshLibrary, loadCircuit, loadVariants, enclosures]);
 
   const activePreset =
     VIEW_PRESETS.find((p) => p.key === preset) ?? null;
+
+  /** something is already working on the board: the triggers of another job are off */
+  const boardBusy = recompiling || massBusy !== "" || status !== "idle";
 
   return (
     <div className="grid h-dvh grid-rows-[64px_minmax(0,1fr)_60px] overflow-hidden bg-canvas text-text">
@@ -1300,120 +1446,139 @@ export function Studio({
               without the shared library fails and leaves the frame empty — and
               it looked like the edit had not arrived. */}
           <div className="absolute inset-0">
-            {circuitJson ? (
-              tab === "pcb" ? (
-                editor.mode === "view" ? (
-                  // in read-only we use our own viewer: hover on components,
-                  // solder paste, markers at the right spot. For moving and
-                  // routing by hand, tscircuit's stays, which already knows
-                  // everything about those edits.
-                  <BoardCanvas
+            {/* one boundary for whichever view is on: a view that cannot draw
+                this circuit goes alone, with retry and recompile */}
+            <ViewerBoundary
+              label={VIEW_LABELS[circuitJson ? tab : "fallback"]}
+              resetKeys={[circuitJson, tab, editor.mode]}
+              onRecompile={() => void recompile()}
+            >
+              {circuitJson ? (
+                tab === "pcb" ? (
+                  editor.mode === "view" ? (
+                    // in read-only we use our own viewer: hover on components,
+                    // solder paste, markers at the right spot. For moving and
+                    // routing by hand, tscircuit's stays, which already knows
+                    // everything about those edits.
+                    <BoardCanvas
+                      circuitJson={circuitJson}
+                      flags={flags}
+                      layer={layer}
+                      xray={xray}
+                      markers={drcMarkers}
+                      hoveredComponentId={hoverPartId}
+                      onHoverComponent={setHoverPartId}
+                      onPickComponent={setPartId}
+                      selectMode={selectMode}
+                      selectedIds={selectedIds}
+                      onSelectionChange={setSelectedIds}
+                      zone={zone}
+                      onZoneChange={setZone}
+                    />
+                  ) : editor.mode === "route" ? (
+                    // hand routing on our canvas: every click is a real corner,
+                    // not a suggestion to the autorouter
+                    <RouteCanvas
+                      circuitJson={circuitJson}
+                      width={0.25}
+                      pendingRoutes={editor.routes}
+                      onRoute={editor.addRoute}
+                      resetKey={editor.viewerKey}
+                      projectId={projectId}
+                      onChanged={() => void loadCircuit()}
+                    />
+                  ) : (
+                    // hand moving on our canvas: drag, arrows, rotation — with
+                    // grid snap. Before it was tscircuit's viewer: a canvas with
+                    // no events, the move would not stick.
+                    <BoardCanvas
+                      circuitJson={circuitJson}
+                      flags={flags}
+                      layer={layer}
+                      xray={xray}
+                      markers={drcMarkers}
+                      hoveredComponentId={hoverPartId}
+                      onHoverComponent={setHoverPartId}
+                      onPickComponent={setPartId}
+                      selectMode={selectMode}
+                      selectedIds={selectedIds}
+                      onSelectionChange={setSelectedIds}
+                      zone={zone}
+                      onZoneChange={setZone}
+                      mode="move"
+                      pickedId={partId}
+                      moveOverrides={pcbMoveOverrides}
+                      onMoveComponent={moveComponent}
+                      // only what a PERSON is holding: the placer's own saved
+                      // positions are a starting point, not a constraint
+                      pinnedNames={editor.saved.pcb_placements
+                        .filter((p) => !p.auto)
+                        .map((p) => p.selector)}
+                      onRelease={(name) => void editor.release("pcb", name)}
+                    />
+                  )
+                ) : tab === "bom" ? (
+                  <BomView projectId={projectId} />
+                ) : tab === "stato" ? (
+                  <StatusView projectId={projectId} />
+                ) : tab === "schematic" ? (
+                  <SchematicView
                     circuitJson={circuitJson}
-                    flags={flags}
-                    layer={layer}
-                    xray={xray}
-                    markers={drcMarkers}
-                    hoveredComponentId={hoverPartId}
-                    onHoverComponent={setHoverPartId}
-                    onPickComponent={setPartId}
-                    selectMode={selectMode}
-                    selectedIds={selectedIds}
-                    onSelectionChange={setSelectedIds}
-                    zone={zone}
-                    onZoneChange={setZone}
-                  />
-                ) : editor.mode === "route" ? (
-                  // hand routing on our canvas: every click is a real corner,
-                  // not a suggestion to the autorouter
-                  <RouteCanvas
-                    circuitJson={circuitJson}
-                    width={0.25}
-                    pendingRoutes={editor.routes}
-                    onRoute={editor.addRoute}
-                    resetKey={editor.viewerKey}
                     projectId={projectId}
-                    onChanged={() => void loadCircuit()}
+                    mode={editor.mode}
+                    saved={editor.saved}
+                    onEditEvent={editor.pushPending}
+                    pendingEvents={editor.pending}
+                    resetKey={editor.viewerKey}
+                    pendingLinks={editor.links}
+                    onLink={editor.addLink}
+                    onUnlink={editor.addUnlink}
                   />
                 ) : (
-                  // hand moving on our canvas: drag, arrows, rotation — with
-                  // grid snap. Before it was tscircuit's viewer: a canvas with
-                  // no events, the move would not stick.
-                  <BoardCanvas
-                    circuitJson={circuitJson}
-                    flags={flags}
-                    layer={layer}
-                    xray={xray}
-                    markers={drcMarkers}
-                    hoveredComponentId={hoverPartId}
-                    onHoverComponent={setHoverPartId}
-                    onPickComponent={setPartId}
-                    selectMode={selectMode}
-                    selectedIds={selectedIds}
-                    onSelectionChange={setSelectedIds}
-                    zone={zone}
-                    onZoneChange={setZone}
-                    mode="move"
-                    pickedId={partId}
-                    moveOverrides={pcbMoveOverrides}
-                    onMoveComponent={moveComponent}
-                    // only what a PERSON is holding: the placer's own saved
-                    // positions are a starting point, not a constraint
-                    pinnedNames={editor.saved.pcb_placements
-                      .filter((p) => !p.auto)
-                      .map((p) => p.selector)}
-                    onRelease={(name) => void editor.release("pcb", name)}
+                  // 3D tab: the enclosure designer (board in GLB from the
+                  // server, enclosures and modules imported as meshes in the
+                  // same scene)
+                  <EnclosureCanvas
+                    projectId={projectId}
+                    boardWidthMm={report.widthMm}
+                    boardHeightMm={report.heightMm}
+                    parts={parts}
+                    meshes={enclosures.meshes}
+                    showEnclosures={showEnclosures}
+                    enclosureOpacity={enclosureOpacity}
+                    explodedMm={explodedMm}
                   />
                 )
-              ) : tab === "bom" ? (
-                <BomView projectId={projectId} />
-              ) : tab === "stato" ? (
-                <StatusView projectId={projectId} />
-              ) : tab === "schematic" ? (
-                <SchematicView
-                  circuitJson={circuitJson}
-                  projectId={projectId}
-                  mode={editor.mode}
-                  saved={editor.saved}
-                  onEditEvent={editor.pushPending}
-                  resetKey={editor.viewerKey}
-                  pendingLinks={editor.links}
-                  onLink={editor.addLink}
-                  onUnlink={editor.addUnlink}
+              ) : fsMap && circuitChecked ? (
+                <RunFrame
+                  // the browser fallback compilation must also see the
+                  // hand-pinned positions, otherwise the drawing jumps back
+                  // every time the server compilation is missing
+                  fsMap={applyManualEditsToFsMap(fsMap)}
+                  mainComponentPath="main.tsx"
+                  showRunButton={false}
+                  availableTabs={["schematic", "pcb", "cad", "bom"]}
+                  // the fallback viewer knows nothing about our own views: on
+                  // those it opens on the board, which is the closest thing it has
+                  defaultActiveTab={tab === "stato" ? "pcb" : tab}
                 />
               ) : (
-                // 3D tab: the enclosure designer (board in GLB from the
-                // server, enclosures and modules imported as meshes in the
-                // same scene)
-                <EnclosureCanvas
-                  projectId={projectId}
-                  boardWidthMm={report.widthMm}
-                  boardHeightMm={report.heightMm}
-                  parts={parts}
-                  meshes={enclosures.meshes}
-                  showEnclosures={showEnclosures}
-                  enclosureOpacity={enclosureOpacity}
-                  explodedMm={explodedMm}
-                />
-              )
-            ) : fsMap && circuitChecked ? (
-              <RunFrame
-                // the browser fallback compilation must also see the
-                // hand-pinned positions, otherwise the drawing jumps back
-                // every time the server compilation is missing
-                fsMap={applyManualEditsToFsMap(fsMap)}
-                mainComponentPath="main.tsx"
-                showRunButton={false}
-                availableTabs={["schematic", "pcb", "cad", "bom"]}
-                // the fallback viewer knows nothing about our own views: on
-                // those it opens on the board, which is the closest thing it has
-                defaultActiveTab={tab === "stato" ? "pcb" : tab}
-              />
-            ) : (
-              <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
-                <span className="dot dot-busy" /> Caricamento del progetto...
-              </div>
-            )}
+                <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
+                  <span className="dot dot-busy" /> Caricamento del progetto...
+                </div>
+              )}
+            </ViewerBoundary>
           </div>
+
+          {/* while "Applica" (or undo) is writing, the canvas does not take
+              new edits: they would be drawn on the board being replaced */}
+          {editor.busy && editor.mode !== "view" && (tab === "pcb" || tab === "schematic") && (
+            <div
+              aria-hidden
+              title="Applico le modifiche: un attimo"
+              className="absolute inset-0 z-[15] cursor-wait"
+            />
+          )}
 
           {/* hand edits: only where they make sense, i.e. where the geometry
               is visible. In 3D and on the BOM there is nothing to move */}
@@ -1467,7 +1632,14 @@ export function Studio({
               // not constraints, and counting them scared "sposta tutto" off
               pinned={editor.counts.pcb}
               stale={circuitStale}
-              busy={massBusy || (recompiling ? recompileStep || "Ricompilo" : "")}
+              busy={
+                massBusy ||
+                (recompiling
+                  ? recompileStep || "Ricompilo"
+                  : status !== "idle"
+                    ? "Il copilota sta lavorando sulla scheda"
+                    : "")
+              }
               progress={massBusy ? null : recompileProgress}
               seconds={massBusy ? massSeconds : recompileSec}
               onRun={(a, sc) => void runMass(a, sc)}
@@ -1492,6 +1664,12 @@ export function Studio({
               scope={tab === "pcb" ? "pcb" : "schematic"}
               stale={circuitStale}
               onRecompile={() => void recompile()}
+              recompileBusy={boardBusy}
+              warning={
+                swappedUnderEdits
+                  ? "La scheda e' cambiata mentre avevi modifiche non applicate: le hai disegnate sulla versione precedente. Controlla che i pezzi siano dove li vuoi prima di applicare, o scartale."
+                  : null
+              }
             />
           )}
 
@@ -1613,6 +1791,7 @@ export function Studio({
           onShowOnBoard={showOnBoard}
           onRecompile={() => void recompile()}
           recompiling={recompiling}
+          blocked={boardBusy}
           enclosures={enclosures}
         />
         {copilot && (
@@ -1722,6 +1901,16 @@ export function Studio({
     </div>
   );
 }
+
+/** what a broken view is called in its error card */
+const VIEW_LABELS: Record<BoardTab | "fallback", string> = {
+  schematic: "lo schematico",
+  pcb: "lo sbroglio",
+  cad: "la vista 3D",
+  bom: "la distinta base",
+  stato: "lo stato dei componenti",
+  fallback: "l'anteprima della scheda",
+};
 
 const TAB_TITLES: Record<BoardTab, string> = {
   schematic: "Schematico",
