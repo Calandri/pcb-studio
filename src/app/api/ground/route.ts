@@ -1,8 +1,15 @@
 import { requireProjectAccess } from "@/lib/acl";
+import { withLibrary } from "@/lib/agent-tools";
 import { summarizeCircuit } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { stitchToPlanes } from "@/lib/house-rules";
+import {
+  boardFreshness,
+  MANUAL_EDITS_PATH,
+  parseManualEdits,
+  withoutManualEdits,
+} from "@/lib/manual-edits";
 import {
   filesHash,
   getCompileCache,
@@ -12,6 +19,9 @@ import {
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+/** createdAt may come back as a Date or as a string, depending on the driver */
+const stamp = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
 
 /**
  * Rebuilds the ground, and only that.
@@ -47,6 +57,27 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const files = await getProject(projectId);
+  /*
+   * Only on the board of these sources. The result keeps the cache's own
+   * hash, so it would not be shown as current anyway — but vias stitched on
+   * a board the files no longer describe are work nobody can use.
+   */
+  const full = await withLibrary(files);
+  const fresh = boardFreshness({
+    cacheFilesHash: cached.filesHash,
+    filesHash: filesHash(full),
+    sourcesHash: filesHash(withoutManualEdits(full)),
+    edits: parseManualEdits(files[MANUAL_EDITS_PATH]),
+  });
+  if (!fresh) {
+    return Response.json(
+      {
+        error:
+          "la scheda compilata non e' quella dei file attuali: ricompila prima di rifare la massa",
+      },
+      { status: 409 },
+    );
+  }
   const rules = resolveDesignRules(files).rules;
   const before = (cached.circuitJson as Array<{ type?: string }>).filter(
     (el) => el?.type === "pcb_via",
@@ -57,9 +88,21 @@ export async function POST(req: Request): Promise<Response> {
   ).length;
 
   const summary = summarizeCircuit(circuitJson, files);
+  // a compile that finished meanwhile is newer than this: it is not overwritten
+  const latest = await getCompileCache(projectId).catch(() => null);
+  if (
+    !latest ||
+    latest.filesHash !== cached.filesHash ||
+    stamp(latest.createdAt) !== stamp(cached.createdAt)
+  ) {
+    return Response.json(
+      { error: "la scheda e' cambiata mentre rifacevo la massa: non salvo, riprova" },
+      { status: 409 },
+    );
+  }
   await saveCompileCache(
     projectId,
-    cached.filesHash ?? filesHash(files),
+    cached.filesHash,
     circuitJson,
     summary,
     CHECKS_ENGINE_VERSION,

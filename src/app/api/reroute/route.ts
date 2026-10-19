@@ -10,11 +10,14 @@ import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { routeBoard } from "@/lib/autoroute";
 import {
   applyManualEditsToFsMap,
+  boardFreshness,
   MANUAL_EDITS_PATH,
+  mergeAutoPlacements,
   parseManualEdits,
   readAttr,
   scanJsxTags,
-  serializeManualEdits,
+  withoutManualEdits,
+  type ManualPlacement,
 } from "@/lib/manual-edits";
 import {
   filesHash,
@@ -22,7 +25,7 @@ import {
   getProject,
   saveCompileCache,
   savePreviewCircuit,
-  writeProjectFile,
+  updateProjectFile,
 } from "@/lib/project-store";
 
 export const runtime = "nodejs";
@@ -54,6 +57,7 @@ export const maxDuration = 800;
 function elencoComponenti(main: string): string[] {
   const out: string[] = [];
   for (const tag of scanJsxTags(main)) {
+    if (tag.inAttribute) continue;
     const nome = readAttr(main.slice(tag.attrsStart, tag.attrsEnd), "name");
     if (nome) out.push(nome);
   }
@@ -210,37 +214,56 @@ export async function POST(req: Request): Promise<Response> {
            */
           let hash = filesHash(fsMap);
           if (placements && placements.length > 0) {
-            const attuali = parseManualEdits(files[MANUAL_EDITS_PATH]);
-            const aMano = new Set(
-              attuali.pcb_placements.filter((p) => !p.auto).map((p) => p.selector),
-            );
-            const nuovi = [
-              ...attuali.pcb_placements,
-              ...placements
-                .filter((p) => !aMano.has(p.name))
-                .map((p) => ({
-                  selector: p.name,
-                  center: p.center,
-                  auto: true as const,
-                  ...(p.rotation !== undefined ? { rotation: p.rotation } : {}),
-                })),
-            ];
-            // one entry per component: the last one wins, and the last ones are these
-            const perNome = new Map(nuovi.map((p) => [p.selector, p]));
-            const contenuto = serializeManualEdits({
-              ...attuali,
-              pcb_placements: [...perNome.values()],
-            });
-            await writeProjectFile(projectId, MANUAL_EDITS_PATH, contenuto).catch(() => {});
-            // the cache belongs to the files WITH the positions just written,
-            // otherwise the page believes it is stale and recompiles for nothing
-            hash = filesHash({ ...fsMap, [MANUAL_EDITS_PATH]: contenuto });
-            send("passo", {
-              step: "Posizioni salvate",
-              detail: `${placements.length} pezzi scritti su ${MANUAL_EDITS_PATH}: la scheda che vedi e' quella che resta`,
-              progress: 0.95,
-              sec: sec(),
-            });
+            const auto: ManualPlacement[] = placements.map((p) => ({
+              selector: p.name,
+              center: p.center,
+              auto: true as const,
+              ...(p.rotation !== undefined ? { rotation: p.rotation } : {}),
+            }));
+            // what the board just computed corresponds to: the snapshot plus these positions
+            const sullaFoto = mergeAutoPlacements(files[MANUAL_EDITS_PATH] ?? null, auto);
+            let scritto: string | null = null;
+            try {
+              const r = await updateProjectFile(projectId, MANUAL_EDITS_PATH, (current) =>
+                mergeAutoPlacements(current, auto),
+              );
+              scritto = r.content;
+            } catch (err) {
+              send("passo", {
+                step: "Posizioni NON salvate",
+                detail: err instanceof Error ? err.message : String(err),
+                progress: 0.95,
+                sec: sec(),
+              });
+            }
+            /*
+             * The cache belongs to the files WITH the positions just written,
+             * otherwise the page believes it is stale and recompiles for
+             * nothing — but only if nothing else changed in the file while the
+             * placer ran. If a person pinned a part or drew a trace meanwhile,
+             * this board does not include it: it is filed under the snapshot,
+             * and the page rightly says it is out of date.
+             */
+            if (scritto !== null && scritto === sullaFoto) {
+              hash = filesHash({ ...fsMap, [MANUAL_EDITS_PATH]: scritto });
+              send("passo", {
+                step: "Posizioni salvate",
+                detail: `${placements.length} pezzi scritti su ${MANUAL_EDITS_PATH}: la scheda che vedi e' quella che resta`,
+                progress: 0.95,
+                sec: sec(),
+              });
+            } else {
+              hash = filesHash({ ...fsMap, [MANUAL_EDITS_PATH]: sullaFoto });
+              if (scritto !== null) {
+                send("passo", {
+                  step: "Posizioni salvate, con modifiche a mano arrivate nel frattempo",
+                  detail:
+                    "mentre la scheda si rifaceva qualcuno ha cambiato le modifiche a mano: sono state tenute, e per vederle sulla scheda va ricompilata",
+                  progress: 0.95,
+                  sec: sec(),
+                });
+              }
+            }
           }
           await saveCompileCache(
             projectId,
@@ -256,6 +279,24 @@ export async function POST(req: Request): Promise<Response> {
         const cached = await getCompileCache(projectId).catch(() => null);
         if (!cached?.circuitJson) {
           send("errore", { error: "non c'e' una scheda compilata su cui lavorare" });
+          return;
+        }
+        /*
+         * Only on the board of these sources: closing the open connections of
+         * a board the files no longer describe is minutes of work for copper
+         * nobody will use.
+         */
+        const fresh = boardFreshness({
+          cacheFilesHash: cached.filesHash,
+          filesHash: filesHash(fsMap),
+          sourcesHash: filesHash(withoutManualEdits(fsMap)),
+          edits: parseManualEdits(files[MANUAL_EDITS_PATH]),
+        });
+        if (!fresh) {
+          send("errore", {
+            error:
+              "la scheda compilata non e' quella dei file attuali: ricompila prima di chiudere i mancanti",
+          });
           return;
         }
         send("passo", { step: "Chiudo i mancanti", detail: "si parte", sec: 0 });
@@ -276,9 +317,23 @@ export async function POST(req: Request): Promise<Response> {
           },
         });
         const summary = summarizeCircuit(circuitJson as unknown[], files);
+        /*
+         * Minutes have passed: if a compile replaced the board meanwhile (a
+         * different files hash), that board is newer than this result and is
+         * not overwritten. The previews of this run do move createdAt, so only
+         * the hash can tell.
+         */
+        const latest = await getCompileCache(projectId).catch(() => null);
+        if (!latest || latest.filesHash !== cached.filesHash) {
+          send("errore", {
+            error:
+              "la scheda e' stata ricompilata mentre chiudevo i mancanti: il risultato non e' salvato, rilancia su quella nuova",
+          });
+          return;
+        }
         await saveCompileCache(
           projectId,
-          cached.filesHash ?? filesHash(fsMap),
+          cached.filesHash,
           circuitJson as unknown[],
           summary,
           CHECKS_ENGINE_VERSION,

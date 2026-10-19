@@ -11,10 +11,23 @@
  * The writing is surgical: a single <trace> line is inserted (or removed)
  * leaving the rest of the file untouched. No rewriting, so two hand
  * connections in a row cannot lose the agent's work in between.
+ *
+ * The <trace> tags are FOUND with the JSX scanner of manual-edits.ts, not
+ * with a regex: the agent writes `to=` before `from=`, single quotes,
+ * `from={".U1 > .VCC"}`, extra props, several lines — and a regex built for
+ * `<trace from="..." to="..." />` could not find any of those to remove them,
+ * nor see that they already existed before adding a duplicate.
  */
 
-/** ".U1 > .VCC" or "net.GND": the two forms a trace accepts */
-const SELECTOR = /^(\.[A-Za-z_][\w$]*\s*>\s*\.[\w$.+-]+|net\.[A-Za-z_][\w$]*)$/;
+import { readAttr, scanJsxTags, type JsxTag } from "./manual-edits";
+
+/*
+ * ".U1 > .VCC" or "net.GND": the two forms a trace accepts. Pin names are
+ * whatever the datasheet calls them — "~RST", "/CS", "D+", "IO0.1" — so the
+ * pin part takes any character that cannot end a selector or a JSX string.
+ * Component names follow tscircuit's: letters, digits, underscore, dash.
+ */
+const SELECTOR = /^(\.[A-Za-z_][\w$-]*\s*>\s*\.[^\s>"'{}<`]+|net\.[\w$+-]+)$/;
 
 export function isValidSelector(value: string): boolean {
   return SELECTOR.test(value.trim());
@@ -34,18 +47,49 @@ export interface ConnectResult {
   trace?: string;
 }
 
-const traceRegex = (from: string, to: string): RegExp => {
-  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // a connection has no direction: A->B and B->A are the same line
-  return new RegExp(
-    `\\s*<trace\\b[^>]*?(?:from="${esc(from)}"[^>]*?to="${esc(to)}"|from="${esc(to)}"[^>]*?to="${esc(from)}")[^>]*/>`,
-    "g",
-  );
-};
+/** the <trace> tags of the file joining these two points, in either direction */
+function tracesBetween(main: string, from: string, to: string): JsxTag[] {
+  const a = normalizeSelector(from);
+  const b = normalizeSelector(to);
+  return scanJsxTags(main).filter((tag) => {
+    if (tag.name !== "trace" || tag.inAttribute) return false;
+    const attrs = main.slice(tag.attrsStart, tag.attrsEnd);
+    const f = readAttr(attrs, "from");
+    const t = readAttr(attrs, "to");
+    if (f === null || t === null) return false;
+    const nf = normalizeSelector(f);
+    const nt = normalizeSelector(t);
+    // a connection has no direction: A->B and B->A are the same line
+    return (nf === a && nt === b) || (nf === b && nt === a);
+  });
+}
 
 /** does a connection between these two points already exist? */
 export function hasConnection(main: string, from: string, to: string): boolean {
-  return traceRegex(from, to).test(main);
+  return tracesBetween(main, from, to).length > 0;
+}
+
+/**
+ * Checks a selector against a compiled board, when there is one: the part
+ * must have that pin. A part the board does not know yet (added after the
+ * last compile) cannot be checked and passes; a net is never refused, as it
+ * may be the one this very connection introduces.
+ */
+export function checkSelectorOnBoard(selector: string, circuitJson: unknown[] | null | undefined): string | null {
+  if (!circuitJson?.length) return null;
+  const m = /^\.(.+?)\s*>\s*\.(.+)$/.exec(selector.trim());
+  if (!m) return null;
+  const els = circuitJson as Array<Record<string, unknown>>;
+  const comp = els.find((e) => e?.type === "source_component" && e.name === m[1]);
+  if (!comp) return null;
+  const pin = m[2];
+  const has = els.some(
+    (e) =>
+      e?.type === "source_port" &&
+      e.source_component_id === comp.source_component_id &&
+      (e.name === pin || (Array.isArray(e.port_hints) && (e.port_hints as unknown[]).includes(pin))),
+  );
+  return has ? null : `${m[1]} non ha un piedino "${pin}"`;
 }
 
 /**
@@ -53,7 +97,12 @@ export function hasConnection(main: string, from: string, to: string): boolean {
  * others already are: the file stays readable and the order is the one in
  * which the connections were created.
  */
-export function addConnection(main: string, fromRaw: string, toRaw: string): ConnectResult {
+export function addConnection(
+  main: string,
+  fromRaw: string,
+  toRaw: string,
+  circuitJson?: unknown[] | null,
+): ConnectResult {
   const from = normalizeSelector(fromRaw);
   const to = normalizeSelector(toRaw);
 
@@ -63,19 +112,28 @@ export function addConnection(main: string, fromRaw: string, toRaw: string): Con
   if (from === to) {
     return { ok: false, main, error: "un piedino non si collega a se stesso" };
   }
+  const wrong = checkSelectorOnBoard(from, circuitJson) ?? checkSelectorOnBoard(to, circuitJson);
+  if (wrong) return { ok: false, main, error: wrong };
   if (hasConnection(main, from, to)) {
     return { ok: false, main, error: "questi due punti sono gia' collegati" };
   }
 
-  const close = main.lastIndexOf("</board>");
+  // the board's REAL closing tag, not a "</board>" in a comment or a string
+  const board = scanJsxTags(main).filter((t) => t.name === "board" && !t.inAttribute && t.closeStart !== undefined).pop();
+  const close = board?.closeStart ?? -1;
   if (close === -1) {
     return { ok: false, main, error: "non trovo la chiusura del board in main.tsx" };
   }
 
   // the closing line's indent is reused, so the new line aligns
   const lineStart = main.lastIndexOf("\n", close) + 1;
-  const indent = `${main.slice(lineStart, close)}  `;
+  const before = main.slice(lineStart, close);
+  const indent = /^\s*$/.test(before) ? `${before}  ` : "    ";
   const trace = `<trace from="${from}" to="${to}" />`;
+  if (!/^\s*$/.test(before)) {
+    // the closing tag shares its line with something: the trace goes right before it
+    return { ok: true, main: `${main.slice(0, close)}\n${indent}${trace}\n${main.slice(close)}`, trace };
+  }
   return {
     ok: true,
     main: `${main.slice(0, lineStart)}${indent}${trace}\n${main.slice(lineStart)}`,
@@ -90,11 +148,26 @@ export function removeConnection(main: string, fromRaw: string, toRaw: string): 
   if (!isValidSelector(from) || !isValidSelector(to)) {
     return { ok: false, main, error: "selettore non valido" };
   }
-  const re = traceRegex(from, to);
-  if (!re.test(main)) {
+  const found = tracesBetween(main, from, to);
+  if (found.length === 0) {
     return { ok: false, main, error: "questo collegamento non e' scritto in main.tsx" };
   }
-  return { ok: true, main: main.replace(traceRegex(from, to), ""), trace: `${from} -> ${to}` };
+  // from the bottom, so earlier indexes stay valid
+  let out = main;
+  for (const tag of [...found].sort((x, y) => y.start - x.start)) {
+    let s = tag.start;
+    let e = tag.closeEnd ?? tag.end;
+    // the whole line goes when the trace was alone on it
+    const lineStart = out.lastIndexOf("\n", s - 1) + 1;
+    const nl = out.indexOf("\n", e);
+    const lineEnd = nl === -1 ? out.length : nl;
+    if (/^\s*$/.test(out.slice(lineStart, s)) && /^\s*$/.test(out.slice(e, lineEnd))) {
+      s = lineStart;
+      e = nl === -1 ? out.length : nl + 1;
+    }
+    out = out.slice(0, s) + out.slice(e);
+  }
+  return { ok: true, main: out, trace: `${from} -> ${to}` };
 }
 
 /**

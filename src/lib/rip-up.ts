@@ -129,6 +129,145 @@ export interface Cut {
 }
 
 /**
+ * The stretch of the segment a->b that lies inside the zone, as parameters
+ * 0 <= t0 <= t1 <= 1 along it (Liang-Barsky). null when it misses the zone.
+ */
+export function clipSegmentToZone(
+  zone: Zone,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): { t0: number; t1: number } | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let t0 = 0;
+  let t1 = 1;
+  const edges: Array<[number, number]> = [
+    [-dx, a.x - zone.minX],
+    [dx, zone.maxX - a.x],
+    [-dy, a.y - zone.minY],
+    [dy, zone.maxY - a.y],
+  ];
+  for (const [p, q] of edges) {
+    if (Math.abs(p) < 1e-12) {
+      if (q < 0) return null; // parallel and outside
+      continue;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return null;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return null;
+      if (r < t1) t1 = r;
+    }
+  }
+  return t0 <= t1 ? { t0, t1 } : null;
+}
+
+/** a new route point on the segment a->b at t: a wire point on the segment's layer */
+function pointOn(a: Record<string, unknown>, b: Record<string, unknown>, t: number): Record<string, unknown> {
+  const ax = num(a.x) ?? 0, ay = num(a.y) ?? 0, bx = num(b.x) ?? 0, by = num(b.y) ?? 0;
+  const layer =
+    (a.route_type === "via" ? a.to_layer : a.layer) ??
+    (b.route_type === "via" ? b.from_layer : b.layer) ??
+    "top";
+  const width = a.width ?? b.width;
+  return {
+    route_type: "wire",
+    x: Math.round((ax + (bx - ax) * t) * 1e6) / 1e6,
+    y: Math.round((ay + (by - ay) * t) * 1e6) / 1e6,
+    layer,
+    ...(width !== undefined ? { width } : {}),
+  };
+}
+
+/**
+ * The pieces of a route that stay OUTSIDE the zone, and the cuts to stitch.
+ *
+ * Measured on SEGMENTS, not on vertices: a long straight trace crossing the
+ * zone with both ends outside has no vertex inside it, and used to survive
+ * untouched right through the copper being redone there. Every segment is
+ * clipped against the rectangle; the outside part of a segment that enters
+ * ends ON the boundary, and the stretch inside is removed.
+ *
+ * A cut is recorded wherever copper was removed between two things that must
+ * stay joined: between two kept pieces (a backbone crossing the zone), and
+ * between a kept piece and the route's own END when that end lies inside the
+ * zone (a trace from a pad outside to a pad inside). Without the second kind
+ * the head or tail outside was kept with nothing to join it, a floating stub.
+ */
+export function splitRouteByZone(
+  route: Array<Record<string, unknown>>,
+  zone: Zone,
+): { pieces: Array<Array<Record<string, unknown>>>; cuts: Array<{ a: Record<string, unknown>; b: Record<string, unknown> }>; touched: boolean } {
+  const pieces: Array<Array<Record<string, unknown>>> = [];
+  const cuts: Array<{ a: Record<string, unknown>; b: Record<string, unknown> }> = [];
+  const ok = (p: Record<string, unknown>) => num(p.x) !== null && num(p.y) !== null;
+  const pts = route.filter(ok);
+  if (pts.length === 0) return { pieces: [route], cuts, touched: false };
+  if (pts.length === 1) {
+    const inside = inZone(zone, num(pts[0].x), num(pts[0].y));
+    return { pieces: inside ? [] : [route], cuts, touched: inside };
+  }
+
+  let touched = false;
+  let piece: Array<Record<string, unknown>> = [];
+  /** where the removed stretch started: a piece's end on the boundary, or the route's start */
+  let pendingFrom: Record<string, unknown> | null = null;
+  const firstInside = inZone(zone, num(pts[0].x), num(pts[0].y));
+  if (!firstInside) piece.push(pts[0]);
+  else {
+    touched = true;
+    pendingFrom = pts[0];
+  }
+
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const clip = clipSegmentToZone(
+      zone,
+      { x: num(a.x)!, y: num(a.y)! },
+      { x: num(b.x)!, y: num(b.y)! },
+    );
+    const bInside = inZone(zone, num(b.x), num(b.y));
+    if (!clip || clip.t1 - clip.t0 < 1e-9) {
+      // the segment does not cross the zone (or only grazes a corner)
+      if (piece.length === 0) {
+        // coming out of the zone at a vertex
+        if (pendingFrom) cuts.push({ a: pendingFrom, b: a });
+        pendingFrom = null;
+        piece.push(a);
+      }
+      piece.push(b);
+      continue;
+    }
+    touched = true;
+    // the part before the zone
+    if (piece.length > 0) {
+      if (clip.t0 > 1e-9) piece.push(pointOn(a, b, clip.t0));
+      if (piece.length >= 1) {
+        pieces.push(piece);
+        pendingFrom = piece[piece.length - 1];
+      }
+      piece = [];
+    }
+    // the part after the zone
+    if (!bInside && clip.t1 < 1 - 1e-9) {
+      const exit = pointOn(a, b, clip.t1);
+      if (pendingFrom) cuts.push({ a: pendingFrom, b: exit });
+      pendingFrom = null;
+      piece = [exit, b];
+    }
+  }
+  if (piece.length > 0) pieces.push(piece);
+  else if (pendingFrom && pieces.length > 0) {
+    // the route ENDS inside the zone: the kept head must reach that end
+    cuts.push({ a: pendingFrom, b: pts[pts.length - 1] });
+  }
+  return { pieces, cuts, touched };
+}
+
+/**
  * The circuit without the copper inside the zone.
  *
  * Traces entirely contained disappear. Those that ENTER AND EXIT — the long
@@ -147,6 +286,21 @@ export function ripZone(
   const out: CircuitElement[] = [];
   const cuts: Cut[] = [];
 
+  /*
+   * The holes hand copper changes face through. They are marked `manual` by
+   * applyManualRoutes; on a board compiled before that marker existed they
+   * are recognised by sitting on a `via` point of a hand trace. Deleting one
+   * while keeping its trace left copper jumping between faces through nothing.
+   */
+  const manualViaAt = new Set<string>();
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_trace" || (el as { manual?: boolean }).manual !== true) continue;
+    for (const p of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
+      const x = num(p.x), y = num(p.y);
+      if (p.route_type === "via" && x !== null && y !== null) manualViaAt.add(`${x.toFixed(3)},${y.toFixed(3)}`);
+    }
+  }
+
   for (const el of circuitJson) {
     /*
      * Hand-drawn copper is sacred: ripZone never touches it, not even when it
@@ -158,7 +312,12 @@ export function ripZone(
       continue;
     }
     if (el.type === "pcb_via") {
-      if (!inZone(zone, num(el.x), num(el.y))) out.push(el);
+      const x = num(el.x), y = num(el.y);
+      if (x !== null && y !== null && manualViaAt.has(`${x.toFixed(3)},${y.toFixed(3)}`)) {
+        out.push(el);
+        continue;
+      }
+      if (!inZone(zone, x, y)) out.push(el);
       continue;
     }
     if (el.type !== "pcb_trace") {
@@ -170,30 +329,14 @@ export function ripZone(
       out.push(el);
       continue;
     }
-    // split the route into the pieces that stay OUTSIDE the zone
-    const pieces: Array<Array<Record<string, unknown>>> = [];
-    let piece: Array<Record<string, unknown>> = [];
-    for (const p of route) {
-      if (inZone(zone, num(p.x), num(p.y))) {
-        if (piece.length > 0) pieces.push(piece);
-        piece = [];
-        continue;
-      }
-      piece.push(p);
-    }
-    if (piece.length > 0) pieces.push(piece);
-
-    if (pieces.length === 1 && pieces[0].length === route.length) {
+    const split = splitRouteByZone(route, zone);
+    if (!split.touched) {
       out.push(el); // does not touch the zone
       continue;
     }
     const sourceTraceId = typeof el.source_trace_id === "string" ? el.source_trace_id : null;
-    for (let i = 1; i < pieces.length; i++) {
-      const a = pieces[i - 1][pieces[i - 1].length - 1];
-      const b = pieces[i][0];
-      if (num(a.x) !== null && num(b.x) !== null) cuts.push({ a, b, sourceTraceId });
-    }
-    for (const [i, kept] of pieces.entries()) {
+    for (const c of split.cuts) cuts.push({ ...c, sourceTraceId });
+    for (const [i, kept] of split.pieces.entries()) {
       if (kept.length < 2) continue;
       out.push({ ...el, pcb_trace_id: `${String(el.pcb_trace_id)}_k${i}`, route: kept });
     }
@@ -266,6 +409,30 @@ export function rerouteZone(
   rules: DesignRules = DEFAULT_DESIGN_RULES,
   opts?: { routeEvenWithoutRip?: boolean },
 ): { circuitJson: CircuitElement[]; drc: number } | null {
+  const r = rerouteZoneDetailed(circuitJson, zone, defs, rules, opts);
+  return r.status === "ok" ? { circuitJson: r.circuitJson, drc: r.drc } : null;
+}
+
+export type ZoneRerouteOutcome =
+  | { status: "ok"; circuitJson: CircuitElement[]; drc: number }
+  /** nothing in the zone to rip or to route: the board is fine as it is */
+  | { status: "nothing" }
+  /** there was work and no solver produced a board that breaks nothing */
+  | { status: "failed"; reason: string };
+
+/**
+ * rerouteZone with the reason when it gives nothing back. "Nothing to do"
+ * and "could not do it" are opposite answers for whoever moved a part: in the
+ * first case the board is right, in the second the moved pads are left with
+ * the old copper pointing at where they were.
+ */
+export function rerouteZoneDetailed(
+  circuitJson: CircuitElement[],
+  zone: Zone,
+  defs: VariantDef[],
+  rules: DesignRules = DEFAULT_DESIGN_RULES,
+  opts?: { routeEvenWithoutRip?: boolean },
+): ZoneRerouteOutcome {
   const { circuitJson: base, cuts } = ripZone(circuitJson, zone);
   /*
    * By default work happens only if there was copper to rip up: this is the
@@ -274,8 +441,10 @@ export function rerouteZone(
    * solver must be able to route it even if there was nothing to remove in the
    * zone.
    */
-  if (!opts?.routeEvenWithoutRip && base.length === circuitJson.length && cuts.length === 0) {
-    return null;
+  const ripped =
+    base.length !== circuitJson.length || cuts.length > 0 || base.some((el, i) => el !== circuitJson[i]);
+  if (!opts?.routeEvenWithoutRip && !ripped) {
+    return { status: "nothing" };
   }
 
   let srj: RouteProblem;
@@ -326,10 +495,17 @@ export function rerouteZone(
         pointsToConnect: [cut.a, cut.b],
       })),
     ] as typeof srj.connections;
-  } catch {
-    return null;
+  } catch (err) {
+    return {
+      status: "failed",
+      reason: `il problema di instradamento della zona non si costruisce: ${err instanceof Error ? err.message.slice(0, 120) : String(err)}`,
+    };
   }
-  if (srj.connections.length === 0) return null;
+  if (srj.connections.length === 0) {
+    return ripped
+      ? { status: "failed", reason: "dopo lo strappo nella zona non resta nessun collegamento da rifare" }
+      : { status: "nothing" };
+  }
 
   /*
    * How many connections were left unrouted BEFORE. Used as a yardstick: a
@@ -368,5 +544,7 @@ export function rerouteZone(
       // a solver that cannot make it takes nothing away from the others
     }
   }
-  return best ? { circuitJson: best.circuitJson, drc: best.drc } : null;
+  return best
+    ? { status: "ok", circuitJson: best.circuitJson, drc: best.drc }
+    : { status: "failed", reason: "nessun solutore ha rifatto il rame della zona senza staccare altri collegamenti" };
 }

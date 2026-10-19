@@ -39,6 +39,19 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const fsMap = await withLibrary(await getProject(projectId));
+  /*
+   * "This board" is the one that was on screen: if a compile replaced it in
+   * the meantime, re-hashing the OLD circuit over the new one would throw
+   * the newer board away.
+   */
+  const latest = await getCompileCache(projectId).catch(() => null);
+  const stamp = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
+  if (!latest || latest.filesHash !== cached.filesHash || stamp(latest.createdAt) !== stamp(cached.createdAt)) {
+    return Response.json(
+      { error: "la scheda e' appena cambiata: guarda quella nuova prima di prenderla" },
+      { status: 409 },
+    );
+  }
   await saveCompileCache(
     projectId,
     filesHash(fsMap),

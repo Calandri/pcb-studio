@@ -1,3 +1,5 @@
+import { parseJsxAttrs, readAttr, scanJsxTags } from "./manual-edits";
+
 /**
  * Footprint provenance: where the pad geometry of each component comes from.
  * Twin of drc.ts (manufacturability), prc.ts (operation) and
@@ -208,6 +210,11 @@ function supplierCode(el: El): string | undefined {
  * Reads the footprint string of each component from the sources. The files
  * under lib/ are the definitions of library components, not instances: they
  * are read separately to find out which ones carry manufacturer geometry.
+ *
+ * Tags and attributes come from the JSX scanner, not from a regex: a `>` in
+ * a prop (`from=".U1 > .VCC"`, `pinLabels={{...}}`) closed the old pattern in
+ * the middle of the tag, `footprint={"soic8"}` and single quotes were not
+ * read, and a `name` inside the inline <footprint> was taken for the chip's.
  */
 function parseSources(sources: Sources): Map<string, Declared> {
   const declared = new Map<string, Declared>();
@@ -215,34 +222,44 @@ function parseSources(sources: Sources): Map<string, Declared> {
   for (const [path, content] of Object.entries(sources)) {
     if (path.startsWith("lib/") || !path.endsWith(".tsx")) continue;
 
-    // every self-closing JSX element or one with children: <tag ... name="X" ... >
-    for (const m of content.matchAll(/<([A-Za-z_][\w]*)\s([^>]*?)\/?>/g)) {
-      const tag = m[1];
-      const body = m[2];
+    const tags = scanJsxTags(content, { includeNested: true });
+    for (const tag of tags) {
+      // part of another tag's value (the <footprint> of a chip): not a component
+      if (tag.inAttribute) continue;
       // the <footprint name="..."> tag is the footprint's own name, not a component
-      if (tag.toLowerCase() === "footprint") continue;
-      const name = /name="([\w]+)"/.exec(body)?.[1];
+      if (tag.name.toLowerCase() === "footprint") continue;
+      const body = content.slice(tag.attrsStart, tag.attrsEnd);
+      const attrs = parseJsxAttrs(body);
+      const name = readAttr(body, "name");
       if (!name) continue;
 
-      const footprint = /footprint="([^"]+)"/.exec(body)?.[1];
-      const lcsc = /jlcpcb:\s*\[\s*"([^"]+)"/.exec(body)?.[1];
+      const fp = attrs.find((a) => a.name === "footprint");
+      const footprint = fp && fp.kind !== "element" ? readAttr(body, "footprint") : null;
+      const stringFootprint =
+        fp && (fp.kind === "string" || (fp.kind === "expr" && footprint !== fp.raw)) ? footprint : null;
+      const lcsc = /jlcpcb["']?\s*:\s*\[\s*["']([^"']+)["']/.exec(body)?.[1];
       // a tag starting with a capital letter is a library component
-      const fromLib = /^[A-Z]/.test(tag);
+      const fromLib = /^[A-Z]/.test(tag.name);
 
-      if (footprint) {
-        declared.set(name, { footprint, inline: false, fromLib: false, lcsc });
+      if (stringFootprint) {
+        declared.set(name, { footprint: stringFootprint, inline: false, fromLib: false, lcsc });
       } else if (fromLib) {
-        declared.set(name, { footprint: tag, inline: false, fromLib: true, lcsc });
-      } else if (/footprint=\{/.test(body)) {
+        declared.set(name, { footprint: tag.name, inline: false, fromLib: true, lcsc });
+      } else if (fp) {
         /*
          * The name the CAD gave it, when it is written on the tag: an imported
          * board carries its geometry inline, and "<footprint> inline" in the
          * PACKAGE column of a bill of materials tells a buyer nothing. The file
          * knows it is a "CAP 0402_1005".
          */
-        const nome = /<footprint\s+name="([^"]+)"/.exec(
-          content.slice(m.index ?? 0, (m.index ?? 0) + 600),
-        )?.[1];
+        const inner = tags.find(
+          (t) =>
+            t.inAttribute &&
+            t.name.toLowerCase() === "footprint" &&
+            t.start >= tag.attrsStart &&
+            t.start < tag.attrsEnd,
+        );
+        const nome = inner ? readAttr(content.slice(inner.attrsStart, inner.attrsEnd), "name") : null;
         declared.set(name, {
           footprint: nome ?? "<footprint> inline",
           inline: true,

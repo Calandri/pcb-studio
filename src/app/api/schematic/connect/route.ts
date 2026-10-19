@@ -3,8 +3,9 @@ import {
   addConnection,
   parseDeclaredTrace,
   removeConnection,
+  type ConnectResult,
 } from "@/lib/schematic-connect";
-import { getProject, writeProjectFile } from "@/lib/project-store";
+import { getCompileCache, updateProjectFile } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 
@@ -15,6 +16,10 @@ export const runtime = "nodejs";
  * routing to see the same circuit the user sees.
  *
  * It does not rebuild: you can draw five wires and pay for a single build.
+ *
+ * main.tsx is also the file the agent rewrites: the change is applied on the
+ * file as it is at write time (updateProjectFile), so a wire drawn while the
+ * agent saves does not erase the agent's turn, nor the other way round.
  */
 export async function POST(req: Request): Promise<Response> {
   let body: Record<string, unknown>;
@@ -31,36 +36,46 @@ export async function POST(req: Request): Promise<Response> {
   const { ok } = await requireProjectAccess(projectId, "edit");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
-  const fsMap = await getProject(projectId);
-  const main = fsMap["main.tsx"];
-  if (typeof main !== "string") {
-    return Response.json({ error: "il progetto non ha main.tsx" }, { status: 404 });
-  }
-
+  let op: (main: string) => ConnectResult;
   // to remove, start from the name the compiler gives to the connection
   if (typeof body.declared === "string") {
-    const pair = parseDeclaredTrace(body.declared);
+    const pair = body.declared.length <= 400 ? parseDeclaredTrace(body.declared) : null;
     if (!pair) {
       return Response.json({ error: "collegamento non riconosciuto" }, { status: 400 });
     }
-    const result = removeConnection(main, pair.from, pair.to);
-    if (!result.ok) return Response.json({ error: result.error }, { status: 409 });
-    await writeProjectFile(projectId, "main.tsx", result.main);
-    return Response.json({ ok: true, removed: result.trace });
+    op = (main) => removeConnection(main, pair.from, pair.to);
+  } else {
+    const from = typeof body.from === "string" && body.from.length <= 200 ? body.from : "";
+    const to = typeof body.to === "string" && body.to.length <= 200 ? body.to : "";
+    if (!from || !to) {
+      return Response.json({ error: "servono due punti" }, { status: 400 });
+    }
+    if (body.action === "remove") {
+      op = (main) => removeConnection(main, from, to);
+    } else {
+      // the pins are checked against the compiled board, when there is one
+      const cache = await getCompileCache(projectId).catch(() => null);
+      op = (main) => addConnection(main, from, to, cache?.circuitJson ?? null);
+    }
   }
 
-  const from = typeof body.from === "string" ? body.from : "";
-  const to = typeof body.to === "string" ? body.to : "";
-  if (!from || !to) {
-    return Response.json({ error: "servono due punti" }, { status: 400 });
+  let result: ConnectResult | null = null;
+  try {
+    await updateProjectFile(projectId, "main.tsx", (current) => {
+      if (typeof current !== "string") {
+        result = null;
+        return null;
+      }
+      result = op(current);
+      return result.ok ? result.main : null;
+    });
+  } catch (err) {
+    return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 409 });
   }
-
-  const result =
-    body.action === "remove"
-      ? removeConnection(main, from, to)
-      : addConnection(main, from, to);
-  if (!result.ok) return Response.json({ error: result.error }, { status: 409 });
-
-  await writeProjectFile(projectId, "main.tsx", result.main);
-  return Response.json({ ok: true, trace: result.trace });
+  const done = result as ConnectResult | null;
+  if (!done) return Response.json({ error: "il progetto non ha main.tsx" }, { status: 404 });
+  if (!done.ok) return Response.json({ error: done.error }, { status: 409 });
+  return Response.json(
+    typeof body.declared === "string" ? { ok: true, removed: done.trace } : { ok: true, trace: done.trace },
+  );
 }
