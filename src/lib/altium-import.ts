@@ -1300,7 +1300,7 @@ export async function importAltiumProject(
        * autoPlaneVias in design-rules.ts.
        */
       fsMap[DESIGN_RULES_PATH] = serializeDesignRules(
-        buildProjectRules("custom", { ...limiti, autoPlaneVias: false }),
+        buildProjectRules("custom", { ...limiti, autoPlaneVias: false, autoroute: false }),
       );
     }
     const coppie = Object.entries(limiti.clearanceByPairMm ?? {});

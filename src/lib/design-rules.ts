@@ -111,6 +111,17 @@ export interface DesignRules {
    * one of them on both faces.
    */
   pasteOnPlatedHoles?: boolean;
+  /**
+   * WHETHER THE COMPILE RUNS THE AUTOROUTER. By default it does. A board whose
+   * copper already exists, like one imported from Altium, has nothing to route:
+   * the router still tried for minutes on the connections it cannot see as
+   * done, failed every time, and left a routing error on a board with no open
+   * connection. On BIRDY_BAT (2026-10-20) it took 5 to 9 minutes of a compile,
+   * past the 800 s a production function may run, so the compile was never
+   * saved. `false` compiles geometry, the project's own copper, planes and
+   * checks: the same board, in a minute.
+   */
+  autoroute?: boolean;
 }
 
 /** what a clearance rule can talk about */
@@ -246,7 +257,7 @@ export interface ProjectRules {
 }
 
 const LIMITS: Record<
-  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "autoPlaneVias" | "pasteOnPlatedHoles">
+  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "autoPlaneVias" | "pasteOnPlatedHoles" | "autoroute">
   | "pourClearanceMm"
   | "pasteExpansionMm",
   { min: number; max: number }
@@ -282,7 +293,7 @@ const LIMITS: Record<
 function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = []): DesignRules {
   const out = { ...DEFAULT_DESIGN_RULES };
   if (!input || typeof input !== "object") return out;
-  type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm" | "autoPlaneVias" | "pasteOnPlatedHoles">;
+  type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm" | "autoPlaneVias" | "pasteOnPlatedHoles" | "autoroute">;
   for (const key of Object.keys(LIMITS) as Numeriche[]) {
     const v = input[key];
     if (v === undefined) continue;
@@ -309,6 +320,7 @@ function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = 
   if (Object.keys(coppie).length > 0) out.clearanceByPairMm = coppie;
   if (typeof input.autoPlaneVias === "boolean") out.autoPlaneVias = input.autoPlaneVias;
   if (typeof input.pasteOnPlatedHoles === "boolean") out.pasteOnPlatedHoles = input.pasteOnPlatedHoles;
+  if (typeof input.autoroute === "boolean") out.autoroute = input.autoroute;
 
   // --- the values against each other
   if (out.targetTraceWidthMm < out.minTraceWidthMm) {

@@ -455,6 +455,8 @@ export async function compileProject(
    * here, once, and they hold for both routing and checking.
    */
   const projectRules = resolveDesignRules(projectFsMap);
+  // a board whose copper already exists is not routed again: see DesignRules.autoroute
+  if (opts.route === undefined && projectRules.rules.autoroute === false) opts = { ...opts, route: false };
   const profiler = new Profiler();
 
   /*
