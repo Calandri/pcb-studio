@@ -184,6 +184,54 @@ export function normalizeRotation(deg: unknown): number {
 }
 
 /**
+ * WHERE THE MACHINE PUTS THE PART.
+ *
+ * circuit-json-to-pnp-csv writes `pcb_component.center`: the middle of the box
+ * around the footprint. For a symmetric part that is the body. For a footprint
+ * whose pads are not symmetric it is not: on BIRDY_BAT (2026-10-20) the two MEMS
+ * microphones, with their pads at one end and the acoustic ring at the other,
+ * came out 0.41 and 0.36 mm away from the body, enough to move the sound port
+ * off its hole in the board; an EMI filter array 0.2 mm.
+ *
+ * IPC-7351, and every CAD library that follows it, puts the origin of a
+ * surface-mount footprint at the centre of the body, and the origin is where
+ * the design placed the part (pcbX/pcbY, `display_offset_*`). So for parts
+ * without plated holes the origin is used. Through-hole parts keep the
+ * library's value: a connector is often drawn from pin 1 (the JST XH on the
+ * same board has its origin 3.75 mm from the middle of its pins), and there
+ * the box of the pads is the better guess.
+ */
+export function centriDiMontaggio(rows: PnpRow[], circuitJson: readonly unknown[]): PnpRow[] {
+  type El = { type?: unknown; [k: string]: unknown };
+  const els = circuitJson as El[];
+  const nome = new Map<string, string>();
+  for (const e of els) {
+    if (e.type === "source_component" && typeof e.source_component_id === "string") {
+      nome.set(e.source_component_id, String(e.name ?? ""));
+    }
+  }
+  const conFori = new Set<string>();
+  for (const e of els) {
+    if (e.type === "pcb_plated_hole" && typeof e.pcb_component_id === "string") conFori.add(e.pcb_component_id);
+  }
+  const origine = new Map<string, { x: number; y: number }>();
+  for (const e of els) {
+    if (e.type !== "pcb_component" || typeof e.pcb_component_id !== "string") continue;
+    const x = e.display_offset_x;
+    const y = e.display_offset_y;
+    const n = nome.get(String(e.source_component_id ?? ""));
+    if (!n || conFori.has(e.pcb_component_id)) continue;
+    if (typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)) {
+      origine.set(n, { x, y });
+    }
+  }
+  return rows.map((r) => {
+    const o = origine.get(String(r.designator ?? ""));
+    return o ? { ...r, mid_x: o.x, mid_y: o.y } : r;
+  });
+}
+
+/**
  * The pick-and-place file, same columns as circuit-json-to-pnp-csv writes
  * (Designator, Mid X, Mid Y, Layer, Rotation), with two differences that
  * matter on the factory side: text cells cannot be formulas (see csvCell), and

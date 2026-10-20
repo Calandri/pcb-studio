@@ -8,7 +8,7 @@ import {
 import { convertCircuitJsonToPickAndPlaceRows } from "circuit-json-to-pnp-csv";
 import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
-import { bomToCsv, buildBom, pnpToCsv } from "@/lib/bom";
+import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
@@ -129,8 +129,12 @@ export async function GET(req: Request): Promise<Response> {
       }
       case "pnp": {
         // the library's rows, our CSV: no formulas, rotations in [0, 360)
+        // the body centre, not the middle of the footprint box (see centriDiMontaggio)
         const csv = pnpToCsv(
-          convertCircuitJsonToPickAndPlaceRows(circuitJson as unknown as PnpCircuitJson),
+          centriDiMontaggio(
+            convertCircuitJsonToPickAndPlaceRows(circuitJson as unknown as PnpCircuitJson),
+            circuitJson as unknown[],
+          ),
         );
         return csvResponse(csv, "pnp.csv");
       }
