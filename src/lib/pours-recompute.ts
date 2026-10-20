@@ -107,6 +107,57 @@ function suFaccia(el: El, faccia: string): boolean {
 }
 
 /**
+ * THE VIAS THE SOLVER DOES NOT SEE ON THE INNER LAYERS.
+ *
+ * A through via is written by tscircuit with `layers: ["top", "bottom"]`, and
+ * the solver's converter keeps a via only on a layer that list names
+ * (dist/index.js, `if (!via.layers.includes(options.layer)) continue`). So on
+ * inner1 and inner2 every via is invisible: the plane pours straight over the
+ * holes of the other nets. On an imported board it mostly hides, because the
+ * file's own outlines already have the openings; where they do not, the plane
+ * shorts the via. Measured on BAT_BS on 2026-10-20: the 3V3_MIC via at
+ * (2.654, 21) inside the inner1 ground plane, a short from the microphone
+ * supply to ground.
+ *
+ * A via that spans top to bottom crosses every inner layer, so it is handed
+ * over on that layer too: as an obstacle when it belongs to another net, with
+ * the pour's own key when it is the plane's net, so it stays connected.
+ */
+export function viePassanti(
+  circuitJson: El[],
+  faccia: string,
+  netDellaColata: string,
+  netDiVia: Map<string, string>,
+  chiaveColata: string | undefined,
+): Array<Record<string, unknown>> {
+  if (faccia === "top" || faccia === "bottom") return [];
+  const fuori: Array<Record<string, unknown>> = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_via") continue;
+    const strati = (el.layers as string[] | undefined) ?? [];
+    if (strati.includes(faccia)) continue; // the converter already has it
+    if (!(strati.includes("top") && strati.includes("bottom"))) continue; // blind or buried: not through here
+    const x = num(el.x);
+    const y = num(el.y);
+    const d = num(el.outer_diameter);
+    if (x === null || y === null || d === null) continue;
+    const id = String(el.pcb_via_id ?? "");
+    const suaRete = netDiVia.get(id);
+    const nostra = suaRete !== undefined && suaRete === netDellaColata && chiaveColata;
+    fuori.push({
+      shape: "circle",
+      padId: id,
+      layer: faccia,
+      connectivityKey: nostra ? chiaveColata : `unconnected-via:${id}`,
+      x,
+      y,
+      radius: d / 2,
+    });
+  }
+  return fuori;
+}
+
+/**
  * THE PADS THE SOLVER CANNOT READ.
  *
  * Its converter knows a handful of shapes — smtpad rect, circle, pill,
@@ -579,9 +630,17 @@ export async function ricolaPiani({
     );
     const vicine = altreColate(pours, pour, areaNetta(brep ?? {}));
     const bordo = bandaDelBordo(circuitJson, String(pour.layer), bordoMm);
-    if (mancanti.length + vicine.length + bordo.length > 0) {
+    const passanti = viePassanti(
+      circuitJson,
+      String(pour.layer),
+      String(pour.source_net_id ?? ""),
+      netDiVia,
+      (problema as unknown as { regionsForPour?: Array<{ connectivityKey?: string }> }).regionsForPour?.[0]
+        ?.connectivityKey,
+    );
+    if (mancanti.length + vicine.length + bordo.length + passanti.length > 0) {
       const p = problema as unknown as { pads?: Array<Record<string, unknown>> };
-      p.pads = [...(p.pads ?? []), ...mancanti, ...vicine, ...bordo];
+      p.pads = [...(p.pads ?? []), ...mancanti, ...vicine, ...bordo, ...passanti];
       aggiunti += mancanti.length;
       scavate += vicine.length;
     }
