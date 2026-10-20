@@ -9,6 +9,7 @@ import { convertCircuitJsonToPickAndPlaceRows } from "circuit-json-to-pnp-csv";
 import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
 import { bomToCsv, buildBom, pnpToCsv } from "@/lib/bom";
+import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
@@ -135,8 +136,9 @@ export async function GET(req: Request): Promise<Response> {
       }
       case "gerber": {
         const zip = new JSZip();
-        const gerberLayers = stringifyGerberCommandLayers(
-          convertSoupToGerberCommands(circuitJson),
+        // a silkscreen pen thinner than a fab can print is widened (see silk-stroke)
+        const { layers: gerberLayers } = serigrafiaStampabile(
+          stringifyGerberCommandLayers(convertSoupToGerberCommands(circuitJson)),
         );
         for (const [layerName, content] of Object.entries(gerberLayers)) {
           zip.file(`${layerName}.gbr`, content as string);
