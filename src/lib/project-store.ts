@@ -1,5 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { createHash } from "node:crypto";
+import { conRiprova } from "./db-retry";
 
 export type FsMap = Record<string, string>;
 export interface ChatMessage {
@@ -469,7 +470,8 @@ export async function saveCompileCache(
 ): Promise<SaveCompileResult> {
   const sql = db();
   if (!sql) return { saved: false };
-  await ensureCompileCacheTable(sql);
+  // the first queries after a long compile are the ones that find a dead socket: see db-retry
+  await conRiprova(() => ensureCompileCacheTable(sql));
 
   // the preview of a compile that is not being saved must not stay on screen
   const dropPreview = () =>
@@ -523,7 +525,10 @@ export async function saveCompileCache(
      * millisecond of slack is the precision a JS Date keeps of a timestamptz:
      * without it the row just read would look newer than itself.
      */
-    const rows = (await sql`
+    // retried on a dead socket too: if the first attempt did commit and only the answer was lost,
+    // the second finds its own row and returns none, which reads as "kept the previous" while the
+    // board is in fact saved; a wrong word, never a lost board
+    const rows = (await conRiprova(() => sql`
       INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version)
       VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion})
       ON CONFLICT (project_id)
@@ -537,7 +542,7 @@ export async function saveCompileCache(
       WHERE project_compiles.files_hash = ${condizione.filesHash}
         AND project_compiles.created_at < ${quando}::timestamptz + interval '1 millisecond'
       RETURNING project_id
-    `) as Array<{ project_id: string }>;
+    `)) as Array<{ project_id: string }>;
     return rows.length > 0
       ? { saved: true }
       : {
@@ -548,7 +553,7 @@ export async function saveCompileCache(
   }
 
   // the final save wins over any preview still in flight: it clears it
-  await sql`
+  await conRiprova(() => sql`
     INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version)
     VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion})
     ON CONFLICT (project_id)
@@ -559,7 +564,7 @@ export async function saveCompileCache(
                   preview_circuit_json = NULL,
                   preview_at = NULL,
                   created_at = now()
-  `;
+  `);
   return { saved: true };
 }
 
