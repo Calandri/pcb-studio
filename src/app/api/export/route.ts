@@ -9,6 +9,7 @@ import { convertCircuitJsonToPickAndPlaceRows } from "circuit-json-to-pnp-csv";
 import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
 import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
+import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { viePassantiSuOgniStrato } from "@/lib/via-layers";
 import { withLibrary } from "@/lib/agent-tools";
@@ -142,10 +143,15 @@ export async function GET(req: Request): Promise<Response> {
       case "gerber": {
         const zip = new JSZip();
         // a silkscreen pen thinner than a fab can print is widened (see silk-stroke)
-        const { layers: gerberLayers } = serigrafiaStampabile(
+        // a pad at an angle is written as a region, not as a rotated aperture (see gerber-rotation)
+        const ruotate = senzaRotazioneDiCarico(
           // through vias get their pad on the inner layers too (see via-layers)
           stringifyGerberCommandLayers(convertSoupToGerberCommands(viePassantiSuOgniStrato(circuitJson as never) as AnyCircuitJson)),
         );
+        if (ruotate.nonConvertiti.length > 0) {
+          console.warn(`[export] ${projectId}: rotated apertures left as %LR on ${ruotate.nonConvertiti.join(", ")}`);
+        }
+        const { layers: gerberLayers } = serigrafiaStampabile(ruotate.layers);
         for (const [layerName, content] of Object.entries(gerberLayers)) {
           zip.file(`${layerName}.gbr`, content as string);
         }
