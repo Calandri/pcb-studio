@@ -7,4 +7,7 @@
  */
 // 2 (2026-10-19): plated holes measured by shape, real connectivity for
 // "unrouted", per-rule caps, edge on the real outline, via nets from their trace
-export const CHECKS_ENGINE_VERSION = 2;
+// 3 (2026-10-20): the stencil opening of each pad is the pad plus the project's
+// pasteExpansionMm, no longer tscircuit's 70%: older boards must be recompiled
+// or rechecked before their Gerber can be exported
+export const CHECKS_ENGINE_VERSION = 3;

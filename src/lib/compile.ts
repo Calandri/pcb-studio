@@ -105,6 +105,7 @@ import {
   unrouteSections,
   type SectionVariants,
 } from "./variants";
+import { pastaDaiPad } from "./solder-paste";
 
 export interface UnroutedDetail {
   /** e.g. ".R1 > .pin1 to net.VCC" */
@@ -673,7 +674,11 @@ export async function compileProject(
         projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
       bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
     }).catch(() => null);
-    const circuitJson = (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[];
+    // the stencil of each pad is the pad: see solder-paste.ts
+    const circuitJson = pastaDaiPad(
+      (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[],
+      projectRules.rules.pasteExpansionMm ?? 0,
+    );
     const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
     say({ step: "Controllo le regole", progress: 0.95, circuitJson });
     const summary = await summarize(circuitJson, projectFsMap);
@@ -1004,7 +1009,11 @@ export async function compileProject(
       projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
   }).catch(() => null);
-  const circuitJson = (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[];
+  // the stencil of each pad is the pad: see solder-paste.ts
+  const circuitJson = pastaDaiPad(
+    (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[],
+    projectRules.rules.pasteExpansionMm ?? 0,
+  );
   const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise
   // every hand-pinned component would be flagged as a spurious schX/schY

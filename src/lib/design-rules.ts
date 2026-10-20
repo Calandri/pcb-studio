@@ -83,6 +83,15 @@ export interface DesignRules {
    * about its pours means.
    */
   pourClearanceMm?: number;
+  /**
+   * HOW MUCH THE STENCIL OPENING OF A PAD DIFFERS FROM THE PAD, per side (mm).
+   *
+   * Zero, the Altium and KiCad default, means the paste covers the pad
+   * exactly. Negative shrinks it (fine pitch, where bridges are the risk),
+   * positive grows it. Missing means zero. Before this rule every pad got 70%
+   * of its width and height from tscircuit, half the area: see solder-paste.ts.
+   */
+  pasteExpansionMm?: number;
 }
 
 /** what a clearance rule can talk about */
@@ -218,7 +227,9 @@ export interface ProjectRules {
 }
 
 const LIMITS: Record<
-  Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm"> | "pourClearanceMm",
+  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm">
+  | "pourClearanceMm"
+  | "pasteExpansionMm",
   { min: number; max: number }
 > = {
   minTraceWidthMm: { min: 0.05, max: 2 },
@@ -233,6 +244,9 @@ const LIMITS: Record<
   viaCostMm: { min: 0, max: 50 },
   minHoleToHoleMm: { min: 0.05, max: 3 },
   pourClearanceMm: { min: 0.05, max: 5 },
+  // a tenth of a millimetre either way is already a lot of paste: beyond
+  // that it is a typo, not a stencil
+  pasteExpansionMm: { min: -0.1, max: 0.1 },
 };
 
 /**

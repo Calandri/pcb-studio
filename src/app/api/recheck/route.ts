@@ -1,5 +1,7 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { summarizeCircuit } from "@/lib/compile";
+import { resolveDesignRules } from "@/lib/design-rules";
+import { pastaDaiPad } from "@/lib/solder-paste";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
 import { getCompileCache, getProject, hasBoard, saveCompileCache } from "@/lib/project-store";
@@ -55,10 +57,16 @@ export async function POST(req: Request): Promise<Response> {
      * at each recheck: 98 records became zero, and the board looked like nobody
      * knew where its footprints came from.
      */
-    const summary = summarizeCircuit(
-      cache.circuitJson,
-      await withLibrary(await getProject(projectId)),
+    const progetto = await withLibrary(await getProject(projectId));
+    /*
+     * A board compiled before the paste rule carries tscircuit's 70% openings:
+     * re-evaluating it with the new checks must not certify those for export.
+     */
+    const circuitJson = pastaDaiPad(
+      cache.circuitJson as Array<Record<string, unknown> & { type: string }>,
+      resolveDesignRules(progetto).rules.pasteExpansionMm ?? 0,
     );
+    const summary = summarizeCircuit(circuitJson as typeof cache.circuitJson, progetto);
     /*
      * Only over the row that was read: a compile that finished while this
      * recheck ran has saved a newer board, and the old one re-evaluated must
@@ -67,7 +75,7 @@ export async function POST(req: Request): Promise<Response> {
     const salvataggio = await saveCompileCache(
       projectId,
       cache.filesHash,
-      cache.circuitJson,
+      circuitJson,
       summary,
       CHECKS_ENGINE_VERSION,
       { ifUnchangedSince: { filesHash: cache.filesHash, createdAt: cache.createdAt } },
