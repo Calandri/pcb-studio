@@ -5,7 +5,8 @@
  * "Error connecting to database: TypeError: fetch failed". That sentence is the
  * same for a closed socket, a refused connection, a timeout and a body the
  * server would not take: the reason lives in `cause`, one or two levels down
- * (undici puts the socket error there, with a code such as UND_ERR_SOCKET).
+ * (undici puts the socket error there, with a code such as UND_ERR_SOCKET), or in
+ * `sourceError`, where the Neon driver keeps the TypeError it wrapped.
  * Reporting only the top message leaves whoever reads it with nothing to act on.
  *
  * The chain is walked a few levels and joined; the result is short, so it can
@@ -18,7 +19,8 @@ export function motivoErrore(err: unknown, max = 400): string {
     if (e instanceof Error) {
       const code = (e as { code?: unknown }).code;
       parti.push(`${typeof code === "string" ? `[${code}] ` : ""}${e.message}`);
-      e = (e as { cause?: unknown }).cause;
+      // undici chains with `cause`, the Neon driver keeps the fetch error in `sourceError`
+      e = (e as { cause?: unknown }).cause ?? (e as { sourceError?: unknown }).sourceError;
     } else {
       parti.push(String(e));
       break;
