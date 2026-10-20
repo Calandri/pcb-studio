@@ -105,7 +105,7 @@ import {
   unrouteSections,
   type SectionVariants,
 } from "./variants";
-import { pastaDaiPad } from "./solder-paste";
+import { leggiStencil, pastaDaiPad } from "./solder-paste";
 
 export interface UnroutedDetail {
   /** e.g. ".R1 > .pin1 to net.VCC" */
@@ -678,6 +678,7 @@ export async function compileProject(
     const circuitJson = pastaDaiPad(
       (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[],
       projectRules.rules.pasteExpansionMm ?? 0,
+      { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
     );
     const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
     say({ step: "Controllo le regole", progress: 0.95, circuitJson });
@@ -1016,6 +1017,7 @@ export async function compileProject(
   const circuitJson = pastaDaiPad(
     (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[],
     projectRules.rules.pasteExpansionMm ?? 0,
+    { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
   );
   const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise

@@ -104,6 +104,13 @@ export interface DesignRules {
    * other nets' traces. `false` leaves the planes exactly as the file has them.
    */
   autoPlaneVias?: boolean;
+  /**
+   * PASTE ON THROUGH-HOLE PADS (pin-in-paste). Off unless asked: Altium and
+   * KiCad do not paste a through-hole pad, and pasting it on a normal line
+   * leaves solder on the ring before the lead goes in. tscircuit pasted every
+   * one of them on both faces.
+   */
+  pasteOnPlatedHoles?: boolean;
 }
 
 /** what a clearance rule can talk about */
@@ -239,7 +246,7 @@ export interface ProjectRules {
 }
 
 const LIMITS: Record<
-  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "autoPlaneVias">
+  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "autoPlaneVias" | "pasteOnPlatedHoles">
   | "pourClearanceMm"
   | "pasteExpansionMm",
   { min: number; max: number }
@@ -275,7 +282,7 @@ const LIMITS: Record<
 function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = []): DesignRules {
   const out = { ...DEFAULT_DESIGN_RULES };
   if (!input || typeof input !== "object") return out;
-  type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm" | "autoPlaneVias">;
+  type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm" | "autoPlaneVias" | "pasteOnPlatedHoles">;
   for (const key of Object.keys(LIMITS) as Numeriche[]) {
     const v = input[key];
     if (v === undefined) continue;
@@ -301,6 +308,7 @@ function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = 
   }
   if (Object.keys(coppie).length > 0) out.clearanceByPairMm = coppie;
   if (typeof input.autoPlaneVias === "boolean") out.autoPlaneVias = input.autoPlaneVias;
+  if (typeof input.pasteOnPlatedHoles === "boolean") out.pasteOnPlatedHoles = input.pasteOnPlatedHoles;
 
   // --- the values against each other
   if (out.targetTraceWidthMm < out.minTraceWidthMm) {

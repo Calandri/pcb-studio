@@ -1,7 +1,7 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { summarizeCircuit } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
-import { pastaDaiPad } from "@/lib/solder-paste";
+import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
 import { getCompileCache, getProject, hasBoard, saveCompileCache } from "@/lib/project-store";
@@ -65,6 +65,10 @@ export async function POST(req: Request): Promise<Response> {
     const circuitJson = pastaDaiPad(
       cache.circuitJson as Array<Record<string, unknown> & { type: string }>,
       resolveDesignRules(progetto).rules.pasteExpansionMm ?? 0,
+      {
+        stencil: leggiStencil(progetto).stencil,
+        pasteOnPlatedHoles: resolveDesignRules(progetto).rules.pasteOnPlatedHoles,
+      },
     );
     const summary = summarizeCircuit(circuitJson as typeof cache.circuitJson, progetto);
     /*
