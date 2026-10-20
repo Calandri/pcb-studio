@@ -9,6 +9,7 @@ import {
   saveCompileCache,
   saveRouteVariants,
 } from "@/lib/project-store";
+import { motivoErrore } from "@/lib/error-cause";
 
 export const runtime = "nodejs";
 // increasing-effort routing is the slow part: it gets the same time window
@@ -116,7 +117,7 @@ export async function POST(req: Request): Promise<Response> {
           CHECKS_ENGINE_VERSION,
         ).catch((err) => ({
           saved: false,
-          reason: `salvataggio fallito: ${err instanceof Error ? err.message : String(err)}`,
+          reason: `salvataggio fallito: ${motivoErrore(err)}`,
         }));
         if (!salvataggio.saved && "reason" in salvataggio && salvataggio.reason) {
           summary.message += ` (${salvataggio.reason})`;

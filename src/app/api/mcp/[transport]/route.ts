@@ -23,6 +23,7 @@ import {
   SCHEMATIC_RULES,
   TSCIRCUIT_BASICS,
 } from "@/lib/system-prompt";
+import { motivoErrore } from "@/lib/error-cause";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -298,7 +299,7 @@ function buildHandler(viewer: Viewer) {
           CHECKS_ENGINE_VERSION,
         ).catch((err: unknown) => ({
           saved: false,
-          reason: err instanceof Error ? err.message.slice(0, 200) : String(err),
+          reason: motivoErrore(err),
         }));
         // a compile that is not the board on screen must say so: the agent
         // would otherwise reason on a result the viewer never shows
