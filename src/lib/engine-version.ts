@@ -10,4 +10,6 @@
 // 3 (2026-10-20): the stencil opening of each pad is the pad plus the project's
 // pasteExpansionMm, no longer tscircuit's 70%: older boards must be recompiled
 // or rechecked before their Gerber can be exported
-export const CHECKS_ENGINE_VERSION = 3;
+// 4 (2026-10-20): no piece of a pour narrower than the minimum trace width
+// (pour-necks.ts); through vias get their pad on the inner layers in the Gerber
+export const CHECKS_ENGINE_VERSION = 4;

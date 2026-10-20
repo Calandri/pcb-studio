@@ -37,6 +37,7 @@
     "@tscircuit/core": "^0.0.1512",
     "@tscircuit/create-snippet-url": "^0.0.9",
     "@tscircuit/eval": "^0.0.1059",
+    "@tscircuit/manifold-2d": "0.0.6",
     "@tscircuit/pcb-viewer": "1.11.374",
     "@tscircuit/props": "^0.0.592",
     "@tscircuit/runframe": "^0.0.2274",

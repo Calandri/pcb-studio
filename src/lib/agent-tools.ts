@@ -890,6 +890,7 @@ async function runTool(
         circuitJson: tidy as never,
         clearanceMm: rules.pourClearanceMm ?? rules.minClearanceMm,
         bordoMm: rules.minBoardEdgeClearanceMm,
+        larghezzaMinimaMm: rules.minTraceWidthMm,
       }).catch(() => null);
       const assembled = (poured?.circuitJson ?? tidy) as unknown[];
 

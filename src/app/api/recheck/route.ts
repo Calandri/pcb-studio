@@ -2,6 +2,7 @@ import { requireProjectAccess } from "@/lib/acl";
 import { summarizeCircuit } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
+import { colateSenzaColli } from "@/lib/pour-necks";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
 import { getCompileCache, getProject, hasBoard, saveCompileCache } from "@/lib/project-store";
@@ -62,8 +63,16 @@ export async function POST(req: Request): Promise<Response> {
      * A board compiled before the paste rule carries tscircuit's 70% openings:
      * re-evaluating it with the new checks must not certify those for export.
      */
-    const circuitJson = pastaDaiPad(
+    /*
+     * And a board poured before the neck rule carries slivers a fab cannot
+     * etch: they are cut out here too (see pour-necks.ts).
+     */
+    const senzaColli = await colateSenzaColli(
       cache.circuitJson as Array<Record<string, unknown> & { type: string }>,
+      resolveDesignRules(progetto).rules.minTraceWidthMm,
+    );
+    const circuitJson = pastaDaiPad(
+      senzaColli,
       resolveDesignRules(progetto).rules.pasteExpansionMm ?? 0,
       {
         stencil: leggiStencil(progetto).stencil,

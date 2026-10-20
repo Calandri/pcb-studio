@@ -68,6 +68,7 @@ const esitoColate = (e: EsitoRicolata): NonNullable<CompileSummary["pours"]> => 
   orfaneTolte: e.orfaneTolte,
   viaRiconosciute: e.viaRiconosciute,
   colateSparite: e.colateSparite,
+  colliTagliatiMm2: e.colliTagliatiMm2,
 });
 
 /**
@@ -263,6 +264,8 @@ export interface CompileSummary {
     viaRiconosciute: number;
     /** pours that lost every piece: they existed in the code and are not on the copper */
     colateSparite?: string[];
+    /** copper narrower than the minimum trace width cut out of the pours (pour-necks.ts) */
+    colliTagliatiMm2?: number;
   };
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{
@@ -673,6 +676,7 @@ export async function compileProject(
       clearanceMm:
         projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
       bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
+      larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
     }).catch(() => null);
     // the stencil of each pad is the pad: see solder-paste.ts
     const circuitJson = pastaDaiPad(
@@ -1012,6 +1016,7 @@ export async function compileProject(
     clearanceMm:
       projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
+    larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
   }).catch(() => null);
   // the stencil of each pad is the pad: see solder-paste.ts
   const circuitJson = pastaDaiPad(

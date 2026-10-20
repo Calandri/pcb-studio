@@ -5,6 +5,7 @@ import {
 } from "@tscircuit/copper-pour-solver";
 
 import { planeServedPorts, readPours } from "./pours";
+import { senzaColliStretti } from "./pour-necks";
 
 /**
  * THE PLANES, POURED AGAIN ONCE ALL THE COPPER IS ON THE BOARD.
@@ -56,6 +57,8 @@ export interface EsitoRicolata {
   orfaneTolte: number;
   /** vias of the pour's own net the solver would have carved around */
   viaRiconosciute: number;
+  /** copper narrower than the minimum trace width cut out of the pours, mm2 */
+  colliTagliatiMm2: number;
   /**
    * Pours that came out with NO piece left: every fragment was a splinter or
    * an empty scrap. They disappear from the board, and this says which, so
@@ -537,8 +540,15 @@ export async function ricolaPiani({
   circuitJson,
   clearanceMm,
   bordoMm,
+  larghezzaMinimaMm,
 }: {
   circuitJson: El[];
+  /**
+   * The narrowest copper the project allows (its minimum trace width): no piece
+   * of a pour comes out narrower than this. See pour-necks.ts. Left out, the
+   * pours are kept as the solver draws them.
+   */
+  larghezzaMinimaMm?: number;
   /** the project's minimum spacing: what the pour keeps from everything else */
   clearanceMm: number;
   /**
@@ -551,7 +561,7 @@ export async function ricolaPiani({
 }): Promise<EsitoRicolata> {
   const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
   if (pours.length === 0) {
-    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0, colateScavate: 0, bricioleTolte: 0, orfaneTolte: 0, viaRiconosciute: 0, colateSparite: [] };
+    return { circuitJson, ricolate: 0, areaPrimaMm2: 0, areaDopoMm2: 0, padRuotatiAggiunti: 0, colateScavate: 0, bricioleTolte: 0, orfaneTolte: 0, viaRiconosciute: 0, colateSparite: [], colliTagliatiMm2: 0 };
   }
 
   await initializeManifoldGeometry();
@@ -582,6 +592,7 @@ export async function ricolaPiani({
   let briciole = 0;
   let orfane = 0;
   let riconosciute = 0;
+  let colli = 0;
   const sparite: string[] = [];
   /** pieces already named per original pour: ids stay unique across its fragments */
   const pezziDi = new Map<string, number>();
@@ -659,6 +670,13 @@ export async function ricolaPiani({
       continue;
     }
 
+    // no neck narrower than a trace: see pour-necks.ts
+    if (larghezzaMinimaMm && larghezzaMinimaMm > 0) {
+      const prima = forme.reduce((t, f) => t + areaNetta(f), 0);
+      forme = forme.flatMap((f) => senzaColliStretti(f, larghezzaMinimaMm));
+      colli += Math.max(0, prima - forme.reduce((t, f) => t + areaNetta(f), 0));
+    }
+
     ricolate++;
     /*
      * The id of the pour as the FILE has it: a second run on an already
@@ -722,6 +740,7 @@ export async function ricolaPiani({
     orfaneTolte: orfane,
     viaRiconosciute: riconosciute,
     colateSparite: sparite,
+    colliTagliatiMm2: Number(colli.toFixed(3)),
   };
 }
 
