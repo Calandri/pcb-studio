@@ -10,6 +10,7 @@ import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
 import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
+import { viePassantiSuOgniStrato } from "@/lib/via-layers";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
@@ -142,7 +143,8 @@ export async function GET(req: Request): Promise<Response> {
         const zip = new JSZip();
         // a silkscreen pen thinner than a fab can print is widened (see silk-stroke)
         const { layers: gerberLayers } = serigrafiaStampabile(
-          stringifyGerberCommandLayers(convertSoupToGerberCommands(circuitJson)),
+          // through vias get their pad on the inner layers too (see via-layers)
+          stringifyGerberCommandLayers(convertSoupToGerberCommands(viePassantiSuOgniStrato(circuitJson as never) as AnyCircuitJson)),
         );
         for (const [layerName, content] of Object.entries(gerberLayers)) {
           zip.file(`${layerName}.gbr`, content as string);
