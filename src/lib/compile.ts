@@ -979,7 +979,10 @@ export async function compileProject(
     straightenPinEscapes(
       widenThinTraces(
         nudgeCrowdedVias(
-          stitchToPlanes(state.best.circuitJson, projectRules.rules),
+          // a board whose copper already exists keeps its own planes: see autoPlaneVias
+          projectRules.rules.autoPlaneVias === false
+            ? state.best.circuitJson
+            : stitchToPlanes(state.best.circuitJson, projectRules.rules),
           projectRules.rules.minClearanceMm,
         ),
         projectRules.rules.minTraceWidthMm,

@@ -32,7 +32,7 @@ interface Current {
   rules: DesignRules;
 }
 
-type CampoNumerico = Exclude<keyof DesignRules, "clearanceByPairMm">;
+type CampoNumerico = Exclude<keyof DesignRules, "clearanceByPairMm" | "autoPlaneVias">;
 
 const FIELDS: Array<{
   key: CampoNumerico;

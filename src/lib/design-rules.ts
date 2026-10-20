@@ -92,6 +92,18 @@ export interface DesignRules {
    * of its width and height from tscircuit, half the area: see solder-paste.ts.
    */
   pasteExpansionMm?: number;
+  /**
+   * WHETHER THE COMPILE MAY ADD ITS OWN VIAS TO THE PLANES.
+   *
+   * By default it does (stitchToPlanes): a via next to every pad whose net has
+   * its plane on another face, and stitching vias on a grid. That is right for a
+   * board the router draws. It is wrong for a board whose copper already
+   * exists, like one imported from Altium: the vias are added BEFORE the
+   * imported traces come back, so they land next to pads those traces already
+   * connect, and on BAT_BS they sat 0.07mm from the original vias and on top of
+   * other nets' traces. `false` leaves the planes exactly as the file has them.
+   */
+  autoPlaneVias?: boolean;
 }
 
 /** what a clearance rule can talk about */
@@ -227,7 +239,7 @@ export interface ProjectRules {
 }
 
 const LIMITS: Record<
-  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm">
+  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "autoPlaneVias">
   | "pourClearanceMm"
   | "pasteExpansionMm",
   { min: number; max: number }
@@ -263,7 +275,7 @@ const LIMITS: Record<
 function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = []): DesignRules {
   const out = { ...DEFAULT_DESIGN_RULES };
   if (!input || typeof input !== "object") return out;
-  type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm">;
+  type Numeriche = Exclude<keyof DesignRules, "clearanceByPairMm" | "autoPlaneVias">;
   for (const key of Object.keys(LIMITS) as Numeriche[]) {
     const v = input[key];
     if (v === undefined) continue;
@@ -288,6 +300,7 @@ function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = 
     if (coppie[chiave] !== v) avvisi.push(`distanza ${chiave}: ${v} portata a ${coppie[chiave]}`);
   }
   if (Object.keys(coppie).length > 0) out.clearanceByPairMm = coppie;
+  if (typeof input.autoPlaneVias === "boolean") out.autoPlaneVias = input.autoPlaneVias;
 
   // --- the values against each other
   if (out.targetTraceWidthMm < out.minTraceWidthMm) {

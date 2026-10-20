@@ -58,3 +58,15 @@ describe("the rule", () => {
     expect(nulla.rules.pasteExpansionMm).toBeUndefined();
   });
 });
+
+describe("autoPlaneVias", () => {
+  it("is kept when the project says false, absent otherwise", async () => {
+    const { resolveDesignRules } = await import("@/lib/design-rules");
+    const off = resolveDesignRules({ "design-rules.json": JSON.stringify({ preset: "custom", rules: { autoPlaneVias: false } }) });
+    expect(off.rules.autoPlaneVias).toBe(false);
+    const on = resolveDesignRules({ "design-rules.json": JSON.stringify({ preset: "custom", rules: {} }) });
+    expect(on.rules.autoPlaneVias).toBeUndefined();
+    const sbagliato = resolveDesignRules({ "design-rules.json": JSON.stringify({ preset: "custom", rules: { autoPlaneVias: "no" } }) });
+    expect(sbagliato.rules.autoPlaneVias).toBeUndefined();
+  });
+});

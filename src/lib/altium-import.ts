@@ -1294,7 +1294,14 @@ export async function importAltiumProject(
       );
     }
     if (Object.values(limiti).some((v) => v !== undefined)) {
-      fsMap[DESIGN_RULES_PATH] = serializeDesignRules(buildProjectRules("custom", limiti));
+      /*
+       * The board arrives with its own vias to the planes: the compile must not
+       * add more next to pads the imported traces already connect. See
+       * autoPlaneVias in design-rules.ts.
+       */
+      fsMap[DESIGN_RULES_PATH] = serializeDesignRules(
+        buildProjectRules("custom", { ...limiti, autoPlaneVias: false }),
+      );
     }
     const coppie = Object.entries(limiti.clearanceByPairMm ?? {});
     if (coppie.length > 0) {
