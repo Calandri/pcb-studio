@@ -536,6 +536,14 @@ const areaNetta = (forma: { outer_ring?: Anello; inner_rings?: Anello[] }): numb
   area(forma.outer_ring?.vertices ?? []) -
   (forma.inner_rings ?? []).reduce((s, r) => s + area(r.vertices ?? []), 0);
 
+/**
+ * A splinter: a shape smaller than a square of the clearance, where there is
+ * not room for anything at all. The same line for the pieces a re-pour gives
+ * back and for an old shape kept because the re-pour gave nothing.
+ */
+export const eScheggia = (forma: { outer_ring?: Anello; inner_rings?: Anello[] }, clearanceMm: number): boolean =>
+  areaNetta(forma) < clearanceMm * clearanceMm;
+
 export async function ricolaPiani({
   circuitJson,
   clearanceMm,
@@ -656,17 +664,32 @@ export async function ricolaPiani({
       scavate += vicine.length;
     }
 
+    /*
+     * A plane that will not solve keeps the shape it had: better the old one
+     * than none, and the numbers below say it did not change. Unless the old
+     * one is itself a splinter: on BIRDY_BAT v1.1 a ground polygon squeezed
+     * between two RTC pins 0.4 mm apart (0.2 of clearance from each) came out
+     * of the compiler as a strip 0.0001 mm wide, the re-pour found no room and
+     * gave nothing back, and the strip went to the Gerber as copper 0.025 mm
+     * from a trace. A kept shape passes the same splinter test as a new one.
+     */
+    const tieni = (): void => {
+      if (eScheggia(brep ?? {}, clearanceMm)) {
+        briciole++;
+        sparite.push(String(pour.pcb_copper_pour_id ?? "").replace(/(_r\d+)+$/, ""));
+        return;
+      }
+      nuovi.push(pour);
+    };
     let forme: Array<{ outer_ring?: Anello; inner_rings?: Anello[] }> = [];
     try {
       forme = new CopperPourPipelineSolver(problema).getOutput().brep_shapes ?? [];
     } catch {
-      // a plane that will not solve keeps the shape it had: better the old one
-      // than none, and the numbers below say it did not change
-      nuovi.push(pour);
+      tieni();
       continue;
     }
     if (forme.length === 0) {
-      nuovi.push(pour);
+      tieni();
       continue;
     }
 
@@ -696,7 +719,7 @@ export async function ricolaPiani({
        * room for anything at all.
        */
       const suaArea = areaNetta(forma);
-      if (suaArea < clearanceMm * clearanceMm) {
+      if (eScheggia(forma, clearanceMm)) {
         briciole++;
         return;
       }

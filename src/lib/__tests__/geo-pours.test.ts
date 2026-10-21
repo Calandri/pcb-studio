@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { padsOffPlane, readPours } from "@/lib/pours";
-import { bandaDelBordo, padRuotati, ricolaPiani } from "@/lib/pours-recompute";
+import { bandaDelBordo, eScheggia, padRuotati, ricolaPiani } from "@/lib/pours-recompute";
 
 type El = { type: string; [key: string]: unknown };
 
@@ -97,4 +97,12 @@ describe("ricolaPiani", () => {
     expect(ids(twice)).toEqual(["pour0_r0"]);
     expect(once.colateSparite).toEqual([]);
   }, 60_000);
+
+  it("calls the 0.0001 mm strip left between two pins a splinter, and a real plane not", () => {
+    // as the compiler left it on BIRDY_BAT v1.1 between two RTC pins 0.4 mm apart
+    const striscia = { outer_ring: { vertices: square(26.4, -5.13, 26.4001, -4.0501) }, inner_rings: [] };
+    const piano = { outer_ring: { vertices: square(-8, -8, 8, 8) }, inner_rings: [] };
+    expect(eScheggia(striscia, 0.2)).toBe(true);
+    expect(eScheggia(piano, 0.2)).toBe(false);
+  });
 });
