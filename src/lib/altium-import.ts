@@ -1,3 +1,5 @@
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import {
   circuitJsonToProjectFiles,
@@ -250,13 +252,104 @@ export function eseguiLimitato<T>(
   });
 }
 
-/** the parse itself, as it runs inside the worker */
-const CORPO_PARSE_ALTIUM = `
+/**
+ * WHERE THE PARSER IS, as a file:// URL the worker can import.
+ *
+ * The worker runs EVAL code: it has no file of its own, so a bare
+ * `import("altium-toolkit")` in it resolves from the process's working
+ * directory, `<cwd>/node_modules/altium-toolkit`. On Vercel that folder does not
+ * exist. Turbopack leaves server externals out of the bundle and reaches them
+ * through a HASHED symlink, `.next/node_modules/altium-toolkit-<hash>`, and the
+ * file tracer ships that one only. Measured in production on 20/10/2026: every
+ * file of every import failed to load the parser in the worker ("Cannot find
+ * package 'altium-toolkit' imported from /var/task/[worker eval]") and was
+ * read on the main thread, without the limits below.
+ *
+ * So the path is found here, in the parent, by looking at what is really on
+ * disk: the plain package (dev, tests, any non-hashed layout) and the hashed
+ * symlink Turbopack creates. The names come from the directory listing, never
+ * from a literal, so no bundler can rewrite the resolution, and Node's own
+ * resolver turns the package folder into its entry file (`exports["."]`).
+ * `import.meta.url` is not used on purpose: Turbopack rewrites it.
+ *
+ * `fs` and `module` are taken through `process.getBuiltinModule` and not
+ * imported: the file tracer reads `readdirSync(path.join(process.cwd(), ...))`
+ * as a request to ship that whole folder, node_modules included. Nothing here
+ * must change what goes into the function; it only reads what is already there.
+ */
+const PACCHETTO_PARSER = "altium-toolkit";
+
+type ModuliNode = {
+  fs: typeof import("node:fs");
+  module: typeof import("node:module");
+};
+const builtin = <K extends keyof ModuliNode>(nome: K): ModuliNode[K] =>
+  (process as unknown as { getBuiltinModule: (n: string) => unknown }).getBuiltinModule(
+    `node:${nome}`,
+  ) as ModuliNode[K];
+
+export function trovaAltiumToolkit(radice: string = process.cwd()): {
+  url: string | null;
+  cercati: string[];
+} {
+  const { readdirSync, realpathSync } = builtin("fs");
+  const { createRequire } = builtin("module");
+  const cercati: string[] = [];
+  for (const cartella of [
+    path.join(radice, "node_modules"),
+    path.join(radice, ".next", "node_modules"),
+  ]) {
+    cercati.push(cartella);
+    let voci: string[];
+    try {
+      voci = readdirSync(cartella);
+    } catch {
+      continue;
+    }
+    const candidati = voci
+      .filter((n) => n === PACCHETTO_PARSER || n.startsWith(`${PACCHETTO_PARSER}-`))
+      // the plain name first: it is the one a local install has
+      .sort((a, b) => Number(b === PACCHETTO_PARSER) - Number(a === PACCHETTO_PARSER));
+    for (const nome of candidati) {
+      try {
+        const entrata = createRequire(path.join(cartella, "noop.js")).resolve(nome);
+        return { url: pathToFileURL(realpathSync(entrata)).href, cercati };
+      } catch {
+        // a dangling symlink or an unreadable package: try the next one
+      }
+    }
+  }
+  return { url: null, cercati };
+}
+
+let urlParser: { url: string | null; cercati: string[] } | null = null;
+/** memoized: the layout of a deployment does not change while it runs */
+function urlAltiumToolkit(): { url: string | null; cercati: string[] } {
+  if (!urlParser || !urlParser.url) {
+    try {
+      urlParser = trovaAltiumToolkit();
+    } catch {
+      // a runtime without getBuiltinModule: the worker tries the bare name
+      urlParser = { url: null, cercati: [] };
+    }
+  }
+  return urlParser;
+}
+
+/**
+ * The parse itself, as it runs inside the worker. `workerData.dati.toolkit` is
+ * the parser's file URL found by trovaAltiumToolkit; without it the bare name
+ * is tried, which works only where node_modules sits in the working directory.
+ */
+export const CORPO_PARSE_ALTIUM = `
 let Parser;
 try {
-  ({ Parser } = await import("altium-toolkit"));
+  ({ Parser } = await import(workerData.dati.toolkit || "altium-toolkit"));
 } catch (err) {
-  const e = new Error("altium-toolkit non caricabile nel lettore: " + ((err && err.message) || err));
+  const e = new Error(
+    "altium-toolkit non caricabile nel lettore: " + ((err && err.message) || err) +
+      (workerData.dati.toolkit ? "" : " (cercato in: " + (workerData.dati.cercati || []).join(", ") + ")"),
+  );
   e.moduloMancante = true;
   throw e;
 }
@@ -316,9 +409,12 @@ async function parseOne(
   const warnings: string[] = [];
   let letto: Letto | null = null;
   try {
+    const parser = urlAltiumToolkit();
     const esito = await eseguiLimitato<Letto>(CORPO_PARSE_ALTIUM, {
       nome: file.path,
       dati: file.data,
+      toolkit: parser.url,
+      cercati: parser.cercati,
     });
     if (esito.ok) {
       letto = esito.valore;

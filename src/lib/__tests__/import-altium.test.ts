@@ -1,8 +1,15 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { deflateSync } from "node:zlib";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { eseguiLimitato, importAltiumLibrary } from "@/lib/altium-import";
+import {
+  CORPO_PARSE_ALTIUM,
+  eseguiLimitato,
+  importAltiumLibrary,
+  trovaAltiumToolkit,
+} from "@/lib/altium-import";
 import {
   contornoNativo,
   footprintDaNativo,
@@ -292,6 +299,65 @@ return unzlibSync(new Uint8Array(workerData.dati.compresso)).length;
     expect(c.code).toMatch(/<platedhole shape="pill" outerWidth=\{1\.524\} outerHeight=\{3\.048\}/);
     // the file name went into a comment and stayed there
     expect(c.code.split("\n")[0]).toMatch(/^\/\/ Importato da Altium: lib "x"\.PcbLib/);
+  });
+
+  /*
+   * THE VERCEL LAYOUT. In production the eval worker could not find the parser
+   * from the working directory ("Cannot find package 'altium-toolkit' imported
+   * from /var/task/[worker eval]") and every file was read on the main thread,
+   * without limits. There Turbopack ships the package only as a hashed symlink,
+   * `.next/node_modules/altium-toolkit-<hash>`: this root reproduces exactly
+   * that, with no node_modules/altium-toolkit at all.
+   */
+  it("finds the parser through Turbopack's hashed symlink and parses in the worker", async () => {
+    const radice = mkdtempSync(path.join(tmpdir(), "pcb-vercel-"));
+    try {
+      const esterni = path.join(radice, ".next", "node_modules");
+      mkdirSync(esterni, { recursive: true });
+      symlinkSync(
+        realpathSync(path.join(process.cwd(), "node_modules/altium-toolkit")),
+        path.join(esterni, "altium-toolkit-0123456789abcdef"),
+        "dir",
+      );
+      const { url, cercati } = trovaAltiumToolkit(radice);
+      expect(cercati).toEqual([path.join(radice, "node_modules"), esterni]);
+      expect(url).toMatch(/^file:\/\/.*\/altium-toolkit\/src\/index\.mjs$/);
+
+      const percorso = path.join(
+        process.cwd(),
+        "node_modules/altium-toolkit/src/core/altium/AltiumPcbLibExporter.mjs",
+      );
+      const { AltiumPcbLibExporter } = (await import(pathToFileURL(percorso).href)) as {
+        AltiumPcbLibExporter: { export: (b: unknown) => Uint8Array };
+      };
+      const byte = AltiumPcbLibExporter.export({
+        name: "lib",
+        footprint: {
+          name: "FP",
+          pads: [{ x: 0, y: 0, width: 40, height: 40, shapeTopName: "rectangular", layerId: 1 }],
+        },
+      });
+      const esito = await eseguiLimitato<{ native: Record<string, unknown> }>(CORPO_PARSE_ALTIUM, {
+        nome: "lib.PcbLib",
+        dati: byte.buffer.slice(byte.byteOffset, byte.byteOffset + byte.byteLength),
+        toolkit: url,
+      });
+      expect(esito.ok === false ? esito : null).toBeNull();
+      expect(esito.ok && Object.keys(esito.valore.native).length).toBeGreaterThan(0);
+    } finally {
+      rmSync(radice, { recursive: true, force: true });
+    }
+  });
+
+  it("without the package anywhere, says where it looked", () => {
+    const radice = mkdtempSync(path.join(tmpdir(), "pcb-vuoto-"));
+    try {
+      const { url, cercati } = trovaAltiumToolkit(radice);
+      expect(url).toBeNull();
+      expect(cercati).toHaveLength(2);
+    } finally {
+      rmSync(radice, { recursive: true, force: true });
+    }
   });
 });
 
