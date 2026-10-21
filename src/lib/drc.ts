@@ -978,7 +978,8 @@ export function runDrcChecks(
         if (px === null || py === null) return false;
         const w = (num(el.width) ?? (num(el.radius) ?? 0) * 2) / 2;
         const h = (num(el.height) ?? (num(el.radius) ?? 0) * 2) / 2;
-        return Math.abs(px - x) <= w + 1e-6 && Math.abs(py - y) <= h + 1e-6;
+        const [lx, ly] = nelPad(el, x - px, y - py);
+        return Math.abs(lx) <= w + 1e-6 && Math.abs(ly) <= h + 1e-6;
       }
       // through holes too (pinheaders, connectors): the straight escape applies just the same
       if (el.type === "pcb_plated_hole") {
@@ -1002,11 +1003,14 @@ export function runDrcChecks(
     ] as Array<[Record<string, unknown>, Record<string, unknown>]>) {
       const x = num(from.x)!;
       const y = num(from.y)!;
-      if (!padAt(x, y)) continue;
+      const pad = padAt(x, y);
+      if (!pad) continue;
       const dx = num(to.x)! - x;
       const dy = num(to.y)! - y;
       if (Math.hypot(dx, dy) < 1e-6) continue;
-      const offAxis = escapeOffAxisDeg(dx, dy);
+      // measured against the pad's own edges: on an LQFP turned by 135 degrees
+      // the straight escape IS the 45-degree one
+      const offAxis = escapeOffAxisDeg(...nelPad(pad, dx, dy));
       if (offAxis <= ESCAPE_MAX_DEG) continue;
       /*
        * Copper that arrives from another CAD is counted, not marked. The rule
@@ -1299,6 +1303,18 @@ function dentroPoligono(x: number, y: number, poligono: Array<{ x: number; y: nu
  * How many degrees the escape is off the nearest axis (horizontal or
  * vertical). 0 = perfectly straight, 45 = fully diagonal.
  */
+/**
+ * A vector seen from the pad's own axes. A rotated pad (shape "rotated_rect")
+ * has its edges at ccw_rotation degrees: "straight out of the pad" means
+ * perpendicular to THOSE edges, not to the board's. Every other shape is
+ * already on the board's axes and comes back unchanged.
+ */
+export function nelPad(pad: Record<string, unknown>, dx: number, dy: number): [number, number] {
+  if (pad.shape !== "rotated_rect") return [dx, dy];
+  const t = (-(num(pad.ccw_rotation) ?? 0) * Math.PI) / 180;
+  return [dx * Math.cos(t) - dy * Math.sin(t), dx * Math.sin(t) + dy * Math.cos(t)];
+}
+
 export function escapeOffAxisDeg(dx: number, dy: number): number {
   const deg = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
   return Math.min(deg, 90 - deg);

@@ -112,3 +112,26 @@ describe("stitchToPlanes keeps the wire of a pad that got no via", () => {
     expect(out.some((el) => el.pcb_trace_id === "gnd_wire")).toBe(true);
   });
 });
+
+describe("straightenPinEscapes on a rotated pad", () => {
+  it("leaves an escape along the pad's axis alone and bends a crooked one along that axis", () => {
+    const pad: El = { type: "pcb_smtpad", shape: "rotated_rect", pcb_smtpad_id: "p", x: 0, y: 0, width: 1.194, height: 0.305, ccw_rotation: 135, layer: "top" };
+    const trace = (id: string, tx: number, ty: number): El => ({
+      type: "pcb_trace",
+      pcb_trace_id: id,
+      route: [
+        { route_type: "wire", x: 0, y: 0, width: 0.15, layer: "top" },
+        { route_type: "wire", x: tx, y: ty, width: 0.15, layer: "top" },
+      ],
+    });
+    const out = straightenPinEscapes([pad, trace("dritta", -1, 1), trace("storta", -2, 0)]);
+    expect(routeOf(out, "dritta")).toHaveLength(2);
+    const storta = routeOf(out, "storta");
+    expect(storta).toHaveLength(3);
+    // the bend sits on the pad's long axis, at 135 degrees from the centre
+    const bx = Number(storta[1].x);
+    const by = Number(storta[1].y);
+    expect(bx).toBeLessThan(0);
+    expect(by).toBeCloseTo(-bx, 6);
+  });
+});

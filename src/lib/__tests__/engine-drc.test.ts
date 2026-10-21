@@ -210,3 +210,25 @@ describe("coverage: tie stubs, bare holes, the real edge", () => {
     expect(rules(runDrcChecks(inside))).not.toContain("board_edge_clearance");
   });
 });
+
+describe("pin_escape on a rotated pad", () => {
+  // one LQFP pad turned by 135 degrees, as on BIRDY_BAT's STM32
+  const pad: El = { type: "pcb_smtpad", shape: "rotated_rect", pcb_smtpad_id: "p", x: 0, y: 0, width: 1.194, height: 0.305, ccw_rotation: 135, layer: "top" };
+  const trace = (tx: number, ty: number): El => ({
+    type: "pcb_trace",
+    pcb_trace_id: "t",
+    route: [
+      { route_type: "wire", x: 0, y: 0, width: 0.15, layer: "top" },
+      { route_type: "wire", x: tx, y: ty, width: 0.15, layer: "top" },
+    ],
+  });
+  const escapes = (c: El[]) => runDrcChecks(c).filter((v) => v.rule === "pin_escape");
+
+  it("leaving along the pad's own axis is straight, even at 45 degrees on the board", () => {
+    expect(escapes([board(), pad, trace(-1, 1)])).toHaveLength(0);
+  });
+
+  it("leaving horizontally from that pad is the crooked one", () => {
+    expect(escapes([board(), pad, trace(1.5, 0)])).toHaveLength(1);
+  });
+});

@@ -4,7 +4,7 @@
  * Circuit JSON: they can be verified without running a compilation.
  */
 import { DEFAULT_DESIGN_RULES } from "./design-rules";
-import { distanzaPuntoForma, escapeOffAxisDeg, ingombroForma, rameDelForo } from "./drc";
+import { distanzaPuntoForma, escapeOffAxisDeg, ingombroForma, nelPad, rameDelForo } from "./drc";
 import {
   insidePour,
   marginInsidePour,
@@ -72,7 +72,8 @@ export function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElem
       if (px === null || py === null) return false;
       const w = (num(el.width) ?? (num(el.radius) ?? 0) * 2) / 2;
       const h = (num(el.height) ?? (num(el.radius) ?? 0) * 2) / 2;
-      return Math.abs(px - x) <= w + 1e-6 && Math.abs(py - y) <= h + 1e-6;
+      const [lx, ly] = nelPad(el, x - px, y - py);
+      return Math.abs(lx) <= w + 1e-6 && Math.abs(ly) <= h + 1e-6;
     }) ?? null;
 
   // same angular criterion as the check: only what is truly crooked is
@@ -101,13 +102,12 @@ export function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElem
       const ty = num(to.y);
       if (x === null || y === null || tx === null || ty === null) continue;
 
-      const dx = tx - x;
-      const dy = ty - y;
-      if (Math.hypot(dx, dy) < 1e-6) continue;
-      if (escapeOffAxisDeg(dx, dy) <= MAX_DEG) continue; // already on-axis
-
+      if (Math.hypot(tx - x, ty - y) < 1e-6) continue;
       const pad = padAt(x, y);
       if (!pad) continue;
+      // in the pad's own axes: a rotated pad is exited along ITS edges
+      const [dx, dy] = nelPad(pad, tx - x, ty - y);
+      if (escapeOffAxisDeg(dx, dy) <= MAX_DEG) continue; // already on-axis
 
       // perpendicular to the edge being exited: on the long side of the pad
       const pw = num(pad.width) ?? 0;
@@ -117,12 +117,15 @@ export function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElem
       // the distance to the next point, so as not to overshoot it
       const span = Math.abs(horizontal ? dx : dy);
       const stub = Math.min(MAX_STUB, Math.max(span * 0.4, 0.05));
+      const [sx, sy] = horizontal ? [Math.sign(dx) * stub, 0] : [0, Math.sign(dy) * stub];
+      // back to the board's axes (the inverse of nelPad)
+      const t = pad.shape === "rotated_rect" ? ((num(pad.ccw_rotation) ?? 0) * Math.PI) / 180 : 0;
 
       const point = puntoDiPiega(
         from,
         to,
-        horizontal ? x + Math.sign(dx) * stub : x,
-        horizontal ? y : y + Math.sign(dy) * stub,
+        x + sx * Math.cos(t) - sy * Math.sin(t),
+        y + sx * Math.sin(t) + sy * Math.cos(t),
       );
       next.splice(end === "start" ? 1 : next.length - 1, 0, point);
       changed = true;
