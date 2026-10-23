@@ -38,6 +38,17 @@ const nextConfig: NextConfig = {
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
       },
+      {
+        // magic-link interstitial: the URL carries a one-time token, so it
+        // must not be cached, indexed or leaked through Referer (last match
+        // wins over the global Referrer-Policy above)
+        source: "/auth/verify",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "no-store, max-age=0" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+        ],
+      },
     ];
   },
   serverExternalPackages: [
