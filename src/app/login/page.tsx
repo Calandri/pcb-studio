@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth, signIn } from "@/auth";
 import { LogoMark } from "@/components/Logo";
+import { loginErrorMessage } from "@/lib/magic-link";
 
 export default async function LoginPage({
   searchParams,
@@ -76,7 +77,7 @@ export default async function LoginPage({
 
           {params.error && (
             <p className="mt-4 rounded-lg bg-danger-wash px-3 py-2 text-xs text-danger">
-              Accesso non riuscito ({params.error}). Riprova.
+              {loginErrorMessage(params.error)}
             </p>
           )}
         </div>

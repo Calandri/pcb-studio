@@ -4,6 +4,7 @@ import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import Google from "next-auth/providers/google";
 import { isEmailAllowed } from "@/lib/access-list";
+import { escapeHtml, toInterstitialUrl } from "@/lib/magic-link";
 import { ensureUserOrganization } from "@/lib/org-store";
 
 // Sender must be an identity verified on the SES account in use.
@@ -23,10 +24,13 @@ async function sendMagicLink({
 }): Promise<void> {
   const { SESClient, SendEmailCommand } = await import("@aws-sdk/client-ses");
   const host = new URL(url).host;
+  // Never email the one-time callback itself: mail scanners would consume
+  // the token before the human click. Point at the interstitial instead.
+  const link = toInterstitialUrl(url);
 
   // in development the link also goes to the console, so you don't have to open the email
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[auth] magic link per ${identifier}: ${url}`);
+    console.log(`[auth] magic link per ${identifier}: ${link}`);
   }
 
   const client = new SESClient({
@@ -46,14 +50,14 @@ async function sendMagicLink({
         Body: {
           Text: {
             Charset: "UTF-8",
-            Data: `Apri questo link per accedere a PCB Studio (${host}):\n\n${url}\n\nIl link scade tra 24 ore. Se non hai richiesto l'accesso, ignora questa email.`,
+            Data: `Apri questo link per accedere a PCB Studio (${host}):\n\n${link}\n\nIl link scade tra 24 ore. Se non hai richiesto l'accesso, ignora questa email.`,
           },
           Html: {
             Charset: "UTF-8",
             Data: `<div style="font-family:system-ui,sans-serif;max-width:480px">
               <h2 style="margin:0 0 16px">PCB Studio</h2>
               <p>Clicca per accedere:</p>
-              <p><a href="${url}" style="display:inline-block;background:#059669;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">Accedi</a></p>
+              <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#059669;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">Accedi</a></p>
               <p style="color:#666;font-size:13px">Il link scade tra 24 ore. Se non hai richiesto l'accesso, ignora questa email.</p>
             </div>`,
           },
