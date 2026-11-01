@@ -94,7 +94,7 @@ ${LIBRARY_RULES}
 ${SCHEMATIC_METRICS}
 - unroutedDetail gives the exact pad coordinates still to connect; congestion gives the most copper-covered board cells; ratsnest gives estimatedCrossings and the longest nets. Use them to move parts instead of guessing.
 - drcViolations (fabrication) and prcViolations (whether the board actually works: decoupling distance, dead pour islands, return vias, power trace width) are defects too: fix them before declaring the work done.
-- fabClasses / fabClass say which manufacturer class the design satisfies, cheapest first.
+- fabClasses / fabClass say which manufacturer class the design satisfies, cheapest first; a project with custom rules is listed first and satisfies its own class when the DRC is clean.
 - With variants=3, variantReport lists the routing candidates per section: switch with pick_variant when one looks better or the section is a closeCall.
 - footprintProvenance says where each component's pad geometry comes from. A part with an LCSC code that still uses a generic footprint is a defect: import the real one.
 - A schematic_layout_disabled error means schX/schY disabled the schematic auto layout: remove them and use schSectionName.

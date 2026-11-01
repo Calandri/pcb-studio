@@ -80,7 +80,7 @@ interface Box {
    * courtyards reported eleven "too close" on bat-bs-blocchi where the copper
    * had 1,4 mm of air: noise that buried the two real overlaps.
    */
-  pads: Array<{ minX: number; maxX: number; minY: number; maxY: number; layer: string }>;
+  pads: Array<{ minX: number; maxX: number; minY: number; maxY: number; layer: string; net: string | null }>;
   ports: string[];
 }
 
@@ -104,6 +104,19 @@ function boxesOf(circuitJson: unknown[]): Box[] {
     const sid = str(p.source_port_id);
     if (!cid || !sid) continue;
     portsOfComponent.set(cid, [...(portsOfComponent.get(cid) ?? []), sid]);
+  }
+  /** the net of each pad, as the connectivity key of its port */
+  const chiaveDiSorgente = new Map<string, string>();
+  for (const sp of by("source_port")) {
+    const id = str(sp.source_port_id);
+    const k = str(sp.subcircuit_connectivity_map_key);
+    if (id && k) chiaveDiSorgente.set(id, k);
+  }
+  const reteDiPorta = new Map<string, string>();
+  for (const p of by("pcb_port")) {
+    const id = str(p.pcb_port_id);
+    const k = chiaveDiSorgente.get(str(p.source_port_id) ?? "");
+    if (id && k) reteDiPorta.set(id, k);
   }
 
   /*
@@ -193,6 +206,7 @@ function boxesOf(circuitJson: unknown[]): Box[] {
             minY: sy[0],
             maxY: sy[1],
             layer: p.type === "pcb_plated_hole" ? "both" : (str(p.layer) ?? "top"),
+            net: reteDiPorta.get(str(p.pcb_port_id) ?? "") ?? null,
           };
         })
         .filter((v): v is NonNullable<typeof v> => v !== null),
@@ -205,12 +219,19 @@ function boxesOf(circuitJson: unknown[]): Box[] {
 /**
  * Shortest distance between the copper of two components, pad against pad and
  * only on the same face. null when there is nothing to compare.
+ *
+ * Pads of the SAME net are left out: copper that has to be connected anyway
+ * may touch. A decoupling capacitor 0.06mm from the supply pin it feeds is the
+ * best placement there is, and it was a "too close" failure that made the
+ * board read "routable: false" (eight of them on the sonda del suolo, all of
+ * this kind).
  */
 function padGap(a: Box, b: Box): number | null {
   let best: number | null = null;
   for (const pa of a.pads) {
     for (const pb of b.pads) {
       if (pa.layer !== "both" && pb.layer !== "both" && pa.layer !== pb.layer) continue;
+      if (pa.net !== null && pa.net === pb.net) continue;
       const dx = Math.max(pa.minX - pb.maxX, pb.minX - pa.maxX);
       const dy = Math.max(pa.minY - pb.maxY, pb.minY - pa.maxY);
       // both negative: the pads overlap, and then the distance is negative

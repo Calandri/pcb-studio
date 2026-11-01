@@ -394,6 +394,102 @@ function dentro(x: number, y: number, anello: Array<{ x: number; y: number }>): 
   return d;
 }
 
+/** the distance from a point to a ring's edges */
+function dalBordo(x: number, y: number, anello: Array<{ x: number; y: number }>): number {
+  let d = Infinity;
+  for (let i = 0, j = anello.length - 1; i < anello.length; j = i++) {
+    const a = anello[j];
+    const b = anello[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / l2)) : 0;
+    d = Math.min(d, Math.hypot(x - (a.x + t * dx), y - (a.y + t * dy)));
+  }
+  return d;
+}
+
+const PUNTO = /\{\s*x\s*:\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)\s*,\s*y\s*:\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)\s*\}/g;
+
+/**
+ * The `<copperpour>` of the file whose outline is written as a literal list of
+ * points, with face and net. An outline built from variables or expressions is
+ * left out: reading it would mean running the file, and the shape tscircuit
+ * gives back stays the best guess for it.
+ */
+export function contorniDichiarati(
+  main: string,
+): Array<{ layer: string; net: string; outline: Array<{ x: number; y: number }> }> {
+  const out: Array<{ layer: string; net: string; outline: Array<{ x: number; y: number }> }> = [];
+  for (const m of main.matchAll(/<copperpour\b([^>]*?)\/>/g)) {
+    const attr = m[1];
+    const layer = /\blayer\s*=\s*["']([\w-]+)["']/.exec(attr)?.[1];
+    const net = /\bconnectsTo\s*=\s*["']net\.([\w-]+)["']/.exec(attr)?.[1];
+    const lista = /\boutline\s*=\s*\{\s*\[([^\]]*)\]\s*\}/.exec(attr)?.[1];
+    if (!layer || !net || lista === undefined) continue;
+    if (lista.replace(PUNTO, "").replace(/[\s,]/g, "") !== "") continue;
+    const outline = [...lista.matchAll(PUNTO)].map((q) => ({ x: Number(q[1]), y: Number(q[2]) }));
+    if (outline.length >= 3) out.push({ layer, net, outline });
+  }
+  return out;
+}
+
+/**
+ * THE POURS START AGAIN FROM THE OUTLINE THE FILE DRAWS.
+ *
+ * tscircuit pours a `<copperpour>` keeping its clearance (0.2mm unless the
+ * file says otherwise) from the outline itself, as if the outline were the
+ * board edge, and ricolaPiani used to take that shrunken shape as its outer
+ * ring. Every pour therefore came out about 0.35mm smaller on each side than
+ * the one drawn: on the sonda del suolo a strip of ground poured over a
+ * resistor pad disappeared, the pad lost its plane, and the online report
+ * flagged a missing stitch and a dead island that the Gerbers made from the
+ * declared outlines did not have.
+ *
+ * Each piece tscircuit poured inside a declared outline of the same face and
+ * net is replaced by one pour with that outline; ricolaPiani then cuts it
+ * against the copper of the finished board, the board edge included. Pours
+ * without a literal outline (a whole plane, or an outline built in code) keep
+ * the shape tscircuit gave them.
+ */
+export function conContorniDichiarati(circuitJson: El[], main: unknown): El[] {
+  if (typeof main !== "string" || !main.includes("copperpour")) return circuitJson;
+  const dichiarati = contorniDichiarati(main);
+  if (!dichiarati.length) return circuitJson;
+  const reteDi = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type === "source_net") reteDi.set(String(el.name ?? ""), String(el.source_net_id ?? ""));
+  }
+  const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
+  const sostituite = new Set<El>();
+  const nuove: El[] = [];
+  dichiarati.forEach((d, i) => {
+    const netId = reteDi.get(d.net);
+    if (!netId) return;
+    const pezzi = pours.filter((p) => {
+      if (sostituite.has(p) || String(p.layer ?? "") !== d.layer || String(p.source_net_id ?? "") !== netId) return false;
+      const anello = (p.brep_shape as { outer_ring?: Anello } | undefined)?.outer_ring?.vertices ??
+        (p.points as Array<{ x: number; y: number }> | undefined) ?? [];
+      return anello.length >= 3 && anello.every((v) => dentro(v.x, v.y, d.outline) || dalBordo(v.x, v.y, d.outline) < 0.01);
+    });
+    const modello = pezzi[0] ?? pours.find((p) => String(p.layer ?? "") === d.layer) ?? pours[0];
+    if (!modello) return;
+    pezzi.forEach((p) => sostituite.add(p));
+    const nuova: El = {
+      ...modello,
+      pcb_copper_pour_id: `pcb_copper_pour_dichiarata_${i}`,
+      layer: d.layer,
+      source_net_id: netId,
+      shape: "brep",
+      brep_shape: { outer_ring: { vertices: d.outline }, inner_rings: [] },
+    };
+    delete nuova.points;                                  // a brep pour carries no polygon points
+    nuove.push(nuova);
+  });
+  if (!nuove.length) return circuitJson;
+  return [...circuitJson.filter((el) => !sostituite.has(el)), ...nuove];
+}
+
 /**
  * THE BAND ALONG THE BOARD EDGE, as obstacles.
  *

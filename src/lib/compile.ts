@@ -1,13 +1,13 @@
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
-import { ingombroForma, rameDelForo, runDrcChecks, type DrcViolation } from "./drc";
+import { distanzaPuntoForma, ingombroForma, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame } from "./drc";
 import {
   controllaLunghezze,
   leggiGruppi,
   LUNGHEZZE_PATH,
 } from "./lunghezze";
-import { runPrcChecks, type PrcViolation } from "./prc";
+import { prcTotal, runPrcChecks, type PrcViolation } from "./prc";
 import { emptyErcReport, runErcChecks, type ErcReport } from "./erc";
 import {
   analyzeFootprints,
@@ -54,7 +54,7 @@ import {
   type OrphanEdits,
 } from "./manual-edits";
 import { applyManualRoutes } from "./manual-routes";
-import { ricolaPiani, type EsitoRicolata } from "./pours-recompute";
+import { conContorniDichiarati, ricolaPiani, type EsitoRicolata } from "./pours-recompute";
 import { Profiler, routerPhases, type Profile } from "./profile";
 
 /** the pour numbers, in the shape the summary declares them */
@@ -673,7 +673,8 @@ export async function compileProject(
     });
     // the planes, poured again with the copper in place: see pours-recompute.ts
     const ricolate = await ricolaPiani({
-      circuitJson: conMano.circuitJson as never,
+      // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati
+      circuitJson: conContorniDichiarati(conMano.circuitJson as never, projectFsMap["main.tsx"]) as never,
       // a pour holds its own distance, wider than a trace's when the board says so
       clearanceMm:
         projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
@@ -1014,7 +1015,8 @@ export async function compileProject(
    * over them. See pours-recompute.ts.
    */
   const ricolate = await ricolaPiani({
-    circuitJson: manual.circuitJson as never,
+    // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati
+    circuitJson: conContorniDichiarati(manual.circuitJson as never, projectFsMap["main.tsx"]) as never,
     clearanceMm:
       projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
@@ -1149,6 +1151,19 @@ function emptySummary(
   };
 }
 
+/*
+ * THE ROUTER OF A BOARD THAT NAMES NONE. The autorouterMap below only replaces
+ * the presets a board declares (auto, auto-local, auto-cloud): a <board> with
+ * no `autorouter` prop never looks the map up, and tscircuit falls back to its
+ * own local router. On the sonda del suolo the "geometry only" compile was
+ * therefore routing the whole board with that router (minutes, thrown away)
+ * and leaving a stray "unknown PCB terminal" error behind; a routed compile
+ * used it instead of ours, without the project's fab rules. tscircuit reads a
+ * missing prop from the platform (getInheritedProperty), so the platform
+ * names the preset the map handles.
+ */
+const PRESET_DI_DIFETTO = "auto";
+
 /**
  * Re-compile forcing the local pipeline autorouter at the given effort,
  * regardless of the board's autorouter prop: the platform autorouterMap
@@ -1186,6 +1201,7 @@ async function compileWithLocalRouter(
      * clearance pad against pad, which is the rule the factory actually applies.
      */
     placementDrcChecksDisabled: true,
+    autorouter: PRESET_DI_DIFETTO,
   };
   const runner = new CircuitRunner();
   try {
@@ -1356,11 +1372,11 @@ function carryCopper(geometry: CircuitElement[], vecchio: unknown[]): CircuitEle
 }
 
 /** traces whose ends no longer land on a pad: copper of parts that have moved */
-function danglingTraces(circuitJson: CircuitElement[]): number {
+export function danglingTraces(circuitJson: CircuitElement[]): number {
   const REACH = 0.3;
   const pad: Array<{ x: number; y: number }> = [];
   for (const el of circuitJson) {
-    if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole" && el.type !== "pcb_port") continue;
+    if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole" && el.type !== "pcb_port" && el.type !== "pcb_via") continue;
     const punti = Array.isArray(el.points)
       ? (el.points as Array<{ x?: unknown; y?: unknown }>)
       : [{ x: el.x, y: el.y }];
@@ -1370,8 +1386,63 @@ function danglingTraces(circuitJson: CircuitElement[]): number {
       if (x !== null && y !== null) pad.push({ x, y });
     }
   }
-  const vicinoAUnPad = (x: number, y: number) =>
-    pad.some((p) => Math.abs(p.x - x) <= REACH && Math.abs(p.y - y) <= REACH);
+  /* the copper of every pad, by face: a long pad is entered far from its centre */
+  const rame: Array<{ forma: FormaRame; layer: string | null }> = [];
+  for (const el of circuitJson) {
+    const forma = el.type === "pcb_smtpad" ? rameDelPad(el as never) : el.type === "pcb_plated_hole" ? rameDelForo(el as never) : null;
+    if (forma) rame.push({ forma, layer: el.type === "pcb_smtpad" ? String(el.layer ?? "top") : null });
+  }
+  /* and the pours: a trace may end inside the plane it feeds */
+  const colate: Array<{ layer: string; anello: Array<{ x: number; y: number }> }> = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_copper_pour") continue;
+    const anello = (el.brep_shape as { outer_ring?: { vertices?: Array<{ x: number; y: number }> } } | undefined)?.outer_ring?.vertices ??
+      (el.points as Array<{ x: number; y: number }> | undefined);
+    if (anello && anello.length >= 3) colate.push({ layer: String(el.layer ?? ""), anello });
+  }
+  const dentroAnello = (x: number, y: number, a: Array<{ x: number; y: number }>) => {
+    let d = false;
+    for (let i = 0, j = a.length - 1; i < a.length; j = i++) {
+      if (a[i].y > y !== a[j].y > y && x < ((a[j].x - a[i].x) * (y - a[i].y)) / (a[j].y - a[i].y) + a[i].x) d = !d;
+    }
+    return d;
+  };
+  const vicinoAUnPad = (x: number, y: number, layer: string) =>
+    pad.some((p) => Math.abs(p.x - x) <= REACH && Math.abs(p.y - y) <= REACH) ||
+    rame.some((r) => (r.layer === null || r.layer === layer) && distanzaPuntoForma(r.forma, x, y) <= 0.01) ||
+    colate.some((c) => c.layer === layer && dentroAnello(x, y, c.anello));
+  /*
+   * A trace drawn by hand ends where the next one starts: on a via of the
+   * route, or on the side of another trace (a T junction). Only pads counted
+   * before, so every hand-routed board read "254 traces no longer reach a pad"
+   * while its Gerbers had no open net at all.
+   */
+  const segmenti: Array<{ id: unknown; ax: number; ay: number; bx: number; by: number; w: number; layer: string }> = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_trace") continue;
+    const route = (el.route as Array<Record<string, unknown>> | undefined) ?? [];
+    for (let i = 0; i < route.length; i++) {
+      const p = route[i];
+      const x = num(p.x);
+      const y = num(p.y);
+      if (p.route_type === "via" && x !== null && y !== null) pad.push({ x, y });
+      const q = route[i + 1];
+      if (!q || p.route_type !== "wire" || q.route_type !== "wire") continue;
+      const bx = num(q.x);
+      const by = num(q.y);
+      if (x === null || y === null || bx === null || by === null) continue;
+      segmenti.push({ id: el, ax: x, ay: y, bx, by, w: num(p.width) ?? 0.15, layer: String(p.layer ?? "") });
+    }
+  }
+  const suUnaltraPista = (traccia: unknown, x: number, y: number, layer: string) =>
+    segmenti.some((s) => {
+      if (s.id === traccia || s.layer !== layer) return false;
+      const dx = s.bx - s.ax;
+      const dy = s.by - s.ay;
+      const l2 = dx * dx + dy * dy;
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - s.ax) * dx + (y - s.ay) * dy) / l2)) : 0;
+      return Math.hypot(x - (s.ax + t * dx), y - (s.ay + t * dy)) <= s.w / 2 + 0.01;
+    });
 
   let orfane = 0;
   for (const el of circuitJson) {
@@ -1385,7 +1456,7 @@ function danglingTraces(circuitJson: CircuitElement[]): number {
       const x = num(capo.x);
       const y = num(capo.y);
       if (x === null || y === null) continue;
-      if (!vicinoAUnPad(x, y)) {
+      if (!vicinoAUnPad(x, y, String(capo.layer ?? "")) && !suUnaltraPista(el, x, y, String(capo.layer ?? ""))) {
         orfane++;
         break;
       }
@@ -1412,13 +1483,16 @@ export async function compileGeometryOnly(fsMap: FsMap): Promise<CircuitElement[
       stop() {},
     }),
   });
-  const platform = getPlatformConfig({
-    autorouterMap: {
-      auto: noRouting() as never,
-      "auto-local": noRouting() as never,
-      "auto-cloud": noRouting() as never,
-    },
-  });
+  const platform = {
+    ...getPlatformConfig({
+      autorouterMap: {
+        auto: noRouting() as never,
+        "auto-local": noRouting() as never,
+        "auto-cloud": noRouting() as never,
+      },
+    }),
+    autorouter: PRESET_DI_DIFETTO,
+  };
   const runner = new CircuitRunner();
   try {
     await runner.setPlatformConfig(platform);
@@ -1897,6 +1971,22 @@ function summarize(
       ok: violations === 0,
     };
   }).sort((a, b) => a.costTier - b.costTier);
+  /*
+   * A project that writes its own rules (a different fab, e.g. Eurocircuits
+   * with 0.15mm drills) is checked against them by the main DRC: when that is
+   * clean, the board satisfies the class it was drawn for. Before, only the
+   * three built-in classes counted, so such a board read "NO RULESET
+   * SATISFIED (redesign needed)" with a clean DRC and could never be green.
+   */
+  if (projectRules.isCustom) {
+    fabClasses.unshift({
+      key: "custom",
+      label: projectRules.label,
+      costTier: 0,
+      violations: drcViolations.length,
+      ok: drcViolations.length === 0,
+    });
+  }
   const fabClass = fabClasses.find((f) => f.ok)?.label ?? null;
   const congestion = computeCongestion(circuitJson);
   const ratsnest = computeRatsnest(groupInfo);
@@ -1933,7 +2023,7 @@ function summarize(
     errors: reportedErrors.length,
     unrouted: unroutedConnections.length,
     drcViolations: drcViolations.length,
-    prcViolations: prcViolations.length,
+    prcViolations: prcTotal(prcViolations),
     schematicOverlaps:
       schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount,
     fabClass,
@@ -1941,7 +2031,7 @@ function summarize(
       reportedErrors.length === 0 &&
       unroutedConnections.length === 0 &&
       drcViolations.length === 0 &&
-      prcViolations.length === 0 &&
+      prcTotal(prcViolations) === 0 &&
       schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount === 0 &&
       fabClass !== null,
   };
@@ -1952,7 +2042,7 @@ function summarize(
       `, ${stats.vias} vias, ${round1(totalTraceLengthMm)}mm routed` +
       `${ratsnest.estimatedCrossings ? `, ~${ratsnest.estimatedCrossings} ratsnest crossings` : ""}` +
       `${drcViolations.length ? ` - ${drcViolations.length} DRC violation(s)` : " - DRC clean"}` +
-      `${prcViolations.length ? ` - ${prcViolations.length} electrical issue(s)` : ""}` +
+      `${prcViolations.length ? ` - ${prcTotal(prcViolations)} electrical issue(s)` : ""}` +
       ` - fab: ${fabClass ?? "NO RULESET SATISFIED (redesign needed)"}` +
       `${
         schematicQuality.symbolOverlapCount

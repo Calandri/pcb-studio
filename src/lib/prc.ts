@@ -12,6 +12,7 @@
 
 import { eMassa, ePotenza } from "./net-roles";
 import { insidePour, readPours } from "./pours";
+import { distanzaPuntoForma, rameDelPad, type FormaRame } from "./drc";
 
 /** the outer ring of a pour, whatever shape it was written as */
 function anelloDi(pour: El): Array<{ x: number; y: number }> | null {
@@ -85,11 +86,38 @@ export interface PrcViolation {
   message: string;
   x?: number;
   y?: number;
+  /**
+   * Further occurrences of the same rule that are not listed. Each rule lists
+   * at most MAX_PER_RULE of them, so a long list does not bury the others, but
+   * the count must stay true: the sonda del suolo showed 15 narrow supply
+   * traces when it had 38, and the 23 hidden ones were the ones worth fixing.
+   */
+  more?: number;
+}
+
+/** occurrences listed per rule; the rest are counted in `more` */
+const MAX_PER_RULE = 15;
+
+/** how many issues a PRC run found, the unlisted ones included */
+export function prcTotal(violations: PrcViolation[]): number {
+  return violations.reduce((n, v) => n + 1 + (v.more ?? 0), 0);
 }
 
 const DECOUPLING_MAX_MM = 3;
 const RETURN_VIA_MAX_MM = 2;
 const POWER_TRACE_MIN_WIDTH_MM = 0.4;
+/*
+ * A NECK INTO A FINE-PITCH PIN IS NOT A THIN SUPPLY. A QFN pin is 0.25 mm wide
+ * at 0.5 mm pitch: a 0.4 mm trace on it spills past the pad towards the next
+ * pin, and the solder follows the copper (bridges). Every board with such a
+ * chip enters its supply pins with a short narrow stretch and widens right
+ * after, and IPC-2221 treats that neck-down as normal. The rule therefore
+ * accepts a narrow stretch that starts inside a pad too small for the full
+ * width, is no wider than that pad, and leaves it for at most NECK_MAX_MM.
+ * Before this, the sonda del suolo had 13 "fails" that were all such necks,
+ * and the board could never come out green.
+ */
+const NECK_MAX_MM = 0.6;
 
 /*
  * Ground and supplies are recognised by the shared classifier, not by a regex
@@ -276,10 +304,77 @@ export function parseFarads(text: string): number | null {
   return Number.isFinite(f) && f > 0 ? f : null;
 }
 
+/** the short side of a pad: the widest trace it can take without spilling */
+function latoCorto(f: FormaRame): number {
+  if (f.tipo === "rettangolo") return Math.min(f.w, f.h);
+  if (f.tipo === "capsula") return 2 * f.capsula.r;
+  return 2 * f.r;
+}
+
+/**
+ * Whether every stretch of a power trace narrower than the minimum is a neck
+ * into a fine-pitch pin (see NECK_MAX_MM). The stretch is measured outside the
+ * pad it starts from, by sampling it every 0.01 mm.
+ */
+function soloColli(route: Array<Record<string, unknown>>, pads: Array<{ forma: FormaRame; layer: string }>): boolean {
+  type Punto = { x: number; y: number; layer: string };
+  const segmenti: Array<{ a: Punto; b: Punto; w: number }> = [];
+  for (let i = 0; i + 1 < route.length; i++) {
+    const p = route[i];
+    const q = route[i + 1];
+    if (p.route_type !== "wire" || q.route_type !== "wire") continue;
+    const ax = num(p.x), ay = num(p.y), bx = num(q.x), by = num(q.y);
+    const w = num(p.width) ?? num(q.width);
+    if (ax === null || ay === null || bx === null || by === null || w === null) continue;
+    const layer = String(p.layer ?? "top");
+    segmenti.push({ a: { x: ax, y: ay, layer }, b: { x: bx, y: by, layer }, w });
+  }
+  // runs of consecutive narrow segments
+  const tratti: Array<typeof segmenti> = [];
+  let corrente: typeof segmenti = [];
+  for (const s of segmenti) {
+    if (s.w < POWER_TRACE_MIN_WIDTH_MM - 1e-6) {
+      corrente.push(s);
+      continue;
+    }
+    if (corrente.length) tratti.push(corrente);
+    corrente = [];
+  }
+  if (corrente.length) tratti.push(corrente);
+  if (!tratti.length) return false;
+  return tratti.every((tratto) => {
+    const w = Math.max(...tratto.map((s) => s.w));
+    const capi = [tratto[0].a, tratto[tratto.length - 1].b];
+    const suoi = pads.filter(
+      (p) =>
+        p.layer === capi[0].layer &&
+        latoCorto(p.forma) < POWER_TRACE_MIN_WIDTH_MM &&
+        w <= latoCorto(p.forma) + 1e-6 &&
+        capi.some((c) => distanzaPuntoForma(p.forma, c.x, c.y) < 1e-6),
+    );
+    if (!suoi.length) return false;
+    let fuori = 0;
+    for (const s of tratto) {
+      const lung = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+      const passi = Math.max(1, Math.ceil(lung / 0.01));
+      for (let k = 0; k < passi; k++) {
+        const t = (k + 0.5) / passi;
+        const x = s.a.x + (s.b.x - s.a.x) * t;
+        const y = s.a.y + (s.b.y - s.a.y) * t;
+        if (suoi.every((p) => distanzaPuntoForma(p.forma, x, y) > 1e-6)) fuori += lung / passi;
+      }
+    }
+    return fuori <= NECK_MAX_MM + 1e-6;
+  });
+}
+
 export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
   const violations: PrcViolation[] = [];
+  const perRegola = new Map<string, number>();
   const push = (v: PrcViolation) => {
-    if (violations.filter((x) => x.rule === v.rule).length < 15) violations.push(v);
+    const n = (perRegola.get(v.rule) ?? 0) + 1;
+    perRegola.set(v.rule, n);
+    if (n <= MAX_PER_RULE) violations.push(v);
   };
   const maps = buildMaps(circuitJson);
 
@@ -468,6 +563,12 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
   // --- 4. power traces must actually be wide (house style: 0.5mm target)
   let stretteImportate = 0;
   let piuStretta = Infinity;
+  const padsSmt: Array<{ forma: FormaRame; layer: string }> = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_smtpad") continue;
+    const forma = rameDelPad(el);
+    if (forma) padsSmt.push({ forma, layer: String(el.layer ?? "top") });
+  }
   for (const el of circuitJson) {
     if (el.type !== "pcb_trace") continue;
     let net: string | null = null;
@@ -514,6 +615,7 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
       piuStretta = Math.min(piuStretta, minW);
       continue;
     }
+    if (soloColli(route, padsSmt)) continue;
     const first = route.find((p) => p.route_type === "wire");
     push({
       rule: "power_trace_width",
@@ -524,12 +626,22 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
     });
   }
   if (stretteImportate > 0) {
-    push({
+    // the summary line of the imported copper is always listed: it stands for many
+    violations.push({
       rule: "power_trace_width",
       severity: "warn",
       message: `${stretteImportate} tratti di rame importato su reti di potenza sono piu' stretti di ${POWER_TRACE_MIN_WIDTH_MM}mm (il piu' stretto ${piuStretta}mm): e' come e' disegnata la scheda di partenza, non un errore introdotto qui`,
     });
   }
 
+  // the unlisted occurrences go on the last listed one of their rule
+  for (const [rule, n] of perRegola) {
+    if (n <= MAX_PER_RULE) continue;
+    const ultima = [...violations].reverse().find((v) => v.rule === rule && v.severity === "fail") ??
+      [...violations].reverse().find((v) => v.rule === rule);
+    if (!ultima) continue;
+    ultima.more = n - MAX_PER_RULE;
+    ultima.message += ` (and ${n - MAX_PER_RULE} more not listed)`;
+  }
   return violations;
 }
