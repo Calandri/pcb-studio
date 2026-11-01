@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { prcTotal, runPrcChecks } from "@/lib/prc";
+import { runDrcChecks } from "@/lib/drc";
 import { analyzePlacement } from "@/lib/placement-quality";
 import { conContorniDichiarati, contorniDichiarati } from "@/lib/pours-recompute";
 import { compileGeometryOnly, danglingTraces, summarizeCircuit } from "@/lib/compile";
@@ -162,4 +163,47 @@ describe("a board that names no autorouter", () => {
     expect(s.fabClass).toBe("Regole personalizzate");
     expect(s.fabClasses[0]).toMatchObject({ key: "custom", ok: true });
   }, 120_000);
+});
+
+/*
+ * The false alarms found on the SBB dongle V1.1 (01/11/2026).
+ */
+describe("power_trace_width: a short bridge from pad to pad is not a thin supply", () => {
+  /** an 0402 pad, 0.64 x 0.6, centred on x,y: too wide to call its entry a neck */
+  const pad = (id: string, x: number, y: number): El => ({
+    type: "pcb_smtpad", shape: "rect", pcb_smtpad_id: id, x, y, width: 0.64, height: 0.6, layer: "top",
+  });
+  it("accepts 0.2mm between two pads 0.21mm apart", () => {
+    const c = [...supply(), pad("a", 0, 0), pad("b", 0.85, 0), trace("ponte", [[0, 0], [0.85, 0]], 0.2)];
+    expect(runPrcChecks(c).filter((v) => v.rule === "power_trace_width")).toEqual([]);
+  });
+  it("still flags a narrow run of 2mm between two pads", () => {
+    const c = [...supply(), pad("a", 0, 0), pad("b", 2.64, 0), trace("lunga", [[0, 0], [2.64, 0]], 0.2)];
+    expect(runPrcChecks(c).map((v) => v.rule)).toContain("power_trace_width");
+  });
+  it("still flags a narrow stretch that ends in the air", () => {
+    const c = [...supply(), pad("a", 0, 0), trace("aria", [[0, 0], [0.6, 0]], 0.2)];
+    expect(runPrcChecks(c).map((v) => v.rule)).toContain("power_trace_width");
+  });
+});
+
+describe("drc: a polygonal pad is measured on its outline, not on its straight extent", () => {
+  /** the LP5907 X2SON of the SBB dongle: four chamfered corner pins and the thermal pad turned by 45 degrees */
+  const poli = (id: string, punti: Array<[number, number]>, dx = 0): El => ({
+    type: "pcb_smtpad", shape: "polygon", pcb_smtpad_id: id, layer: "top", points: punti.map(([x, y]) => ({ x: x + dx, y })),
+  });
+  const x2son = (dxTermico = 0): El[] => [
+    poli("p1", [[2.913, 4.825], [3.213, 4.825], [3.213, 5.225], [2.913, 4.925]]),
+    poli("p2", [[2.287, 5.175], [2.287, 4.825], [2.587, 4.825], [2.587, 4.925], [2.337, 5.175]]),
+    poli("p3", [[2.587, 5.875], [2.287, 5.875], [2.287, 5.525], [2.337, 5.525], [2.587, 5.775]]),
+    poli("p4", [[3.213, 5.525], [3.213, 5.875], [2.913, 5.875], [2.913, 5.775], [3.163, 5.525]]),
+    poli("termico", [[3.104, 5.35], [2.75, 5.704], [2.397, 5.35], [2.75, 4.997]], dxTermico),
+  ];
+  const vicinanze = (c: El[]) => runDrcChecks(c as never).filter((v) => v.rule === "vicinanza_pad_senza_rete" || v.rule === "pad_clearance");
+  it("finds nothing too close around the X2SON as drawn", () => {
+    expect(vicinanze(x2son())).toEqual([]);
+  });
+  it("still finds the thermal pad when it really comes within 0.15mm of a pin", () => {
+    expect(vicinanze(x2son(0.12)).length).toBeGreaterThan(0);
+  });
 });

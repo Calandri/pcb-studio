@@ -49,7 +49,7 @@ export interface Capsula {
 /** the copper of a pad, in the one of three shapes that measures it right */
 export type FormaRame =
   | { tipo: "cerchio"; x: number; y: number; r: number }
-  | { tipo: "rettangolo"; x: number; y: number; w: number; h: number; rot: number }
+  | { tipo: "rettangolo"; x: number; y: number; w: number; h: number; rot: number; punti?: Array<{ x: number; y: number }> }
   | { tipo: "capsula"; x: number; y: number; capsula: Capsula };
 
 /** a w x h stadium centred on x,y, its core along the long side, turned by rotDeg */
@@ -259,6 +259,9 @@ export function rameDelPad(el: El): FormaRame | null {
   const xs = punti.map((p) => num(p?.x)).filter((v): v is number => v !== null);
   const ys = punti.map((p) => num(p?.y)).filter((v): v is number => v !== null);
   if (xs.length > 0 && ys.length > 0) {
+    const vertici = punti
+      .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
+      .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null);
     return {
       tipo: "rettangolo",
       x,
@@ -266,6 +269,7 @@ export function rameDelPad(el: El): FormaRame | null {
       w: Math.max(...xs) - Math.min(...xs),
       h: Math.max(...ys) - Math.min(...ys),
       rot: 0,
+      ...(vertici.length >= 3 ? { punti: vertici } : {}),
     };
   }
   const r = num(el.radius);
@@ -318,6 +322,8 @@ interface Box {
   capsula?: Capsula;
   /** the drill, when the thing has one: only this one decides hole to hole */
   foro?: Capsula;
+  /** set for a POLYGONAL pad: its real outline (the box is only its extent) */
+  poligono?: Array<{ x: number; y: number }>;
 }
 
 /** a copper shape as a box the checks can measure */
@@ -336,6 +342,7 @@ function boxDaForma(
     minY: f.y - f.h / 2,
     maxY: f.y + f.h / 2,
     ...(f.rot ? { rot: f.rot } : {}),
+    ...(f.punti ? { poligono: f.punti } : {}),
   };
 }
 
@@ -386,6 +393,7 @@ function distanzaPuntoRettangolo(px: number, py: number, r: Box): number {
 }
 
 function boxDistance(a: Box, b: Box): number {
+  if (a.poligono || b.poligono) return distanzaConPoligono(a, b);
   // a stadium against anything: measured from its core
   if (a.capsula || b.capsula) {
     const tondo = a.capsula ? a : b;
@@ -459,6 +467,38 @@ function angoliDi(r: Box): Array<{ x: number; y: number }> {
     [hw, hh],
     [-hw, hh],
   ].map(([dx, dy]) => ({ x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos }));
+}
+
+/*
+ * A POLYGONAL PAD IS MEASURED ON ITS OUTLINE. Some footprints draw pads as
+ * polygons: the corner pins of an X2SON with their chamfer, its thermal pad
+ * as a square turned by 45 degrees. Taken as their straight extent, the
+ * thermal pad of the SBB dongle's LDO grew into the four pins around it and
+ * the check counted four pairs too close that the copper does not have.
+ * Everything is reduced to points plus a radius (a circle is its center, a
+ * stadium its core, a rectangle its four corners) and measured edge to edge.
+ */
+function sagomaDi(b: Box): { punti: Array<{ x: number; y: number }>; r: number } {
+  if (b.poligono) return { punti: b.poligono, r: 0 };
+  if (b.capsula) return { punti: [{ x: b.capsula.ax, y: b.capsula.ay }, { x: b.capsula.bx, y: b.capsula.by }], r: b.capsula.r };
+  if (b.raggio !== undefined) return { punti: [centroDi(b)], r: b.raggio };
+  return { punti: angoliDi(b), r: 0 };
+}
+
+function distanzaConPoligono(a: Box, b: Box): number {
+  const A = sagomaDi(a);
+  const B = sagomaDi(b);
+  const dentro = (p: { x: number; y: number }, P: Array<{ x: number; y: number }>) => P.length >= 3 && dentroPoligono(p.x, p.y, P);
+  if (A.punti.some((p) => dentro(p, B.punti)) || B.punti.some((p) => dentro(p, A.punti))) return 0;
+  const lati = (P: Array<{ x: number; y: number }>) =>
+    P.length === 1 ? [[P[0], P[0]]] : P.length === 2 ? [[P[0], P[1]]] : P.map((p, i) => [p, P[(i + 1) % P.length]]);
+  let minimo = Infinity;
+  for (const [p, q] of lati(A.punti)) {
+    for (const [u, v] of lati(B.punti)) {
+      minimo = Math.min(minimo, segSegDistanceRaw(p.x, p.y, q.x, q.y, u.x, u.y, v.x, v.y));
+    }
+  }
+  return Math.max(0, minimo - A.r - B.r);
 }
 
 function distanzaFraRettangoli(a: Box, b: Box): number {

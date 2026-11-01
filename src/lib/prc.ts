@@ -116,6 +116,14 @@ const POWER_TRACE_MIN_WIDTH_MM = 0.4;
  * width, is no wider than that pad, and leaves it for at most NECK_MAX_MM.
  * Before this, the sonda del suolo had 13 "fails" that were all such necks,
  * and the board could never come out green.
+ *
+ * The same holds for a SHORT BRIDGE FROM PAD TO PAD: two pads of the same
+ * supply sitting 0.2 mm apart, each with a pad of another net right next to
+ * it, are joined by a stretch that cannot be 0.4 wide, and that is outside the
+ * pads for a fraction of a millimetre. What the minimum width protects, the
+ * drop and the heating along a supply, does not exist on 0.2 mm. A narrow
+ * stretch with both ends inside pads, outside them for at most NECK_MAX_MM, is
+ * accepted too (SBB dongle V1.1: C4.1 to FB2.1, 0.21 mm outside the pads).
  */
 const NECK_MAX_MM = 0.6;
 
@@ -342,17 +350,8 @@ function soloColli(route: Array<Record<string, unknown>>, pads: Array<{ forma: F
   }
   if (corrente.length) tratti.push(corrente);
   if (!tratti.length) return false;
-  return tratti.every((tratto) => {
-    const w = Math.max(...tratto.map((s) => s.w));
-    const capi = [tratto[0].a, tratto[tratto.length - 1].b];
-    const suoi = pads.filter(
-      (p) =>
-        p.layer === capi[0].layer &&
-        latoCorto(p.forma) < POWER_TRACE_MIN_WIDTH_MM &&
-        w <= latoCorto(p.forma) + 1e-6 &&
-        capi.some((c) => distanzaPuntoForma(p.forma, c.x, c.y) < 1e-6),
-    );
-    if (!suoi.length) return false;
+  /** how much of the stretch runs outside the given pads, sampled every 0.01 mm */
+  const fuoriDa = (tratto: typeof segmenti, suoi: typeof pads): number => {
     let fuori = 0;
     for (const s of tratto) {
       const lung = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
@@ -364,7 +363,24 @@ function soloColli(route: Array<Record<string, unknown>>, pads: Array<{ forma: F
         if (suoi.every((p) => distanzaPuntoForma(p.forma, x, y) > 1e-6)) fuori += lung / passi;
       }
     }
-    return fuori <= NECK_MAX_MM + 1e-6;
+    return fuori;
+  };
+  return tratti.every((tratto) => {
+    const w = Math.max(...tratto.map((s) => s.w));
+    const capi = [tratto[0].a, tratto[tratto.length - 1].b];
+    const dentro = (c: Punto) => pads.filter((p) => p.layer === c.layer && distanzaPuntoForma(p.forma, c.x, c.y) < 1e-6);
+    const suoi = pads.filter(
+      (p) =>
+        p.layer === capi[0].layer &&
+        latoCorto(p.forma) < POWER_TRACE_MIN_WIDTH_MM &&
+        w <= latoCorto(p.forma) + 1e-6 &&
+        capi.some((c) => distanzaPuntoForma(p.forma, c.x, c.y) < 1e-6),
+    );
+    if (suoi.length && fuoriDa(tratto, suoi) <= NECK_MAX_MM + 1e-6) return true;
+    // a short bridge from pad to pad (see NECK_MAX_MM)
+    const inizio = dentro(capi[0]);
+    const fine = dentro(capi[1]);
+    return inizio.length > 0 && fine.length > 0 && fuoriDa(tratto, [...inizio, ...fine]) <= NECK_MAX_MM + 1e-6;
   });
 }
 
