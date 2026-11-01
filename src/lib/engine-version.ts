@@ -12,4 +12,8 @@
 // or rechecked before their Gerber can be exported
 // 4 (2026-10-20): no piece of a pour narrower than the minimum trace width
 // (pour-necks.ts); through vias get their pad on the inner layers in the Gerber
-export const CHECKS_ENGINE_VERSION = 4;
+// 5 (2026-11-01): necks into fine-pitch pins and short pad-to-pad bridges accepted by power_trace_width, the PRC count
+// beyond the 15 listed, the fab class of the project's own rules, dangling traces on vias, same-net copper in the
+// placement gap, pours re-poured from their declared outline (d689551); polygonal pads measured on their outline
+// (20a62ca)
+export const CHECKS_ENGINE_VERSION = 5;
