@@ -111,11 +111,36 @@ export interface Hole {
   x: number;
   y: number;
   hole: number;
+  /** the copper ring's diameter; for a non-plated hole it is the drill itself */
   outer: number;
   padW: number;
   padH: number;
   rect: boolean;
   componentId: string;
+  /**
+   * false for a pcb_hole: a bare drill, with no copper around it. Drawn with
+   * the ring of a plated hole, the 2.1mm mounting holes of htl-401 showed a
+   * 3.4mm copper ring over the modem pads that the files do not have.
+   */
+  plated: boolean;
+}
+
+/** the colour of a plated hole's copper */
+export const HOLE_COPPER = "#E8A33C";
+
+/**
+ * The copper around a hole, or null when there is none. Only a plated hole has
+ * copper: a mechanical hole (pcb_hole) is a drill in the bare laminate, and a
+ * ring drawn around it reads as copper touching whatever sits next to it.
+ */
+export function holeCopper(
+  h: Hole,
+): { kind: "rect"; x: number; y: number; w: number; h: number } | { kind: "circle"; r: number } | null {
+  if (!h.plated) return null;
+  if (h.rect && h.padW > 0) {
+    return { kind: "rect", x: h.x - h.padW / 2, y: h.y - h.padH / 2, w: h.padW, h: h.padH };
+  }
+  return { kind: "circle", r: h.outer / 2 };
 }
 
 export interface Paste {
@@ -452,16 +477,19 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
         const y = num(el.y);
         if (x === null || y === null) break;
         const hole = num(el.hole_diameter) ?? num(el.hole_width) ?? 0.8;
+        const plated = el.type === "pcb_plated_hole";
         scene.holes.push({
           id: String(el.pcb_plated_hole_id ?? el.pcb_hole_id ?? `hole${scene.holes.length}`),
           x,
           y,
           hole,
-          outer: num(el.outer_diameter) ?? hole * 1.6,
-          padW: num(el.rect_pad_width) ?? 0,
-          padH: num(el.rect_pad_height) ?? 0,
-          rect: String(el.shape ?? "").includes("rect"),
+          // a non-plated hole has no ring: whatever outer_diameter it carries is not copper
+          outer: plated ? (num(el.outer_diameter) ?? hole * 1.6) : hole,
+          padW: plated ? (num(el.rect_pad_width) ?? 0) : 0,
+          padH: plated ? (num(el.rect_pad_height) ?? 0) : 0,
+          rect: plated && String(el.shape ?? "").includes("rect"),
           componentId: String(el.pcb_component_id ?? ""),
+          plated,
         });
         break;
       }

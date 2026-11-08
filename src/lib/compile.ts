@@ -1327,6 +1327,15 @@ export function readConstraints(main: string): Map<string, string> {
  * depend on the ids that change at every compile. What DOES depend on
  * them, the link to the source trace, is remapped by connection name, so the
  * "which connections are still open" count keeps working.
+ *
+ * The carried copper only fills the connections the files leave WITHOUT copper.
+ * The previous board also holds the copper the files draw themselves (a
+ * <trace> with its pcbPath, a <via>), and the geometry draws it again: carrying
+ * it too put every hand-drawn trace and via twice on the board at every
+ * "Aggiorna" (htl-401-scheda-unica, 253 traces became 506, then 759). So a
+ * connection that already has copper in the geometry keeps that copper only,
+ * and its old copper goes, vias included; and nothing is carried on top of an
+ * identical piece already there. Recompiling N times gives the same board.
  */
 function carryCopper(geometry: CircuitElement[], vecchio: unknown[]): CircuitElement[] {
   /*
@@ -1357,18 +1366,83 @@ function carryCopper(geometry: CircuitElement[], vecchio: unknown[]): CircuitEle
     [...chiaveDiRete(geometry)].map(([id, porte]) => [porte, id] as const),
   );
 
-  return [
-    ...geometry,
-    ...rame.map((el) => {
-      const vecchioId = String(el.source_trace_id ?? "");
-      if (!vecchioId) return el;
-      const porte = vecchie.get(vecchioId);
-      const nuovoId = porte ? nuove.get(porte) : undefined;
-      // a connection that no longer exists keeps the old id: the copper stays
-      // visible and the checks report it as orphaned, which is the truth
-      return nuovoId ? { ...el, source_trace_id: nuovoId } : el;
-    }),
-  ];
+  /** the connection the old trace belongs to on the NEW board, if it still exists */
+  const nuovoIdDi = (el: CircuitElement): string | undefined => {
+    const vecchioId = String(el.source_trace_id ?? "");
+    const porte = vecchioId ? vecchie.get(vecchioId) : undefined;
+    return porte ? nuove.get(porte) : undefined;
+  };
+  /** the connections the files already draw: the geometry has copper for them */
+  const disegnate = new Set(
+    geometry
+      .filter((el) => el.type === "pcb_trace" && el.source_trace_id)
+      .map((el) => String(el.source_trace_id)),
+  );
+
+  /*
+   * The old traces of a connection the files now draw go, and the vias that
+   * were part of them with them: an old via left alone in the middle of the
+   * board would be a hole nothing describes any more.
+   */
+  const viaKey = (x: unknown, y: unknown) => `${Math.round(Number(x) * 1e4)},${Math.round(Number(y) * 1e4)}`;
+  const giaDisegnata = (trace: CircuitElement): boolean => disegnate.has(nuovoIdDi(trace) ?? "");
+  const tracceTolte = new Set<string>();
+  const tracceTenute = new Set<string>();
+  const viaTolte = new Set<string>();
+  const viaTenute = new Set<string>();
+  for (const el of rame) {
+    if (el.type !== "pcb_trace") continue;
+    const tolta = giaDisegnata(el);
+    const id = String(el.pcb_trace_id ?? "");
+    if (id) (tolta ? tracceTolte : tracceTenute).add(id);
+    for (const p of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
+      if (p.route_type === "via") (tolta ? viaTolte : viaTenute).add(viaKey(p.x, p.y));
+    }
+  }
+  const dellaTracciaTolta = (via: CircuitElement): boolean => {
+    // a via a kept trace still passes through stays, whoever else used it
+    const dove = viaKey(via.x, via.y);
+    if (viaTenute.has(dove)) return false;
+    if (viaTolte.has(dove)) return true;
+    // ids are reused across compiles: one a kept trace still uses decides nothing
+    const id = String(via.pcb_trace_id ?? "");
+    return id !== "" && tracceTolte.has(id) && !tracceTenute.has(id);
+  };
+
+  /*
+   * And nothing goes on top of an identical piece: the same trace on the same
+   * path, the same via in the same spot. It also cleans a board already doubled
+   * by the earlier carry, which is what the compile cache holds.
+   */
+  const impronta = (el: CircuitElement): string =>
+    el.type === "pcb_via"
+      ? `via ${viaKey(el.x, el.y)}`
+      : `trace ${JSON.stringify(
+          ((el.route as Array<Record<string, unknown>> | undefined) ?? []).map((p) => [
+            p.route_type,
+            Math.round(Number(p.x) * 1e4),
+            Math.round(Number(p.y) * 1e4),
+            p.layer ?? p.from_layer ?? null,
+            p.to_layer ?? null,
+            p.width ?? null,
+          ]),
+        )}`;
+  const presenti = new Set(
+    geometry.filter((el) => el.type === "pcb_trace" || el.type === "pcb_via").map(impronta),
+  );
+
+  const riportato: CircuitElement[] = [];
+  for (const el of rame) {
+    if (el.type === "pcb_trace" ? giaDisegnata(el) : dellaTracciaTolta(el)) continue;
+    const chiave = impronta(el);
+    if (presenti.has(chiave)) continue;
+    presenti.add(chiave);
+    const nuovoId = nuovoIdDi(el);
+    // a connection that no longer exists keeps the old id: the copper stays
+    // visible and the checks report it as orphaned, which is the truth
+    riportato.push(nuovoId ? { ...el, source_trace_id: nuovoId } : el);
+  }
+  return [...geometry, ...riportato];
 }
 
 /** traces whose ends no longer land on a pad: copper of parts that have moved */

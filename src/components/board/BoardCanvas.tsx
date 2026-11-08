@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import {
+  HOLE_COPPER,
   LAYER_COLOR,
   PAD_COLOR,
   LAYER_ORDER,
   buildScene,
+  holeCopper,
   type BoardScene,
   type LayerId,
   type Marker,
@@ -944,23 +946,29 @@ export function BoardCanvas({
           )}
 
 
-          {/* plated holes and mechanical holes */}
-          {scene.holes.map((h) => (
-            <g key={h.id} transform={compTx(h.componentId)}>
-              {h.rect && h.padW > 0 ? (
-                <rect
-                  x={h.x - h.padW / 2}
-                  y={h.y - h.padH / 2}
-                  width={h.padW}
-                  height={h.padH}
-                  fill="#E8A33C"
+          {/*
+            plated holes and mechanical holes: only a plated hole has a copper
+            ring; a mechanical one is the bare drill with a thin grey edge, so it
+            is not read as copper next to the pads around it (see holeCopper)
+          */}
+          {scene.holes.map((h) => {
+            const ring = holeCopper(h);
+            return (
+              <g key={h.id} transform={compTx(h.componentId)}>
+                {ring?.kind === "rect" && (
+                  <rect x={ring.x} y={ring.y} width={ring.w} height={ring.h} fill={HOLE_COPPER} />
+                )}
+                {ring?.kind === "circle" && <circle cx={h.x} cy={h.y} r={ring.r} fill={HOLE_COPPER} />}
+                <circle
+                  cx={h.x}
+                  cy={h.y}
+                  r={h.hole / 2}
+                  fill="#06100D"
+                  {...(h.plated ? {} : { stroke: "#9AA8A2", strokeWidth: mmPerPx * 1.2 })}
                 />
-              ) : (
-                <circle cx={h.x} cy={h.y} r={h.outer / 2} fill="#E8A33C" />
-              )}
-              <circle cx={h.x} cy={h.y} r={h.hole / 2} fill="#06100D" />
-            </g>
-          ))}
+              </g>
+            );
+          })}
 
           {/* solder paste: the stencil opening, smaller than the pad */}
           {showPaste &&
