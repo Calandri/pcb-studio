@@ -1,4 +1,4 @@
-import { requireProjectAccess } from "@/lib/acl";
+import { accessoDaRichiesta } from "@/lib/acl";
 import {
   buildProjectRules,
   DESIGN_RULES_PATH,
@@ -31,8 +31,9 @@ const presets = () =>
 
 export async function GET(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "default";
-  const { ok } = await requireProjectAccess(projectId, "view");
-  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  if (!(await accessoDaRichiesta(req, projectId, "view"))) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
   const fsMap = await getProject(projectId);
   return Response.json({ ok: true, current: resolveDesignRules(fsMap), presets: presets() });
 }
@@ -49,8 +50,9 @@ export async function POST(req: Request): Promise<Response> {
     typeof body.projectId === "string" && body.projectId.length <= 120
       ? body.projectId
       : "default";
-  const { ok } = await requireProjectAccess(projectId, "edit");
-  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  if (!(await accessoDaRichiesta(req, projectId, "edit"))) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
 
   const preset = typeof body.preset === "string" ? body.preset : "";
   if (!preset) return Response.json({ error: "serve un preset" }, { status: 400 });
