@@ -24,7 +24,8 @@ import { filesHash, getProject, updateProjectFile, type CompileCache } from "./p
  */
 export async function commitManualEdits(
   projectId: string,
-  cache: CompileCache | null,
+  // only WHICH board is saved matters here, not the board: see getCompileMeta
+  cache: Pick<CompileCache, "filesHash"> | null,
   transform: (current: ManualEdits) => ManualEdits | null,
 ): Promise<{ edits: ManualEdits; written: boolean }> {
   const files = await getProject(projectId);

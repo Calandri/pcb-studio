@@ -37,7 +37,7 @@ export function EditorBar({
   /** something the person must know before applying, e.g. the board changed under the edits */
   warning?: string | null;
 }) {
-  const { mode, setMode, counts, busy, saving, canUndo, canRedo, error, dirty, links, unlinks } =
+  const { mode, setMode, counts, busy, saveState, canUndo, canRedo, error, dirty, links, unlinks } =
     editor;
   /** two-step "release all": the first click asks, the second executes */
   const [confirmRelease, setConfirmRelease] = useState(false);
@@ -219,7 +219,7 @@ export function EditorBar({
       {!stale &&
         (counts.pcb + counts.schematic + counts.traceHints + counts.routes > 0 ||
           error ||
-          saving ||
+          saveState !== null ||
           mode !== "view") && (
         // one line, never wrapping: it sits over the board and every extra row
         // covers copper. What does not fit goes into the tooltip.
@@ -228,12 +228,12 @@ export function EditorBar({
             <span className="text-[11px] text-danger">{error}</span>
           ) : (
             <>
-              {saving && (
+              {saveState && (
                 <span
-                  className="text-[11px] text-brand"
+                  className={`text-[11px] ${saveState === "salvato" ? "text-[#5F726C]" : "text-brand"}`}
                   title="Gli spostamenti si salvano da soli: puoi continuare a spostare"
                 >
-                  salvo...
+                  {saveState === "salvato" ? "salvato" : "salvataggio..."}
                 </span>
               )}
               {mode !== "view" && (

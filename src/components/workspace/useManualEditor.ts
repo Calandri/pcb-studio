@@ -4,8 +4,11 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import {
   countManualEdits,
   emptyManualEdits,
+  normalizeRotation,
   type EditEvent,
   type ManualEdits,
+  type ManualPlacement,
+  type PlacementPatch,
 } from "@/lib/manual-edits";
 import { manualRouteKey, type ManualRoute } from "@/lib/manual-routes";
 import {
@@ -26,7 +29,66 @@ export type ApplyResult = { ok: boolean; reason?: string } | void;
  * few nudges with the arrows in one write, short enough that a recompile
  * coming from elsewhere finds almost nothing unsaved.
  */
-export const AUTOSAVE_MS = 700;
+export const AUTOSAVE_MS = 400;
+
+/** where the board on screen has a part: its origin, turn and face */
+export type BoardPlacement = { x: number; y: number; rotation: number; layer: "top" | "bottom" };
+
+/**
+ * The board shows the part where the patch put it. To the thousandth of a
+ * millimetre, which is what a placement keeps (round3); the turn and the face
+ * only when the patch set them.
+ */
+export function boardAgrees(board: BoardPlacement | null, patch: PlacementPatch): boolean {
+  if (!board) return false;
+  if (Math.abs(board.x - patch.x) > 0.002 || Math.abs(board.y - patch.y) > 0.002) return false;
+  if (patch.rotation !== undefined && normalizeRotation(board.rotation) !== normalizeRotation(patch.rotation)) return false;
+  if (patch.layer !== undefined && board.layer !== patch.layer) return false;
+  return true;
+}
+
+/** the file as this page knows it, with the placements the server just wrote */
+export function withPlacements(edits: ManualEdits, written: readonly ManualPlacement[]): ManualEdits {
+  const names = new Set(written.map((p) => p.selector));
+  return {
+    ...edits,
+    pcb_placements: [...edits.pcb_placements.filter((p) => !names.has(p.selector)), ...written],
+  };
+}
+
+/**
+ * The moves a board makes useless: those of the parts whose every move is
+ * written and whose last written position the board shows (or that were
+ * written the old way, `null`). A part with a move still unsent or on its way
+ * keeps all of them: its override is the newest thing there is.
+ */
+export function settledMoves(
+  pending: readonly EditEvent[],
+  isSent: (e: EditEvent) => boolean,
+  writtenAs: WeakMap<EditEvent, PlacementPatch | null>,
+  boardOf: (name: string) => BoardPlacement | null,
+): Set<EditEvent> {
+  const byPart = new Map<string, EditEvent[]>();
+  for (const e of pending) {
+    const k = partKey(e);
+    byPart.set(k, [...(byPart.get(k) ?? []), e]);
+  }
+  const gone = new Set<EditEvent>();
+  for (const events of byPart.values()) {
+    if (events.some((e) => !isSent(e) || !writtenAs.has(e))) continue;
+    const last = writtenAs.get(events[events.length - 1]);
+    if (last === null || (last && boardAgrees(boardOf(last.name), last))) {
+      for (const e of events) gone.add(e);
+    }
+  }
+  return gone;
+}
+
+/** which part (or port) an event is about: the events of one part go together */
+const partKey = (e: EditEvent): string =>
+  `${e.edit_event_type ?? e.pcb_edit_event_type ?? ""}|${
+    e.component_name ?? e.pcb_component_id ?? e.schematic_component_id ?? e.pcb_port_id ?? ""
+  }`;
 
 /** hand-drawn link not yet written into main.tsx */
 export interface PendingLink {
@@ -66,6 +128,7 @@ export function useManualEditor({
   projectId,
   onApplied,
   syncingRef,
+  placementsOf,
 }: {
   projectId: string;
   /**
@@ -81,6 +144,13 @@ export function useManualEditor({
    * between the write and the update as a real stale board.
    */
   syncingRef?: MutableRefObject<boolean>;
+  /**
+   * The moves turned into the positions to write, read on the board ON SCREEN
+   * (Studio knows it, this hook does not): absolute origins by name, which the
+   * server stores as they are. What cannot be turned (a part with no origin on
+   * the board, a schematic move) comes back in `rest` and goes the old way.
+   */
+  placementsOf?: (events: EditEvent[]) => { placements: PlacementPatch[]; rest: EditEvent[] };
 }) {
   const [mode, setMode] = useState<EditMode>("view");
   const [pending, setPending] = useState<EditEvent[]>([]);
@@ -132,6 +202,28 @@ export function useManualEditor({
   /** the background save in flight, if any: one write at a time */
   const autoJobRef = useRef<Promise<void> | null>(null);
   const autoAgainRef = useRef(false);
+  /*
+   * What each written move was written AS: the patch (or null, written the old
+   * way). A move sent but not here is still on its way. A board that arrives
+   * takes the override of a part away only when every move of that part is
+   * written and the board shows the last one: an older board (a sync of the
+   * previous move, a compile from elsewhere) used to take it away anyway and
+   * the part jumped back under the cursor (tm-4l-r3, 2026-11-09).
+   */
+  const writtenAsRef = useRef<WeakMap<EditEvent, PlacementPatch | null>>(new WeakMap());
+  /*
+   * The board follows the saves on its own, one update at a time and after
+   * them: a save is a few hundred bytes and never waits for the board.
+   */
+  const syncJobRef = useRef<Promise<void> | null>(null);
+  const syncAgainRef = useRef(false);
+  /** writes done, and writes the board had already seen when its last update started */
+  const writesRef = useRef(0);
+  const syncedWritesRef = useRef(0);
+  /** the last background save went through: the bar says "salvato" */
+  const [lastSaveOk, setLastSaveOk] = useState(false);
+  /** the board is following the saves (syncBoard): the board that arrives is ours */
+  const [syncing, setSyncing] = useState(false);
   /*
    * The list as it was when a background save failed: the same list does not
    * try again by itself (a refusal every second would hammer the server), a
@@ -220,9 +312,18 @@ export function useManualEditor({
     setUnlinks((u) => (u.includes(declared) ? u : [...u, declared]));
   }, []);
 
-  /** the schematic view emits one event at a time, when the drag ends */
+  /*
+   * A dropped part is taken ALWAYS, even while "Applica" or an undo is writing:
+   * moves travel by name and land on whatever board comes next. Dropping them
+   * while busy made the part jump back where it was, with nothing said.
+   */
   const pushPending = useCallback((event: EditEvent) => {
-    if (event.in_progress || busyRef.current) return;
+    if (event.in_progress) return;
+    const isMove =
+      event.edit_event_type === "edit_pcb_component_location" ||
+      event.edit_event_type === "edit_schematic_component_location";
+    if (busyRef.current && !isMove) return;
+    setLastSaveOk(false);
     setPending((p) => [...p, event]);
   }, []);
 
@@ -242,6 +343,8 @@ export function useManualEditor({
     setError(null);
     try {
       if (autoJobRef.current) await autoJobRef.current.catch(() => {});
+      // and the board update in flight: two at once and the second one is refused
+      if (syncJobRef.current) await syncJobRef.current.catch(() => {});
       await job();
     } finally {
       busyRef.current = false;
@@ -281,7 +384,10 @@ export function useManualEditor({
         setError(err instanceof Error ? err.message : String(err));
         return null;
       }
+      writesRef.current += 1;
+      const seen = writesRef.current;
       await notifyApplied(hint);
+      syncedWritesRef.current = seen;
       return savedRef.current;
     },
     [projectId, commitSaved, notifyApplied],
@@ -320,7 +426,7 @@ export function useManualEditor({
     () => pendingRef.current.filter((e) => !sentRef.current.has(e)),
     [],
   );
-  /** a board containing every written move has arrived: their overrides go */
+  /** every written move goes, whatever the board: undo, redo and Applica, which rewrite the file on purpose */
   const dropSent = useCallback(() => {
     setPending((p) => {
       const left = p.filter((e) => !sentRef.current.has(e));
@@ -329,10 +435,133 @@ export function useManualEditor({
   }, []);
 
   /**
-   * The background save: what is not written yet goes, by name, then the board
-   * follows on the fast path. Nothing locks the canvas and the view is not
-   * remounted: the person keeps dragging while it writes, and what is dropped
-   * meanwhile goes with the next round.
+   * A board has arrived: the overrides it makes useless go, and only those. A
+   * part keeps its override while one of its moves is not written yet, or while
+   * the board does not show the last one written (see writtenAsRef). The moves
+   * written the old way go as soon as they are written, as before.
+   */
+  const dropAgreed = useCallback((boardOf: (name: string) => BoardPlacement | null) => {
+    setPending((p) => {
+      const gone = settledMoves(p, (e) => sentRef.current.has(e), writtenAsRef.current, boardOf);
+      return gone.size === 0 ? p : p.filter((e) => !gone.has(e));
+    });
+  }, []);
+
+  /** raised from the first write until the board has followed the last one: see syncingRef */
+  const refreshSyncing = useCallback(() => {
+    if (!syncingRef) return;
+    syncingRef.current =
+      autoJobRef.current !== null || syncJobRef.current !== null || syncedWritesRef.current !== writesRef.current;
+  }, [syncingRef]);
+
+  /**
+   * The board follows the saved positions: the fast path on the server, then
+   * the board reloaded. One at a time, the latest wins, never inside a save: a
+   * drop is saved in a few hundred milliseconds whatever the board costs.
+   */
+  const syncRef = useRef<() => void>(() => {});
+  const syncBoard = useCallback(() => {
+    if (syncJobRef.current) {
+      syncAgainRef.current = true;
+      return;
+    }
+    const seen = writesRef.current;
+    const job = (async () => {
+      const r = await notifyApplied({ background: true });
+      syncedWritesRef.current = seen;
+      if (r && r.ok === false) {
+        // written, but the board on screen is the old one: the overrides stay
+        // until a board that shows them arrives (Aggiorna, a recompile)
+        setError(
+          `spostamenti salvati, ma la scheda non si e' aggiornata${
+            r.reason ? ` (${r.reason})` : ""
+          }: premi Aggiorna`,
+        );
+      }
+    })().finally(() => {
+      syncJobRef.current = null;
+      if (syncAgainRef.current) {
+        syncAgainRef.current = false;
+        syncRef.current();
+      } else {
+        setSyncing(false);
+      }
+      refreshSyncing();
+    });
+    syncJobRef.current = job;
+    setSyncing(true);
+    refreshSyncing();
+  }, [notifyApplied, refreshSyncing]);
+  useEffect(() => {
+    syncRef.current = syncBoard;
+  }, [syncBoard]);
+
+  /**
+   * Writes these moves. The positions dragged on the board go as absolute
+   * patches by name (`placementsOf`): a few hundred bytes, no board read on the
+   * server, last write wins per part. What cannot be a patch goes the old way.
+   * The undo step is made of exactly what the patches replaced, as the server
+   * answered, without reading the whole file back. False if a write failed.
+   */
+  const saveMoves = useCallback(
+    async (batch: EditEvent[]): Promise<boolean> => {
+      const { placements, rest } = placementsOf ? placementsOf(batch) : { placements: [], rest: batch };
+      const restSet = new Set(rest);
+      if (placements.length > 0) {
+        const res = await fetch("/api/manual-edits", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId, action: "place", placements }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || !Array.isArray(d?.placements)) throw new Error(d?.error ?? `HTTP ${res.status}`);
+        const written = d.placements as ManualPlacement[];
+        const replaced = (Array.isArray(d.before) ? d.before : []) as Array<{ placement: ManualPlacement | null }>;
+        commitSaved(withPlacements(savedRef.current, written));
+        const empty = emptyManualEdits();
+        setPast((p) =>
+          [
+            ...p,
+            {
+              before: { ...empty, pcb_placements: replaced.flatMap((b) => (b.placement ? [b.placement] : [])) },
+              after: { ...empty, pcb_placements: written },
+            },
+          ].slice(-40),
+        );
+        const byName = new Map(placements.map((pl) => [pl.name, pl]));
+        for (const e of batch) {
+          if (restSet.has(e)) continue;
+          const patch = e.component_name ? byName.get(e.component_name) : undefined;
+          if (patch) writtenAsRef.current.set(e, patch);
+        }
+        writesRef.current += 1;
+      }
+      if (rest.length > 0) {
+        const before = (await readSaved()) ?? savedRef.current;
+        const res = await fetch("/api/manual-edits", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId, events: rest }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || !d?.edits) throw new Error(d?.error ?? `HTTP ${res.status}`);
+        const next = d.edits as ManualEdits;
+        commitSaved(next);
+        setPast((p) => [...p, { before, after: next }].slice(-40));
+        for (const e of rest) writtenAsRef.current.set(e, null);
+        writesRef.current += 1;
+      }
+      setFuture([]);
+      return true;
+    },
+    [placementsOf, projectId, commitSaved, setPast, readSaved],
+  );
+
+  /**
+   * The background save: what is not written yet goes, by name, and the board
+   * follows afterwards (syncBoard). Nothing locks the canvas and the view is
+   * not remounted: the person keeps dragging while it writes, and what is
+   * dropped meanwhile goes with the next round, with its latest position.
    */
   const autoSaveRef = useRef<() => void>(() => {});
   const autoSave = useCallback(() => {
@@ -346,23 +575,16 @@ export function useManualEditor({
     if (batch.length === 0) return;
     markSent(batch, true);
     setSaving(true);
-    if (syncingRef) syncingRef.current = true;
+    let failed = false;
     const job = (async () => {
-      const before = (await readSaved()) ?? savedRef.current;
-      let next: ManualEdits | null = null;
       try {
-        const res = await fetch("/api/manual-edits", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId, events: batch }),
-        });
-        const d = await res.json().catch(() => ({}));
-        if (!res.ok || !d?.edits) throw new Error(d?.error ?? `HTTP ${res.status}`);
-        next = d.edits as ManualEdits;
+        await saveMoves(batch);
       } catch (err) {
+        failed = true;
         // nothing is thrown away: they go back to "not applied" and the next gesture retries them
         autoFailedRef.current = pendingRef.current;
         markSent(batch, false);
+        setLastSaveOk(false);
         setError(
           `salvataggio automatico non riuscito: ${
             err instanceof Error ? err.message : String(err)
@@ -370,33 +592,26 @@ export function useManualEditor({
         );
         return;
       }
-      commitSaved(next);
-      setPast((p) => [...p, { before, after: next as ManualEdits }].slice(-40));
-      setFuture([]);
       setError(null);
-      const r = await notifyApplied({ background: true });
-      if (r && r.ok === false) {
-        // written, but the board on screen is the old one: the overrides stay
-        // until a board that contains them arrives (Aggiorna, a recompile)
-        setError(
-          `spostamenti salvati, ma la scheda non si e' aggiornata${
-            r.reason ? ` (${r.reason})` : ""
-          }: premi Aggiorna`,
-        );
-        return;
-      }
-      dropSent();
+      setLastSaveOk(true);
     })().finally(() => {
       autoJobRef.current = null;
-      if (syncingRef) syncingRef.current = false;
       setSaving(false);
-      if (autoAgainRef.current) {
-        autoAgainRef.current = false;
+      const again = autoAgainRef.current;
+      autoAgainRef.current = false;
+      // what was dropped meanwhile goes now, with its latest position; after a
+      // failure nothing retries by itself (a new gesture or Applica does)
+      if (!failed && (again || unsentNow().length > 0)) {
         autoSaveRef.current();
+      } else if (syncedWritesRef.current !== writesRef.current) {
+        // nothing left to write: now the board
+        syncRef.current();
       }
+      refreshSyncing();
     });
     autoJobRef.current = job;
-  }, [projectId, unsentNow, markSent, readSaved, commitSaved, notifyApplied, dropSent, syncingRef, setPast]);
+    refreshSyncing();
+  }, [unsentNow, markSent, saveMoves, refreshSyncing]);
   useEffect(() => {
     autoSaveRef.current = autoSave;
   }, [autoSave]);
@@ -449,34 +664,46 @@ export function useManualEditor({
       setUnlinks((u) => withoutSent(u, sentUnlinks, failedUnlinks));
       const circuitChanged = problems.length < sentLinks.length + sentUnlinks.length;
 
-      if (sentPending.length > 0 || sentRoutes.length > 0) {
-        // only the links (written into main.tsx) change the circuit and make
-        // the board need recompiling: moves and hand-routed traces apply
-        // locally, in a second, without a reroute-everything
-        const structural = circuitChanged;
+      // only the links (written into main.tsx) change the circuit and make
+      // the board need recompiling: moves and hand-routed traces apply
+      // locally, in a second, without a reroute-everything
+      const structural = circuitChanged;
+      if (sentPending.length > 0) {
+        markSent(sentPending, true);
+        try {
+          await saveMoves(sentPending);
+        } catch (err) {
+          // nothing is discarded: they stay "not applied"
+          markSent(sentPending, false);
+          setError(err instanceof Error ? err.message : String(err));
+          return;
+        }
+      }
+      if (sentRoutes.length > 0) {
         // the state right before the write, read now: the last one this page
         // saw may be older than what the agent wrote since
         const before = (await readSaved()) ?? savedRef.current;
-        markSent(sentPending, true);
-        const next = await write({ events: sentPending, routes: sentRoutes }, { structural });
+        const next = await write({ events: [], routes: sentRoutes }, { structural });
         // on failure nothing is discarded: the hand-drawn traces stay pending,
         // they used to be dropped BEFORE the error check and vanished
-        if (!next) {
-          markSent(sentPending, false);
-          return;
-        }
+        if (!next) return;
         setRoutes((r) => withoutSent(r, sentRoutes));
-        // the board just reloaded holds every written move, the background ones too
-        dropSent();
         setPast((p) => [...p, { before, after: next }].slice(-40));
         setFuture([]);
-      } else if (circuitChanged) {
-        // no moves to save, but the circuit has changed: recompile
-        await notifyApplied({ structural: true });
+      } else if (sentPending.length > 0 || circuitChanged || syncedWritesRef.current !== writesRef.current) {
+        const seen = writesRef.current;
+        await notifyApplied({ structural });
+        syncedWritesRef.current = seen;
       }
+      /*
+       * No dropSent here: the overrides go when the board that SHOWS them
+       * arrives (dropAgreed, from the page). Dropping them after any write
+       * put the parts back where the old board had them whenever the board
+       * could not follow, and the person saw the move undone.
+       */
       setViewerKey((k) => k + 1);
     });
-  }, [dirty, links, unlinks, routes, exclusive, postConnection, readSaved, write, notifyApplied, unsentNow, markSent, dropSent, setPast]);
+  }, [dirty, links, unlinks, routes, exclusive, postConnection, readSaved, write, notifyApplied, unsentNow, markSent, saveMoves, setPast]);
 
   /**
    * Moves a saved step back (undo) or forward again (redo), relative to what
@@ -598,8 +825,19 @@ export function useManualEditor({
     busy,
     /** a background save is writing (the canvas stays free) */
     saving,
-    /** the board changed by itself (a compile from elsewhere, Aggiorna): written moves are in it */
-    dropSent,
+    /**
+     * For the bar, never blocking: "attesa" a move waits its AUTOSAVE_MS,
+     * "salvo" it is being written, "salvato" the last one is on the server.
+     */
+    saveState: (saving ? "salvo" : unsentMoves > 0 ? "attesa" : lastSaveOk && !error ? "salvato" : null) as
+      | "attesa"
+      | "salvo"
+      | "salvato"
+      | null,
+    /** a board arrived (a sync, a recompile, a compile from elsewhere): the overrides it shows go */
+    dropAgreed,
+    /** the board on screen is being brought up to the saved moves: what arrives meanwhile is ours */
+    syncing,
     error,
     viewerKey,
     links,

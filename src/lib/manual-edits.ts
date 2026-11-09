@@ -991,6 +991,68 @@ const upsertPlacement = (
   return next;
 };
 
+/**
+ * Where a part dragged in Sposta has to stay: its ORIGIN, by name, as the
+ * board on screen shows it. Absolute, not a displacement: sending the same
+ * patch twice writes the same thing, and the latest patch of a part wins.
+ */
+export interface PlacementPatch {
+  name: string;
+  /** the origin, parent-relative like pcbX/pcbY (what a placement stores) */
+  x: number;
+  y: number;
+  rotation?: number;
+  layer?: "top" | "bottom";
+}
+
+/**
+ * The patches of one save, checked: a name, finite coordinates on a board,
+ * a known face. Anything else is dropped, not guessed. Two patches for the
+ * same part: the last one, like on screen.
+ */
+export function parsePlacementPatches(raw: unknown, max: number): PlacementPatch[] {
+  if (!Array.isArray(raw)) return [];
+  const byName = new Map<string, PlacementPatch>();
+  for (const p of raw.slice(0, max)) {
+    if (typeof p !== "object" || p === null) continue;
+    const r = p as Record<string, unknown>;
+    const name = typeof r.name === "string" ? r.name.trim() : "";
+    if (!name || name.length > 120) continue;
+    const ok = (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= EDIT_LIMITS.maxCoordMm;
+    if (!ok(r.x) || !ok(r.y)) continue;
+    if (r.rotation !== undefined && normalizeRotation(r.rotation) === null) continue;
+    if (r.layer !== undefined && faceOf(r.layer) === null) continue;
+    byName.delete(name);
+    byName.set(name, {
+      name,
+      x: r.x,
+      y: r.y,
+      ...(r.rotation !== undefined ? { rotation: normalizeRotation(r.rotation) as number } : {}),
+      ...(r.layer !== undefined ? { layer: faceOf(r.layer) as "top" | "bottom" } : {}),
+    });
+  }
+  return [...byName.values()];
+}
+
+/**
+ * Writes the patches into the placements, last write wins per part. Also says
+ * what each touched part had before (null: no placement), so that the editor
+ * can undo exactly this step without reading the whole file back.
+ */
+export function applyPlacementPatches(
+  edits: ManualEdits,
+  patches: readonly PlacementPatch[],
+): { edits: ManualEdits; before: Array<{ selector: string; placement: ManualPlacement | null }> } {
+  let pcb = edits.pcb_placements;
+  const before: Array<{ selector: string; placement: ManualPlacement | null }> = [];
+  for (const p of patches) {
+    before.push({ selector: p.name, placement: pcb.find((x) => x.selector === p.name) ?? null });
+    pcb = upsertPlacement(pcb, p.name, { x: p.x, y: p.y }, p.rotation, p.layer);
+  }
+  return { edits: { ...edits, pcb_placements: pcb }, before };
+}
+
 /** how much a single save may carry: the editor sends one event per drag */
 export const EDIT_LIMITS = {
   maxEvents: 500,

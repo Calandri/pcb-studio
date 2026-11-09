@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import { useVistaCondivisa } from "./vista-condivisa";
@@ -1110,70 +1110,16 @@ export function BoardCanvas({
             strokeWidth={mmPerPx}
           />
 
-          {/* copper planes, from bottom to top */}
-          {showPours &&
-            drawOrder.map((l) =>
-              scene.pours
-                .filter((p) => p.layer === l)
-                .map((p) => (
-                  <path
-                    key={p.id}
-                    d={p.path}
-                    fillRule="evenodd"
-                    fill={LAYER_COLOR[l]}
-                    /*
-                     * The plane has its own opacity, not the layers'.
-                     * Multiplying the two factors, a ground plane on inner1
-                     * while looking at top ended up at 0.16 x 0.1 = 1.6%: it was there
-                     * but invisible, and on a 4-layer board the ground plane is
-                     * the first thing that must be recognized. Here it stays
-                     * discreet under the traces but visible even when it is not
-                     * the foreground layer.
-                     *
-                     * AND IT HAS AN EDGE. At a fifth of the colour a plane that
-                     * covers the whole face is a uniform tint over a dark board:
-                     * indistinguishable from the board itself, and read as "the
-                     * pour is missing" — which happened, twice, on a board whose
-                     * ground covers 3216 of its 3551 square millimetres. The
-                     * outline is what says there is copper here and it ends
-                     * there; the clearances around pads become visible with it.
-                     */
-                    stroke={LAYER_COLOR[l]}
-                    strokeWidth={mmPerPx * (l === active ? 1.4 : 1)}
-                    strokeOpacity={tutti || l === active ? 0.85 : (xray / 100) * 0.7}
-                    opacity={tutti || l === active ? 0.45 : (xray / 100) * 0.45}
-                  />
-                )),
-            )}
-
-          {/* traces */}
-          {drawOrder.map((l) => (
-            <g key={`tr-${l}`} opacity={layerOpacity(l)}>
-              {scene.traces
-                .filter((t) => t.layer === l && t.points.length > 1)
-                .map((t, i) => (
-                  <polyline
-                    key={`${l}-${i}`}
-                    points={t.points.map((p) => `${p.x},${p.y}`).join(" ")}
-                    fill="none"
-                    stroke={LAYER_COLOR[l]}
-                    strokeWidth={t.width}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                ))}
-            </g>
-          ))}
-
-          {/* via: copper ring with the through hole, UNDER the coating: a via is
-              tented, which is why on a finished board you see a green dot and
-              not a metal ring (this board's file marks all 640 of them tented) */}
-          {scene.vias.map((v) => (
-            <g key={v.id}>
-              <circle cx={v.x} cy={v.y} r={v.outer / 2} fill="#C9A227" opacity={0.9} />
-              <circle cx={v.x} cy={v.y} r={v.hole / 2} fill="#06100D" />
-            </g>
-          ))}
+          {/* planes, traces and vias: they do not move with the parts, see RameFermo */}
+          <RameFermo
+            scene={scene}
+            drawOrder={drawOrder}
+            showPours={showPours}
+            mmPerPx={mmPerPx}
+            active={active}
+            tutti={tutti}
+            xray={xray}
+          />
 
           {/*
             THE SOLDER MASK: the green coating, over the copper.
@@ -1956,3 +1902,110 @@ function ViewButton({
 }
 
 export type { BoardScene };
+
+/**
+ * The copper that does not move with the parts: planes, traces and vias. A
+ * moved part leaves its traces where they are until they are redrawn, so none
+ * of this changes while parts are dragged, dropped or saved, and it is drawn
+ * once per board, zoom and layer choice instead of on every gesture. On
+ * tm-4l-r3 (831 traces, 711 vias) it was 85% of every redraw: 22-39 ms per
+ * drop, 3-5 ms without (2026-11-09).
+ */
+const RameFermo = memo(
+  function RameFermo({
+    scene,
+    drawOrder,
+    showPours,
+    mmPerPx,
+    active,
+    tutti,
+    xray,
+  }: {
+    scene: BoardScene;
+    drawOrder: LayerId[];
+    showPours: boolean;
+    mmPerPx: number;
+    active: LayerId;
+    tutti: boolean;
+    xray: number;
+  }) {
+    const layerOpacity = (l: LayerId) => (tutti || l === active ? 1 : (xray / 100) * 0.75);
+    return (
+      <>
+      {/* copper planes, from bottom to top */}
+      {showPours &&
+        drawOrder.map((l) =>
+          scene.pours
+            .filter((p) => p.layer === l)
+            .map((p) => (
+              <path
+                key={p.id}
+                d={p.path}
+                fillRule="evenodd"
+                fill={LAYER_COLOR[l]}
+                /*
+                 * The plane has its own opacity, not the layers'.
+                 * Multiplying the two factors, a ground plane on inner1
+                 * while looking at top ended up at 0.16 x 0.1 = 1.6%: it was there
+                 * but invisible, and on a 4-layer board the ground plane is
+                 * the first thing that must be recognized. Here it stays
+                 * discreet under the traces but visible even when it is not
+                 * the foreground layer.
+                 *
+                 * AND IT HAS AN EDGE. At a fifth of the colour a plane that
+                 * covers the whole face is a uniform tint over a dark board:
+                 * indistinguishable from the board itself, and read as "the
+                 * pour is missing" — which happened, twice, on a board whose
+                 * ground covers 3216 of its 3551 square millimetres. The
+                 * outline is what says there is copper here and it ends
+                 * there; the clearances around pads become visible with it.
+                 */
+                stroke={LAYER_COLOR[l]}
+                strokeWidth={mmPerPx * (l === active ? 1.4 : 1)}
+                strokeOpacity={tutti || l === active ? 0.85 : (xray / 100) * 0.7}
+                opacity={tutti || l === active ? 0.45 : (xray / 100) * 0.45}
+              />
+            )),
+        )}
+
+      {/* traces */}
+      {drawOrder.map((l) => (
+        <g key={`tr-${l}`} opacity={layerOpacity(l)}>
+          {scene.traces
+            .filter((t) => t.layer === l && t.points.length > 1)
+            .map((t, i) => (
+              <polyline
+                key={`${l}-${i}`}
+                points={t.points.map((p) => `${p.x},${p.y}`).join(" ")}
+                fill="none"
+                stroke={LAYER_COLOR[l]}
+                strokeWidth={t.width}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ))}
+        </g>
+      ))}
+
+      {/* via: copper ring with the through hole, UNDER the coating: a via is
+          tented, which is why on a finished board you see a green dot and
+          not a metal ring (this board's file marks all 640 of them tented) */}
+      {scene.vias.map((v) => (
+        <g key={v.id}>
+          <circle cx={v.x} cy={v.y} r={v.outer / 2} fill="#C9A227" opacity={0.9} />
+          <circle cx={v.x} cy={v.y} r={v.hole / 2} fill="#06100D" />
+        </g>
+      ))}
+      </>
+    );
+  },
+  // the order of the layers is a new array on every render of the canvas: equal by content
+  (a, b) =>
+    a.scene === b.scene &&
+    a.showPours === b.showPours &&
+    a.mmPerPx === b.mmPerPx &&
+    a.active === b.active &&
+    a.tutti === b.tutti &&
+    a.xray === b.xray &&
+    a.drawOrder.join() === b.drawOrder.join(),
+);

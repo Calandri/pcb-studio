@@ -2,6 +2,7 @@ import { accessoDaRichiesta, requireProjectAccess } from "@/lib/acl";
 import { commitManualEdits, rilasciaPezzi } from "@/lib/manual-edits-store";
 import {
   applyEditEvents,
+  applyPlacementPatches,
   countManualEdits,
   EDIT_LIMITS,
   emptyManualEdits,
@@ -9,13 +10,20 @@ import {
   MANUAL_EDITS_PATH,
   normalizeRotation,
   parseManualEdits,
+  parsePlacementPatches,
   releaseManualEdits,
   type EditEvent,
   type ManualEdits,
 } from "@/lib/manual-edits";
 import { mergeManualRoutes, parseManualRoutes } from "@/lib/manual-routes";
 import { parseLength } from "@/lib/pcb-route-model";
-import { getCompileCache, getProject, projectExists, type CompileCache } from "@/lib/project-store";
+import {
+  getCompileCache,
+  getCompileMeta,
+  getProject,
+  projectExists,
+  type CompileCache,
+} from "@/lib/project-store";
 
 export const runtime = "nodejs";
 
@@ -103,6 +111,40 @@ export async function POST(req: Request): Promise<Response> {
     // an existing project only: the access check must not create one
     if (!conToken || !soloRilascio || !(await projectExists(projectId)) || !(await accessoDaRichiesta(req, projectId, "edit"))) {
       return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+  }
+
+  /*
+   * A part dragged in Sposta: where it stays, by name, absolute (see
+   * PlacementPatch). Nothing here needs the board itself, only WHICH board is
+   * saved (for board_base): the board is megabytes, and reading it on every
+   * drop is what made a move on tm-4l-r3 take seconds to save (2026-11-09).
+   * The answer is small too: what was written and what it replaced, for undo,
+   * not the whole file with its 831 hand-drawn traces.
+   */
+  if (body.action === "place") {
+    const patches = parsePlacementPatches(body.placements, EDIT_LIMITS.maxEvents);
+    if (patches.length === 0) {
+      return Response.json({ error: "nessuna posizione valida da salvare" }, { status: 400 });
+    }
+    try {
+      const meta = await getCompileMeta(projectId);
+      let before: ReturnType<typeof applyPlacementPatches>["before"] = [];
+      const { edits } = await commit(projectId, meta, (current) => {
+        // may run again on a conflict: `before` is the one of the run that wrote
+        const r = applyPlacementPatches(current, patches);
+        before = r.before;
+        return r.edits;
+      });
+      const names = new Set(patches.map((p) => p.name));
+      return Response.json({
+        ok: true,
+        placements: edits.pcb_placements.filter((p) => names.has(p.selector)),
+        before,
+        counts: countManualEdits(edits),
+      });
+    } catch (err) {
+      return failure(err);
     }
   }
 

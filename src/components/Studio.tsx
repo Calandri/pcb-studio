@@ -18,6 +18,7 @@ import { SCHEMATIC_NOTES_PATH } from "@/lib/schematic-notes";
 import { DesignRulesDialog } from "./workspace/DesignRulesDialog";
 import { EditorBar } from "./workspace/EditorBar";
 import { useManualEditor } from "./workspace/useManualEditor";
+import { boardPartsByName, patchesFromEvents, placementOnBoard } from "./workspace/placement-patches";
 import { Sidebar, type LibraryItem, type SectionKey } from "./Sidebar";
 import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
 import { Footer, Header, type BoardTab } from "./workspace/Chrome";
@@ -293,7 +294,8 @@ export function Studio({
     setCircuitSaved(true);
     setCompileProblem(null);
     setSummary(d.compile.summary ?? null);
-    setCircuitStale(Boolean(d.compile.stale));
+    // between a save and the board that follows it "older than the files" is true and means nothing
+    setCircuitStale(Boolean(d.compile.stale) && !autoSyncRef.current);
     setChecksStale(Boolean(d.compile.checksStale));
   }, [projectId]);
 
@@ -620,10 +622,26 @@ export function Studio({
     [projectId, loadCircuit],
   );
 
+  /*
+   * The parts of the board ON SCREEN, by name: a dropped part is saved as the
+   * origin this board shows plus the drag (see placement-patches.ts). Read
+   * through a ref because the save runs later than the render that dropped it.
+   */
+  const boardParts = useMemo(() => boardPartsByName(circuitJson), [circuitJson]);
+  const boardPartsRef = useRef(boardParts);
+  useEffect(() => {
+    boardPartsRef.current = boardParts;
+  }, [boardParts]);
+  const placementsOf = useCallback(
+    (events: EditEvent[]) => patchesFromEvents(events, boardPartsRef.current),
+    [],
+  );
+
   const editor = useManualEditor({
     projectId,
     onApplied: onManualEditApplied,
     syncingRef: autoSyncRef,
+    placementsOf,
   });
 
   /*
@@ -634,18 +652,26 @@ export function Studio({
    * it was dropped. Not fixable silently: it is said, before "Applica".
    * Our own apply reloads the board while busy, and does not count.
    * Fixed during render, not in an effect, like the other derived resets here.
+   *
+   * Moves of parts no longer count: they are saved as the absolute place the
+   * person let go of the part, read on the board on screen (placement-patches),
+   * so a board changing under them does not move them. Links and traces do.
    */
   const [seenCircuit, setSeenCircuit] = useState<unknown[] | null>(null);
   const [swappedUnderEdits, setSwappedUnderEdits] = useState(false);
+  const linksOrTraces = editor.links.length + editor.unlinks.length + editor.routes.length;
   if (seenCircuit !== circuitJson) {
     setSeenCircuit(circuitJson);
     // our own background save reloads the board too, with the moves in it: not a swap under the edits
-    if (seenCircuit && circuitJson && editor.dirty > 0 && !editor.busy && !editor.saving) {
+    if (seenCircuit && circuitJson && linksOrTraces > 0 && !editor.busy && !editor.saving && !editor.syncing) {
       setSwappedUnderEdits(true);
     }
-    // a board from elsewhere (a recompile, Aggiorna) is compiled from the file,
-    // where the moves already written are: their overrides are no longer needed
-    if (seenCircuit && circuitJson && !editor.busy && !editor.saving) editor.dropSent();
+    /*
+     * A board arrived (our own sync, a recompile, a compile from elsewhere):
+     * the overrides it already shows go, the others stay. An older board must
+     * not put a part back where it was while the person has moved it since.
+     */
+    if (seenCircuit && circuitJson) editor.dropAgreed((name) => placementOnBoard(boardParts, name));
   }
   if (swappedUnderEdits && editor.dirty === 0) setSwappedUnderEdits(false);
 
@@ -1670,9 +1696,10 @@ export function Studio({
             </ViewerBoundary>
           </div>
 
-          {/* while "Applica" (or undo) is writing, the canvas does not take
-              new edits: they would be drawn on the board being replaced */}
-          {editor.busy && editor.mode !== "view" && (tab === "pcb" || tab === "schematic") && (
+          {/* while "Applica" (or undo) is writing, links and traces wait: they
+              speak in pad ids of the board being replaced. Parts can still be
+              moved: a move travels by name and is saved after */}
+          {editor.busy && (editor.mode === "route" || editor.mode === "link") && (tab === "pcb" || tab === "schematic") && (
             <div
               aria-hidden
               title="Applico le modifiche: un attimo"

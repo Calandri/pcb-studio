@@ -53,6 +53,7 @@ describe("manual-edits col token personale", () => {
       { action: "pin", names: ["J1"] },
       { action: "set", edits: {} },
       { events: [{ edit_event_type: "edit_pcb_component_location" }] },
+      { action: "place", placements: [{ name: "J1", x: 1, y: 1 }] },
     ]) {
       expect((await chiama(body)).status, JSON.stringify(body)).toBe(403);
     }
