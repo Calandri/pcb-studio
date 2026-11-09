@@ -1,5 +1,6 @@
 "use client";
 
+import { descriviPezzo } from "@/lib/part-description";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildBoardReport, type BoardReport } from "@/lib/board-report";
@@ -872,6 +873,11 @@ export function Studio({
     partId,
     setPartId,
   });
+  /** what each part is, for the card next to it in "Sposta" (part-description.ts) */
+  const partInfo = useMemo(
+    () => Object.fromEntries(parts.map((p) => [p.id, { name: p.name, ...descriviPezzo(p) }])),
+    [parts],
+  );
   const sheetNets = useMemo(
     () =>
       ((summary as { erc?: { nets?: SheetNet[] } } | null)?.erc?.nets ?? []) as SheetNet[],
@@ -1393,6 +1399,7 @@ export function Studio({
                       onZoneChange={setZone}
                       mode="move"
                       bothSides={bothSides}
+                      partInfo={partInfo}
                       pickedId={partId}
                       moveOverrides={pcbMoveOverrides}
                       onMoveComponent={moveComponent}

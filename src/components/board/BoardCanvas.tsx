@@ -4,15 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import {
+  DESIGNATOR_FONT,
   LABEL_FONT,
   LABEL_METRICS,
   PIN_FONT,
   latoDi,
+  layoutDesignators,
   layoutNetLabels,
   leaderEnd,
   type LatoEtichetta,
   type PlacedNetLabel,
 } from "./net-labels";
+import { TestoLungo } from "../workspace/PartCard";
+import { ETICHETTA_FONTE, type DescrizionePezzo } from "@/lib/part-description";
 import {
   HOLE_COPPER,
   LAYER_COLOR,
@@ -119,6 +123,7 @@ export function BoardCanvas({
   pinnedNames,
   onRelease,
   bothSides = false,
+  partInfo,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -162,6 +167,11 @@ export function BoardCanvas({
    * default: only when the person asks for "Top + Bottom".
    */
   bothSides?: boolean;
+  /**
+   * What each part is, by pcb_component_id (part-description.ts): the card
+   * next to the part in "Sposta" shows it.
+   */
+  partInfo?: Record<string, DescrizionePezzo & { name: string }>;
 }) {
   const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -615,6 +625,39 @@ export function BoardCanvas({
       ),
     [links, view],
   );
+
+  /*
+   * The names of the parts in "Sposta": every part of the visible face, next
+   * to it, never on another name and off the pads when there is room. They
+   * follow a drag. See net-labels.ts, layoutDesignators.
+   */
+  const designatori = useMemo(() => {
+    if (!scene || mode !== "move") return [];
+    const parti = scene.components
+      .filter((c) => !nascosti.has(c.id) && c.name)
+      .map((c) => {
+        const e = effOf(c);
+        const quarto = Math.round((((e.rotation - c.rotation) % 180) + 180) % 180) === 90;
+        return { key: c.id, name: c.name, cx: e.x, cy: e.y, w: quarto ? c.h : c.w, h: quarto ? c.w : c.h };
+      });
+    const spostamento = new Map(
+      scene.components.map((c) => {
+        const e = effOf(c);
+        return [c.id, { dx: e.x - c.x, dy: e.y - c.y }];
+      }),
+    );
+    const pads = scene.pads
+      .filter((p) => bothSides || latoDiParte(p.componentId, p.layer) === faccia)
+      .map((p) => {
+        const d = spostamento.get(p.componentId) ?? { dx: 0, dy: 0 };
+        const x = view.x + (p.x + d.dx) * view.k;
+        const y = view.y - (p.y + d.dy) * view.k;
+        const r = (Math.max(p.w, p.h) * view.k) / 2;
+        return { bx: x - r, by: y - r, bw: 2 * r, bh: 2 * r };
+      });
+    return layoutDesignators(parti, pads, view);
+    // latoDiParte reads girati, which is in the list
+  }, [scene, mode, nascosti, effOf, view, bothSides, faccia, girati]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** the same transform, but on a point in millimeters (for texts outside the flipped group) */
   const mmPointTx = useCallback(
@@ -1415,6 +1458,49 @@ export function BoardCanvas({
               </text>
             );
           })}
+        {/* part names in "Sposta": what is being moved, always readable */}
+        {designatori.length > 0 && (
+          <g pointerEvents="none">
+            {designatori.map((d) => {
+              const evidente = d.key === hoveredComponentId || d.key === pickedId || d.key === compDrag?.id;
+              return (
+                <g key={`des-${d.key}`}>
+                  {d.leader && (
+                    <line
+                      x1={d.ax}
+                      y1={d.ay}
+                      x2={Math.min(Math.max(d.ax, d.bx), d.bx + d.bw)}
+                      y2={Math.min(Math.max(d.ay, d.by), d.by + d.bh)}
+                      stroke="#9DB8AC"
+                      strokeWidth={0.8}
+                      opacity={0.6}
+                    />
+                  )}
+                  <rect
+                    x={d.bx}
+                    y={d.by}
+                    width={d.bw}
+                    height={d.bh}
+                    rx={2.5}
+                    fill={evidente ? "#3BE8B0" : "#0B1110"}
+                    fillOpacity={evidente ? 1 : 0.88}
+                  />
+                  <text
+                    x={d.bx + d.bw / 2}
+                    y={d.by + d.bh - 3.5}
+                    fontSize={DESIGNATOR_FONT}
+                    textAnchor="middle"
+                    fill={evidente ? "#06100D" : "#D6E8E2"}
+                    fontWeight={evidente ? 700 : 500}
+                    fontFamily="var(--font-plex-mono), monospace"
+                  >
+                    {d.name}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        )}
         {/* net names: on the side of their pad, never on top of each other */}
         {nomiDiRete.length > 0 && (
           <g pointerEvents="none">
@@ -1424,6 +1510,43 @@ export function BoardCanvas({
           </g>
         )}
       </svg>
+
+      {/*
+        WHAT the part is, next to it, in "Sposta": the part under the mouse, or
+        the picked one. Beside the part, never on it, and hidden while dragging:
+        it must not get in the way of the hand. Only the picked part's card
+        takes clicks ("altro"), the hover one lets the mouse through.
+      */}
+      {(() => {
+        if (mode !== "move" || compDrag || !partInfo) return null;
+        const id = hoveredComponentId ?? pickedId;
+        const d = id ? designatori.find((x) => x.key === id) : null;
+        const info = id ? partInfo[id] : null;
+        if (!d || !info) return null;
+        const c = scene.components.find((x) => x.id === id);
+        const hw = c ? (c.w * view.k) / 2 : 0;
+        const larga = 240;
+        const aDestra = d.ax + hw + 14 + larga < size.w;
+        const left = aDestra ? d.ax + hw + 14 : Math.max(4, d.ax - hw - 14 - larga);
+        const top = Math.min(Math.max(4, d.ay - 20), Math.max(4, size.h - 140));
+        const cliccabile = id === pickedId && !hoveredComponentId;
+        return (
+          <div
+            className={`absolute z-20 w-[240px] rounded-[10px] border border-[#2C4C42] bg-[rgba(9,14,13,0.95)] px-2.5 py-2 shadow-[0_12px_30px_-12px_rgba(0,0,0,0.8)] ${
+              cliccabile ? "pointer-events-auto" : "pointer-events-none"
+            }`}
+            style={{ left, top }}
+          >
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-[13px] font-semibold text-brand">{info.name}</span>
+              {info.valore && <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">{info.valore}</span>}
+            </div>
+            <div className="mt-0.5 text-[11.5px] font-semibold text-[#C7D6D1]">{info.titolo}</div>
+            {info.testo && <TestoLungo testo={info.testo} className="mt-0.5 text-[11px] leading-[1.4] text-[#A8B9B4]" />}
+            {info.fonte && <div className="mt-1 text-[9.5px] text-[#5F726C]">{ETICHETTA_FONTE[info.fonte]}</div>}
+          </div>
+        );
+      })()}
 
       {/* the box while it is being drawn: it lives outside the flipped SVG,
           because here the reasoning is in pixels, not millimeters */}

@@ -154,3 +154,118 @@ export function leaderEnd(l: PlacedNetLabel): { x: number; y: number } {
     y: Math.min(Math.max(l.ay, l.by), l.by + l.bh),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Designators in "Sposta"
+// ---------------------------------------------------------------------------
+
+/*
+ * In "Sposta" every part of the visible face carries its name (U7, R12, J3):
+ * on htl-401 the parts were anonymous pads and there was no way to know what
+ * was being moved (Niccolo', 2026-11-09). Same rules as the net names: screen
+ * pixels, constant size, never on another name and, when there is room, never
+ * on a pad. The name sits next to its part (above, below, right, left); when
+ * all four are taken it goes one ring further out with a line to the part.
+ */
+
+export const DESIGNATOR_FONT = 10;
+
+export interface DesignatorInput {
+  key: string;
+  name: string;
+  /** the part's box on the board, mm (centre and size) */
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+}
+
+export interface PlacedDesignator {
+  key: string;
+  name: string;
+  bx: number;
+  by: number;
+  bw: number;
+  bh: number;
+  /** the part's centre on screen, for the leader line */
+  ax: number;
+  ay: number;
+  leader: boolean;
+}
+
+type Box = { bx: number; by: number; bw: number; bh: number };
+
+/** a bucket grid over the screen: checking 90 names against 400 pads stays cheap */
+class Griglia {
+  private cells = new Map<string, Box[]>();
+  constructor(private size = 48) {}
+  private keys(b: Box): string[] {
+    const out: string[] = [];
+    const x0 = Math.floor(b.bx / this.size), x1 = Math.floor((b.bx + b.bw) / this.size);
+    const y0 = Math.floor(b.by / this.size), y1 = Math.floor((b.by + b.bh) / this.size);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) out.push(`${x},${y}`);
+    return out;
+  }
+  add(b: Box) {
+    for (const k of this.keys(b)) {
+      const l = this.cells.get(k);
+      if (l) l.push(b);
+      else this.cells.set(k, [b]);
+    }
+  }
+  hits(b: Box, air: number): boolean {
+    for (const k of this.keys(b)) {
+      for (const o of this.cells.get(k) ?? []) {
+        if (b.bx < o.bx + o.bw + air && o.bx < b.bx + b.bw + air && b.by < o.by + o.bh + air && o.by < b.by + b.bh + air) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+}
+
+export function layoutDesignators(
+  parts: DesignatorInput[],
+  /** pads on screen, pixels: a name avoids them when it can */
+  pads: Box[],
+  view: { x: number; y: number; k: number },
+): PlacedDesignator[] {
+  const nomi = new Griglia();
+  const rame = new Griglia();
+  for (const p of pads) rame.add(p);
+  const out: PlacedDesignator[] = [];
+  // big parts first: they have the most room around them, and the small ones
+  // fill the gaps that are left
+  const ordine = [...parts].sort((a, b) => b.w * b.h - a.w * a.h);
+  for (const p of ordine) {
+    const bw = Math.ceil(p.name.length * ADVANCE * DESIGNATOR_FONT) + 6;
+    const bh = DESIGNATOR_FONT + 4;
+    const ax = view.x + p.cx * view.k;
+    const ay = view.y - p.cy * view.k;
+    const hw = (p.w * view.k) / 2;
+    const hh = (p.h * view.k) / 2;
+    const candidati: Array<Box & { leader: boolean }> = [];
+    for (let anello = 0; anello <= 3; anello++) {
+      const g = 2 + anello * (bh + 4);
+      const leader = anello > 0;
+      candidati.push(
+        { bx: ax - bw / 2, by: ay - hh - g - bh, bw, bh, leader },
+        { bx: ax - bw / 2, by: ay + hh + g, bw, bh, leader },
+        { bx: ax + hw + g, by: ay - bh / 2, bw, bh, leader },
+        { bx: ax - hw - g - bw, by: ay - bh / 2, bw, bh, leader },
+        { bx: ax + hw + g, by: ay - hh - g - bh, bw, bh, leader },
+        { bx: ax - hw - g - bw, by: ay - hh - g - bh, bw, bh, leader },
+        { bx: ax + hw + g, by: ay + hh + g, bw, bh, leader },
+        { bx: ax - hw - g - bw, by: ay + hh + g, bw, bh, leader },
+      );
+    }
+    const scelto =
+      candidati.find((c) => !nomi.hits(c, 1) && !rame.hits(c, 0)) ??
+      candidati.find((c) => !nomi.hits(c, 1)) ??
+      candidati[0];
+    nomi.add(scelto);
+    out.push({ key: p.key, name: p.name, bx: scelto.bx, by: scelto.by, bw, bh, ax, ay, leader: scelto.leader });
+  }
+  return out;
+}
