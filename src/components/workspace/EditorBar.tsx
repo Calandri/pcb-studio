@@ -46,14 +46,20 @@ export function EditorBar({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e)) return;
-      if (stale) return;
       const meta = e.metaKey || e.ctrlKey;
+      /*
+       * Undo and redo work on a board older than the files too: they write the
+       * file, part by part, and the board follows when it can. Switched off
+       * with the rest, Cmd+Z did nothing right when it was needed (tm-4l-r3,
+       * 2026-11-10: a part moved by mistake, the board stale, no way back).
+       */
       if (meta && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        if (e.shiftKey) void editor.redo();
-        else void editor.undo();
+        if (e.shiftKey) editor.redo();
+        else editor.undo();
         return;
       }
+      if (stale) return;
       if (meta && e.key.toLowerCase() === "s") {
         e.preventDefault();
         void editor.apply();
@@ -137,8 +143,8 @@ export function EditorBar({
         <span className="mx-1 h-5 w-px bg-line" />
 
         <Icon
-          onClick={() => void editor.undo()}
-          disabled={!canUndo || busy}
+          onClick={() => editor.undo()}
+          disabled={!canUndo}
           title="Annulla (Cmd+Z)"
         >
           <path
@@ -150,8 +156,8 @@ export function EditorBar({
           />
         </Icon>
         <Icon
-          onClick={() => void editor.redo()}
-          disabled={!canRedo || busy}
+          onClick={() => editor.redo()}
+          disabled={!canRedo}
           title="Ripristina (Cmd+Shift+Z)"
         >
           <path

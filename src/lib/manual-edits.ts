@@ -26,7 +26,7 @@
  * through props and not the native format, which would not work here.
  */
 
-import { manualRouteKey, parseManualRoutes, portSelectorResolver, type ManualRoute } from "./manual-routes";
+import { manualRouteKey, mergeManualRoutes, parseManualRoutes, portSelectorResolver, type ManualRoute } from "./manual-routes";
 import { parentFrameOffset, parseLength } from "./pcb-route-model";
 
 export const MANUAL_EDITS_PATH = "manual-edits.json";
@@ -894,6 +894,13 @@ export interface EditEvent {
   /** the face the part goes to, if the event turns it to the other side */
   new_layer?: "top" | "bottom";
   /**
+   * How the part was on screen when the gesture started: turn and face, next
+   * to original_center. Only the editor reads them, to undo the gesture
+   * exactly; the server ignores them.
+   */
+  original_rotation?: number;
+  original_layer?: "top" | "bottom";
+  /**
    * The same id on every event of one gesture on many parts (a multi-selection
    * dragged, turned, flipped): the editor undoes them together. The server
    * ignores it.
@@ -1003,6 +1010,8 @@ export interface PlacementPatch {
   y: number;
   rotation?: number;
   layer?: "top" | "bottom";
+  /** the placement becomes exactly this: no turn or face kept from the previous one (undo) */
+  exact?: boolean;
 }
 
 /**
@@ -1030,6 +1039,7 @@ export function parsePlacementPatches(raw: unknown, max: number): PlacementPatch
       y: r.y,
       ...(r.rotation !== undefined ? { rotation: normalizeRotation(r.rotation) as number } : {}),
       ...(r.layer !== undefined ? { layer: faceOf(r.layer) as "top" | "bottom" } : {}),
+      ...(r.exact === true ? { exact: true } : {}),
     });
   }
   return [...byName.values()];
@@ -1043,14 +1053,63 @@ export function parsePlacementPatches(raw: unknown, max: number): PlacementPatch
 export function applyPlacementPatches(
   edits: ManualEdits,
   patches: readonly PlacementPatch[],
+  /** parts whose hand position goes: an undo back to where the code puts them */
+  remove: readonly string[] = [],
 ): { edits: ManualEdits; before: Array<{ selector: string; placement: ManualPlacement | null }> } {
   let pcb = edits.pcb_placements;
   const before: Array<{ selector: string; placement: ManualPlacement | null }> = [];
+  const patched = new Set(patches.map((p) => p.name));
+  for (const name of remove) {
+    if (patched.has(name) || before.some((b) => b.selector === name)) continue;
+    before.push({ selector: name, placement: pcb.find((x) => x.selector === name) ?? null });
+    pcb = pcb.filter((x) => x.selector !== name);
+  }
   for (const p of patches) {
     before.push({ selector: p.name, placement: pcb.find((x) => x.selector === p.name) ?? null });
-    pcb = upsertPlacement(pcb, p.name, { x: p.x, y: p.y }, p.rotation, p.layer);
+    /*
+     * An exact patch: the turn and the face it does not say are the code's,
+     * not the ones of the last hand position. That is what an undo needs to
+     * put a part back as it was; a drag always says what it changed.
+     */
+    pcb = upsertPlacement(
+      p.exact ? pcb.filter((x) => x.selector !== p.name) : pcb,
+      p.name,
+      { x: p.x, y: p.y },
+      p.rotation,
+      p.layer,
+    );
   }
   return { edits: { ...edits, pcb_placements: pcb }, before };
+}
+
+/** the names a save may take away, checked like the patches */
+export function parseNames(raw: unknown, max: number): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const n of raw.slice(0, max)) {
+    if (typeof n !== "string") continue;
+    const name = n.trim();
+    if (name && name.length <= 120 && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Hand-drawn traces added and taken away by their key (the pad pair), the
+ * rest of the file untouched. What the step replaced or removed comes back,
+ * so that the editor can undo exactly this.
+ */
+export function applyRoutePatch(
+  edits: ManualEdits,
+  add: readonly ManualRoute[],
+  removeKeys: readonly string[],
+): { edits: ManualEdits; replaced: ManualRoute[]; added: ManualRoute[] } {
+  const addKeys = new Set(add.map(manualRouteKey));
+  const gone = new Set([...removeKeys, ...addKeys]);
+  const replaced = edits.pcb_routes.filter((r) => gone.has(manualRouteKey(r)));
+  const kept = edits.pcb_routes.filter((r) => !gone.has(manualRouteKey(r)));
+  const added = mergeManualRoutes([], [...add]);
+  return { edits: { ...edits, pcb_routes: [...kept, ...added] }, replaced, added };
 }
 
 /** how much a single save may carry: the editor sends one event per drag */

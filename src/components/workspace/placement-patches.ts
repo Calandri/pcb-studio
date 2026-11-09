@@ -42,11 +42,11 @@ export function boardPartsByName(circuitJson: unknown[] | null | undefined): Map
   return out;
 }
 
-/** where a board has a part, for dropAgreed: only when it says where the origin is */
+/** where a board has a part, for dropAgreed: its origin (when the board says it) and its centre */
 export function placementOnBoard(parts: Map<string, BoardPart>, name: string): BoardPlacement | null {
   const p = parts.get(name);
-  if (!p || p.ox === null || p.oy === null) return null;
-  return { x: p.ox, y: p.oy, rotation: p.rotation, layer: p.layer };
+  if (!p) return null;
+  return { x: p.ox, y: p.oy, cx: p.cx, cy: p.cy, rotation: p.rotation, layer: p.layer };
 }
 
 const round3 = (v: number) => Math.round(v * 1000) / 1000;

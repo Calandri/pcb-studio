@@ -44,6 +44,7 @@ export function RouteCanvas({
   resetKey = 0,
   projectId,
   onChanged,
+  onDetached,
 }: {
   circuitJson: unknown[] | null;
   /** trace width in mm */
@@ -55,6 +56,8 @@ export function RouteCanvas({
   projectId?: string;
   /** called after the server has removed a trace: reloads the board */
   onChanged?: () => void;
+  /** what the server took away with the trace: it becomes a step Cmd+Z can undo */
+  onDetached?: (traceId: string, removed: { routes: ManualRoute[]; elements: unknown[] }) => void;
 }) {
   const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
   const model = useMemo(() => buildRouteModel(circuitJson), [circuitJson]);
@@ -73,6 +76,18 @@ export function RouteCanvas({
     sourceTraceId: string | null;
   } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  /*
+   * Traces detached and not yet gone from the board on screen: hidden at once,
+   * the server and the reloaded board follow. A detach waited for the whole
+   * round trip (2,4 s on a copy of tm-4l-r3) with the trace still drawn.
+   * Cleared when a new board arrives: that board says what is there.
+   */
+  const [nascoste, setNascoste] = useState<ReadonlySet<string>>(new Set());
+  const [boardSeen, setBoardSeen] = useState(circuitJson);
+  if (boardSeen !== circuitJson) {
+    setBoardSeen(circuitJson);
+    if (nascoste.size > 0) setNascoste(new Set());
+  }
   /*
    * Detaching a trace writes to the saved board at once, and there is no undo
    * for it: one stray Backspace used to erase copper for good. So the key now
@@ -211,6 +226,8 @@ export function RouteCanvas({
       if (!selectedTrace || !projectId || deleting) return;
       setDeleting(true);
       setArmed(null);
+      const hidden = selectedTrace.traceId;
+      setNascoste((n) => new Set([...n, hidden]));
       try {
         const res = await fetch("/api/trace", {
           method: "POST",
@@ -219,9 +236,11 @@ export function RouteCanvas({
         });
         const r = await res.json().catch(() => null);
         if (!res.ok || !r?.ok) {
+          setNascoste((n) => new Set([...n].filter((x) => x !== hidden)));
           setNote(`non riesco a staccarla: ${r?.error ?? `errore ${res.status}`}`);
           return;
         }
+        if (r.removed) onDetached?.(hidden, r.removed);
         const name = selectedTrace.connectionName;
         const sourceTraceId = selectedTrace.sourceTraceId;
         setSelectedTrace(null);
@@ -258,6 +277,7 @@ export function RouteCanvas({
         onChanged?.();
       } catch (err) {
         // the network gave up: the trace is still there, and that must be said
+        setNascoste((n) => new Set([...n].filter((x) => x !== hidden)));
         setNote(
           `non riesco a staccarla: ${err instanceof Error ? err.message : "rete non raggiungibile"}`,
         );
@@ -265,7 +285,7 @@ export function RouteCanvas({
         setDeleting(false);
       }
     },
-    [selectedTrace, projectId, deleting, model, layer, onChanged],
+    [selectedTrace, projectId, deleting, model, layer, onChanged, onDetached],
   );
 
   /** segment preview: two 0/45/90 segments that REACH the cursor */
@@ -478,7 +498,7 @@ export function RouteCanvas({
 
           {usedLayers.map((l) => (
             <g key={l} opacity={dim(l)}>
-              {scene.traces.filter((t) => t.layer === l && t.points.length > 1).map((t, i) => (
+              {scene.traces.filter((t) => t.layer === l && t.points.length > 1 && !(t.traceId && nascoste.has(t.traceId))).map((t, i) => (
                 <polyline
                   key={i}
                   points={t.points.map((p) => `${p.x},${p.y}`).join(" ")}

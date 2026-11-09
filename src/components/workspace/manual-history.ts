@@ -1,5 +1,5 @@
-import type { ManualEdits } from "@/lib/manual-edits";
-import { manualRouteKey } from "@/lib/manual-routes";
+import type { EditEvent, ManualEdits, ManualPlacement, PlacementPatch } from "@/lib/manual-edits";
+import { manualRouteKey, type ManualRoute } from "@/lib/manual-routes";
 
 /*
  * The pure half of the manual editor's bookkeeping: which pending edits were
@@ -158,4 +158,145 @@ export function senzaUltimoGesto<T extends { gruppo?: string }>(pending: T[]): T
   let i = pending.length;
   while (i > 0 && pending[i - 1].gruppo === g) i--;
   return pending.slice(0, i);
+}
+
+// ---------------------------------------------------------------------------
+// The editor's history, step by step (2026-11-10)
+//
+// Undo used to read the whole file back, rebase it and send it back whole
+// (326 KB with 821 traces on tm-4l-r3), then wait for the board: seconds per
+// Cmd+Z, and a Cmd+Z pressed meanwhile was dropped. A detached trace could not
+// be undone at all. Now every step says exactly what it changed, and undo and
+// redo send only that, the same small writes as a dragged part.
+// ---------------------------------------------------------------------------
+
+/** a part as a step leaves it: its hand position in the file, and where it is on screen */
+export interface PartState {
+  selector: string;
+  /** the placement in manual-edits.json; null = none, the code decides */
+  placement: ManualPlacement | null;
+  center: { x: number; y: number };
+  rotation: number;
+  layer: "top" | "bottom";
+}
+
+/** what detaching a trace took away, as the server answered: enough to put it back */
+export interface RemovedTrace {
+  routes: ManualRoute[];
+  elements: unknown[];
+}
+
+export type EditorStep =
+  /** a step of the whole file (links, release, moves written the old way): see rebaseManualEdits */
+  | ({ kind: "file" } & HistoryStep)
+  /** parts moved, turned, flipped: their state before and after */
+  | { kind: "pezzi"; before: PartState[]; after: PartState[] }
+  /** hand traces written by Applica: what they replaced, and what was written */
+  | { kind: "piste"; before: ManualRoute[]; after: ManualRoute[] }
+  /** a trace detached in Instrada */
+  | { kind: "staccata"; traceId: string; removed: RemovedTrace }
+  /** only on the redo side: a gesture undone before it was even saved */
+  | { kind: "gesto"; events: EditEvent[] };
+
+/** how many steps the editor keeps, each way */
+export const HISTORY_MAX = 100;
+
+/**
+ * The parts of a saved batch, before and after it. On screen: where the first
+ * move of each part started from, and where its last one ended (turn and face
+ * merged like the overrides). In the file: what the server says it replaced,
+ * and what it wrote.
+ */
+export function partStates(
+  batch: readonly EditEvent[],
+  names: readonly string[],
+  fileBefore: ReadonlyArray<{ selector: string; placement: ManualPlacement | null }>,
+  written: readonly ManualPlacement[],
+): { before: PartState[]; after: PartState[] } {
+  const before: PartState[] = [];
+  const after: PartState[] = [];
+  for (const name of names) {
+    const evs = batch.filter(
+      (e) => e.edit_event_type === "edit_pcb_component_location" && e.component_name === name && e.new_center,
+    );
+    if (evs.length === 0) continue;
+    const first = evs[0];
+    const start = {
+      center: first.original_center ?? first.new_center!,
+      rotation: first.original_rotation ?? 0,
+      layer: first.original_layer ?? ("top" as const),
+    };
+    let rotation = start.rotation;
+    let layer = start.layer;
+    for (const e of evs) {
+      if (e.new_rotation !== undefined) rotation = e.new_rotation;
+      if (e.new_layer !== undefined) layer = e.new_layer;
+    }
+    const last = evs[evs.length - 1];
+    before.push({
+      selector: name,
+      placement: fileBefore.find((b) => b.selector === name)?.placement ?? null,
+      ...start,
+    });
+    after.push({
+      selector: name,
+      placement: written.find((w) => w.selector === name) ?? null,
+      center: last.new_center!,
+      rotation,
+      layer,
+    });
+  }
+  return { before, after };
+}
+
+/** the write that brings the parts to these states: exact patches, and removals for "no placement" */
+export function placeRequest(states: readonly PartState[]): {
+  placements: Array<PlacementPatch>;
+  remove: string[];
+} {
+  const placements: PlacementPatch[] = [];
+  const remove: string[] = [];
+  for (const s of states) {
+    if (!s.placement) {
+      remove.push(s.selector);
+      continue;
+    }
+    placements.push({
+      name: s.selector,
+      x: s.placement.center.x,
+      y: s.placement.center.y,
+      ...(s.placement.rotation !== undefined ? { rotation: s.placement.rotation } : {}),
+      ...(s.placement.layer !== undefined ? { layer: s.placement.layer } : {}),
+      exact: true,
+    });
+  }
+  return { placements, remove };
+}
+
+/** the routes write that undoes (or redoes) a "piste" step */
+export function routesRequest(
+  step: { before: ManualRoute[]; after: ManualRoute[] },
+  direction: "undo" | "redo",
+): { add: ManualRoute[]; remove: string[] } {
+  if (direction === "redo") return { add: step.after, remove: [] };
+  const back = new Set(step.before.map(manualRouteKey));
+  return { add: step.before, remove: step.after.map(manualRouteKey).filter((k) => !back.has(k)) };
+}
+
+/** the file as the page knows it, after an undo or redo of these parts */
+export function withPartStates(edits: ManualEdits, states: readonly PartState[]): ManualEdits {
+  const names = new Set(states.map((s) => s.selector));
+  return {
+    ...edits,
+    pcb_placements: [
+      ...edits.pcb_placements.filter((p) => !names.has(p.selector)),
+      ...states.flatMap((s) => (s.placement ? [s.placement] : [])),
+    ],
+  };
+}
+
+/** the file as the page knows it, with routes added and taken away by key */
+export function withRoutes(edits: ManualEdits, add: readonly ManualRoute[], remove: readonly string[]): ManualEdits {
+  const gone = new Set([...remove, ...add.map(manualRouteKey)]);
+  return { ...edits, pcb_routes: [...edits.pcb_routes.filter((r) => !gone.has(manualRouteKey(r))), ...add] };
 }

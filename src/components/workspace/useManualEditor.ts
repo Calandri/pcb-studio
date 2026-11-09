@@ -14,9 +14,18 @@ import { manualRouteKey, type ManualRoute } from "@/lib/manual-routes";
 import {
   senzaUltimoGesto,
   conflictMessage,
+  partStates,
+  placeRequest,
   rebaseManualEdits,
+  routesRequest,
+  withPartStates,
+  withRoutes,
   withoutSent,
+  HISTORY_MAX,
+  type EditorStep,
   type HistoryStep,
+  type PartState,
+  type RemovedTrace,
 } from "./manual-history";
 
 export type EditMode = "view" | "move" | "route" | "link";
@@ -31,16 +40,39 @@ export type ApplyResult = { ok: boolean; reason?: string } | void;
  */
 export const AUTOSAVE_MS = 400;
 
-/** where the board on screen has a part: its origin, turn and face */
-export type BoardPlacement = { x: number; y: number; rotation: number; layer: "top" | "bottom" };
+/**
+ * Where the board on screen has a part: its origin (null when the board does
+ * not say), its centre, turn and face.
+ */
+export type BoardPlacement = {
+  x: number | null;
+  y: number | null;
+  cx?: number;
+  cy?: number;
+  rotation: number;
+  layer: "top" | "bottom";
+};
+
+/**
+ * What a written move expects to see on the next board: the patch it wrote
+ * (its origin), or, for a part sent back to where the code puts it, the
+ * centre it had there. null: written the old way, settled by any board.
+ */
+export type WrittenAs = PlacementPatch | { name: string; center: { x: number; y: number }; rotation: number } | null;
 
 /**
  * The board shows the part where the patch put it. To the thousandth of a
  * millimetre, which is what a placement keeps (round3); the turn and the face
  * only when the patch set them.
  */
-export function boardAgrees(board: BoardPlacement | null, patch: PlacementPatch): boolean {
+export function boardAgrees(board: BoardPlacement | null, patch: Exclude<WrittenAs, null>): boolean {
   if (!board) return false;
+  if ("center" in patch) {
+    if (board.cx === undefined || board.cy === undefined) return false;
+    if (Math.abs(board.cx - patch.center.x) > 0.01 || Math.abs(board.cy - patch.center.y) > 0.01) return false;
+    return normalizeRotation(board.rotation) === normalizeRotation(patch.rotation);
+  }
+  if (board.x === null || board.y === null) return false;
   if (Math.abs(board.x - patch.x) > 0.002 || Math.abs(board.y - patch.y) > 0.002) return false;
   if (patch.rotation !== undefined && normalizeRotation(board.rotation) !== normalizeRotation(patch.rotation)) return false;
   if (patch.layer !== undefined && board.layer !== patch.layer) return false;
@@ -65,7 +97,7 @@ export function withPlacements(edits: ManualEdits, written: readonly ManualPlace
 export function settledMoves(
   pending: readonly EditEvent[],
   isSent: (e: EditEvent) => boolean,
-  writtenAs: WeakMap<EditEvent, PlacementPatch | null>,
+  writtenAs: WeakMap<EditEvent, WrittenAs>,
   boardOf: (name: string) => BoardPlacement | null,
 ): Set<EditEvent> {
   const byPart = new Map<string, EditEvent[]>();
@@ -106,29 +138,32 @@ export interface PendingLink {
  * Two levels, and the difference matters: PENDING edits live in the browser
  * and the viewers draw them on their own (the component stays where you left
  * it, without waiting for the server), SAVED ones live in manual-edits.json
- * and apply to compilation. Moving ten components and recompiling once is the
- * right way to work: re-routing is the expensive part.
- *
- * Undo and redo work on both levels: first they empty the pending edits one at
- * a time, then they move back and forth among the already-saved steps (each
- * of which requires rewriting the file and recompiling), always relative to
- * the file the server holds at that moment.
+ * and apply to compilation.
  *
  * MOVES SAVE THEMSELVES (2026-11-09). A part dropped on the board waits
- * AUTOSAVE_MS and is written in the background, by NAME, without locking the
- * canvas or remounting the view; then the board is updated on the fast path.
- * Before, moves stayed in the tab until "Applica": hours of them, and a
- * recompile from elsewhere in between was enough to land them on other parts.
- * A move being written or already written stays on screen as an override
- * until the board that contains it arrives, but it no longer counts as "not
- * applied" and it is never sent twice. Links, unlinks and hand-drawn traces
- * still wait for "Applica": they change the circuit.
+ * AUTOSAVE_MS and is written in the background, by NAME, as an absolute
+ * patch; then the board follows on the fast path. A move being written or
+ * already written stays on screen as an override until a board that shows it
+ * arrives (dropAgreed). Links, unlinks and hand-drawn traces still wait for
+ * "Applica": they change the circuit.
+ *
+ * ONE QUEUE, IN ORDER (2026-11-10). Every write of the editor (a save, an
+ * undo, a redo, Applica, a release) goes through one queue, one at a time, in
+ * the order the person asked for them. Cmd+Z is never dropped: pressed five
+ * times, it undoes five steps, each one as soon as the one before is written.
+ *
+ * UNDO SAYS WHAT CHANGED. Each step keeps exactly what it touched (the parts
+ * with their state before and after, the traces written, the trace detached)
+ * and undo sends only that: the parts back on screen at once, the same small
+ * write as a drag, the board following afterwards. The history keeps
+ * HISTORY_MAX steps each way, and a save or a board arriving does not touch it.
  */
 export function useManualEditor({
   projectId,
   onApplied,
   syncingRef,
   placementsOf,
+  reloadBoard,
 }: {
   projectId: string;
   /**
@@ -151,6 +186,8 @@ export function useManualEditor({
    * the board, a schematic move) comes back in `rest` and goes the old way.
    */
   placementsOf?: (events: EditEvent[]) => { placements: PlacementPatch[]; rest: EditEvent[] };
+  /** reloads the saved board: after a detached trace is put back (or detached again) */
+  reloadBoard?: () => Promise<void> | void;
 }) {
   const [mode, setMode] = useState<EditMode>("view");
   const [pending, setPending] = useState<EditEvent[]>([]);
@@ -166,21 +203,30 @@ export function useManualEditor({
   const [routes, setRoutes] = useState<ManualRoute[]>([]);
   const [saved, setSaved] = useState<ManualEdits>(emptyManualEdits());
   /*
-   * Each saved step keeps the file before AND after it, as the server answered:
-   * undo moves back only what the step changed (see manual-history.ts).
+   * The steps NOW, kept in step with the state at every change: a queued undo
+   * picks its step when its turn comes, after the writes before it, not when
+   * the key was pressed.
    */
-  const [pastState, setPastState] = useState<HistoryStep[]>([]);
-  /*
-   * The steps NOW, kept in step with the state at every change: undo picks its
-   * step right after waiting for a background save, before any render.
-   */
-  const pastRef = useRef<HistoryStep[]>([]);
-  const setPast = useCallback((next: (p: HistoryStep[]) => HistoryStep[]) => {
-    pastRef.current = next(pastRef.current);
+  const pastRef = useRef<EditorStep[]>([]);
+  const futureRef = useRef<EditorStep[]>([]);
+  const [past, setPastState] = useState<EditorStep[]>([]);
+  const [future, setFutureState] = useState<EditorStep[]>([]);
+  const setPast = useCallback((next: (p: EditorStep[]) => EditorStep[]) => {
+    pastRef.current = next(pastRef.current).slice(-HISTORY_MAX);
     setPastState(pastRef.current);
   }, []);
-  const past = pastState;
-  const [future, setFuture] = useState<HistoryStep[]>([]);
+  const setFuture = useCallback((next: (f: EditorStep[]) => EditorStep[]) => {
+    futureRef.current = next(futureRef.current).slice(0, HISTORY_MAX);
+    setFutureState(futureRef.current);
+  }, []);
+  /** a new step done by the person: what could be redone is gone */
+  const pushStep = useCallback(
+    (step: EditorStep) => {
+      setPast((p) => [...p, step]);
+      setFuture(() => []);
+    },
+    [setPast, setFuture],
+  );
   const [busy, setBusy] = useState(false);
   /*
    * Moves already sent (being written or written): they are never sent again
@@ -199,18 +245,23 @@ export function useManualEditor({
     }
     setSentTick((t) => t + 1);
   }, []);
-  /** the background save in flight, if any: one write at a time */
-  const autoJobRef = useRef<Promise<void> | null>(null);
-  const autoAgainRef = useRef(false);
   /*
-   * What each written move was written AS: the patch (or null, written the old
-   * way). A move sent but not here is still on its way. A board that arrives
-   * takes the override of a part away only when every move of that part is
-   * written and the board shows the last one: an older board (a sync of the
-   * previous move, a compile from elsewhere) used to take it away anyway and
-   * the part jumped back under the cursor (tm-4l-r3, 2026-11-09).
+   * What each written move was written AS (see WrittenAs). A move sent but not
+   * here is still on its way. A board that arrives takes the override of a
+   * part away only when every move of that part is written and the board shows
+   * the last one: an older board (a sync of the previous move, a compile from
+   * elsewhere) used to take it away anyway and the part jumped back under the
+   * cursor (tm-4l-r3, 2026-11-09).
    */
-  const writtenAsRef = useRef<WeakMap<EditEvent, PlacementPatch | null>>(new WeakMap());
+  const writtenAsRef = useRef<WeakMap<EditEvent, WrittenAs>>(new WeakMap());
+  /** the queue of writes: see "ONE QUEUE, IN ORDER" above */
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const queuedRef = useRef(0);
+  const [queued, setQueued] = useState(0);
+  /** an automatic save is already in the queue: a new drop rides with it */
+  const autoQueuedRef = useRef(false);
+  /** moves that came back with a redo: saving them is not a new step, the rest of the redo stays */
+  const redoneRef = useRef<WeakSet<EditEvent>>(new WeakSet());
   /*
    * The board follows the saves on its own, one update at a time and after
    * them: a save is a few hundred bytes and never waits for the board.
@@ -230,13 +281,12 @@ export function useManualEditor({
    * new gesture or "Applica" does.
    */
   const autoFailedRef = useRef<EditEvent[] | null>(null);
-  const [saving, setSaving] = useState(false);
   /** the latest list, for the async paths: the closure of a callback sees an older render */
   const pendingRef = useRef<EditEvent[]>([]);
   /*
-   * The guard against two writes at once is a ref, not the state: the state
-   * read inside a callback is the one of the render that created it, so two
-   * clicks in the same frame both saw `busy === false` and both went.
+   * Applica and release are explicit writes: while one is in the queue, links
+   * and traces wait (they speak in pad ids of the board being replaced). Moves
+   * and undo do not wait for anything.
    */
   const busyRef = useRef(false);
   const savedRef = useRef<ManualEdits>(saved);
@@ -272,12 +322,6 @@ export function useManualEditor({
     };
   }, [readSaved, commitSaved]);
 
-  /*
-   * While a write is in flight the canvas is locked (Studio covers it), and
-   * edits arriving anyway — a key press, a drag that ends — are not taken:
-   * they would be drawn on the board that is being replaced, and the ids they
-   * carry may not exist in the next one.
-   */
   /** the PCB view is controlled: it always passes the full list */
   const replacePending = useCallback((events: EditEvent[]) => {
     if (busyRef.current) return;
@@ -331,27 +375,6 @@ export function useManualEditor({
     pendingRef.current = pending;
   }, [pending]);
 
-  /**
-   * Runs one write at a time; a second call while one is in flight is dropped.
-   * A background save already on its way is waited for: it carries moves this
-   * write must not send again.
-   */
-  const exclusive = useCallback(async (job: () => Promise<void>): Promise<void> => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    setError(null);
-    try {
-      if (autoJobRef.current) await autoJobRef.current.catch(() => {});
-      // and the board update in flight: two at once and the second one is refused
-      if (syncJobRef.current) await syncJobRef.current.catch(() => {});
-      await job();
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
-  }, []);
-
   /** after a write: the board follows. Its failure does not undo the write */
   const notifyApplied = useCallback(
     async (hint?: { structural?: boolean; background?: boolean }): Promise<ApplyResult> => {
@@ -364,51 +387,6 @@ export function useManualEditor({
       }
     },
     [onApplied],
-  );
-
-  const write = useCallback(
-    async (
-      body: Record<string, unknown>,
-      hint?: { structural?: boolean },
-    ): Promise<ManualEdits | null> => {
-      try {
-        const res = await fetch("/api/manual-edits", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId, ...body }),
-        });
-        const d = await res.json().catch(() => ({}));
-        if (!res.ok || !d?.edits) throw new Error(d?.error ?? `HTTP ${res.status}`);
-        commitSaved(d.edits as ManualEdits);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        return null;
-      }
-      writesRef.current += 1;
-      const seen = writesRef.current;
-      await notifyApplied(hint);
-      syncedWritesRef.current = seen;
-      return savedRef.current;
-    },
-    [projectId, commitSaved, notifyApplied],
-  );
-
-  /** writes a link (or removes it) inside main.tsx */
-  const postConnection = useCallback(
-    async (body: Record<string, unknown>): Promise<string | null> => {
-      try {
-        const res = await fetch("/api/schematic/connect", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId, ...body }),
-        });
-        const d = await res.json().catch(() => ({}));
-        return res.ok ? null : (d.error ?? `HTTP ${res.status}`);
-      } catch (err) {
-        return err instanceof Error ? err.message : String(err);
-      }
-    },
-    [projectId],
   );
 
   /*
@@ -426,13 +404,6 @@ export function useManualEditor({
     () => pendingRef.current.filter((e) => !sentRef.current.has(e)),
     [],
   );
-  /** every written move goes, whatever the board: undo, redo and Applica, which rewrite the file on purpose */
-  const dropSent = useCallback(() => {
-    setPending((p) => {
-      const left = p.filter((e) => !sentRef.current.has(e));
-      return left.length === p.length ? p : left;
-    });
-  }, []);
 
   /**
    * A board has arrived: the overrides it makes useless go, and only those. A
@@ -451,7 +422,7 @@ export function useManualEditor({
   const refreshSyncing = useCallback(() => {
     if (!syncingRef) return;
     syncingRef.current =
-      autoJobRef.current !== null || syncJobRef.current !== null || syncedWritesRef.current !== writesRef.current;
+      queuedRef.current > 0 || syncJobRef.current !== null || syncedWritesRef.current !== writesRef.current;
   }, [syncingRef]);
 
   /**
@@ -496,38 +467,147 @@ export function useManualEditor({
     syncRef.current = syncBoard;
   }, [syncBoard]);
 
+  /** after the queue is empty: drops waiting go, then the board follows */
+  const autoSaveRef = useRef<() => void>(() => {});
+  const afterQueue = useCallback(() => {
+    if (queuedRef.current > 0) return;
+    if (syncedWritesRef.current !== writesRef.current) syncRef.current();
+  }, []);
+
+  /**
+   * Puts a write in the queue: it runs after every write asked before it. A
+   * failure is the job's own business (it says so); the queue goes on.
+   */
+  const enqueue = useCallback(
+    (job: () => Promise<void>): Promise<void> => {
+      queuedRef.current += 1;
+      setQueued(queuedRef.current);
+      refreshSyncing();
+      const run = queueRef.current
+        .then(job)
+        .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+        .finally(() => {
+          queuedRef.current -= 1;
+          setQueued(queuedRef.current);
+          afterQueue();
+          refreshSyncing();
+        });
+      queueRef.current = run;
+      return run;
+    },
+    [afterQueue, refreshSyncing],
+  );
+
+  /**
+   * An explicit write (Applica, release): in the queue like the others, after
+   * the board update in flight (two at once and the second one is refused),
+   * with the links and traces held while it runs.
+   */
+  const exclusive = useCallback(
+    async (job: () => Promise<void>): Promise<void> => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      setBusy(true);
+      setError(null);
+      try {
+        await enqueue(async () => {
+          if (syncJobRef.current) await syncJobRef.current.catch(() => {});
+          await job();
+        });
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    },
+    [enqueue],
+  );
+
+  const write = useCallback(
+    async (
+      body: Record<string, unknown>,
+      hint?: { structural?: boolean },
+    ): Promise<ManualEdits | null> => {
+      try {
+        const res = await fetch("/api/manual-edits", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId, ...body }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || !d?.edits) throw new Error(d?.error ?? `HTTP ${res.status}`);
+        commitSaved(d.edits as ManualEdits);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return null;
+      }
+      writesRef.current += 1;
+      const seen = writesRef.current;
+      await notifyApplied(hint);
+      syncedWritesRef.current = seen;
+      return savedRef.current;
+    },
+    [projectId, commitSaved, notifyApplied],
+  );
+
+  /** one small write of manual-edits.json: the answer, or an error with the server's words */
+  const post = useCallback(
+    async (body: Record<string, unknown>, url = "/api/manual-edits"): Promise<Record<string, unknown>> => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, ...body }),
+      });
+      const d = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok || d.ok === false || d.error) throw new Error(String(d.error ?? `HTTP ${res.status}`));
+      return d;
+    },
+    [projectId],
+  );
+
+  /** writes a link (or removes it) inside main.tsx */
+  const postConnection = useCallback(
+    async (body: Record<string, unknown>): Promise<string | null> => {
+      try {
+        const res = await fetch("/api/schematic/connect", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId, ...body }),
+        });
+        const d = await res.json().catch(() => ({}));
+        return res.ok ? null : (d.error ?? `HTTP ${res.status}`);
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
+    [projectId],
+  );
+
   /**
    * Writes these moves. The positions dragged on the board go as absolute
    * patches by name (`placementsOf`): a few hundred bytes, no board read on the
    * server, last write wins per part. What cannot be a patch goes the old way.
    * The undo step is made of exactly what the patches replaced, as the server
-   * answered, without reading the whole file back. False if a write failed.
+   * answered, without reading the whole file back.
    */
   const saveMoves = useCallback(
-    async (batch: EditEvent[]): Promise<boolean> => {
+    async (batch: EditEvent[]): Promise<void> => {
       const { placements, rest } = placementsOf ? placementsOf(batch) : { placements: [], rest: batch };
       const restSet = new Set(rest);
       if (placements.length > 0) {
-        const res = await fetch("/api/manual-edits", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId, action: "place", placements }),
-        });
-        const d = await res.json().catch(() => ({}));
-        if (!res.ok || !Array.isArray(d?.placements)) throw new Error(d?.error ?? `HTTP ${res.status}`);
+        const d = await post({ action: "place", placements });
+        if (!Array.isArray(d.placements)) throw new Error("risposta senza posizioni");
         const written = d.placements as ManualPlacement[];
-        const replaced = (Array.isArray(d.before) ? d.before : []) as Array<{ placement: ManualPlacement | null }>;
+        const replaced = (Array.isArray(d.before) ? d.before : []) as Array<{
+          selector: string;
+          placement: ManualPlacement | null;
+        }>;
         commitSaved(withPlacements(savedRef.current, written));
-        const empty = emptyManualEdits();
-        setPast((p) =>
-          [
-            ...p,
-            {
-              before: { ...empty, pcb_placements: replaced.flatMap((b) => (b.placement ? [b.placement] : [])) },
-              after: { ...empty, pcb_placements: written },
-            },
-          ].slice(-40),
-        );
+        const states = partStates(batch, placements.map((p) => p.name), replaced, written);
+        if (states.before.length > 0) {
+          const redone = batch.every((e) => redoneRef.current.has(e));
+          if (redone) setPast((p) => [...p, { kind: "pezzi", ...states }]);
+          else pushStep({ kind: "pezzi", ...states });
+        }
         const byName = new Map(placements.map((pl) => [pl.name, pl]));
         for (const e of batch) {
           if (restSet.has(e)) continue;
@@ -538,23 +618,16 @@ export function useManualEditor({
       }
       if (rest.length > 0) {
         const before = (await readSaved()) ?? savedRef.current;
-        const res = await fetch("/api/manual-edits", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId, events: rest }),
-        });
-        const d = await res.json().catch(() => ({}));
-        if (!res.ok || !d?.edits) throw new Error(d?.error ?? `HTTP ${res.status}`);
+        const d = await post({ events: rest });
+        if (!d.edits) throw new Error("risposta senza il file");
         const next = d.edits as ManualEdits;
         commitSaved(next);
-        setPast((p) => [...p, { before, after: next }].slice(-40));
+        pushStep({ kind: "file", before, after: next });
         for (const e of rest) writtenAsRef.current.set(e, null);
         writesRef.current += 1;
       }
-      setFuture([]);
-      return true;
     },
-    [placementsOf, projectId, commitSaved, setPast, readSaved],
+    [placementsOf, post, commitSaved, pushStep, setPast, readSaved],
   );
 
   /**
@@ -563,24 +636,20 @@ export function useManualEditor({
    * not remounted: the person keeps dragging while it writes, and what is
    * dropped meanwhile goes with the next round, with its latest position.
    */
-  const autoSaveRef = useRef<() => void>(() => {});
   const autoSave = useCallback(() => {
-    // an explicit write is running: it takes the moves itself, or reschedules after
-    if (busyRef.current) return;
-    if (autoJobRef.current) {
-      autoAgainRef.current = true;
-      return;
-    }
-    const batch = unsentNow();
-    if (batch.length === 0) return;
-    markSent(batch, true);
-    setSaving(true);
-    let failed = false;
-    const job = (async () => {
+    // an explicit write is in the queue: it takes the moves itself, or the effect reschedules after
+    if (busyRef.current || autoQueuedRef.current) return;
+    if (unsentNow().length === 0) return;
+    autoQueuedRef.current = true;
+    void enqueue(async () => {
+      autoQueuedRef.current = false;
+      // the batch is what is unsent when its turn comes: an undo before it may have taken some
+      const batch = unsentNow();
+      if (batch.length === 0) return;
+      markSent(batch, true);
       try {
         await saveMoves(batch);
       } catch (err) {
-        failed = true;
         // nothing is thrown away: they go back to "not applied" and the next gesture retries them
         autoFailedRef.current = pendingRef.current;
         markSent(batch, false);
@@ -594,24 +663,10 @@ export function useManualEditor({
       }
       setError(null);
       setLastSaveOk(true);
-    })().finally(() => {
-      autoJobRef.current = null;
-      setSaving(false);
-      const again = autoAgainRef.current;
-      autoAgainRef.current = false;
-      // what was dropped meanwhile goes now, with its latest position; after a
-      // failure nothing retries by itself (a new gesture or Applica does)
-      if (!failed && (again || unsentNow().length > 0)) {
-        autoSaveRef.current();
-      } else if (syncedWritesRef.current !== writesRef.current) {
-        // nothing left to write: now the board
-        syncRef.current();
-      }
-      refreshSyncing();
+      // what was dropped meanwhile goes right after, with its latest position
+      if (unsentNow().length > 0) autoSaveRef.current();
     });
-    autoJobRef.current = job;
-    refreshSyncing();
-  }, [unsentNow, markSent, saveMoves, refreshSyncing]);
+  }, [unsentNow, markSent, saveMoves, enqueue]);
   useEffect(() => {
     autoSaveRef.current = autoSave;
   }, [autoSave]);
@@ -680,17 +735,26 @@ export function useManualEditor({
         }
       }
       if (sentRoutes.length > 0) {
-        // the state right before the write, read now: the last one this page
-        // saw may be older than what the agent wrote since
-        const before = (await readSaved()) ?? savedRef.current;
-        const next = await write({ events: [], routes: sentRoutes }, { structural });
-        // on failure nothing is discarded: the hand-drawn traces stay pending,
-        // they used to be dropped BEFORE the error check and vanished
-        if (!next) return;
+        /*
+         * The traces go by their key, with what they replace coming back for
+         * undo: the same small write as a part. They used to travel with the
+         * whole file both ways (326 KB with 821 traces on tm-4l-r3).
+         */
+        try {
+          const d = await post({ action: "routes", add: sentRoutes });
+          const added = (Array.isArray(d.added) ? d.added : []) as ManualRoute[];
+          const replaced = (Array.isArray(d.replaced) ? d.replaced : []) as ManualRoute[];
+          commitSaved(withRoutes(savedRef.current, added, []));
+          pushStep({ kind: "piste", before: replaced, after: added });
+          writesRef.current += 1;
+        } catch (err) {
+          // on failure nothing is discarded: the hand-drawn traces stay pending
+          setError(err instanceof Error ? err.message : String(err));
+          return;
+        }
         setRoutes((r) => withoutSent(r, sentRoutes));
-        setPast((p) => [...p, { before, after: next }].slice(-40));
-        setFuture([]);
-      } else if (sentPending.length > 0 || circuitChanged || syncedWritesRef.current !== writesRef.current) {
+      }
+      if (sentPending.length > 0 || sentRoutes.length > 0 || circuitChanged || syncedWritesRef.current !== writesRef.current) {
         const seen = writesRef.current;
         await notifyApplied({ structural });
         syncedWritesRef.current = seen;
@@ -703,11 +767,11 @@ export function useManualEditor({
        */
       setViewerKey((k) => k + 1);
     });
-  }, [dirty, links, unlinks, routes, exclusive, postConnection, readSaved, write, notifyApplied, unsentNow, markSent, saveMoves, setPast]);
+  }, [dirty, links, unlinks, routes, exclusive, postConnection, notifyApplied, unsentNow, markSent, saveMoves, post, commitSaved, pushStep]);
 
   /**
-   * Moves a saved step back (undo) or forward again (redo), relative to what
-   * the server holds NOW. Posting the stored snapshot as it was overwrote
+   * A step of the whole file back (undo) or forward again (redo), relative to
+   * what the server holds NOW. Posting the stored snapshot as it was overwrote
    * every pin and move saved in the meantime by the agent or another tab.
    */
   const travel = useCallback(
@@ -739,8 +803,105 @@ export function useManualEditor({
     [readSaved, commitSaved, write],
   );
 
-  const undo = useCallback(async () => {
-    if (busyRef.current) return;
+  /**
+   * Brings the parts to these states: on screen at once (an override per part,
+   * like a drag), then the same small write as a drag. The override goes when
+   * a board shows the part there.
+   */
+  const placeParts = useCallback(
+    async (states: readonly PartState[]): Promise<void> => {
+      const events: EditEvent[] = states.map((s) => ({
+        edit_event_type: "edit_pcb_component_location",
+        component_name: s.selector,
+        original_center: s.center,
+        new_center: s.center,
+        new_rotation: s.rotation,
+        new_layer: s.layer,
+      }));
+      markSent(events, true);
+      setPending((p) => [...p, ...events]);
+      try {
+        const { placements, remove } = placeRequest(states);
+        await post({ action: "place", placements, remove });
+      } catch (err) {
+        setPending((p) => withoutSent(p, events));
+        throw err;
+      }
+      commitSaved(withPartStates(savedRef.current, states));
+      const byName = new Map(placeRequest(states).placements.map((p) => [p.name, p]));
+      for (const [i, s] of states.entries()) {
+        writtenAsRef.current.set(
+          events[i],
+          byName.get(s.selector) ?? { name: s.selector, center: s.center, rotation: s.rotation },
+        );
+      }
+      writesRef.current += 1;
+    },
+    [markSent, post, commitSaved],
+  );
+
+  /** a detached trace back on the board (undo), or detached again (redo) */
+  const traceStep = useCallback(
+    async (step: Extract<EditorStep, { kind: "staccata" }>, direction: "undo" | "redo"): Promise<void> => {
+      if (direction === "undo") {
+        await post({ action: "restore", routes: step.removed.routes, elements: step.removed.elements }, "/api/trace");
+        commitSaved(withRoutes(savedRef.current, step.removed.routes, []));
+      } else {
+        const d = await post({ action: "delete", pcbTraceId: step.traceId }, "/api/trace");
+        const removed = d.removed as RemovedTrace | undefined;
+        if (removed) step.removed = removed;
+        commitSaved(withRoutes(savedRef.current, [], step.removed.routes.map(manualRouteKey)));
+      }
+      await reloadBoard?.();
+    },
+    [post, commitSaved, reloadBoard],
+  );
+
+  /** runs one saved step the given way; false if it could not be written */
+  const runStep = useCallback(
+    async (step: EditorStep, direction: "undo" | "redo"): Promise<boolean> => {
+      try {
+        if (step.kind === "pezzi") {
+          await placeParts(direction === "undo" ? step.before : step.after);
+        } else if (step.kind === "piste") {
+          const { add, remove } = routesRequest(step, direction);
+          await post({ action: "routes", add, remove });
+          commitSaved(withRoutes(savedRef.current, add, remove));
+          writesRef.current += 1;
+        } else if (step.kind === "staccata") {
+          await traceStep(step, direction);
+        } else if (step.kind === "file") {
+          return await travel(step, direction);
+        }
+        setError(null);
+        return true;
+      } catch (err) {
+        setError(
+          `${direction === "undo" ? "Annulla" : "Ripristina"} non riuscito: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return false;
+      }
+    },
+    [placeParts, post, commitSaved, traceStep, travel],
+  );
+
+  /** a detached trace becomes a step: Cmd+Z puts it back */
+  const recordDetached = useCallback(
+    (traceId: string, removed: RemovedTrace) => {
+      pushStep({ kind: "staccata", traceId, removed });
+    },
+    [pushStep],
+  );
+
+  /**
+   * Cmd+Z. What is only on screen goes back at once (a trace drawn, a link, a
+   * gesture not saved yet); a saved step is undone in the queue, after the
+   * writes before it, and never dropped: pressed again while one is running, it
+   * undoes the next one.
+   */
+  const undo = useCallback(() => {
     // undo in the reverse order of doing: links first, which are the last
     // thing drawn, then the moves
     if (routes.length > 0) {
@@ -755,38 +916,52 @@ export function useManualEditor({
       setLinks((l) => l.slice(0, -1));
       return;
     }
-    const unsent = pending.filter((e) => !sentRef.current.has(e));
+    const unsent = unsentNow();
     if (unsent.length > 0) {
       // a gesture on many parts (same gruppo) is undone in one go, like it was done
       const keep = new Set(senzaUltimoGesto(unsent));
       const gone = unsent.filter((e) => !keep.has(e));
       setPending((p) => withoutSent(p, gone));
+      setFuture((f) => [{ kind: "gesto", events: gone }, ...f]);
       setViewerKey((k) => k + 1);
       return;
     }
-    await exclusive(async () => {
-      // after the background save in flight: its step is the last one to undo
+    void enqueue(async () => {
       const step = pastRef.current[pastRef.current.length - 1];
       if (!step) return;
-      if (!(await travel(step, "undo"))) return;
       setPast((p) => p.slice(0, -1));
-      setFuture((f) => [step, ...f].slice(0, 40));
-      dropSent();
-      setViewerKey((k) => k + 1);
+      setFuture((f) => [step, ...f]);
+      if (!(await runStep(step, "undo"))) {
+        // not written: the step is still the last one done
+        setFuture((f) => f.filter((s) => s !== step));
+        setPast((p) => [...p, step]);
+      }
     });
-  }, [pending, links, unlinks, routes, exclusive, travel, dropSent, setPast]);
+  }, [links, unlinks, routes, unsentNow, enqueue, runStep, setPast, setFuture]);
 
-  const redo = useCallback(async () => {
-    const step = future[0];
-    if (!step) return;
-    await exclusive(async () => {
-      if (!(await travel(step, "redo"))) return;
+  /** Cmd+Shift+Z: the step undone last, done again, in the same queue */
+  const redo = useCallback(() => {
+    const first = futureRef.current[0];
+    if (!first) return;
+    if (first.kind === "gesto") {
+      // a gesture that was never saved: it comes back on screen and saves itself
       setFuture((f) => f.slice(1));
-      setPast((p) => [...p, step].slice(-40));
-      dropSent();
+      for (const e of first.events) redoneRef.current.add(e);
+      setPending((p) => [...p, ...first.events]);
       setViewerKey((k) => k + 1);
+      return;
+    }
+    void enqueue(async () => {
+      const step = futureRef.current[0];
+      if (!step || step.kind === "gesto") return;
+      setFuture((f) => f.slice(1));
+      setPast((p) => [...p, step]);
+      if (!(await runStep(step, "redo"))) {
+        setPast((p) => p.filter((s) => s !== step));
+        setFuture((f) => [step, ...f]);
+      }
     });
-  }, [future, exclusive, travel, dropSent, setPast]);
+  }, [enqueue, runStep, setPast, setFuture]);
 
   /** throws away what has not been written yet: what is already on the file stays on screen */
   const discard = useCallback(() => {
@@ -805,16 +980,16 @@ export function useManualEditor({
         const before = (await readSaved()) ?? savedRef.current;
         const next = await write({ action: "release", scope, name }, { structural: true });
         if (!next) return;
-        setPast((p) => [...p, { before, after: next }].slice(-40));
-        setFuture([]);
+        pushStep({ kind: "file", before, after: next });
         setPending([]);
         setViewerKey((k) => k + 1);
       });
     },
-    [exclusive, readSaved, write, setPast],
+    [exclusive, readSaved, write, pushStep],
   );
 
   const counts = countManualEdits(saved);
+  const saving = queued > 0;
 
   return {
     mode,
@@ -823,7 +998,7 @@ export function useManualEditor({
     saved,
     counts,
     busy,
-    /** a background save is writing (the canvas stays free) */
+    /** a write of the editor is running or waiting in the queue (the canvas stays free) */
     saving,
     /**
      * For the bar, never blocking: "attesa" a move waits its AUTOSAVE_MS,
@@ -851,6 +1026,7 @@ export function useManualEditor({
     canRedo: future.length > 0,
     replacePending,
     pushPending,
+    recordDetached,
     apply,
     undo,
     redo,

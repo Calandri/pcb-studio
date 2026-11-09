@@ -642,6 +642,8 @@ export function Studio({
     onApplied: onManualEditApplied,
     syncingRef: autoSyncRef,
     placementsOf,
+    // a detached trace put back by Cmd+Z is on the saved board: it only has to be read again
+    reloadBoard: loadCircuit,
   });
 
   /*
@@ -880,11 +882,16 @@ export function Studio({
       gruppo?: string,
     ) => {
       const nome = partNames.byPcbId.get(id);
+      // how the part was on screen when the gesture started: Cmd+Z puts it back exactly so
+      const prima = overridesRef.current[id];
+      const sullaScheda = nome ? boardPartsRef.current.get(nome) : undefined;
       editor.pushPending({
         edit_event_type: "edit_pcb_component_location",
         pcb_component_id: id,
         ...(nome ? { component_name: nome } : {}),
         original_center: from,
+        original_rotation: prima?.rotation ?? sullaScheda?.rotation ?? 0,
+        original_layer: prima?.layer ?? sullaScheda?.layer ?? "top",
         new_center: to,
         ...(rotation !== undefined ? { new_rotation: rotation } : {}),
         // "Gira lato": the other face travels with the event, like the rotation
@@ -927,6 +934,10 @@ export function Studio({
     }
     return out;
   }, [editor.pending, partNames]);
+  const overridesRef = useRef(pcbMoveOverrides);
+  useEffect(() => {
+    overridesRef.current = pcbMoveOverrides;
+  }, [pcbMoveOverrides]);
 
   // "instrada" only exists on the copper: switching tabs would leave the mode
   // on while doing nothing, and the mouse would look broken
@@ -1600,6 +1611,7 @@ export function Studio({
                       resetKey={editor.viewerKey}
                       projectId={projectId}
                       onChanged={() => void loadCircuit()}
+                      onDetached={editor.recordDetached}
                     />
                   ) : (
                     // hand moving on our canvas: drag, arrows, rotation — with

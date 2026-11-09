@@ -9,10 +9,13 @@ import {
   parseManualEdits,
   serializeManualEdits,
   withoutManualEdits,
+  type ManualEdits,
 } from "@/lib/manual-edits";
+import { manualRouteKey, parseManualRoutes, type ManualRoute } from "@/lib/manual-routes";
 import {
   filesHash,
   getCompileCache,
+  getCompileMeta,
   getProject,
   saveCompileCache,
   updateProjectFile,
@@ -25,11 +28,18 @@ export const maxDuration = 60;
 /** createdAt may come back as a Date or as a string, depending on the driver */
 const stamp = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
 
+/** what one undo may put back: a trace with its vias, and the hand routes it came from */
+const RESTORE_LIMITS = { maxElements: 64, maxBytes: 500_000, maxRoutes: 50, maxPoints: 2000 } as const;
+
 /**
  * Detaches an existing trace: you select it in Route mode and remove it.
  * The connection is left unrouted — you redraw it by hand right away, or the
  * next full compilation redoes it on its own. No recompilation here: removing
  * copper is a millisecond-scale operation.
+ *
+ * The answer says what went (the copper and the hand routes), and
+ * action=restore puts exactly that back: Cmd+Z in Instrada. Without it a
+ * detached trace was gone for good (tm-4l-r3, 2026-11-10: 828 routes to 821).
  */
 export async function POST(req: Request): Promise<Response> {
   let body: Record<string, unknown>;
@@ -43,8 +53,33 @@ export async function POST(req: Request): Promise<Response> {
       ? body.projectId
       : "default";
   const pcbTraceId = typeof body.pcbTraceId === "string" && body.pcbTraceId.length <= 300 ? body.pcbTraceId : "";
-  if (!pcbTraceId || body.action !== "delete") {
-    return Response.json({ error: "serve action=delete e pcbTraceId" }, { status: 400 });
+  const restoring = body.action === "restore";
+  if (!restoring && (!pcbTraceId || body.action !== "delete")) {
+    return Response.json({ error: "serve action=delete e pcbTraceId, o action=restore" }, { status: 400 });
+  }
+
+  /*
+   * What comes back on restore, checked: only copper of a trace (pcb_trace,
+   * pcb_via), a bounded amount, and hand routes that pass the editor's own
+   * checks. It goes onto the requester's own board, which they may edit.
+   */
+  let restoreElements: Array<Record<string, unknown>> = [];
+  let restoreRoutes: ReturnType<typeof parseManualRoutes> = [];
+  if (restoring) {
+    const raw = Array.isArray(body.elements) ? body.elements : [];
+    if (raw.length > RESTORE_LIMITS.maxElements || JSON.stringify(raw).length > RESTORE_LIMITS.maxBytes) {
+      return Response.json({ error: "troppo rame da rimettere in una volta" }, { status: 413 });
+    }
+    restoreElements = raw.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === "object" &&
+        e !== null &&
+        ((e as { type?: unknown }).type === "pcb_trace" || (e as { type?: unknown }).type === "pcb_via"),
+    );
+    restoreRoutes = parseManualRoutes(body.routes, RESTORE_LIMITS);
+    if (restoreElements.length === 0 && restoreRoutes.length === 0) {
+      return Response.json({ error: "niente da rimettere" }, { status: 400 });
+    }
   }
 
   const { ok } = await requireProjectAccess(projectId, "edit");
@@ -72,7 +107,34 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  const result = deleteTrace(cached.circuitJson, pcbTraceId, fsMap[MANUAL_EDITS_PATH]);
+  /** the board and the file after this action, from the board and the file as they are */
+  const change = (
+    board: unknown[],
+    raw: string | null | undefined,
+  ): { circuitJson: unknown[]; edits: ManualEdits; editsChanged: boolean; connection: string | null } | null => {
+    if (!restoring) {
+      const r = deleteTrace(board, pcbTraceId, raw);
+      return r ? { circuitJson: r.circuitJson, edits: r.edits, editsChanged: r.editsChanged, connection: r.connection } : null;
+    }
+    const idOf = (e: Record<string, unknown>) => String(e.type === "pcb_via" ? e.pcb_via_id : e.pcb_trace_id);
+    const present = new Set(
+      (board as Array<Record<string, unknown>>)
+        .filter((e) => e.type === "pcb_trace" || e.type === "pcb_via")
+        .map(idOf),
+    );
+    const back = restoreElements.filter((e) => !present.has(idOf(e)));
+    const edits = parseManualEdits(raw);
+    const keys = new Set(edits.pcb_routes.map(manualRouteKey));
+    const routes = restoreRoutes.filter((r) => !keys.has(manualRouteKey(r)));
+    return {
+      circuitJson: [...board, ...back],
+      edits: routes.length > 0 ? { ...edits, pcb_routes: [...edits.pcb_routes, ...routes] } : edits,
+      editsChanged: routes.length > 0,
+      connection: null,
+    };
+  };
+
+  const result = change(cached.circuitJson, fsMap[MANUAL_EDITS_PATH]);
   if (!result) {
     return Response.json({ error: "pista non trovata nella scheda compilata" }, { status: 404 });
   }
@@ -84,13 +146,16 @@ export async function POST(req: Request): Promise<Response> {
    * instead of turning the page stale for a millisecond operation.
    */
   let hash = cached.filesHash;
+  let removedRoutes: ManualRoute[] = [];
   if (result.editsChanged) {
     let written: string | null = null;
     try {
       const r = await updateProjectFile(projectId, MANUAL_EDITS_PATH, (current) => {
-        const redone = deleteTrace(cached.circuitJson, pcbTraceId, current);
+        const redone = change(cached.circuitJson, current);
         if (!redone?.editsChanged) return null;
         const before = parseManualEdits(current);
+        const afterKeys = new Set(redone.edits.pcb_routes.map(manualRouteKey));
+        removedRoutes = before.pcb_routes.filter((x) => !afterKeys.has(manualRouteKey(x)));
         const base = nextBoardBase({
           cacheFilesHash: cached.filesHash,
           filesHashBefore: filesHash(current === null ? sources : { ...sources, [MANUAL_EDITS_PATH]: current }),
@@ -111,7 +176,8 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const summary = summarizeCircuit(result.circuitJson as unknown[], fsMap);
-  const latest = await getCompileCache(projectId).catch(() => null);
+  // which board is saved now: the metadata is enough, the board is megabytes
+  const latest = await getCompileMeta(projectId);
   if (
     !latest ||
     latest.filesHash !== cached.filesHash ||
@@ -128,5 +194,14 @@ export async function POST(req: Request): Promise<Response> {
     ? ((summary as { unroutedConnections?: unknown[] }).unroutedConnections as unknown[]).length
     : null;
 
-  return Response.json({ ok: true, connection: result.connection, unrouted, summary });
+  // what went, for Cmd+Z: the copper taken off the board and the routes taken out of the file
+  const kept = new Set(result.circuitJson);
+  const removedElements = restoring ? [] : (cached.circuitJson as unknown[]).filter((e) => !kept.has(e));
+  return Response.json({
+    ok: true,
+    connection: result.connection,
+    unrouted,
+    summary,
+    ...(restoring ? {} : { removed: { routes: removedRoutes, elements: removedElements } }),
+  });
 }

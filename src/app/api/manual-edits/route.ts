@@ -3,6 +3,7 @@ import { commitManualEdits, rilasciaPezzi } from "@/lib/manual-edits-store";
 import {
   applyEditEvents,
   applyPlacementPatches,
+  applyRoutePatch,
   countManualEdits,
   EDIT_LIMITS,
   emptyManualEdits,
@@ -10,6 +11,7 @@ import {
   MANUAL_EDITS_PATH,
   normalizeRotation,
   parseManualEdits,
+  parseNames,
   parsePlacementPatches,
   releaseManualEdits,
   type EditEvent,
@@ -123,8 +125,11 @@ export async function POST(req: Request): Promise<Response> {
    * not the whole file with its 831 hand-drawn traces.
    */
   if (body.action === "place") {
+    const t0 = Date.now();
     const patches = parsePlacementPatches(body.placements, EDIT_LIMITS.maxEvents);
-    if (patches.length === 0) {
+    // an undo back to where the code puts a part: its hand position goes
+    const remove = parseNames(body.remove, EDIT_LIMITS.maxEvents);
+    if (patches.length === 0 && remove.length === 0) {
       return Response.json({ error: "nessuna posizione valida da salvare" }, { status: 400 });
     }
     try {
@@ -132,17 +137,51 @@ export async function POST(req: Request): Promise<Response> {
       let before: ReturnType<typeof applyPlacementPatches>["before"] = [];
       const { edits } = await commit(projectId, meta, (current) => {
         // may run again on a conflict: `before` is the one of the run that wrote
-        const r = applyPlacementPatches(current, patches);
+        const r = applyPlacementPatches(current, patches, remove);
         before = r.before;
         return r.edits;
       });
       const names = new Set(patches.map((p) => p.name));
+      // in the function log: whether a page saves this way, and how long it takes
+      console.log(`[manual-edits ${projectId}] place ${patches.length} pezzi, tolti ${remove.length}: ${Date.now() - t0} ms`);
       return Response.json({
         ok: true,
         placements: edits.pcb_placements.filter((p) => names.has(p.selector)),
         before,
         counts: countManualEdits(edits),
       });
+    } catch (err) {
+      return failure(err);
+    }
+  }
+
+  /*
+   * Hand-drawn traces, added and taken away by their key: the same small
+   * write as a dragged part. "Applica" in Instrada used to send them with the
+   * whole file back (326 KB and 821 traces on tm-4l-r3) and read the board on
+   * the way. The answer carries what was replaced, for undo.
+   */
+  if (body.action === "routes") {
+    const t0 = Date.now();
+    const add = parseManualRoutes(body.add, POST_LIMITS);
+    const removeKeys = Array.isArray(body.remove)
+      ? body.remove.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length <= 400).slice(0, POST_LIMITS.maxRoutes)
+      : [];
+    if (add.length === 0 && removeKeys.length === 0) {
+      return Response.json({ error: "nessuna pista valida da salvare" }, { status: 400 });
+    }
+    try {
+      const meta = await getCompileMeta(projectId);
+      let replaced: ReturnType<typeof applyRoutePatch>["replaced"] = [];
+      let added: ReturnType<typeof applyRoutePatch>["added"] = [];
+      const { edits } = await commit(projectId, meta, (current) => {
+        const r = applyRoutePatch(current, add, removeKeys);
+        replaced = r.replaced;
+        added = r.added;
+        return r.edits;
+      });
+      console.log(`[manual-edits ${projectId}] routes +${add.length} -${removeKeys.length}: ${Date.now() - t0} ms`);
+      return Response.json({ ok: true, added, replaced, counts: countManualEdits(edits) });
     } catch (err) {
       return failure(err);
     }
@@ -317,6 +356,8 @@ export async function POST(req: Request): Promise<Response> {
         { status: 409 },
       );
     }
+    // in the function log: a page still saving moves the old way (opened before the deploy)
+    console.log(`[manual-edits ${projectId}] events ${events.length} (vecchia via), piste ${routes.length}`);
     const main = (await getProject(projectId))["main.tsx"] ?? "";
     const { edits } = await commit(projectId, cache, (current) => {
       const moved = applyEditEvents({

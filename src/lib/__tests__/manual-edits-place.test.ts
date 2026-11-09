@@ -110,3 +110,48 @@ describe("POST action place", () => {
     expect(vuota.status).toBe(400);
   });
 });
+
+describe("POST action routes e place con remove", () => {
+  it("aggiunge e toglie piste per chiave senza mandare indietro il file, e place toglie le posizioni nominate", async () => {
+    const store = await import("@/lib/project-store");
+    const P = "prova-routes-memoria";
+    const r = (from: string, to: string, y: number) => ({ connection: `${from} to ${to}`, from, to, width: 0.2, points: [{ x: 0, y, layer: "top" }, { x: 2, y, layer: "top" }] });
+    await store.writeProjectFile(P, "main.tsx", "export default () => <board width=\"10mm\" height=\"10mm\" />");
+    await store.writeProjectFile(
+      P,
+      "manual-edits.json",
+      serializeManualEdits({ ...emptyManualEdits(), pcb_routes: [r(".R1 > .pin1", ".C1 > .pin1", 0)] as never, pcb_placements: [{ selector: "U1", center: { x: 1, y: 1 } }, { selector: "U2", center: { x: 2, y: 2 } }] }),
+    );
+    const { POST } = await import("@/app/api/manual-edits/route");
+    const call = (body: Record<string, unknown>) =>
+      POST(new Request("http://x/api/manual-edits", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: P, ...body }) }));
+    const a = await call({ action: "routes", add: [r(".R1 > .pin1", ".C1 > .pin1", 3), r(".R2 > .pin1", ".C2 > .pin1", 6)] });
+    const d = await a.json();
+    expect(a.status).toBe(200);
+    expect(d.replaced).toHaveLength(1);
+    expect(d.added).toHaveLength(2);
+    expect(d.edits).toBeUndefined();
+    let saved = parseManualEdits((await store.getProject(P))["manual-edits.json"]);
+    expect(saved.pcb_routes.map((x) => x.points[0].y)).toEqual([3, 6]);
+    const { manualRouteKey } = await import("@/lib/manual-routes");
+    const b = await call({ action: "routes", remove: [manualRouteKey(r(".R2 > .pin1", ".C2 > .pin1", 6) as never), "chiave-che-non-c-e"], add: [] });
+    expect(b.status).toBe(200);
+    saved = parseManualEdits((await store.getProject(P))["manual-edits.json"]);
+    expect(saved.pcb_routes).toHaveLength(1);
+    expect((await call({ action: "routes", add: [{ connection: "x", points: [] }] })).status).toBe(400);
+
+    const c = await call({ action: "place", placements: [], remove: ["U1"] });
+    expect(c.status).toBe(200);
+    saved = parseManualEdits((await store.getProject(P))["manual-edits.json"]);
+    expect(saved.pcb_placements).toEqual([{ selector: "U2", center: { x: 2, y: 2 } }]);
+  });
+
+  it("rimettere una pista accetta solo rame di piste e in quantita' limitata", async () => {
+    const { POST } = await import("@/app/api/trace/route");
+    const call = (body: Record<string, unknown>) =>
+      POST(new Request("http://x/api/trace", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: "prova-x", action: "restore", ...body }) }));
+    expect((await call({ elements: [{ type: "pcb_component" }], routes: [] })).status).toBe(400);
+    expect((await call({ elements: Array.from({ length: 65 }, () => ({ type: "pcb_via" })) })).status).toBe(413);
+  });
+});
+
