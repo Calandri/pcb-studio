@@ -1,5 +1,6 @@
 "use client";
 
+import { avvisoDelProgetto } from "@/lib/progetti-con-difetti";
 import { isTypingTarget } from "./keyboard";
 import { layerForKey } from "./board/render";
 import { descriviPezzo } from "@/lib/part-description";
@@ -1359,6 +1360,15 @@ export function Studio({
               backgroundSize: "28px 28px",
             }}
           />
+
+          {avvisoDelProgetto(projectId) && (
+            <div className="absolute left-1/2 top-[110px] z-20 flex max-w-[min(640px,92%)] -translate-x-1/2 items-start gap-2.5 rounded-[10px] border border-[#5A2420] bg-[rgba(40,12,10,0.95)] px-3 py-2">
+              <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-danger" />
+              <span className="text-[11.5px] font-semibold leading-snug text-[#FFB4AB]">
+                {projectId}: {avvisoDelProgetto(projectId)}
+              </span>
+            </div>
+          )}
 
           {nonSalvata && circuitJson && (
             <div className="absolute left-1/2 top-[70px] z-20 flex max-w-[min(640px,92%)] -translate-x-1/2 items-start gap-2.5 rounded-[10px] border border-[#5A2420] bg-[rgba(40,12,10,0.95)] px-3 py-2 backdrop-blur">

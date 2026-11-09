@@ -8,6 +8,7 @@ import {
 import { convertCircuitJsonToPickAndPlaceRows } from "circuit-json-to-pnp-csv";
 import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
+import { avvisoDelProgetto } from "@/lib/progetti-con-difetti";
 import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
@@ -122,12 +123,13 @@ export async function GET(req: Request): Promise<Response> {
   try {
     switch (kind) {
       case "bom": {
-        return csvResponse(bomToCsv(buildBom(circuitJson as never, fsMap)), "bom.csv");
+        return csvResponse(bomToCsv(buildBom(circuitJson as never, fsMap)), "bom.csv", avvisoDelProgetto(projectId));
       }
       // same rows as the downloadable BOM, in JSON: the on-screen table
       // must not be able to diverge from the file that goes to production
       case "bom-json": {
-        return Response.json({ rows: buildBom(circuitJson as never, fsMap) });
+        const avviso = avvisoDelProgetto(projectId);
+        return Response.json({ rows: buildBom(circuitJson as never, fsMap), ...(avviso ? { avviso } : {}) });
       }
       case "pnp": {
         // the library's rows, our CSV: no formulas, rotations in [0, 360)
@@ -138,7 +140,7 @@ export async function GET(req: Request): Promise<Response> {
             circuitJson as unknown[],
           ),
         );
-        return csvResponse(csv, "pnp.csv");
+        return csvResponse(csv, "pnp.csv", avvisoDelProgetto(projectId));
       }
       case "gerber": {
         const zip = new JSZip();
@@ -165,11 +167,14 @@ export async function GET(req: Request): Promise<Response> {
             stringifyExcellonDrill(drill),
           );
         }
+        // a board known to be wrong says so inside the package and on its name
+        const avviso = avvisoDelProgetto(projectId);
+        if (avviso) zip.file("ATTENZIONE_NON_PRODURRE.txt", `ATTENZIONE: ${projectId} ${avviso}\n`);
         const buffer = await zip.generateAsync({ type: "nodebuffer" });
         return new Response(new Uint8Array(buffer), {
           headers: {
             "content-type": "application/zip",
-            "content-disposition": `attachment; filename="${projectId}-gerber.zip"`,
+            "content-disposition": `attachment; filename="${avviso ? "NON-PRODURRE-" : ""}${projectId}-gerber.zip"`,
           },
         });
       }
@@ -200,11 +205,12 @@ export async function GET(req: Request): Promise<Response> {
   }
 }
 
-function csvResponse(csv: string, filename: string): Response {
-  return new Response(csv, {
+function csvResponse(csv: string, filename: string, avviso: string | null = null): Response {
+  // a board known to be wrong: the first line of the file says it, and the name
+  return new Response(avviso ? `# ATTENZIONE: ${avviso}\n${csv}` : csv, {
     headers: {
       "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="${filename}"`,
+      "content-disposition": `attachment; filename="${avviso ? "NON-PRODURRE-" : ""}${filename}"`,
     },
   });
 }
