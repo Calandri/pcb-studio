@@ -1,0 +1,66 @@
+diff --git a/dist/index.js b/dist/index.js
+index d9e35b8..5b8334f 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -3509,8 +3509,60 @@ var calculateCellBoundaries = (inputCellContents, containerWidth, containerHeigh
+   return outlineLines;
+ };
+ 
+-// lib/index.ts
++// patched (pcb-studio): the exact solver below grows by about eight times
++// per cell (8 cells 0.01 s, 10 cells 2 s, 12 cells 22 s, 25 cells never
++// ends), and tscircuit calls it once per board with one cell per
++// <schematicsection>: a board with 25 sections could not be compiled at all.
++// tscircuit lays the sections out in rows (computeSchematicSectionLayoutUsingRows),
++// so above PCB_STUDIO_EXACT_MAX_CELLS the dividers are computed from the rows
++// directly: one horizontal line between two rows across the sheet, one
++// vertical line between two neighbours of a row, as tall as the row. Every
++// pair of cells stays separated and no line crosses a cell. Up to that count
++// the drawing is the exact one, as before.
++var PCB_STUDIO_EXACT_MAX_CELLS = 8;
++var rowCellBoundaries = (cells) => {
++  const TOL5 = 1e-6;
++  const boxes = cells.filter(
++    (c) => Number.isFinite(c.minX) && Number.isFinite(c.maxX) && Number.isFinite(c.minY) && Number.isFinite(c.maxY)
++  );
++  if (boxes.length < 2) return [];
++  const outer = computeBoundsFromCellContents(boxes);
++  const rows = [];
++  for (const c of [...boxes].sort((a, b) => b.maxY - a.maxY)) {
++    const row = rows[rows.length - 1];
++    if (row && c.maxY > row.minY + TOL5) {
++      row.cells.push(c);
++      row.minY = Math.min(row.minY, c.minY);
++    } else {
++      rows.push({ cells: [c], maxY: c.maxY, minY: c.minY });
++    }
++  }
++  const lines = [];
++  const cuts = [];
++  for (let i = 0; i + 1 < rows.length; i++) cuts.push((rows[i].minY + rows[i + 1].maxY) / 2);
++  for (const y of cuts) lines.push({ start: { x: outer.minX, y }, end: { x: outer.maxX, y } });
++  rows.forEach((row, i) => {
++    const top = i === 0 ? outer.maxY : cuts[i - 1];
++    const bottom = i === rows.length - 1 ? outer.minY : cuts[i];
++    const cols = [];
++    for (const c of [...row.cells].sort((a, b) => a.minX - b.minX)) {
++      const col = cols[cols.length - 1];
++      if (col && c.minX < col.maxX - TOL5) col.maxX = Math.max(col.maxX, c.maxX);
++      else cols.push({ minX: c.minX, maxX: c.maxX });
++    }
++    for (let j = 0; j + 1 < cols.length; j++) {
++      const x = (cols[j].maxX + cols[j + 1].minX) / 2;
++      lines.push({ start: { x, y: bottom }, end: { x, y: top } });
++    }
++  });
++  return lines.sort(
++    (a, b) => pointSortKey(a.start, b.start) || pointSortKey(a.end, b.end)
++  );
++};
+ var calculateCellBoundaries2 = (inputCellContents) => {
++  if (inputCellContents.length > PCB_STUDIO_EXACT_MAX_CELLS) {
++    return rowCellBoundaries(inputCellContents);
++  }
+   return calculateCellBoundaries(
+     inputCellContents.map((c) => ({
+       x: c.minX,

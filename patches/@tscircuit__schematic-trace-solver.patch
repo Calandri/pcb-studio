@@ -1,0 +1,103 @@
+diff --git a/dist/index.js b/dist/index.js
+index dce2cd1..92cc6f6 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -7265,12 +7265,86 @@ var isYOrientation = (orientation) => orientation === "y+" || orientation === "y
+ var isXOrientation = (orientation) => orientation === "x+" || orientation === "x-";
+ var rectsOverlap2 = (a, b) => Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX) > EPS9 && Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY) > EPS9;
+ var rangesOverlap = (minA, maxA, minB, maxB) => Math.min(maxA, maxB) - Math.max(minA, minB) > EPS9;
+-var traceCrossesBoundsInterior = (bounds, traceMap) => {
+-  for (const trace of Object.values(traceMap)) {
++// patched (pcb-studio): every label candidate was tested against every
++// segment of every trace on the sheet. On fototrappola-frontale (217 parts, 827
++// connections, 113 labels to turn) that scan took 112 of the 184 seconds of a
++// compile, and the compile did not fit in a Vercel function. The segments are
++// put in a grid once per traceMap (each solver builds its own), and a
++// candidate is tested only against the segments in the cells it covers: a
++// segment that crosses the candidate's interior lies in one of those cells, so
++// the answer is the same. Traces are only ever added to a traceMap while it is
++// used (addConnectorTrace, which drops the grid), never edited in place.
++var PCB_STUDIO_GRID_CELL = 1;
++var PCB_STUDIO_GRID_MAX_SPAN = 4096;
++var pcbStudioSpan = (a, b) => {
++  const n = b - a + 1;
++  return Number.isFinite(a) && Number.isFinite(b) && n > 0 && n <= PCB_STUDIO_GRID_MAX_SPAN;
++};
++var pcbStudioSegmentGrids = /* @__PURE__ */ new WeakMap();
++var pcbStudioCellKey = (gx, gy) => gx + "," + gy;
++var pcbStudioSegmentGrid = (traceMap) => {
++  const known = pcbStudioSegmentGrids.get(traceMap);
++  if (known) return known;
++  const traces = Object.values(traceMap);
++  const cells = /* @__PURE__ */ new Map();
++  const wide = [];
++  for (const trace of traces) {
+     const points = trace.tracePath;
+     for (let i = 0; i < points.length - 1; i++) {
+-      if (segmentCrossesBoundsInterior(points[i], points[i + 1], bounds)) {
+-        return true;
++      const p1 = points[i];
++      const p2 = points[i + 1];
++      const gx0 = Math.floor(Math.min(p1.x, p2.x) / PCB_STUDIO_GRID_CELL);
++      const gx1 = Math.floor(Math.max(p1.x, p2.x) / PCB_STUDIO_GRID_CELL);
++      const gy0 = Math.floor(Math.min(p1.y, p2.y) / PCB_STUDIO_GRID_CELL);
++      const gy1 = Math.floor(Math.max(p1.y, p2.y) / PCB_STUDIO_GRID_CELL);
++      if (!pcbStudioSpan(gx0, gx1) || !pcbStudioSpan(gy0, gy1)) {
++        wide.push(p1, p2);
++        continue;
++      }
++      for (let gx = gx0; gx <= gx1; gx++) {
++        for (let gy = gy0; gy <= gy1; gy++) {
++          const key = pcbStudioCellKey(gx, gy);
++          const list = cells.get(key);
++          if (list) list.push(p1, p2);
++          else cells.set(key, [p1, p2]);
++        }
++      }
++    }
++  }
++  const grid = { cells, wide };
++  pcbStudioSegmentGrids.set(traceMap, grid);
++  return grid;
++};
++var traceCrossesBoundsInterior = (bounds, traceMap) => {
++  const grid = pcbStudioSegmentGrid(traceMap);
++  const gx0 = Math.floor(bounds.minX / PCB_STUDIO_GRID_CELL);
++  const gx1 = Math.floor(bounds.maxX / PCB_STUDIO_GRID_CELL);
++  const gy0 = Math.floor(bounds.minY / PCB_STUDIO_GRID_CELL);
++  const gy1 = Math.floor(bounds.maxY / PCB_STUDIO_GRID_CELL);
++  if (!pcbStudioSpan(gx0, gx1) || !pcbStudioSpan(gy0, gy1)) {
++    for (const trace of Object.values(traceMap)) {
++      const points = trace.tracePath;
++      for (let i = 0; i < points.length - 1; i++) {
++        if (segmentCrossesBoundsInterior(points[i], points[i + 1], bounds)) {
++          return true;
++        }
++      }
++    }
++    return false;
++  }
++  for (let i = 0; i < grid.wide.length; i += 2) {
++    if (segmentCrossesBoundsInterior(grid.wide[i], grid.wide[i + 1], bounds)) {
++      return true;
++    }
++  }
++  for (let gx = gx0; gx <= gx1; gx++) {
++    for (let gy = gy0; gy <= gy1; gy++) {
++      const list = grid.cells.get(pcbStudioCellKey(gx, gy));
++      if (!list) continue;
++      for (let i = 0; i < list.length; i += 2) {
++        if (segmentCrossesBoundsInterior(list[i], list[i + 1], bounds)) {
++          return true;
++        }
+       }
+     }
+   }
+@@ -7547,6 +7621,7 @@ var AvailableNetOrientationSolver = class extends BaseSolver {
+     };
+     this.traces.push(connectorTrace);
+     this.traceMap[mspPairId] = connectorTrace;
++    pcbStudioSegmentGrids.delete(this.traceMap);
+   }
+   finish() {
+     this.currentLabelIndex = null;

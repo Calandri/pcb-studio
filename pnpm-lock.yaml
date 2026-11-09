@@ -11,6 +11,12 @@ patchedDependencies:
   '@tscircuit/pcb-viewer':
     hash: 4oaijp2v6z4hac7qkqszkmvgvq
     path: patches/@tscircuit__pcb-viewer.patch
+  '@tscircuit/schematic-trace-solver':
+    hash: efpc4rl4crjvvjepgtelabm2ne
+    path: patches/@tscircuit__schematic-trace-solver.patch
+  calculate-cell-boundaries:
+    hash: zskjel6x2zomqqyvac6ece5eba
+    path: patches/calculate-cell-boundaries.patch
   circuit-json-to-gerber:
     hash: oavrcynxautxagsypkghucikcq
     path: patches/circuit-json-to-gerber.patch
@@ -6835,7 +6841,7 @@ snapshots:
       '@tscircuit/props': 0.0.589(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(react@19.2.4)(zod@3.25.76)
       '@tscircuit/schematic-match-adapt': 0.0.18(typescript@5.9.3)
       bpc-graph: 0.0.57(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(typescript@5.9.3)
-      calculate-cell-boundaries: 0.0.13(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
+      calculate-cell-boundaries: 0.0.13(patch_hash=zskjel6x2zomqqyvac6ece5eba)(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
       calculate-packing: 0.0.79(@tscircuit/circuit-json-util@0.0.100(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(typescript@5.9.3)
       circuit-json: 0.0.453(format-si-unit@0.0.7(typescript@5.9.3))
       circuit-json-to-bpc: 0.0.13(bpc-graph@0.0.66(typescript@5.9.3))(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(typescript@5.9.3)
@@ -6869,7 +6875,7 @@ snapshots:
       '@tscircuit/props': 0.0.592(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(react@19.2.4)(zod@3.25.76)
       '@tscircuit/schematic-match-adapt': 0.0.22(typescript@5.9.3)
       bpc-graph: 0.0.66(typescript@5.9.3)
-      calculate-cell-boundaries: 0.0.13(graphics-debug@0.0.96(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
+      calculate-cell-boundaries: 0.0.13(patch_hash=zskjel6x2zomqqyvac6ece5eba)(graphics-debug@0.0.96(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
       calculate-packing: 0.0.82(@tscircuit/circuit-json-util@0.0.101(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(typescript@5.9.3)
       circuit-json: 0.0.455(format-si-unit@0.0.7(typescript@5.9.3))
       circuit-json-to-bpc: 0.0.13(bpc-graph@0.0.66(typescript@5.9.3))(circuit-json@0.0.455(format-si-unit@0.0.7(typescript@5.9.3)))(typescript@5.9.3)
@@ -7056,7 +7062,7 @@ snapshots:
     dependencies:
       typescript: 5.9.3
 
-  '@tscircuit/schematic-trace-solver@0.0.106(typescript@5.9.3)':
+  '@tscircuit/schematic-trace-solver@0.0.106(patch_hash=efpc4rl4crjvvjepgtelabm2ne)(typescript@5.9.3)':
     dependencies:
       typescript: 5.9.3
 
@@ -7672,7 +7678,7 @@ snapshots:
 
   bytes@3.1.2: {}
 
-  calculate-cell-boundaries@0.0.13(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3):
+  calculate-cell-boundaries@0.0.13(patch_hash=zskjel6x2zomqqyvac6ece5eba)(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
       '@tscircuit/solver-utils': 0.0.19(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
       lucide-react: 1.26.0(react@18.3.1)
@@ -7682,7 +7688,7 @@ snapshots:
     transitivePeerDependencies:
       - graphics-debug
 
-  calculate-cell-boundaries@0.0.13(graphics-debug@0.0.96(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3):
+  calculate-cell-boundaries@0.0.13(patch_hash=zskjel6x2zomqqyvac6ece5eba)(graphics-debug@0.0.96(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3):
     dependencies:
       '@tscircuit/solver-utils': 0.0.19(graphics-debug@0.0.96(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
       lucide-react: 1.26.0(react@18.3.1)
@@ -10410,12 +10416,12 @@ snapshots:
       '@tscircuit/props': 0.0.589(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(react@19.2.4)(zod@3.25.76)
       '@tscircuit/runframe': 0.0.2263(@tscircuit/core@0.0.1495(oirsxuuypoiiubpztxfki6lgqu))(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(typescript@5.9.3)(zod@3.25.76)
       '@tscircuit/schematic-match-adapt': 0.0.18(typescript@5.9.3)
-      '@tscircuit/schematic-trace-solver': 0.0.106(typescript@5.9.3)
+      '@tscircuit/schematic-trace-solver': 0.0.106(patch_hash=efpc4rl4crjvvjepgtelabm2ne)(typescript@5.9.3)
       '@tscircuit/simple-3d-svg': 0.0.41
       '@tscircuit/solver-utils': 0.0.16(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
       '@tscircuit/soup-util': 0.0.41(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76)
       bpc-graph: 0.0.57(@tscircuit/schematic-corpus@0.0.114(typescript@5.9.3))(typescript@5.9.3)
-      calculate-cell-boundaries: 0.0.13(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
+      calculate-cell-boundaries: 0.0.13(patch_hash=zskjel6x2zomqqyvac6ece5eba)(graphics-debug@0.0.95(bun-match-svg@0.0.15(typescript@5.9.3))(looks-same@9.0.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
       calculate-elbow: 0.0.12(typescript@5.9.3)
       calculate-packing: 0.0.79(@tscircuit/circuit-json-util@0.0.100(circuit-json@0.0.453(format-si-unit@0.0.7(typescript@5.9.3)))(transformation-matrix@2.16.1)(zod@3.25.76))(typescript@5.9.3)
       circuit-json: 0.0.453(format-si-unit@0.0.7(typescript@5.9.3))

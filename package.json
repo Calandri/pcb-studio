@@ -101,6 +101,8 @@
     },
     "patchedDependencies": {
       "@tscircuit/pcb-viewer": "patches/@tscircuit__pcb-viewer.patch",
+      "@tscircuit/schematic-trace-solver": "patches/@tscircuit__schematic-trace-solver.patch",
+      "calculate-cell-boundaries": "patches/calculate-cell-boundaries.patch",
       "circuit-json-to-gerber": "patches/circuit-json-to-gerber.patch"
     }
   }
