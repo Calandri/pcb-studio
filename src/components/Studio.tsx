@@ -1,5 +1,7 @@
 "use client";
 
+import { isTypingTarget } from "./keyboard";
+import { layerForKey } from "./board/render";
 import { descriviPezzo } from "@/lib/part-description";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -97,6 +99,30 @@ export function Studio({
   const [xray, setXray] = useState(0);
   /** "Sposta" shows the parts of both faces: only when asked for (LeftRail) */
   const [bothSides, setBothSides] = useState(false);
+
+  /*
+   * 1, 2, 3, 4: only that copper layer, in stackup order (2 = Bottom on a
+   * 2-layer board); 0: all of them. The same as clicking the layer in "Sezione
+   * della scheda", so in Sposta it also changes the face whose parts can be
+   * grabbed. Only on the board tab (on the schematic 0 frames the sheet), never
+   * while typing, never with a modifier (Cmd+1 belongs to the browser).
+   * In Instrada the same keys also pick the layer being drawn on, as before.
+   */
+  const numLayers = useMemo(() => {
+    const b = (circuitJson as Array<Record<string, unknown>> | null)?.find((e) => e.type === "pcb_board");
+    return typeof b?.num_layers === "number" ? b.num_layers : 2;
+  }, [circuitJson]);
+  useEffect(() => {
+    if (tab !== "pcb") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+      const next = layerForKey(e.key, numLayers);
+      if (!next) return;
+      setLayer(next);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tab, numLayers]);
   const [partId, setPartId] = useState<string | null>(null);
   /** component descriptions written by the model (datasheet + connections) */
   const [partDesc, setPartDesc] = useState<Record<string, { role: string; why: string }>>({});

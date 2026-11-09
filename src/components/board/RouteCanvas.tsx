@@ -13,7 +13,7 @@ import {
 import type { ManualRoute } from "@/lib/manual-routes";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
 import { isTypingTarget } from "../keyboard";
-import { LAYER_COLOR, PAD_COLOR, LAYER_ORDER, buildScene, type LayerId } from "./render";
+import { LAYER_COLOR, PAD_COLOR, LAYER_ORDER, buildScene, layerForKey, type LayerId } from "./render";
 
 /**
  * Manual routing.
@@ -29,12 +29,6 @@ import { LAYER_COLOR, PAD_COLOR, LAYER_ORDER, buildScene, type LayerId } from ".
 /** pad grab tolerance, in pixels: constant at every zoom level */
 const GRAB_PX = 14;
 
-const LAYER_KEYS: Record<string, LayerId> = {
-  "1": "top",
-  "2": "inner1",
-  "3": "inner2",
-  "4": "bottom",
-};
 
 interface Draft {
   from: RoutePad;
@@ -349,8 +343,9 @@ export function RouteCanvas({
         setDraft((d) => (!d || d.points.length <= 1 ? null : { ...d, points: d.points.slice(0, -1) }));
         return;
       }
-      const next = LAYER_KEYS[e.key];
-      if (!next) return;
+      // the same keys as the board view: stackup order, so 2 is Bottom on a 2-layer board
+      const next = layerForKey(e.key, scene?.board.layers ?? 2);
+      if (!next || next === "all") return;
       e.preventDefault();
       // changing layer while drawing leaves a via at the current point:
       // it is the only way to get to the other side of the copper
@@ -362,7 +357,7 @@ export function RouteCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [draft, layer, selectedTrace, deleteSelected, armed, deleting]);
+  }, [draft, layer, selectedTrace, deleteSelected, armed, deleting, scene]);
 
   if (!scene) {
     return (

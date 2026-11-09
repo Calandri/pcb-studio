@@ -224,6 +224,18 @@ function PcbSections({
       <section className="flex flex-col gap-3">
         <SectionHead title="SEZIONE DELLA SCHEDA" />
         <div className="flex flex-col gap-[7px] rounded-2xl border border-line bg-gradient-to-b from-[#0E1514] to-[#0A0F0E] px-3 py-3.5">
+          {/* every copper layer together (key 0); 1, 2, 3, 4 pick one */}
+          <button
+            type="button"
+            onClick={() => onLayer("all")}
+            title="Tutti gli strati di rame insieme (0). Uno solo: 1, 2, 3, 4 in ordine dall'alto"
+            className={`flex items-center justify-between rounded-[9px] px-1 py-[5px] text-left text-[12px] font-semibold transition-colors ${
+              layer === "all" ? "bg-[#141E1B] text-brand" : "text-text hover:bg-[#141E1B]"
+            }`}
+          >
+            Tutti
+            <span className="font-mono text-[9px] text-[#4E625C]">0</span>
+          </button>
           {report.layers.map((l) => {
             const active = l.id === layer;
             return (

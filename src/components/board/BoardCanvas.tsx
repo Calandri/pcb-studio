@@ -777,6 +777,8 @@ export function BoardCanvas({
     );
   }
 
+  /** "all" (key 0, "Tutti"): every copper layer at full strength, top above */
+  const tutti = layer === "all";
   const active = (layer === "top" || layer === "bottom" || layer === "inner1" || layer === "inner2"
     ? layer
     : "top") as LayerId;
@@ -798,7 +800,7 @@ export function BoardCanvas({
    * no way to look at one face only and the command does not do what it says.
    * Raising the x-ray brings the other layers back, which is where they belong.
    */
-  const layerOpacity = (l: LayerId) => (l === active ? 1 : (xray / 100) * 0.75);
+  const layerOpacity = (l: LayerId) => (tutti || l === active ? 1 : (xray / 100) * 0.75);
 
   const mmPerPx = 1 / view.k;
   const showSilk = flags.is_showing_silkscreen;
@@ -968,8 +970,8 @@ export function BoardCanvas({
                      */
                     stroke={LAYER_COLOR[l]}
                     strokeWidth={mmPerPx * (l === active ? 1.4 : 1)}
-                    strokeOpacity={l === active ? 0.85 : (xray / 100) * 0.7}
-                    opacity={l === active ? 0.45 : (xray / 100) * 0.45}
+                    strokeOpacity={tutti || l === active ? 0.85 : (xray / 100) * 0.7}
+                    opacity={tutti || l === active ? 0.45 : (xray / 100) * 0.45}
                   />
                 )),
             )}
@@ -1588,7 +1590,7 @@ export function BoardCanvas({
       </div>
 
       <div className="pointer-events-none absolute bottom-[18px] left-1/2 -translate-x-1/2 font-mono text-[10px] text-[#4E625C]">
-        {Math.round(view.k)} px/mm
+        {Math.round(view.k)} px/mm · 1–{scene.board.layers >= 4 ? 4 : 2} uno strato · 0 tutti
       </div>
 
       {/* the move-mode controls: above the "Ricalcola massa" button,

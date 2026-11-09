@@ -16,6 +16,18 @@ export type LayerId = "top" | "inner1" | "inner2" | "bottom";
 
 export const LAYER_ORDER: LayerId[] = ["bottom", "inner2", "inner1", "top"];
 
+/**
+ * The copper layers in stackup order, top first: what keys 1, 2, 3... pick
+ * (1 = Top, 2 = Inner 1, 3 = Inner 2, 4 = Bottom on a 4-layer board; 1 = Top,
+ * 2 = Bottom on a 2-layer one). A key past the last layer picks nothing.
+ */
+export function layerForKey(key: string, layerCount: number): LayerId | "all" | null {
+  if (key === "0") return "all";
+  if (!/^[1-9]$/.test(key)) return null;
+  const stack: LayerId[] = layerCount >= 4 ? ["top", "inner1", "inner2", "bottom"] : ["top", "bottom"];
+  return stack[Number(key) - 1] ?? null;
+}
+
 /** copper: top is the warmest, the inner ones are told apart at a glance */
 export const LAYER_COLOR: Record<LayerId, string> = {
   top: "#E8A33C",
