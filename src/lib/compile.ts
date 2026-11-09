@@ -651,20 +651,25 @@ export async function compileProject(
     say({ step: "Leggo la scheda", detail: "prima il rame e i pezzi, lo schematico dopo", progress: 0.05 });
     let pcbOnly: CircuitElement[] | null = null;
     try {
-      pcbOnly = await compileGeometryOnly(fsMap, { schematic: false });
+      pcbOnly = await profiler.run("scheda senza schematico (tscircuit)", () =>
+        compileGeometryOnly(fsMap, { schematic: false }),
+      );
     } catch {
       pcbOnly = null;
     }
     if (pcbOnly && pcbOnly.some((el) => el.type === "pcb_board")) {
-      const early = await boardWithoutRouting(pcbOnly);
+      const early = await profiler.run("rame, colate e controlli della scheda senza schematico", () =>
+        boardWithoutRouting(pcbOnly as CircuitElement[]),
+      );
       early.summary.schematicPending =
         "scheda salvata prima dello schematico: lo schematico e i suoi controlli arrivano a fine compilazione";
       early.summary.message = `${early.summary.message} (schematico in calcolo)`;
       try {
-        await opts.onBoard(early);
+        await profiler.run("salvataggio della scheda senza schematico", () => opts.onBoard!(early));
       } catch {
         // saving early is a bonus: the full compile goes on and saves at the end
       }
+      console.log(`[compile] scheda senza schematico pronta in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
       say({ step: "Scheda pronta", detail: "ora disegno lo schematico", progress: 0.15, circuitJson: early.circuitJson });
     }
   }
@@ -691,7 +696,7 @@ export async function compileProject(
   let geometry: CircuitElement[] | null = null;
   try {
     state.attempts += 1;
-    geometry = await compileGeometryOnly(fsMap);
+    geometry = await profiler.run("scheda con schematico (tscircuit)", () => compileGeometryOnly(fsMap));
   } catch (err) {
     state.fatalError = err instanceof Error ? err.message : String(err);
   }
@@ -781,7 +786,17 @@ export async function compileProject(
       };
     }
     say({ step: "Riporto il rame che c'era", detail: "le piste non si rifanno", progress: 0.7 });
-    const { summary, circuitJson } = await boardWithoutRouting(geometry, true);
+    const g = geometry;
+    const { summary, circuitJson } = await profiler.run("rame, colate e controlli", () => boardWithoutRouting(g, true));
+    /*
+     * Where the time went, in the summary and in the function log: on Vercel
+     * the same compile takes several times the local one, and without the
+     * split nobody can tell the board from the schematic.
+     */
+    summary.profile = profiler.result();
+    console.log(
+      `[compile] ${summary.profile.spans.map((sp) => `${sp.name} ${(sp.ms / 1000).toFixed(1)}s`).join(", ")}; totale ${(summary.profile.totalMs / 1000).toFixed(1)}s`,
+    );
     return { summary, circuitJson, placements: placedNow ?? undefined };
   }
 

@@ -70,3 +70,13 @@ describe("la scheda prima dello schematico", () => {
     expect(count(result.circuitJson, "schematic_component")).toBe(2);
   }, 120_000);
 });
+
+describe("dove va il tempo della compilazione", () => {
+  it("il riepilogo divide la scheda dallo schematico", async () => {
+    const result = await compileProject({ "main.tsx": MAIN }, { onBoard: async () => {} });
+    const names = result.summary.profile.spans.map((s) => s.name);
+    expect(names).toContain("scheda senza schematico (tscircuit)");
+    expect(names).toContain("scheda con schematico (tscircuit)");
+    expect(result.summary.profile.totalMs).toBeGreaterThan(0);
+  }, 120_000);
+});
