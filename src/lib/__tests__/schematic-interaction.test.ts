@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { buildSchematicModel, type SchematicModel } from "@/lib/schematic-model";
 import {
   HIGHLIGHT_COLOR,
@@ -360,9 +360,16 @@ describe("the panels keep text as text", () => {
  */
 const HTL = "/tmp/ht_prova/giri/s_circuit.json";
 describe.skipIf(!existsSync(HTL))("HTL-401", () => {
-  const big = JSON.parse(readFileSync(HTL, "utf8")) as unknown[];
-  const m = buildSchematicModel(big);
-  const ix = buildIndex(m, big);
+  // read in beforeAll, not in the describe body: a skipped describe still runs
+  // its body to collect the tests, and on CI the file is not there
+  let big: unknown[] = [];
+  let m: SchematicModel = model;
+  let ix = idx;
+  beforeAll(() => {
+    big = JSON.parse(readFileSync(HTL, "utf8")) as unknown[];
+    m = buildSchematicModel(big);
+    ix = buildIndex(m, big);
+  });
 
   it("VREF lights all its pins, U3 included", () => {
     const h = highlightFor(m, ix, resolveKey(ix, "VREF"))!;
