@@ -81,6 +81,7 @@ export function BoardCanvas({
   onMoveComponent,
   pinnedNames,
   onRelease,
+  bothSides = false,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -117,6 +118,11 @@ export function BoardCanvas({
   pinnedNames?: string[];
   /** lets go of a single part: it is the × on its mark */
   onRelease?: (name: string) => void;
+  /**
+   * In move mode, the parts of BOTH faces can be seen and grabbed. Off by
+   * default: only when the person asks for "Top + Bottom".
+   */
+  bothSides?: boolean;
 }) {
   const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -147,6 +153,34 @@ export function BoardCanvas({
   const selected = useMemo(() => new Set(selectedIds ?? []), [selectedIds]);
   /** the names held still by hand: they get the mark in move mode */
   const fermi = useMemo(() => new Set(pinnedNames ?? []), [pinnedNames]);
+
+  /*
+   * In move mode only the parts of the face being looked at exist.
+   *
+   * With Top chosen, the parts on the bottom still had their hover box and
+   * their drag handle on top of the top ones: translucent rectangles under
+   * C10 and C8 on sbb-dl-retro, and a drag that could pick up a part on the
+   * other face ("e' un casino", Niccolo', 2026-11-09). The face follows the
+   * chosen layer like the silkscreen does (bottom -> bottom, anything else ->
+   * top); both faces only when asked for. "Guarda" is untouched.
+   */
+  const faccia: LayerId = layer === "bottom" ? "bottom" : "top";
+  const nascosti = useMemo(() => {
+    const out = new Set<string>();
+    if (!scene || mode !== "move" || bothSides) return out;
+    for (const c of scene.components) if (c.layer !== faccia) out.add(c.id);
+    return out;
+  }, [scene, mode, bothSides, faccia]);
+
+  // what is no longer visible leaves the selection, the hover and the pick
+  useEffect(() => {
+    if (nascosti.size === 0) return;
+    if (pickedId && nascosti.has(pickedId)) onPickComponent?.(null);
+    if (hoveredComponentId && nascosti.has(hoveredComponentId)) onHoverComponent?.(null);
+    if (selectedIds?.some((id) => nascosti.has(id))) {
+      onSelectionChange?.(selectedIds.filter((id) => !nascosti.has(id)));
+    }
+  }, [nascosti, pickedId, hoveredComponentId, selectedIds, onPickComponent, onHoverComponent, onSelectionChange]);
 
 
   // --- container measurement: the scale is computed in real pixels
@@ -301,7 +335,7 @@ export function BoardCanvas({
    */
   const links = useMemo(() => {
     const focus = hoveredComponentId ?? (selectedIds?.length === 1 ? selectedIds[0] : null);
-    if (!scene || !focus) return [];
+    if (!scene || !focus || nascosti.has(focus)) return [];
 
     /*
      * Where a pad REALLY is now, not where it was when the board was
@@ -442,7 +476,7 @@ export function BoardCanvas({
     }
 
     return out;
-  }, [scene, hoveredComponentId, selectedIds, effOf]);
+  }, [scene, hoveredComponentId, selectedIds, effOf, nascosti]);
 
   /** the same transform, but on a point in millimeters (for texts outside the flipped group) */
   const mmPointTx = useCallback(
@@ -476,7 +510,7 @@ export function BoardCanvas({
         return;
       }
       const comp = pickedId ? scene.components.find((c) => c.id === pickedId) : null;
-      if (!comp) return;
+      if (!comp || nascosti.has(comp.id)) return;
       const cur = effOf(comp);
       const from = { x: cur.x, y: cur.y };
       /*
@@ -527,7 +561,7 @@ export function BoardCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, scene, pickedId, effOf, onMoveComponent, onPickComponent, gridMm]);
+  }, [mode, scene, pickedId, effOf, onMoveComponent, onPickComponent, gridMm, nascosti]);
 
   if (!scene) {
     return (
@@ -653,6 +687,7 @@ export function BoardCanvas({
               const inside = scene.components
                 .filter(
                   (c) =>
+                    !nascosti.has(c.id) &&
                     c.x >= box.minX && c.x <= box.maxX && c.y >= box.minY && c.y <= box.maxY,
                 )
                 .map((c) => c.id);
@@ -972,7 +1007,7 @@ export function BoardCanvas({
 
           {/* solder paste: the stencil opening, smaller than the pad */}
           {showPaste &&
-            scene.paste.map((p) =>
+            scene.paste.filter((p) => !nascosti.has(p.componentId)).map((p) =>
               p.circle ? (
                 <circle
                   key={p.id}
@@ -1014,7 +1049,7 @@ export function BoardCanvas({
           {mode === "move" &&
             fermi.size > 0 &&
             scene.components
-              .filter((c) => fermi.has(c.name))
+              .filter((c) => fermi.has(c.name) && !nascosti.has(c.id))
               .map((c) => {
                 const r = Math.max(0.5, mmPerPx * 7);
                 return (
@@ -1042,7 +1077,7 @@ export function BoardCanvas({
 
           {/* courtyards */}
           {showCourtyards &&
-            scene.courtyards.map((c) => (
+            scene.courtyards.filter((c) => !nascosti.has(c.componentId)).map((c) => (
               <rect
                 key={c.id}
                 transform={componi(
@@ -1098,7 +1133,7 @@ export function BoardCanvas({
 
           {/* invisible rectangles over the components: they provide the hover,
               and in move mode they are the handle to drag them */}
-          {scene.components.map((c) => {
+          {scene.components.filter((c) => !nascosti.has(c.id)).map((c) => {
             const p = effOf(c);
             const isSelected = selected.has(c.id) || pickedId === c.id;
             const isHovered = hoveredComponentId === c.id;

@@ -68,6 +68,8 @@ export function LeftRail({
   onLayer,
   xray,
   onXray,
+  bothSides = false,
+  onBothSides,
   onAskCopilot,
   enclosures,
   scene,
@@ -84,6 +86,9 @@ export function LeftRail({
   onLayer: (l: string) => void;
   xray: number;
   onXray: (v: number) => void;
+  /** in "Sposta": the parts of both faces, only when asked for */
+  bothSides?: boolean;
+  onBothSides?: (v: boolean) => void;
   onAskCopilot: () => void;
   /** enclosure designer: state and actions (3D tab only) */
   enclosures: EnclosuresApi | null;
@@ -118,6 +123,8 @@ export function LeftRail({
             onLayer={onLayer}
             xray={xray}
             onXray={onXray}
+            bothSides={bothSides}
+            onBothSides={onBothSides}
           />
         )}
         {tab === "schematic" && (
@@ -160,6 +167,8 @@ function PcbSections({
   onLayer,
   xray,
   onXray,
+  bothSides,
+  onBothSides,
 }: {
   report: BoardReport;
   preset: string;
@@ -168,6 +177,8 @@ function PcbSections({
   onLayer: (l: string) => void;
   xray: number;
   onXray: (v: number) => void;
+  bothSides: boolean;
+  onBothSides?: (v: boolean) => void;
 }) {
   return (
     <>
@@ -253,6 +264,34 @@ function PcbSections({
               </button>
             );
           })}
+          {/*
+            Which face's parts "Sposta" shows and lets you grab: the face of
+            the chosen layer (bottom on Bottom, top otherwise). Both faces only
+            by asking here, never by default: parts of the other face under
+            the ones being moved could be picked up by mistake.
+          */}
+          {onBothSides && (
+            <button
+              type="button"
+              aria-pressed={bothSides}
+              onClick={() => onBothSides(!bothSides)}
+              title="In Sposta: mostra e fa spostare i pezzi di tutte e due le facce. Spento, si vedono e si prendono solo i pezzi della faccia scelta sopra"
+              className={`mt-1 flex items-center gap-2 rounded-[9px] border px-2 py-[6px] text-left text-[11.5px] transition-colors ${
+                bothSides
+                  ? "border-[#2C4C42] bg-brand-wash font-semibold text-brand"
+                  : "border-line text-muted hover:border-[#3A5A50] hover:text-text"
+              }`}
+            >
+              <span
+                className={`grid h-[13px] w-[13px] flex-none place-items-center rounded-[3px] border ${
+                  bothSides ? "border-brand bg-brand text-ink" : "border-[#3A5A50]"
+                }`}
+              >
+                {bothSides ? "✓" : ""}
+              </span>
+              Top + Bottom in Sposta
+            </button>
+          )}
         </div>
       </section>
 

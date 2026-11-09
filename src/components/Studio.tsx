@@ -94,6 +94,8 @@ export function Studio({
   );
   const [layer, setLayer] = useState("top");
   const [xray, setXray] = useState(0);
+  /** "Sposta" shows the parts of both faces: only when asked for (LeftRail) */
+  const [bothSides, setBothSides] = useState(false);
   const [partId, setPartId] = useState<string | null>(null);
   /** component descriptions written by the model (datasheet + connections) */
   const [partDesc, setPartDesc] = useState<Record<string, { role: string; why: string }>>({});
@@ -1276,6 +1278,8 @@ export function Studio({
           onLayer={setLayer}
           xray={xray}
           onXray={setXray}
+          bothSides={bothSides}
+          onBothSides={setBothSides}
           onAskCopilot={() => setCopilot(true)}
           enclosures={enclosures}
           scene={{
@@ -1387,6 +1391,7 @@ export function Studio({
                       zone={zone}
                       onZoneChange={setZone}
                       mode="move"
+                      bothSides={bothSides}
                       pickedId={partId}
                       moveOverrides={pcbMoveOverrides}
                       onMoveComponent={moveComponent}
