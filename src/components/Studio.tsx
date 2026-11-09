@@ -6,7 +6,9 @@ import { layerForKey } from "./board/render";
 import { descriviPezzo } from "@/lib/part-description";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buildBoardReport, type BoardReport } from "@/lib/board-report";
+import { buildBoardReport, schematicMissing, type BoardReport } from "@/lib/board-report";
+import type { CompileRun } from "@/lib/compile-run";
+import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
 import { BoardCanvas, type BoardZone, type SelectMode } from "./board/BoardCanvas";
@@ -21,7 +23,6 @@ import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
 import { Footer, Header, type BoardTab } from "./workspace/Chrome";
 import { LeftRail, type SchematicSummary, type SheetNet } from "./workspace/LeftRail";
 import { extractComponents } from "@/lib/inspect";
-import { applyManualEditsToFsMap } from "@/lib/manual-edits";
 import { BomView } from "./workspace/BomView";
 import { StatusView } from "./workspace/StatusView";
 import { PartCard } from "./workspace/PartCard";
@@ -33,21 +34,6 @@ import { useEnclosures } from "@/lib/use-enclosures";
 import { useSharedSelection } from "./workspace/useSharedSelection";
 import { readSseStream } from "./sse-stream";
 import { ViewerBoundary } from "./ViewerBoundary";
-
-const RunFrame = dynamic(
-  () => import("@tscircuit/runframe/runner").then((m) => m.RunFrame),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full w-full items-center justify-center">
-        <div className="flex items-center gap-2 text-sm text-faint">
-          <span className="dot dot-busy" />
-          Avvio dell&apos;ambiente di progettazione
-        </div>
-      </div>
-    ),
-  },
-);
 
 const EnclosureCanvas = dynamic(
   () =>
@@ -80,7 +66,17 @@ export function Studio({
   const [uploading, setUploading] = useState(false);
   // server-validated routed circuit (truth); stale after any file change
   const [circuitJson, setCircuitJson] = useState<unknown[] | null>(null);
+  /*
+   * The circuit on screen is the compile SAVED on the server, not the preview
+   * of one running: only that one has checks behind it, and only that one can
+   * say "ready for the factory".
+   */
+  const [circuitSaved, setCircuitSaved] = useState(false);
   const [circuitStale, setCircuitStale] = useState(false);
+  /** a compile running (or cut off) anywhere, from the project's log */
+  const [compileRun, setCompileRun] = useState<CompileRun | null>(null);
+  /** why the last compile from this page ended without a board, if it did */
+  const [compileProblem, setCompileProblem] = useState<string | null>(null);
   // the checks are newer than the cached verification: needs re-checking
   const [checksStale, setChecksStale] = useState(false);
   /*
@@ -285,6 +281,8 @@ export function Studio({
     setNonSalvata((n) => (n && n.createdAt !== (d.compile.createdAt ?? null) ? null : n));
     compiledAtRef.current = d.compile.createdAt ?? null;
     setCircuitJson(d.compile.circuitJson as unknown[]);
+    setCircuitSaved(true);
+    setCompileProblem(null);
     setSummary(d.compile.summary ?? null);
     setCircuitStale(Boolean(d.compile.stale));
     setChecksStale(Boolean(d.compile.checksStale));
@@ -388,10 +386,16 @@ export function Studio({
           setRecompileStep(data.detail ? `${data.step} — ${data.detail}` : (data.step ?? ""));
           setRecompileProgress(typeof data.progress === "number" ? data.progress : null);
           // the board updates while it works: that is the whole point of this
-          if (Array.isArray(data.circuitJson)) setCircuitJson(data.circuitJson);
+          if (Array.isArray(data.circuitJson)) {
+            setCircuitJson(data.circuitJson);
+            setCircuitSaved(false);
+          }
         } else if (event === "errore") {
           failed = true;
-          if (data.error) setChat((c) => [...c, { kind: "error", text: String(data.error) }]);
+          if (data.error) {
+            setChat((c) => [...c, { kind: "error", text: String(data.error) }]);
+            setCompileProblem(String(data.error).slice(0, 240));
+          }
         } else if (event === "fine") {
           finished = true;
           if (data.summary) setSummary(data.summary);
@@ -416,13 +420,13 @@ export function Studio({
             text: "La compilazione è stata interrotta prima della fine (durata massima o rete). Quello che era già salvato resta: premi di nuovo «Ricompila» per riprendere.",
           },
         ]);
+        setCompileProblem("la compilazione è stata interrotta prima della fine (durata massima o rete)");
       }
       await loadCircuit();
     } catch (err) {
-      setChat((c) => [
-        ...c,
-        { kind: "error", text: err instanceof Error ? err.message : String(err) },
-      ]);
+      const text = err instanceof Error ? err.message : String(err);
+      setChat((c) => [...c, { kind: "error", text }]);
+      setCompileProblem(text.slice(0, 240));
     } finally {
       setRecompiling(false);
       setRecompileStep("");
@@ -482,7 +486,11 @@ export function Studio({
         const d = await res.json();
         const at = d?.compile?.createdAt ?? null;
         const previewAt: string | null = d?.previewAt ?? null;
-        if (!alive || !circuitLoadedRef.current) return;
+        if (!alive) return;
+        setCompileRun((d?.running as CompileRun | null | undefined) ?? null);
+        // the files can change without a compile (write_file from Claude): the score must know
+        if (d?.compile) setCircuitStale(Boolean(d.compile.stale));
+        if (!circuitLoadedRef.current) return;
         if (at && compiledAtRef.current !== at) {
           reloading = true;
           try {
@@ -507,6 +515,7 @@ export function Studio({
             if (p?.preview?.circuitJson) {
               previewAtRef.current = previewAt;
               setCircuitJson(p.preview.circuitJson as unknown[]);
+              setCircuitSaved(false);
             }
           } finally {
             reloading = false;
@@ -865,12 +874,16 @@ export function Studio({
    */
   const report = useMemo<BoardReport>(() => {
     try {
-      return buildBoardReport(circuitJson, summary);
+      return buildBoardReport(circuitJson, summary, {
+        saved: circuitSaved,
+        stale: circuitStale,
+        checksStale,
+      });
     } catch (err) {
       console.error("resoconto della scheda non calcolato:", err);
       return buildBoardReport(null, null);
     }
-  }, [circuitJson, summary]);
+  }, [circuitJson, summary, circuitSaved, circuitStale, checksStale]);
 
   // enclosure designer: record from the server + compiled meshes for the 3D canvas
   const enclosures = useEnclosures(projectId, report.widthMm, report.heightMm);
@@ -1284,6 +1297,11 @@ export function Studio({
 
   /** something is already working on the board: the triggers of another job are off */
   const boardBusy = recompiling || massBusy !== "" || status !== "idle";
+  /** the saved board has no schematic yet: see CompileOptions.onBoard */
+  const schematicPending = useMemo(
+    () => Boolean((summary as { schematicPending?: string } | null)?.schematicPending) || schematicMissing(circuitJson),
+    [summary, circuitJson],
+  );
 
   return (
     <div className="grid h-dvh grid-rows-[64px_minmax(0,1fr)_60px] overflow-hidden bg-canvas text-text">
@@ -1292,7 +1310,7 @@ export function Studio({
         report={report}
         tab={tab}
         onTab={setTab}
-        busy={status !== "idle"}
+        busy={status !== "idle" || recompiling}
         onOpenProjects={() => setDrawer(true)}
         actions={
           <div className="flex items-center gap-1.5">
@@ -1375,6 +1393,19 @@ export function Studio({
               <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-danger" />
               <span className="text-[11.5px] leading-snug text-[#FFB4AB]">
                 A schermo c&apos;e&apos; la versione delle {nonSalvata.ora}: la nuova non compila per: {nonSalvata.motivo}
+              </span>
+            </div>
+          )}
+
+          {/* the board was saved before its schematic (big boards: see
+              CompileOptions.onBoard): the sheet says why it is empty */}
+          {tab === "schematic" && circuitJson && schematicPending && (
+            <div className="absolute left-1/2 top-[70px] z-20 flex max-w-[min(640px,92%)] -translate-x-1/2 items-start gap-2.5 rounded-[10px] border border-[#4A3A16] bg-[rgba(32,24,8,0.95)] px-3 py-2 backdrop-blur">
+              <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-[#E8B23B]" />
+              <span className="text-[11.5px] leading-snug text-[#E8C97A]">
+                {recompiling || compileRun?.state === "running"
+                  ? "Schematico in calcolo: la scheda e' gia' salvata, lo schematico compare quando la compilazione finisce."
+                  : "Lo schematico di questa scheda non e' stato calcolato: l'ultima compilazione si e' fermata dopo aver salvato la scheda. Premi Ricompila per riprovare."}
               </span>
             </div>
           )}
@@ -1518,18 +1549,24 @@ export function Studio({
                     explodedMm={explodedMm}
                   />
                 )
-              ) : fsMap && circuitChecked ? (
-                <RunFrame
-                  // the browser fallback compilation must also see the
-                  // hand-pinned positions, otherwise the drawing jumps back
-                  // every time the server compilation is missing
-                  fsMap={applyManualEditsToFsMap(fsMap)}
-                  mainComponentPath="main.tsx"
-                  showRunButton={false}
-                  availableTabs={["schematic", "pcb", "cad", "bom"]}
-                  // the fallback viewer knows nothing about our own views: on
-                  // those it opens on the board, which is the closest thing it has
-                  defaultActiveTab={tab === "stato" ? "pcb" : tab}
+              ) : circuitChecked ? (
+                /*
+                 * NO BOARD ON THE SERVER: it is said, with the button. There
+                 * used to be tscircuit's RunFrame here, compiling the board in
+                 * the browser: on fototrappola-frontale (219 parts, a 264-ball
+                 * BGA) it never got to draw, the frame stayed empty with its
+                 * "customize the autorouter" tip, and a browser compile is one
+                 * more place that could route on its own. The board is only the
+                 * one the server compiled and saved.
+                 */
+                <BoardNotCompiled
+                  run={compileRun}
+                  recompiling={recompiling}
+                  step={recompileStep}
+                  seconds={recompileSec}
+                  problem={compileProblem}
+                  busy={boardBusy}
+                  onRecompile={() => void recompile()}
                 />
               ) : (
                 <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
@@ -1573,8 +1610,9 @@ export function Studio({
                 {recompileStep || "Avvio della ricompilazione…"}
               </div>
               <div className="px-5 pb-4 pt-1 text-[11.5px] leading-snug text-faint">
-                Il rame e le piste non si toccano: non è un instradamento. Il tempo serve a
-                rileggere la scheda da zero: su una scheda così può metterci 1–2 minuti.
+                Il rame e le piste non si toccano: non è un instradamento. La scheda si salva
+                appena letta, in pochi secondi; lo schematico arriva dopo, e su una scheda
+                grande può richiedere qualche minuto.
               </div>
               <div className="h-[4px] w-full bg-[#122620]">
                 <div

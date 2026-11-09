@@ -1,4 +1,5 @@
 import { accessoDaRichiesta } from "@/lib/acl";
+import { COMPILE_START, logActivity } from "@/lib/activity-store";
 import { withLibrary } from "@/lib/agent-tools";
 import { compileProject, type CompileProgress } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
@@ -10,6 +11,7 @@ import {
   saveRouteVariants,
 } from "@/lib/project-store";
 import { motivoErrore } from "@/lib/error-cause";
+import { earlyBoardSaver } from "@/lib/compile-save";
 
 export const runtime = "nodejs";
 // a large board takes minutes just to be read again (190 parts: ~2 minutes)
@@ -66,6 +68,16 @@ export async function POST(req: Request): Promise<Response> {
         }
       };
 
+      /*
+       * In the project's log, like a compile from Claude: whoever has the page
+       * open elsewhere (or reloads it mid-way) sees that a compile is running
+       * and where it is, instead of an empty board (see readCompileRun).
+       */
+      const activity = (phase: "avvio" | "fine" | "errore", detail: string, ms?: number) =>
+        logActivity(projectId, { actor: "app", tool: "compile", phase, detail, ms });
+      let lastStep = "";
+      await activity("avvio", COMPILE_START);
+
       try {
         /*
          * The stream opens BEFORE loading the project: these steps can take
@@ -77,6 +89,7 @@ export async function POST(req: Request): Promise<Response> {
         const fsMap = await withLibrary(await getProject(projectId));
         mark("getProject+withLibrary", t);
         if (Object.keys(fsMap).length === 0) {
+          await activity("errore", "progetto vuoto", Date.now() - t0);
           send("errore", { error: "progetto vuoto" });
           return;
         }
@@ -87,19 +100,34 @@ export async function POST(req: Request): Promise<Response> {
         const inCache = await getCompileCache(projectId).catch(() => null);
         mark("getCompileCache", t);
 
+        const hash = filesHash(fsMap);
+        const saveEarly = earlyBoardSaver(projectId, hash, inCache);
         const { summary, circuitJson, variants } = await compileProject(fsMap, {
           keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
-          onProgress: (event: CompileProgress) =>
+          // the board is saved as soon as it exists, before the schematic: see compile-save.ts
+          onBoard: async (early) => {
+            const r = await saveEarly(early);
+            if (r.saved) {
+              mark("scheda salvata senza schematico", t0);
+              await activity("avvio", "Scheda salvata - ora lo schematico");
+            }
+          },
+          onProgress: (event: CompileProgress) => {
             send("passo", {
               step: event.step,
               detail: event.detail,
               progress: event.progress,
               // the drawing only travels when it really exists: it's megabytes
               circuitJson: event.circuitJson ?? undefined,
-            }),
+            });
+            // only step CHANGES go to the log, not every heartbeat
+            if (event.step && event.step !== lastStep) {
+              lastStep = event.step;
+              void activity("avvio", event.detail ? `${event.step} - ${event.detail}` : event.step);
+            }
+          },
         });
         mark("compileProject", t0);
-        const hash = filesHash(fsMap);
         /*
          * A compile that produced no board is NOT saved over the last good one
          * (see saveCompileCache): it is said, so whoever is watching knows the
@@ -134,9 +162,16 @@ export async function POST(req: Request): Promise<Response> {
             })),
           ).catch(() => {});
         }
+        await activity(
+          "fine",
+          salvataggio.saved ? summary.message.slice(0, 300) : `non salvata: ${summary.message.slice(0, 260)}`,
+          Date.now() - t0,
+        );
         send("fine", { ok: summary.ok, summary, saved: salvataggio.saved });
       } catch (err) {
-        send("errore", { error: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        await activity("errore", message, Date.now() - t0);
+        send("errore", { error: message });
       } finally {
         closed = true;
         try {

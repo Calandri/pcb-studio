@@ -72,22 +72,39 @@ export function Header({
 
       <div className="min-w-0 flex-1" />
 
-      <div className="flex flex-none items-center gap-3 rounded-[10px] border border-line bg-[#0F1716] px-3.5 py-[7px]">
-        <div className="flex flex-col gap-[5px]">
+      {/* "ready" only when nothing is missing, and what is missing is said:
+          a bare percentage said 100 on a board never compiled */}
+      <div
+        className="flex flex-none items-center gap-3 rounded-[10px] border border-line bg-[#0F1716] px-3.5 py-[7px]"
+        title={
+          report.ready
+            ? "Compilazione salvata e aggiornata, nessun problema bloccante"
+            : `Cosa manca:\n${report.missing.map((m) => `- ${m}`).join("\n")}`
+        }
+      >
+        <div className="flex min-w-0 flex-col gap-[5px]">
           <div className="text-[10px] font-semibold tracking-[0.08em] text-faint">
-            {busy ? "CONTROLLO IN CORSO" : "PRONTA PER LA FABBRICA"}
+            {busy ? "CONTROLLO IN CORSO" : report.ready ? "PRONTA PER LA FABBRICA" : "NON ANCORA PRONTA"}
           </div>
           <div className="h-[5px] w-[150px] overflow-hidden rounded-[3px] bg-line">
             <div
               className="h-full rounded-[3px] transition-[width] duration-500"
               style={{
                 width: `${report.readiness}%`,
-                background: "linear-gradient(90deg,#2C9C77,#3BE8B0)",
+                background: report.ready
+                  ? "linear-gradient(90deg,#2C9C77,#3BE8B0)"
+                  : "linear-gradient(90deg,#8A6420,#E8B23B)",
               }}
             />
           </div>
+          {!busy && !report.ready && report.missing[0] && (
+            <div className="w-[150px] truncate text-[10px] leading-none text-[#E8C97A]">
+              {report.missing[0]}
+              {report.missing.length > 1 ? ` (+${report.missing.length - 1})` : ""}
+            </div>
+          )}
         </div>
-        <div className="font-mono text-[18px] font-semibold text-brand">
+        <div className={`font-mono text-[18px] font-semibold ${report.ready ? "text-brand" : "text-[#E8B23B]"}`}>
           {report.readiness}
           <span className="text-[11px] text-faint">%</span>
         </div>
@@ -112,17 +129,19 @@ export function Header({
           href={`/api/export?projectId=${projectId}&kind=pnp`}
           download
           title={
-            report.errors > 0
-              ? `Ci sono ancora ${report.errors} cose da correggere: gli esport restano scaricabili, ma la scheda non e' pronta`
-              : "Scarica il pacchetto di produzione"
+            report.ready
+              ? "Scarica il pacchetto di produzione"
+              : `La scheda non e' pronta: gli esport restano scaricabili, ma manca ancora:\n${report.missing.map((m) => `- ${m}`).join("\n")}`
           }
           className={`rounded-[10px] px-[15px] py-[9px] text-[13px] font-semibold transition-opacity hover:opacity-90 ${
-            report.errors > 0
-              ? "bg-[#B9832B] text-[#1E1608]"
-              : "bg-brand text-[#06110D]"
+            report.ready ? "bg-brand text-[#06110D]" : "bg-[#B9832B] text-[#1E1608]"
           }`}
         >
-          {report.errors > 0 ? `${report.errors} da correggere` : "Manda in produzione"}
+          {report.ready
+            ? "Manda in produzione"
+            : !report.compiled
+              ? "Da compilare"
+              : `${report.missing.length} da sistemare`}
         </a>
         {actions}
       </div>

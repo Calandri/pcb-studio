@@ -19,6 +19,7 @@ import {
   type FsMap,
 } from "./project-store";
 import { CHECKS_ENGINE_VERSION } from "./engine-version";
+import { earlyBoardSaver } from "./compile-save";
 import { runSimulation } from "./simulate";
 import { compileProject } from "./compile";
 import { resolveDesignRules } from "./design-rules";
@@ -564,6 +565,8 @@ async function runTool(
             ? undefined
             : ((previous?.circuitJson as unknown[] | undefined) ?? undefined),
         budgetMs: Math.min(MAX_COMPILE_MS, left - 60_000),
+        // the board is saved as soon as it exists, before the schematic: see compile-save.ts
+        onBoard: earlyBoardSaver(projectId, filesHash(compileFsMap), previous),
         // the intermediate circuit does not pass through here: it weighs
         // megabytes and the agent channel carries text. Whoever looks takes it
         // from the periodic check.

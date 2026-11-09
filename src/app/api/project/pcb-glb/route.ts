@@ -1,4 +1,4 @@
-import { runTscircuitCode } from "@tscircuit/eval";
+import { compileGeometryOnly } from "@/lib/compile";
 import { convertCircuitJsonToGltf } from "circuit-json-to-gltf";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
@@ -135,9 +135,8 @@ export async function GET(req: Request): Promise<Response> {
     circuitJson = compile.circuitJson as GltfCircuitJson;
   } else {
     try {
-      circuitJson = (await runTscircuitCode(fsMap, {
-        mainComponentPath: "main.tsx",
-      })) as GltfCircuitJson;
+      // the board only, never routed: tscircuit's own run would route it
+      circuitJson = (await compileGeometryOnly(fsMap, { schematic: false })) as unknown as GltfCircuitJson;
     } catch (err) {
       return Response.json(
         { error: err instanceof Error ? err.message : String(err) },

@@ -1,12 +1,11 @@
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
-import { logActivity, recordTool } from "@/lib/activity-store";
+import { COMPILE_START, logActivity, recordTool } from "@/lib/activity-store";
 import { executeTool, withLibrary } from "@/lib/agent-tools";
 import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
-import { extractComponents, extractIssues } from "@/lib/inspect";
 import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
 import { claimProject, listAccessibleProjects, projectAccess, type Viewer } from "@/lib/acl";
@@ -16,6 +15,7 @@ import {
   getProject,
   saveCompileCache,
   savePreviewCircuit,
+  type CompileCache,
 } from "@/lib/project-store";
 import {
   HOUSE_STYLE,
@@ -26,6 +26,8 @@ import {
   TSCIRCUIT_BASICS,
 } from "@/lib/system-prompt";
 import { motivoErrore } from "@/lib/error-cause";
+import { inspectSavedBoard } from "@/lib/saved-board";
+import { earlyBoardSaver } from "@/lib/compile-save";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -114,7 +116,7 @@ function describeCall(tool: string, args: Record<string, unknown>): string {
     case "write_file":
       return `riscrive ${s(args.path) || "un file"} (${s(args.content).length} caratteri)`;
     case "compile":
-      return "compila la scheda";
+      return COMPILE_START;
     case "search_parts":
       return `cerca componenti: ${s(args.query)}`;
     case "import_component_from_lcsc":
@@ -148,9 +150,8 @@ function describeCall(tool: string, args: Record<string, unknown>): string {
  * other board got its copper from the router, which is gone: without the
  * cached copper the next compile would save a board with no traces.
  */
-async function copperToKeep(projectId: string, fsMap: Record<string, string>): Promise<unknown[] | undefined> {
+function copperToKeep(fsMap: Record<string, string>, cache: CompileCache | null): unknown[] | undefined {
   if (resolveDesignRules(fsMap).rules.autoroute === false) return undefined;
-  const cache = await getCompileCache(projectId).catch(() => null);
   return (cache?.circuitJson as unknown[] | undefined) ?? undefined;
 }
 
@@ -268,10 +269,29 @@ function buildHandler(viewer: Viewer) {
          * notices on its own at the periodic check.
          */
         const fsMap = await withLibrary(await getProject(projectId));
+        const hash = filesHash(fsMap);
+        const inCache = await getCompileCache(projectId).catch(() => null);
+        const saveEarly = earlyBoardSaver(projectId, hash, inCache);
         let lastPreview = 0;
         let lastStep = "";
         const { summary, circuitJson } = await compileProject(fsMap, {
-          keepCopperFrom: await copperToKeep(projectId, fsMap),
+          keepCopperFrom: copperToKeep(fsMap, inCache),
+          /*
+           * The board is saved as soon as it exists, before the schematic: on a
+           * big board the open page draws it within seconds, and it stays saved
+           * even if this call is cut off while the schematic is being drawn.
+           */
+          onBoard: async (early) => {
+            const r = await saveEarly(early);
+            if (r.saved) {
+              await logActivity(projectId, {
+                actor: "claude",
+                tool: "compile",
+                phase: "avvio",
+                detail: "Scheda salvata - ora lo schematico",
+              });
+            }
+          },
           onProgress: (p) => {
             /*
              * Steps go to the log even without a drawing: the compilation
@@ -300,7 +320,7 @@ function buildHandler(viewer: Viewer) {
         });
         const salvataggio = await saveCompileCache(
           projectId,
-          filesHash(fsMap),
+          hash,
           circuitJson,
           summary,
           CHECKS_ENGINE_VERSION,
@@ -320,22 +340,21 @@ function buildHandler(viewer: Viewer) {
 
     server.tool(
       "inspect_board",
-      "Fotografia della scheda compilata: problemi con posizione e componenti con " +
-        "coordinate e reti collegate. Utile per decidere dove spostare i pezzi.",
+      "Fotografia dell'ULTIMA scheda compilata e salvata: problemi con posizione e " +
+        "componenti con coordinate e reti collegate. Non ricompila: dopo un write_file " +
+        "chiama prima compile. Utile per decidere dove spostare i pezzi.",
       { projectId: z.string() },
       async ({ projectId }) => {
-        // a full compile on every call: compute is for who can change the board
-        if ((await projectAccess(projectId, viewer)) !== "edit") {
-          return deniedEdit();
+        /*
+         * A read of the saved board, like read_project: it used to compile the
+         * whole project on every call and timed out on big boards (see
+         * saved-board.ts). With no compute behind it, viewing access is enough.
+         */
+        if ((await projectAccess(projectId, viewer)) === "none") {
+          return denied();
         }
-        const fsMap = await withLibrary(await getProject(projectId));
-        const { circuitJson } = await compileProject(fsMap, {
-          keepCopperFrom: await copperToKeep(projectId, fsMap),
-        });
-        return text({
-          issues: extractIssues(circuitJson).slice(0, 60),
-          components: extractComponents(circuitJson, await getProject(projectId)),
-        });
+        const snapshot = await inspectSavedBoard(projectId);
+        return snapshot.ok ? text(snapshot.result) : fail(snapshot.error);
       },
     );
 

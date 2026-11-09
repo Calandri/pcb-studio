@@ -139,8 +139,12 @@ export interface CompileSummary {
   nets: string[];
   /** every declared connection, e.g. ".R1 > .pin1 to net.VCC" */
   connections: string[];
-  /** connections declared in source but with no routed pcb trace */
+  /** connections declared in source but with no routed pcb trace (the first 40) */
   unroutedConnections: string[];
+  /** every connection group still open: unroutedConnections stops at 40 */
+  unroutedTotal?: number;
+  /** connection groups on the board, routed or not */
+  connectionGroups?: number;
   /** geometric detail for each unrouted connectivity group */
   unroutedDetail: UnroutedDetail[];
   /** deterministic design-rule violations (JLCPCB defaults) */
@@ -267,6 +271,11 @@ export interface CompileSummary {
     /** copper narrower than the minimum trace width cut out of the pours (pour-necks.ts) */
     colliTagliatiMm2?: number;
   };
+  /**
+   * The board was saved without its schematic, which was still being drawn:
+   * the schematic checks below say nothing yet. Absent on a complete compile.
+   */
+  schematicPending?: string;
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{
     section: string;
@@ -404,6 +413,20 @@ export interface CompileOptions {
    * doing and, when it has a drawing to show, it sends it.
    */
   onProgress?: (event: CompileProgress) => void;
+  /**
+   * The board without its schematic, as soon as it exists: whoever compiles
+   * saves it here, before the schematic is drawn.
+   *
+   * On a big board the schematic is almost the whole compile: on
+   * fototrappola-frontale (217 parts, 827 connections) tscircuit's schematic
+   * trace solver takes 180 of the 184 seconds of a local compile, the board
+   * itself 5. On Vercel the whole thing did not fit in the function's 800
+   * seconds, so the compile was cut off before saving and the server never
+   * had a board to show. With this the board is saved within seconds, and
+   * the schematic follows when it is done; if the function is cut off
+   * before, the board stays saved and says its schematic is missing.
+   */
+  onBoard?: (early: { circuitJson: unknown[]; summary: CompileSummary }) => Promise<unknown>;
 }
 
 export interface CompileProgress {
@@ -566,6 +589,87 @@ export async function compileProject(
   };
 
   /*
+   * Recompile without routing: the geometry is the new one, the copper is the
+   * one that was already there. See CompileOptions.route. One function for the
+   * early board (no schematic yet) and the final one, so the two cannot drift.
+   */
+  const boardWithoutRouting = async (
+    geometry: CircuitElement[],
+    announce = false,
+  ): Promise<{ summary: CompileSummary; circuitJson: CircuitElement[] }> => {
+    /*
+     * tscircuit writes "Autorouting was skipped because of placement errors"
+     * even here, where nobody asked for routing: two overlapping pads while
+     * placing (normal, mid-work) and the board looked like a failed routing,
+     * which kept the previous board on screen (sbb-dl-frontale, 2026-11-09).
+     * The overlaps themselves stay, as errors on the board.
+     */
+    const senzaSbroglio = geometry.filter((el) => el.type !== "pcb_autorouting_error");
+    const conRame = carryCopper(senzaSbroglio, opts.keepCopperFrom ?? []);
+    const conMano = applyManualRoutes({
+      circuitJson: conRame,
+      routes: parsedManualEdits.pcb_routes,
+      viaDiameter: projectRules.rules.minViaDiameterMm,
+      viaHoleDiameter: projectRules.rules.minViaHoleMm,
+    });
+    // the planes, poured again with the copper in place: see pours-recompute.ts
+    const ricolate = await ricolaPiani({
+      // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati
+      circuitJson: conContorniDichiarati(conMano.circuitJson as never, projectFsMap["main.tsx"]) as never,
+      // a pour holds its own distance, wider than a trace's when the board says so
+      clearanceMm:
+        projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
+      bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
+      larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
+    }).catch(() => null);
+    // the stencil of each pad is the pad: see solder-paste.ts
+    const circuitJson = pastaDaiPad(
+      (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[],
+      projectRules.rules.pasteExpansionMm ?? 0,
+      { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+    );
+    const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
+    if (announce) say({ step: "Controllo le regole", progress: 0.95, circuitJson });
+    const summary = await summarize(circuitJson, projectFsMap);
+    summary.pours = rapportoColate;
+    summary.manualEdits = manualEdits;
+    summary.manualEditsOrphans = withOrphans(summary, circuitJson, parsedManualEdits);
+    if (placementReport) summary.placementReport = placementReport;
+    const orfane = danglingTraces(circuitJson);
+    summary.message = orfane === 0
+      ? `${summary.message} (geometria aggiornata, rame non toccato)`
+      : `${summary.message} (geometria aggiornata, rame non toccato: ${orfane} piste non arrivano piu' su un pad, vanno ridisegnate a mano)`;
+    return { summary, circuitJson };
+  };
+
+  /*
+   * THE BOARD FIRST, ALONE. Compiled without the schematic (seconds even on a
+   * 219-part board) and handed to whoever saves it: see CompileOptions.onBoard.
+   * A failure here costs nothing: the full compile below says what is wrong.
+   */
+  if (opts.route === false && opts.onBoard) {
+    say({ step: "Leggo la scheda", detail: "prima il rame e i pezzi, lo schematico dopo", progress: 0.05 });
+    let pcbOnly: CircuitElement[] | null = null;
+    try {
+      pcbOnly = await compileGeometryOnly(fsMap, { schematic: false });
+    } catch {
+      pcbOnly = null;
+    }
+    if (pcbOnly && pcbOnly.some((el) => el.type === "pcb_board")) {
+      const early = await boardWithoutRouting(pcbOnly);
+      early.summary.schematicPending =
+        "scheda salvata prima dello schematico: lo schematico e i suoi controlli arrivano a fine compilazione";
+      early.summary.message = `${early.summary.message} (schematico in calcolo)`;
+      try {
+        await opts.onBoard(early);
+      } catch {
+        // saving early is a bonus: the full compile goes on and saves at the end
+      }
+      say({ step: "Scheda pronta", detail: "ora disegno lo schematico", progress: 0.15, circuitJson: early.circuitJson });
+    }
+  }
+
+  /*
    * FIRST STEP: the geometry, without a single trace.
    *
    * Needed for placement, and placement must be done BEFORE routing. Two pads
@@ -579,7 +683,11 @@ export async function compileProject(
    * attempt, which routed with the router declared on the board and which
    * almost always lost the comparison against the later passes anyway.
    */
-  say({ step: "Leggo la scheda", detail: "componenti, piedini, collegamenti", progress: 0.05 });
+  say({
+    step: opts.onBoard ? "Disegno lo schematico" : "Leggo la scheda",
+    detail: opts.onBoard ? "collegamenti ed etichette: sulle schede grandi e' la parte lunga" : "componenti, piedini, collegamenti",
+    progress: opts.onBoard ? 0.2 : 0.05,
+  });
   let geometry: CircuitElement[] | null = null;
   try {
     state.attempts += 1;
@@ -673,48 +781,7 @@ export async function compileProject(
       };
     }
     say({ step: "Riporto il rame che c'era", detail: "le piste non si rifanno", progress: 0.7 });
-    /*
-     * tscircuit writes "Autorouting was skipped because of placement errors"
-     * even here, where nobody asked for routing: two overlapping pads while
-     * placing (normal, mid-work) and the board looked like a failed routing,
-     * which kept the previous board on screen (sbb-dl-frontale, 2026-11-09).
-     * The overlaps themselves stay, as errors on the board.
-     */
-    const senzaSbroglio = geometry.filter((el) => el.type !== "pcb_autorouting_error");
-    const conRame = carryCopper(senzaSbroglio, opts.keepCopperFrom ?? []);
-    const conMano = applyManualRoutes({
-      circuitJson: conRame,
-      routes: parsedManualEdits.pcb_routes,
-      viaDiameter: projectRules.rules.minViaDiameterMm,
-      viaHoleDiameter: projectRules.rules.minViaHoleMm,
-    });
-    // the planes, poured again with the copper in place: see pours-recompute.ts
-    const ricolate = await ricolaPiani({
-      // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati
-      circuitJson: conContorniDichiarati(conMano.circuitJson as never, projectFsMap["main.tsx"]) as never,
-      // a pour holds its own distance, wider than a trace's when the board says so
-      clearanceMm:
-        projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
-      bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
-      larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
-    }).catch(() => null);
-    // the stencil of each pad is the pad: see solder-paste.ts
-    const circuitJson = pastaDaiPad(
-      (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[],
-      projectRules.rules.pasteExpansionMm ?? 0,
-      { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
-    );
-    const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
-    say({ step: "Controllo le regole", progress: 0.95, circuitJson });
-    const summary = await summarize(circuitJson, projectFsMap);
-    summary.pours = rapportoColate;
-    summary.manualEdits = manualEdits;
-    summary.manualEditsOrphans = withOrphans(summary, circuitJson, parsedManualEdits);
-    if (placementReport) summary.placementReport = placementReport;
-    const orfane = danglingTraces(circuitJson);
-    summary.message = orfane === 0
-      ? `${summary.message} (geometria aggiornata, rame non toccato)`
-      : `${summary.message} (geometria aggiornata, rame non toccato: ${orfane} piste non arrivano piu' su un pad, vanno ridisegnate a mano)`;
+    const { summary, circuitJson } = await boardWithoutRouting(geometry, true);
     return { summary, circuitJson, placements: placedNow ?? undefined };
   }
 
@@ -1564,7 +1631,17 @@ export function danglingTraces(circuitJson: CircuitElement[]): number {
  * decide where to put the parts — without paying the minutes of routing,
  * which at that point would be thrown away anyway.
  */
-export async function compileGeometryOnly(fsMap: FsMap): Promise<CircuitElement[]> {
+export async function compileGeometryOnly(
+  fsMap: FsMap,
+  opts: {
+    /**
+     * false: no schematic at all (tscircuit's `schematicDisabled`). The board,
+     * its pads and its connections in seconds: on a big board the schematic
+     * trace solver is almost the whole compile (see CompileOptions.onBoard).
+     */
+    schematic?: boolean;
+  } = {},
+): Promise<CircuitElement[]> {
   const noRouting = () => ({
     createAutorouter: () => ({
       on(event: string, cb: (payload: unknown) => void) {
@@ -1596,6 +1673,7 @@ export async function compileGeometryOnly(fsMap: FsMap): Promise<CircuitElement[
       autorouterMap: Object.fromEntries(presets.map((p) => [p, noRouting() as never])),
     }),
     autorouter: PRESET_DI_DIFETTO,
+    ...(opts.schematic === false ? { schematicDisabled: true } : {}),
   };
   const runner = new CircuitRunner();
   try {
@@ -1992,6 +2070,10 @@ function summarize(
     }
     if (unroutedConnections.length >= 40) break;
   }
+  // the list above stops at 40: these are the true counts, for the score and the message
+  const connectionGroups = groupInfo.size;
+  let unroutedTotal = 0;
+  for (const info of groupInfo.values()) if (!info.routed) unroutedTotal++;
 
   const sourceTraces = sourceTraceEls.length;
   const pcbTraces = pcbTraceEls.length;
@@ -2125,7 +2207,7 @@ function summarize(
   // convergence checklist: the agent's loop targets in one place (Fase 3.h)
   const targets = {
     errors: reportedErrors.length,
-    unrouted: unroutedConnections.length,
+    unrouted: unroutedTotal,
     drcViolations: drcViolations.length,
     prcViolations: prcTotal(prcViolations),
     schematicOverlaps:
@@ -2142,7 +2224,7 @@ function summarize(
   const message = ok
     ? `Compile OK: ${components.length} components, ${nets.length} nets, ` +
       `${pcbTraces} routed pcb traces (${sourceTraces} source traces` +
-      `${unroutedConnections.length ? `, ${unroutedConnections.length} UNROUTED` : ""})` +
+      `${unroutedTotal ? `, ${unroutedTotal} UNROUTED` : ""})` +
       `, ${stats.vias} vias, ${round1(totalTraceLengthMm)}mm routed` +
       `${ratsnest.estimatedCrossings ? `, ~${ratsnest.estimatedCrossings} ratsnest crossings` : ""}` +
       `${drcViolations.length ? ` - ${drcViolations.length} DRC violation(s)` : " - DRC clean"}` +
@@ -2176,6 +2258,8 @@ function summarize(
     nets,
     connections,
     unroutedConnections,
+    unroutedTotal,
+    connectionGroups,
     unroutedDetail,
     drcViolations,
     prcViolations,

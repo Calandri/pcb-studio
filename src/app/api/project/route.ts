@@ -1,4 +1,5 @@
 import { requireProjectAccess } from "@/lib/acl";
+import { readCompileRun } from "@/lib/activity-store";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
   filesHash,
@@ -27,11 +28,13 @@ export async function GET(req: Request): Promise<Response> {
    * poter dire `stale`: e' il confronto ad avere senso, non la serializzazione.
    */
   if (url.searchParams.get("meta") === "1") {
-    const [cache, previewAt] = await Promise.all([
+    const [cache, previewAt, running] = await Promise.all([
       getCompileCache(projectId).catch(() => null),
       getPreviewAt(projectId),
+      // a compile running (or cut off) anywhere: the page says so, see readCompileRun
+      readCompileRun(projectId),
     ]);
-    if (!cache) return Response.json({ projectId, compile: null, previewAt });
+    if (!cache) return Response.json({ projectId, compile: null, previewAt, running });
     let stale = false;
     try {
       stale = cache.filesHash !== filesHash(await withLibrary(await getProject(projectId)));
@@ -51,6 +54,7 @@ export async function GET(req: Request): Promise<Response> {
       // a compile is running somewhere (agent, MCP, another tab) and has
       // drawn something newer than the saved board
       previewAt,
+      running,
     });
   }
 

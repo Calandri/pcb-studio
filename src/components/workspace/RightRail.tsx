@@ -362,9 +362,21 @@ function BoardRail({
             value={`${report.layerCount} strati · 1,6 mm`}
           />
           <PreflightRow
-            ok={report.unrouted === 0}
-            label={report.unrouted === 0 ? "Collegamenti completi" : "Collegamenti aperti"}
-            value={report.unrouted === 0 ? `${report.traceCount} piste` : `${report.unrouted}`}
+            ok={report.compiled && report.unrouted === 0}
+            label={
+              !report.compiled
+                ? "Scheda da compilare"
+                : report.unrouted === 0
+                  ? "Collegamenti completi"
+                  : "Collegamenti aperti"
+            }
+            value={
+              !report.compiled
+                ? "-"
+                : report.unrouted === 0
+                  ? `${report.traceCount} piste`
+                  : `${report.unrouted}`
+            }
           />
         </div>
       </section>

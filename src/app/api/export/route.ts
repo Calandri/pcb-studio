@@ -1,4 +1,3 @@
-import { runTscircuitCode } from "@tscircuit/eval";
 import {
   convertSoupToExcellonDrillCommands,
   convertSoupToGerberCommands,
@@ -16,6 +15,7 @@ import { viePassantiSuOgniStrato } from "@/lib/via-layers";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
+import { compileGeometryOnly } from "@/lib/compile";
 import { applyManualEditsToFsMap } from "@/lib/manual-edits";
 import {
   filesHash,
@@ -109,9 +109,8 @@ export async function GET(req: Request): Promise<Response> {
     // BOM and schematic only: they depend on the parts, not on the copper. The
     // manual edits still apply, so the schematic is the one the user arranged
     try {
-      circuitJson = (await runTscircuitCode(applyManualEditsToFsMap(fsMap), {
-        mainComponentPath: "main.tsx",
-      })) as AnyCircuitJson;
+      // without routing: tscircuit's own run would route a board that never asked for it
+      circuitJson = (await compileGeometryOnly(applyManualEditsToFsMap(fsMap))) as unknown as AnyCircuitJson;
     } catch (err) {
       return Response.json(
         { error: `Compile failed: ${err instanceof Error ? err.message : String(err)}` },

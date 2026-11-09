@@ -80,6 +80,9 @@ export async function POST(req: Request): Promise<Response> {
       },
     );
     const summary = summarizeCircuit(circuitJson as typeof cache.circuitJson, progetto);
+    // a board saved before its schematic stays one: re-evaluating it draws no schematic
+    const pending = (cache.summary as { schematicPending?: unknown } | null)?.schematicPending;
+    if (typeof pending === "string") summary.schematicPending = pending;
     /*
      * Only over the row that was read: a compile that finished while this
      * recheck ran has saved a newer board, and the old one re-evaluated must

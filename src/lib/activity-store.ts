@@ -1,4 +1,7 @@
 import { neon } from "@neondatabase/serverless";
+import { compileRunFrom, type CompileRun } from "./compile-run";
+
+export { COMPILE_START } from "./compile-run";
 
 /**
  * What is happening to the project, in time order.
@@ -224,5 +227,31 @@ function unwrap(result: unknown): Record<string, unknown> | null {
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null; // free text: no summary to extract
+  }
+}
+
+/** the compile running (or cut off) on this project, if any: see compileRunFrom */
+export async function readCompileRun(projectId: string): Promise<CompileRun | null> {
+  const sql = db();
+  if (!sql) return null;
+  try {
+    await ensureTable(sql);
+    const rows = (await sql`
+      SELECT at, actor, phase, detail
+      FROM project_activity
+      WHERE project_id = ${projectId} AND tool = 'compile'
+      ORDER BY id DESC
+      LIMIT 60
+    `) as Array<Record<string, unknown>>;
+    return compileRunFrom(
+      rows.map((r) => ({
+        at: new Date(String(r.at)).toISOString(),
+        actor: String(r.actor),
+        phase: String(r.phase) as ActivityPhase,
+        detail: String(r.detail ?? ""),
+      })),
+    );
+  } catch {
+    return null;
   }
 }
