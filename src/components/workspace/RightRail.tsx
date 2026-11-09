@@ -314,14 +314,21 @@ function BoardRail({
 
                   {expanded && (
                     <div className="flex gap-1.5 pt-1 pl-4">
+                      {/*
+                        It does NOT fix anything by itself: it writes the request into
+                        the copilot's box, which sends nothing until the person does.
+                        It used to read "Correggi in automatico" (2026-11-09: no
+                        automatic action may route or place on its own).
+                      */}
                       <button
                         type="button"
                         onClick={() =>
-                          onAsk(`Risolvi il problema "${c.name}": ${c.detail}`)
+                          onAsk(`Spiegami il problema "${c.name}" e dove sta: ${c.detail}`)
                         }
+                        title="Scrive la domanda nel copilota: non parte finche' non la mandi tu, e non cambia niente da solo"
                         className="rounded-lg border border-[#2C4C42] bg-brand-wash px-2.5 py-1.5 text-[11px] font-semibold text-brand transition-colors hover:bg-[#1D3229]"
                       >
-                        Correggi in automatico
+                        Chiedi al copilota
                       </button>
                       <button
                         type="button"
