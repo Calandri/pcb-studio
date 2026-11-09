@@ -657,6 +657,34 @@ export async function getCompileCache(
   }
 }
 
+/**
+ * The saved board without the board: hash, time, engine. One row of a few
+ * bytes, where getCompileCache brings megabytes (3,8 MB on tm-4l-r3) for
+ * callers that only wanted to know WHICH board is saved: the page's poll every
+ * five seconds and the save of a dragged part.
+ */
+export async function getCompileMeta(
+  projectId: string,
+): Promise<{ filesHash: string; createdAt: unknown; engineVersion: number } | null> {
+  const sql = db();
+  if (!sql) return null;
+  try {
+    await ensureCompileCacheTable(sql);
+    const [row] = (await sql`
+      SELECT files_hash, created_at, engine_version
+      FROM project_compiles WHERE project_id = ${projectId}
+    `) as Array<{ files_hash: string; created_at: string; engine_version: number }>;
+    if (!row) return null;
+    return {
+      filesHash: row.files_hash,
+      createdAt: row.created_at,
+      engineVersion: Number(row.engine_version ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface ProjectCheckStatus {
   drcViolations: number;
   prcViolations: number;

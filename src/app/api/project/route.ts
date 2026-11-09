@@ -5,6 +5,7 @@ import {
   filesHash,
   getChatMessages,
   getCompileCache,
+  getCompileMeta,
   getPreviewAt,
   getPreviewCircuit,
   getProject,
@@ -29,7 +30,8 @@ export async function GET(req: Request): Promise<Response> {
    */
   if (url.searchParams.get("meta") === "1") {
     const [cache, previewAt, running] = await Promise.all([
-      getCompileCache(projectId).catch(() => null),
+      // the metadata only: the board is megabytes, and this runs every five seconds per open tab
+      getCompileMeta(projectId),
       getPreviewAt(projectId),
       // a compile running (or cut off) anywhere: the page says so, see readCompileRun
       readCompileRun(projectId),

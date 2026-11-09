@@ -6,7 +6,6 @@ import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { rilasciaPezzi } from "@/lib/manual-edits-store";
-import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
 import { claimProject, listAccessibleProjects, projectAccess, type Viewer } from "@/lib/acl";
@@ -14,7 +13,6 @@ import {
   filesHash,
   getCompileCache,
   getProject,
-  saveCompileCache,
   savePreviewCircuit,
   type CompileCache,
 } from "@/lib/project-store";
@@ -28,7 +26,7 @@ import {
 } from "@/lib/system-prompt";
 import { motivoErrore } from "@/lib/error-cause";
 import { inspectSavedBoard } from "@/lib/saved-board";
-import { earlyBoardSaver } from "@/lib/compile-save";
+import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 import { withSseKeepalive } from "@/lib/sse-keepalive";
 
 export const runtime = "nodejs";
@@ -272,14 +270,18 @@ function buildHandler(viewer: Viewer) {
          * which only makes sense once the work is finished. The open page
          * notices on its own at the periodic check.
          */
+        // the files are read now: a board saved after this moment may be of newer ones (see compile-save)
+        const fresh = { startedAt: Date.now(), filesNow: async () => withLibrary(await getProject(projectId)) };
         const fsMap = await withLibrary(await getProject(projectId));
         const hash = filesHash(fsMap);
         const inCache = await getCompileCache(projectId).catch(() => null);
-        const saveEarly = earlyBoardSaver(projectId, hash, inCache);
+        const saveEarly = earlyBoardSaver(projectId, hash, inCache, fresh);
         let lastPreview = 0;
         let lastStep = "";
         const { summary, circuitJson } = await compileProject(fsMap, {
           keepCopperFrom: copperToKeep(fsMap, inCache),
+          // the schematic of the last board, reused when only PCB positions changed
+          schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
           /*
            * The board is saved as soon as it exists, before the schematic: on a
            * big board the open page draws it within seconds, and it stays saved
@@ -322,13 +324,7 @@ function buildHandler(viewer: Viewer) {
             void savePreviewCircuit(projectId, p.circuitJson);
           },
         });
-        const salvataggio = await saveCompileCache(
-          projectId,
-          hash,
-          circuitJson,
-          summary,
-          CHECKS_ENGINE_VERSION,
-        ).catch((err: unknown) => ({
+        const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).catch((err: unknown) => ({
           saved: false,
           reason: motivoErrore(err),
         }));

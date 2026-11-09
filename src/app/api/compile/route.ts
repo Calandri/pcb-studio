@@ -2,16 +2,14 @@ import { accessoDaRichiesta } from "@/lib/acl";
 import { COMPILE_START, logActivity } from "@/lib/activity-store";
 import { withLibrary } from "@/lib/agent-tools";
 import { compileProject, type CompileProgress } from "@/lib/compile";
-import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
   filesHash,
   getCompileCache,
   getProject,
-  saveCompileCache,
   saveRouteVariants,
 } from "@/lib/project-store";
 import { motivoErrore } from "@/lib/error-cause";
-import { earlyBoardSaver } from "@/lib/compile-save";
+import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 
 export const runtime = "nodejs";
 // a large board takes minutes just to be read again (190 parts: ~2 minutes)
@@ -86,6 +84,8 @@ export async function POST(req: Request): Promise<Response> {
          */
         send("passo", { step: "Carico il progetto", progress: 0.02 });
         let t = Date.now();
+        // the files are read now: a board saved after this moment may be of newer ones (see compile-save)
+        const fresh = { startedAt: t, filesNow: async () => withLibrary(await getProject(projectId)) };
         const fsMap = await withLibrary(await getProject(projectId));
         mark("getProject+withLibrary", t);
         if (Object.keys(fsMap).length === 0) {
@@ -101,15 +101,22 @@ export async function POST(req: Request): Promise<Response> {
         mark("getCompileCache", t);
 
         const hash = filesHash(fsMap);
-        const saveEarly = earlyBoardSaver(projectId, hash, inCache);
+        const saveEarly = earlyBoardSaver(projectId, hash, inCache, fresh);
+        /** the board is saved and the page has been told: the drawings of the schematic phase stay here */
+        let schedaInviata = false;
         const { summary, circuitJson, variants } = await compileProject(fsMap, {
           keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
+          // the schematic of the last board, reused when only PCB positions changed
+          schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
           // the board is saved as soon as it exists, before the schematic: see compile-save.ts
           onBoard: async (early) => {
             const r = await saveEarly(early);
             if (r.saved) {
               mark("scheda salvata senza schematico", t0);
               await activity("avvio", "Scheda salvata - ora lo schematico");
+              // the page unblocks the board here: the schematic goes on in the background
+              send("scheda", { saved: true });
+              schedaInviata = true;
             }
           },
           onProgress: (event: CompileProgress) => {
@@ -117,8 +124,10 @@ export async function POST(req: Request): Promise<Response> {
               step: event.step,
               detail: event.detail,
               progress: event.progress,
-              // the drawing only travels when it really exists: it's megabytes
-              circuitJson: event.circuitJson ?? undefined,
+              // the drawing only travels when it really exists: it's megabytes. Not
+              // after the board is saved: the page has it, and megabytes queued on
+              // the stream would hold back every event behind them
+              circuitJson: schedaInviata ? undefined : (event.circuitJson ?? undefined),
             });
             // only step CHANGES go to the log, not every heartbeat
             if (event.step && event.step !== lastStep) {
@@ -133,13 +142,7 @@ export async function POST(req: Request): Promise<Response> {
          * (see saveCompileCache): it is said, so whoever is watching knows the
          * board on screen is the previous one and why.
          */
-        const salvataggio = await saveCompileCache(
-          projectId,
-          hash,
-          circuitJson,
-          summary,
-          CHECKS_ENGINE_VERSION,
-        ).catch((err) => ({
+        const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).catch((err) => ({
           saved: false,
           reason: `salvataggio fallito: ${motivoErrore(err)}`,
         }));
@@ -167,7 +170,13 @@ export async function POST(req: Request): Promise<Response> {
           salvataggio.saved ? summary.message.slice(0, 300) : `non salvata: ${summary.message.slice(0, 260)}`,
           Date.now() - t0,
         );
-        send("fine", { ok: summary.ok, summary, saved: salvataggio.saved });
+        // superseded: a newer board is saved (moves made meanwhile), not a failure to show
+        send("fine", {
+          ok: summary.ok,
+          summary,
+          saved: salvataggio.saved,
+          superseded: "superseded" in salvataggio && salvataggio.superseded === true,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await activity("errore", message, Date.now() - t0);

@@ -147,6 +147,8 @@ export function Studio({
    */
   const [viewNote, setViewNote] = useState(false);
   const [recompiling, setRecompiling] = useState(false);
+  /** the board is saved and usable, the schematic is still being drawn (see runCompile) */
+  const [schemaInCorso, setSchemaInCorso] = useState(false);
   /** elapsed seconds: a compilation takes minutes, and without a number that
       moves it looks dead */
   const [recompileSec, setRecompileSec] = useState(0);
@@ -362,6 +364,14 @@ export function Studio({
    * a finished compile, and nothing told the person it had stopped half-way.
    */
   const runCompile = useCallback(async () => {
+    /*
+     * The board is blocked only until it is SAVED: on a big board that is
+     * seconds, and the schematic after it can take minutes (sbb-dl-principale:
+     * 2:09 on "Disegno lo schematico" with Sposta locked, 2026-11-09). From the
+     * "scheda" event on the panel goes away, the board on screen is the saved
+     * one and the schematic goes on in the background, said in a corner.
+     */
+    let sbloccata = false;
     setRecompiling(true);
     setRecompileSec(0);
     setRecompileStep("Comincio");
@@ -389,11 +399,18 @@ export function Studio({
           error?: string;
           summary?: Parameters<typeof buildBoardReport>[1];
         };
-        if (event === "passo") {
+        if (event === "scheda") {
+          sbloccata = true;
+          setRecompiling(false);
+          setSchemaInCorso(true);
+          void loadCircuit();
+        } else if (event === "passo") {
           setRecompileStep(data.detail ? `${data.step} — ${data.detail}` : (data.step ?? ""));
           setRecompileProgress(typeof data.progress === "number" ? data.progress : null);
-          // the board updates while it works: that is the whole point of this
-          if (Array.isArray(data.circuitJson)) {
+          // the board updates while it works, until it is saved: after that the
+          // board on screen is the person's, and a drawing of the schematic
+          // phase must not put back parts they have just moved
+          if (Array.isArray(data.circuitJson) && !sbloccata) {
             setCircuitJson(data.circuitJson);
             setCircuitSaved(false);
           }
@@ -406,8 +423,9 @@ export function Studio({
         } else if (event === "fine") {
           finished = true;
           if (data.summary) setSummary(data.summary);
-          const fine = raw as { saved?: boolean; summary?: { message?: string; errors?: Array<{ message?: string }> } };
-          if (fine.saved === false) {
+          const fine = raw as { saved?: boolean; superseded?: boolean; summary?: { message?: string; errors?: Array<{ message?: string }> } };
+          // superseded: the saved board is newer than this compile (moves made meanwhile): nothing to warn about
+          if (fine.saved === false && !fine.superseded) {
             const quando = compiledAtRef.current;
             setNonSalvata({
               ora: quando ? new Date(quando).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "?",
@@ -436,6 +454,7 @@ export function Studio({
       setCompileProblem(text.slice(0, 240));
     } finally {
       setRecompiling(false);
+      setSchemaInCorso(false);
       setRecompileStep("");
       setRecompileProgress(null);
     }
@@ -1475,6 +1494,13 @@ export function Studio({
                   ? "Schematico in calcolo: la scheda e' gia' salvata, lo schematico compare quando la compilazione finisce."
                   : "Lo schematico di questa scheda non e' stato calcolato: l'ultima compilazione si e' fermata dopo aver salvato la scheda. Premi Ricompila per riprovare."}
               </span>
+            </div>
+          )}
+
+          {schemaInCorso && (
+            <div className="pointer-events-none absolute bottom-[76px] right-[18px] z-20 flex items-center gap-2 rounded-[9px] border border-[#2C4C42] bg-[rgba(9,20,17,0.9)] px-2.5 py-1.5 text-[11px] text-[#9DB8AC]">
+              <span className="dot dot-live" />
+              Schematico in aggiornamento: la scheda si usa gia&apos;
             </div>
           )}
 

@@ -11,6 +11,7 @@ import {
 import {
   filesHash,
   getCompileCache,
+  getCompileMeta,
   getProject,
   saveCompileCache,
 } from "@/lib/project-store";
@@ -81,7 +82,17 @@ export async function POST(req: Request): Promise<Response> {
       return Response.json({ ...redone.result, ms: Date.now() - t0 });
     }
     const summary = summarizeCircuit(redone.circuitJson as unknown[], fsMap);
-    const latest = await getCompileCache(projectId).catch(() => null);
+    /*
+     * The schematic on this board is the one of the board it was moved from:
+     * moving parts does not touch it. Its key travels with it, so that the next
+     * "Aggiorna" reuses it instead of drawing it again (see schematicKeyOf),
+     * and so does the note that it is still being drawn.
+     */
+    const prima = (cached.summary ?? {}) as { schematicKey?: unknown; schematicPending?: unknown };
+    if (typeof prima.schematicKey === "string") summary.schematicKey = prima.schematicKey;
+    if (typeof prima.schematicPending === "string") summary.schematicPending = prima.schematicPending;
+    // which board is saved now: the metadata is enough, the board is megabytes
+    const latest = await getCompileMeta(projectId);
     if (
       !latest ||
       latest.filesHash !== cached.filesHash ||

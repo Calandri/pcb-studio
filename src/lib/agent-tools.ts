@@ -14,12 +14,10 @@ import {
   filesHash,
   getCompileCache,
   getProject,
-  saveCompileCache,
   writeProjectFile,
   type FsMap,
 } from "./project-store";
-import { CHECKS_ENGINE_VERSION } from "./engine-version";
-import { earlyBoardSaver } from "./compile-save";
+import { earlyBoardSaver, saveFinishedCompile } from "./compile-save";
 import { runSimulation } from "./simulate";
 import { compileProject } from "./compile";
 import { resolveDesignRules } from "./design-rules";
@@ -550,6 +548,8 @@ async function runTool(
           },
         };
       }
+      // the files are read now: a board saved after this moment may be of newer ones (see compile-save)
+      const fresh = { startedAt: Date.now(), filesNow: async () => withLibrary(await getProject(projectId)) };
       const compileFsMap = await withLibrary(fsMap);
       // read the previous summary BEFORE overwriting the cache: the delta is
       // what tells the model whether the loop is converging or oscillating
@@ -565,8 +565,10 @@ async function runTool(
             ? undefined
             : ((previous?.circuitJson as unknown[] | undefined) ?? undefined),
         budgetMs: Math.min(MAX_COMPILE_MS, left - 60_000),
+        // the schematic of the last board, reused when only PCB positions changed
+        schematicFrom: previous ? { circuitJson: previous.circuitJson as unknown[], summary: previous.summary } : null,
         // the board is saved as soon as it exists, before the schematic: see compile-save.ts
-        onBoard: earlyBoardSaver(projectId, filesHash(compileFsMap), previous),
+        onBoard: earlyBoardSaver(projectId, filesHash(compileFsMap), previous, fresh),
         // the intermediate circuit does not pass through here: it weighs
         // megabytes and the agent channel carries text. Whoever looks takes it
         // from the periodic check.
@@ -590,7 +592,7 @@ async function runTool(
       // fetches ?circuit=1 as soon as it receives it, and on serverless a
       // fire-and-forget write could be frozen after the response
       const hash = filesHash(compileFsMap);
-      const cached = await saveCompileCache(projectId, hash, circuitJson, summary, CHECKS_ENGINE_VERSION).then(
+      const cached = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).then(
         (r) => r,
         (err: unknown) => ({ saved: false, keptPrevious: false, error: describeError(err) }),
       );

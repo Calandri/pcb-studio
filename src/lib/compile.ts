@@ -1,3 +1,5 @@
+import { CHECKS_ENGINE_VERSION } from "./engine-version";
+import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
@@ -290,6 +292,11 @@ export interface CompileSummary {
    * the schematic checks below say nothing yet. Absent on a complete compile.
    */
   schematicPending?: string;
+  /**
+   * What the schematic was drawn from (see schematicKeyOf). Equal on the next
+   * compile = same schematic: it is taken from here instead of drawn again.
+   */
+  schematicKey?: string;
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{
     section: string;
@@ -441,6 +448,14 @@ export interface CompileOptions {
    * before, the board stays saved and says its schematic is missing.
    */
   onBoard?: (early: { circuitJson: unknown[]; summary: CompileSummary }) => Promise<unknown>;
+  /**
+   * The board saved last time (circuit and summary). When its schematic was
+   * drawn from the same sources (summary.schematicKey), the schematic is TAKEN
+   * from it instead of drawn again: moving a part does not change a single wire
+   * of the schematic, and on sbb-dl-principale drawing it again cost 2:09 of a
+   * blocked editor for every "Aggiorna" (2026-11-09).
+   */
+  schematicFrom?: { circuitJson: unknown[]; summary: unknown } | null;
 }
 
 export interface CompileProgress {
@@ -661,8 +676,20 @@ export async function compileProject(
    * 219-part board) and handed to whoever saves it: see CompileOptions.onBoard.
    * A failure here costs nothing: the full compile below says what is wrong.
    */
-  if (opts.route === false && opts.onBoard) {
-    say({ step: "Leggo la scheda", detail: "prima il rame e i pezzi, lo schematico dopo", progress: 0.05 });
+  const chiaveSchema = schematicKeyOf(projectFsMap);
+  const schemaDiPrima =
+    opts.schematicFrom &&
+    (opts.schematicFrom.summary as { schematicKey?: unknown } | null)?.schematicKey === chiaveSchema
+      ? opts.schematicFrom.circuitJson
+      : null;
+  /** the board with the previous schematic on it, when the schematic has not changed */
+  let innestata: CircuitElement[] | null = null;
+  if (opts.route === false && (opts.onBoard || schemaDiPrima)) {
+    say({
+      step: "Leggo la scheda",
+      detail: schemaDiPrima ? "lo schematico non e' cambiato: riuso quello salvato" : "prima il rame e i pezzi, lo schematico dopo",
+      progress: 0.05,
+    });
     let pcbOnly: CircuitElement[] | null = null;
     try {
       pcbOnly = await profiler.run("scheda senza schematico (tscircuit)", () =>
@@ -671,7 +698,8 @@ export async function compileProject(
     } catch {
       pcbOnly = null;
     }
-    if (pcbOnly && pcbOnly.some((el) => el.type === "pcb_board")) {
+    if (pcbOnly && schemaDiPrima) innestata = graftSchematic(pcbOnly, schemaDiPrima);
+    if (pcbOnly && !innestata && opts.onBoard && pcbOnly.some((el) => el.type === "pcb_board")) {
       const early = await profiler.run("rame, colate e controlli della scheda senza schematico", () =>
         boardWithoutRouting(pcbOnly as CircuitElement[]),
       );
@@ -687,6 +715,14 @@ export async function compileProject(
       }
       console.log(`[compile] scheda senza schematico pronta in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
       say({ step: "Scheda pronta", detail: "ora disegno lo schematico", progress: 0.15, circuitJson: early.circuitJson });
+      /*
+       * One turn of the event loop before the schematic: drawing it is minutes
+       * of CPU without a single await that reaches the network, and what was
+       * just sent (the "board saved" event, the log line) sat in the socket
+       * until it ended. On sbb-dl-principale the page heard "Scheda pronta" at
+       * 117 s for a board saved at 30 (2026-11-09).
+       */
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
 
@@ -704,17 +740,21 @@ export async function compileProject(
    * attempt, which routed with the router declared on the board and which
    * almost always lost the comparison against the later passes anyway.
    */
-  say({
-    step: opts.onBoard ? "Disegno lo schematico" : "Leggo la scheda",
-    detail: opts.onBoard ? "collegamenti ed etichette: sulle schede grandi e' la parte lunga" : "componenti, piedini, collegamenti",
-    progress: opts.onBoard ? 0.2 : 0.05,
-  });
-  let geometry: CircuitElement[] | null = null;
-  try {
-    state.attempts += 1;
-    geometry = await profiler.run("scheda con schematico (tscircuit)", () => compileGeometryOnly(fsMap));
-  } catch (err) {
-    state.fatalError = err instanceof Error ? err.message : String(err);
+  let geometry: CircuitElement[] | null = innestata;
+  if (!geometry) {
+    say({
+      step: opts.onBoard ? "Disegno lo schematico" : "Leggo la scheda",
+      detail: opts.onBoard ? "collegamenti ed etichette: sulle schede grandi e' la parte lunga" : "componenti, piedini, collegamenti",
+      progress: opts.onBoard ? 0.2 : 0.05,
+    });
+    try {
+      state.attempts += 1;
+      geometry = await profiler.run("scheda con schematico (tscircuit)", () => compileGeometryOnly(fsMap));
+    } catch (err) {
+      state.fatalError = err instanceof Error ? err.message : String(err);
+    }
+  } else {
+    console.log(`[compile] schematico invariato: riusato, scheda pronta in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
   }
 
   if (geometry && opts.place === true) {
@@ -810,6 +850,9 @@ export async function compileProject(
      * split nobody can tell the board from the schematic.
      */
     summary.profile = { ...profiler.result(), patches: enginePatches() };
+    // what this schematic was drawn from: the next compile with the same key reuses it
+    if (circuitJson.some((e) => e.type === "schematic_component")) summary.schematicKey = chiaveSchema;
+    if (innestata) summary.message = `${summary.message} (schematico invariato, riusato)`;
     console.log(
       `[compile] ${summary.profile.spans.map((sp) => `${sp.name} ${(sp.ms / 1000).toFixed(1)}s`).join(", ")}; totale ${(summary.profile.totalMs / 1000).toFixed(1)}s`,
     );
@@ -1433,6 +1476,48 @@ export function readConstraints(main: string): Map<string, string> {
     if (name && reason) out.set(name, reason);
   }
   return out;
+}
+
+/**
+ * What the schematic depends on: every file but the hand-held PCB positions.
+ * The sources, the library, the schematic notes, the schematic placements and
+ * the engine: change any of these and the schematic is drawn again; move,
+ * turn or flip parts on the board and it is not.
+ */
+export function schematicKeyOf(projectFsMap: FsMap): string {
+  const edits = parseManualEdits(projectFsMap[MANUAL_EDITS_PATH]);
+  const rest: Record<string, string> = {};
+  for (const [k, v] of Object.entries(projectFsMap)) if (k !== MANUAL_EDITS_PATH) rest[k] = v;
+  rest["__schematic_placements__"] = JSON.stringify(edits.schematic_placements);
+  rest["__engine__"] = String(CHECKS_ENGINE_VERSION);
+  return filesHash(rest);
+}
+
+/**
+ * The board just read (without schematic) with the schematic of the previous
+ * compile on it. Only when every source element the schematic points at is the
+ * same one, with the same id and the same name: otherwise null, and the
+ * schematic is drawn again.
+ */
+export function graftSchematic(pcbOnly: CircuitElement[], previous: unknown[]): CircuitElement[] | null {
+  const prev = previous as CircuitElement[];
+  const schema = prev.filter((e) => String(e.type).startsWith("schematic_"));
+  if (!schema.some((e) => e.type === "schematic_component")) return null;
+  const firma = (els: CircuitElement[], tipo: string, id: string) =>
+    els
+      .filter((e) => e.type === tipo)
+      .map((e) => `${String(e[id])}|${String(e.name ?? "")}|${String(e.source_component_id ?? "")}`)
+      .sort()
+      .join("\n");
+  for (const [tipo, id] of [
+    ["source_component", "source_component_id"],
+    ["source_port", "source_port_id"],
+    ["source_net", "source_net_id"],
+    ["source_trace", "source_trace_id"],
+  ] as const) {
+    if (firma(pcbOnly, tipo, id) !== firma(prev, tipo, id)) return null;
+  }
+  return [...pcbOnly.filter((e) => !String(e.type).startsWith("schematic_")), ...schema];
 }
 
 /**
