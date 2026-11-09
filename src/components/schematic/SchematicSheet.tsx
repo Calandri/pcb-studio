@@ -1,6 +1,15 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { SchNode, SchematicModel } from "@/lib/schematic-model";
 import { SCH_TEXT } from "@/lib/schematic-shapes";
+import {
+  HIGHLIGHT_COLOR,
+  HIGHLIGHT_FADE,
+  isLit,
+  junctionKey,
+  labelKey,
+  wireKey,
+  type SheetHighlight,
+} from "@/lib/schematic-interaction";
 
 /**
  * The drawing of the schematic sheet, and nothing else.
@@ -120,6 +129,7 @@ export function SchematicSheet({
   linkFrom = null,
   cursor = null,
   pendingLinks = [],
+  highlight = null,
   on = {},
   fontFamily = "var(--font-mono, 'IBM Plex Mono'), monospace",
 }: {
@@ -138,6 +148,8 @@ export function SchematicSheet({
   linkFrom?: { selector: string; x: number; y: number } | null;
   cursor?: { x: number; y: number } | null;
   pendingLinks?: SheetLink[];
+  /** selection (or hover preview) from the canvas: lit elements, the rest fades */
+  highlight?: SheetHighlight | null;
   on?: SheetHandlers;
   fontFamily?: string;
 }) {
@@ -148,9 +160,13 @@ export function SchematicSheet({
    * huge letters. The floor in pixels keeps them visible when zoomed out.
    */
   const sw = (units: number, minPx = 1) => Math.max(units, minPx * px);
-  const dim = (net: string | null) =>
-    hoverNets && (!net || !hoverNets.has(net)) ? 0.12 : 1;
-  const lit = (net: string | null) => Boolean(hoverNets && net && hoverNets.has(net));
+  const dim = (net: string | null, key?: string) =>
+    highlight
+      ? isLit(highlight, net, key) ? 1 : HIGHLIGHT_FADE
+      : hoverNets && (!net || !hoverNets.has(net)) ? 0.12 : 1;
+  const lit = (net: string | null, key?: string) =>
+    highlight ? isLit(highlight, net, key) : Boolean(hoverNets && net && hoverNets.has(net));
+  const hl = (net: string | null, key: string) => Boolean(highlight && isLit(highlight, net, key));
   const leave = () => on.hover?.(null, null);
 
   return (
@@ -226,9 +242,9 @@ export function SchematicSheet({
             <path
               key={w.id}
               d={w.d}
-              stroke={w.power ? COLORS.power : lit(w.net) ? COLORS.selected : COLORS.wire}
-              strokeWidth={lit(w.net) ? sw(0.03, 2.4) : sw(0.018, w.power ? 1.5 : 1.3)}
-              opacity={dim(w.net)}
+              stroke={hl(w.net, wireKey(w.id)) ? HIGHLIGHT_COLOR : w.power ? COLORS.power : lit(w.net) ? COLORS.selected : COLORS.wire}
+              strokeWidth={lit(w.net, wireKey(w.id)) ? sw(0.03, 2.4) : sw(0.018, w.power ? 1.5 : 1.3)}
+              opacity={dim(w.net, wireKey(w.id))}
               onPointerEnter={() => on.hover?.(w.net ? new Set([w.net]) : null, w.net)}
               onPointerLeave={leave}
               onClick={(e) => {
@@ -251,8 +267,8 @@ export function SchematicSheet({
               // the junction between multiple wires is bigger than the
               // attachment to a pin: two different things that must be told apart
               r={j.isNode ? sw(0.035, 3) : sw(0.02, 1.8)}
-              fill={j.power ? COLORS.power : COLORS.wire}
-              opacity={dim(j.net)}
+              fill={hl(j.net, junctionKey(i)) ? HIGHLIGHT_COLOR : j.power ? COLORS.power : COLORS.wire}
+              opacity={dim(j.net, junctionKey(i))}
             />
           ))}
         </g>
@@ -263,13 +279,15 @@ export function SchematicSheet({
         <g pointerEvents="none">
           {model.netLabels.map((l, i) => {
             const removable = linking && l.declaredAs && l.declaredAs.length > 0;
-            const edge = lit(l.net) ? COLORS.selected : l.power ? COLORS.power : COLORS.labelEdge;
+            const edge = hl(l.net, labelKey(i))
+              ? HIGHLIGHT_COLOR
+              : lit(l.net) ? COLORS.selected : l.power ? COLORS.power : COLORS.labelEdge;
             const remove = (e: { stopPropagation: () => void }) => {
               e.stopPropagation();
               for (const d of l.declaredAs ?? []) on.unlink?.(d);
             };
             return (
-              <g key={i} opacity={dim(l.net)}>
+              <g key={i} opacity={dim(l.net, labelKey(i))}>
                 {l.port && (
                   <>
                     <path
@@ -341,13 +359,16 @@ export function SchematicSheet({
           const off = offsets[node.id];
           const isSelected = selected.has(node.id);
           const pinned = pinnedNames.has(node.name);
+          const halo = highlight?.focus.get(node.id);
           return (
             <g
               key={node.id}
               opacity={
-                hoverNets && !node.ports.some((p) => lit(p.net)) && hoverName !== node.name
-                  ? 0.25
-                  : 1
+                highlight
+                  ? highlight.nodes.has(node.id) ? 1 : HIGHLIGHT_FADE
+                  : hoverNets && !node.ports.some((p) => lit(p.net)) && hoverName !== node.name
+                    ? 0.25
+                    : 1
               }
               transform={off ? `translate(${off.dx} ${off.dy})` : undefined}
               onPointerDown={on.nodeDown ? (e) => on.nodeDown?.(e, node) : undefined}
@@ -358,6 +379,20 @@ export function SchematicSheet({
               onPointerLeave={leave}
               style={{ cursor: movable ? "move" : "pointer" }}
             >
+              {halo && (
+                <rect
+                  x={halo.minX - 0.1}
+                  y={halo.minY - 0.1}
+                  width={halo.maxX - halo.minX + 0.2}
+                  height={halo.maxY - halo.minY + 0.2}
+                  rx={0.1}
+                  fill={HIGHLIGHT_COLOR}
+                  fillOpacity={0.07}
+                  stroke={HIGHLIGHT_COLOR}
+                  strokeWidth={sw(0.016, 1.5)}
+                  pointerEvents="none"
+                />
+              )}
               {/* grab area: without this you only catch the thin stroke */}
               <rect
                 x={node.bbox.minX - 0.1}
@@ -404,6 +439,21 @@ export function SchematicSheet({
                   {l.text}
                 </text>
               ))}
+              {highlight &&
+                node.ports.map((port) =>
+                  highlight.ports.has(port.selector) ? (
+                    <circle
+                      key={`hl-${port.selector}`}
+                      cx={port.x}
+                      cy={port.y}
+                      r={sw(0.045, 3.5)}
+                      fill="none"
+                      stroke={HIGHLIGHT_COLOR}
+                      strokeWidth={sw(0.014, 1.5)}
+                      pointerEvents="none"
+                    />
+                  ) : null,
+                )}
               {linking &&
                 node.ports.map((port) => {
                   const active = linkFrom?.selector === port.selector;

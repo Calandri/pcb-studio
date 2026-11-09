@@ -22,6 +22,8 @@ export function SchematicView({
   pendingLinks,
   onLink,
   onUnlink,
+  selection,
+  onSelectionChange,
 }: {
   circuitJson: unknown[];
   projectId: string;
@@ -35,6 +37,9 @@ export function SchematicView({
   pendingLinks: PendingLink[];
   onLink: (link: PendingLink) => void;
   onUnlink: (declared: string) => void;
+  /** selection shared with the board view and the URL ("U3", "VREF") */
+  selection?: string | null;
+  onSelectionChange?: (key: string | null, component: string | null) => void;
 }) {
   const pinnedNames = useMemo(
     () => new Set(saved.schematic_placements.map((p) => p.selector)),
@@ -54,6 +59,8 @@ export function SchematicView({
       pendingLinks={pendingLinks}
       onLink={onLink}
       onUnlink={onUnlink}
+      selection={selection}
+      onSelectionChange={onSelectionChange}
     />
   );
 }

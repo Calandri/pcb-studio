@@ -25,6 +25,7 @@ import { ClaudeWork } from "./workspace/ClaudeWork";
 import { RightRail, type ErcSummary } from "./workspace/RightRail";
 import { MassEdit, type MassAction } from "./workspace/MassEdit";
 import { useEnclosures } from "@/lib/use-enclosures";
+import { useSharedSelection } from "./workspace/useSharedSelection";
 import { readSseStream } from "./sse-stream";
 import { ViewerBoundary } from "./ViewerBoundary";
 
@@ -1019,6 +1020,15 @@ export function Studio({
     }
     return base;
   }, [circuitJson, partDesc, fsMap]);
+  // the part picked on the board and the selection on the schematic are one
+  // thing, and it travels in the URL (?sel=U3): a link opens on that part
+  const { selection, pickPart, selectFromSchematic } = useSharedSelection({
+    parts,
+    tab,
+    setTab,
+    partId,
+    setPartId,
+  });
   const sheetNets = useMemo(
     () =>
       ((summary as { erc?: { nets?: SheetNet[] } } | null)?.erc?.nets ?? []) as SheetNet[],
@@ -1207,6 +1217,9 @@ export function Studio({
           leavingRef.current = true;
           const url = new URL(window.location.href);
           url.searchParams.set("project", d.project.id);
+          // the selection belongs to the project being left
+          url.searchParams.delete("sel");
+          url.searchParams.delete("tab");
           window.location.href = url.toString();
         }
       } catch (err) {
@@ -1498,7 +1511,11 @@ export function Studio({
                       markers={drcMarkers}
                       hoveredComponentId={hoverPartId}
                       onHoverComponent={setHoverPartId}
-                      onPickComponent={setPartId}
+                      onPickComponent={pickPart}
+                      // the part picked here or on the schematic: outlined.
+                      // Not while Claude's panel is picking parts: there the
+                      // outline means "in the selection", and it would lie
+                      pickedId={selectMode === "off" ? partId : null}
                       selectMode={selectMode}
                       selectedIds={selectedIds}
                       onSelectionChange={setSelectedIds}
@@ -1529,7 +1546,7 @@ export function Studio({
                       markers={drcMarkers}
                       hoveredComponentId={hoverPartId}
                       onHoverComponent={setHoverPartId}
-                      onPickComponent={setPartId}
+                      onPickComponent={pickPart}
                       selectMode={selectMode}
                       selectedIds={selectedIds}
                       onSelectionChange={setSelectedIds}
@@ -1563,6 +1580,8 @@ export function Studio({
                     pendingLinks={editor.links}
                     onLink={editor.addLink}
                     onUnlink={editor.addUnlink}
+                    selection={selection}
+                    onSelectionChange={selectFromSchematic}
                   />
                 ) : (
                   // 3D tab: the enclosure designer (board in GLB from the
@@ -1761,14 +1780,14 @@ export function Studio({
           )}
 
           {(tab === "pcb" || tab === "cad") && parts.length > 0 && !claudeOpen && (
-            <PartPicker parts={parts} selected={partId} onSelect={setPartId} />
+            <PartPicker parts={parts} selected={partId} onSelect={pickPart} />
           )}
           {/* the component card must not open while the component is being
               moved: it would cover the board right where one is working */}
           {(tab === "pcb" || tab === "cad") && part && editor.mode === "view" && (
             <PartCard
               part={part}
-              onClose={() => setPartId(null)}
+              onClose={() => pickPart(null)}
               onAsk={ask}
               onDescribe={() => describePart(part.name)}
               describing={describingPart === part.name}
