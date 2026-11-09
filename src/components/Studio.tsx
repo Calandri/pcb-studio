@@ -8,6 +8,7 @@ import { HandoffButton } from "./HandoffButton";
 import { BoardCanvas, type BoardZone, type SelectMode } from "./board/BoardCanvas";
 import { RouteCanvas } from "./board/RouteCanvas";
 import { SchematicView } from "./SchematicView";
+import { SCHEMATIC_NOTES_PATH } from "@/lib/schematic-notes";
 import { DesignRulesDialog } from "./workspace/DesignRulesDialog";
 import { EditorBar } from "./workspace/EditorBar";
 import { useManualEditor } from "./workspace/useManualEditor";
@@ -1337,7 +1338,8 @@ export function Studio({
             const { path, content } = data;
             setFsMap((m) => ({ ...(m ?? {}), [path]: content }));
           }
-          setCircuitStale(true);
+          // the drawing's notes are not a source: the board needs no compile
+          if (data.path !== SCHEMATIC_NOTES_PATH) setCircuitStale(true);
         } else if (event === "done") {
           completed = true;
         } else if (event === "error") {
@@ -1582,6 +1584,7 @@ export function Studio({
                     onUnlink={editor.addUnlink}
                     selection={selection}
                     onSelectionChange={selectFromSchematic}
+                    notes={fsMap?.[SCHEMATIC_NOTES_PATH]}
                   />
                 ) : (
                   // 3D tab: the enclosure designer (board in GLB from the

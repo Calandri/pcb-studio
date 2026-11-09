@@ -32,6 +32,7 @@ import {
 import { findSections, SOLVERS, spliceTraces, unrouteSections } from "./variants";
 import { rerouteZone } from "./rip-up";
 import { resolveDesignRules } from "./design-rules";
+import { SCHEMATIC_NOTES_PATH, validateSchematicNotesFile } from "./schematic-notes";
 import { scoreCircuit } from "./route-score";
 import { renderPcbPng, reviewLayout } from "./vision-review";
 import {
@@ -78,7 +79,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     input_schema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "e.g. main.tsx" },
+        path: { type: "string", description: "e.g. main.tsx, or schematico.json for the drawing's notes" },
         content: { type: "string", description: "complete file content" },
       },
       required: ["path", "content"],
@@ -439,8 +440,20 @@ async function runTool(
     case "write_file": {
       const path = String(args.path ?? "");
       const content = String(args.content ?? "");
+      // the one JSON a tool may write: the drawing's notes, checked as JSON
+      if (path === SCHEMATIC_NOTES_PATH) {
+        const invalid = validateSchematicNotesFile(content);
+        if (invalid) return { result: { error: invalid } };
+        await writeProjectFile(projectId, path, content);
+        return {
+          result: { ok: true, path, chars: content.length, note: "drawing only: no compile needed" },
+          fileChanged: { path, content },
+        };
+      }
       if (!FILE_PATH_RE.test(path)) {
-        return { result: { error: `Invalid path "${path}": only relative .tsx paths are allowed` } };
+        return {
+          result: { error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}) are allowed` },
+        };
       }
       if (content.length > MAX_FILE_CHARS) {
         return { result: { error: `File too large (${content.length} chars, max ${MAX_FILE_CHARS})` } };

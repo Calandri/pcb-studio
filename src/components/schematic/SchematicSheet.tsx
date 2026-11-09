@@ -1,6 +1,6 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { SchNode, SchematicModel } from "@/lib/schematic-model";
-import { SCH_TEXT } from "@/lib/schematic-shapes";
+import { SCH_TEXT, type SchLabel } from "@/lib/schematic-shapes";
 import {
   HIGHLIGHT_COLOR,
   HIGHLIGHT_FADE,
@@ -26,26 +26,80 @@ import {
  * "<script>" is drawn as those characters.
  */
 
-const COLORS = {
+/*
+ * One color per class of net, the same on wires, dots and labels: positive
+ * rails green (as on the mockup), grounds blue, signals neutral. Amber is
+ * left to the highlight of the canvas (HIGHLIGHT_COLOR), so a lit net never
+ * looks like a rail. Every text clears 4.5:1 against the sheet and every
+ * wire 3:1, on both sheets (the test measures it).
+ */
+const DARK = {
   sheet: "#0A121C",
   sheetEdge: "#18222E",
   grid: "#1B2735",
-  wire: "#6A7C89",
+  wire: "#71838F",
   power: "#0BA36C",
+  ground: "#6E9FE6",
+  /** a pin with nothing on it, in Link mode: the canvas hint calls them green */
+  unlinked: "#0BA36C",
   outline: "#93A4AE",
   body: "#101A26",
   name: "#D4DEE4",
-  value: "#8494A0",
+  value: "#8C9CA8",
   pin: "#AEBCC5",
-  number: "#6E808C",
+  number: "#7B8D99",
+  comment: "#8FA2AE",
   label: "#A3B3BD",
   labelEdge: "#4F6170",
-  frame: "#223140",
+  frame: "#2A3B4C",
   frameFill: "#0C1621",
-  title: "#8195A4",
-  faint: "#3E4A57",
+  title: "#93A7B6",
+  faint: "#75868F",
+  warning: "#E8B23B",
   selected: "#3BE8B0",
 };
+
+/** the paper sheet: printing, exports, a light page */
+const LIGHT: typeof DARK = {
+  sheet: "#FBFAF7",
+  sheetEdge: "#D9D6CC",
+  grid: "#E4E1D8",
+  wire: "#4A5866",
+  power: "#0A7048",
+  ground: "#2C5FB0",
+  unlinked: "#0A8A5B",
+  outline: "#34414D",
+  body: "#F6F3E8",
+  name: "#141B22",
+  value: "#4E5C69",
+  pin: "#2E3A45",
+  number: "#5F6C78",
+  comment: "#56636F",
+  label: "#2E3A45",
+  labelEdge: "#8A96A1",
+  frame: "#BDB8AA",
+  frameFill: "#F4F2EA",
+  title: "#4E5C69",
+  faint: "#5F6B76",
+  warning: "#8A5A00",
+  selected: "#0B7F8C",
+};
+
+export type SheetTheme = "dark" | "light";
+export const SHEET_PALETTES: Record<SheetTheme, typeof DARK> = { dark: DARK, light: LIGHT };
+
+/**
+ * Below this size on screen a text is noise: pin names, pin numbers and
+ * comments are left out when zoomed out that far. Parts, designators and
+ * section titles always stay: they are how you find your way on the sheet.
+ */
+export const DETAIL_MIN_PX = 5;
+const DETAIL_TONES = new Set<SchLabel["tone"]>(["pin", "number", "comment"]);
+export const showsLabel = (label: Pick<SchLabel, "tone" | "size">, k: number): boolean =>
+  !DETAIL_TONES.has(label.tone) || label.size * k >= DETAIL_MIN_PX;
+
+/** a section title never shrinks below this on screen (it would vanish when zoomed out) */
+const TITLE_MIN_PX = 11;
 
 export interface SheetView {
   x: number;
@@ -103,13 +157,6 @@ export function fitView(sheet: SheetFrame, size: { w: number; h: number }, margi
   };
 }
 
-const TONE = {
-  name: COLORS.name,
-  value: COLORS.value,
-  pin: COLORS.pin,
-  number: COLORS.number,
-} as const;
-
 const NO_OFFSETS: Record<string, { dx: number; dy: number }> = {};
 const NO_SET = new Set<string>();
 
@@ -132,6 +179,7 @@ export function SchematicSheet({
   highlight = null,
   on = {},
   fontFamily = "var(--font-mono, 'IBM Plex Mono'), monospace",
+  theme = "dark",
 }: {
   model: SchematicModel;
   sheet: SheetFrame;
@@ -152,7 +200,12 @@ export function SchematicSheet({
   highlight?: SheetHighlight | null;
   on?: SheetHandlers;
   fontFamily?: string;
+  theme?: SheetTheme;
 }) {
+  const COLORS = SHEET_PALETTES[theme];
+  const TONE = { name: COLORS.name, value: COLORS.value, pin: COLORS.pin, number: COLORS.number, comment: COLORS.comment };
+  /** the color of a net's class: ground, positive rail, signal */
+  const rail = (x: { power: boolean; ground: boolean }) => (x.ground ? COLORS.ground : COLORS.power);
   const px = 1 / view.k; // one pixel in drawing units
   /*
    * Line widths live in sheet units, like the texts: zooming in, a wire grows
@@ -207,21 +260,26 @@ export function SchematicSheet({
       />
 
       <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-        {/* functional sections: a frame each, the title in the corner */}
+        {/* functional sections: a frame each, the title in the corner. Of two
+            frames that overlap, the larger is dashed and unfilled, under the other */}
         <g pointerEvents="none">
-          {model.sectionFrames.map((f, i) => (
-            <rect
-              key={i}
-              x={f.x}
-              y={f.y}
-              width={f.w}
-              height={f.h}
-              rx={0.12}
-              fill={COLORS.frameFill}
-              stroke={COLORS.frame}
-              strokeWidth={sw(0.016)}
-            />
-          ))}
+          {model.sectionFrames.map((f, i) => {
+            const crossed = f.dashed === true;
+            return (
+              <rect
+                key={i}
+                x={f.x}
+                y={f.y}
+                width={f.w}
+                height={f.h}
+                rx={0.12}
+                fill={crossed ? "none" : COLORS.frameFill}
+                stroke={COLORS.frame}
+                strokeWidth={sw(crossed ? 0.02 : 0.016)}
+                strokeDasharray={crossed ? `${sw(0.12, 6)} ${sw(0.08, 4)}` : undefined}
+              />
+            );
+          })}
         </g>
         <g stroke={COLORS.frame} strokeWidth={sw(0.016)}>
           {model.dividers.map((d, i) => (
@@ -229,11 +287,43 @@ export function SchematicSheet({
           ))}
         </g>
         <g fill={COLORS.title} pointerEvents="none">
-          {model.sectionTitles.map((t, i) => (
-            <text key={i} x={t.x} y={t.y} fontSize={SCH_TEXT.sectionTitle} fontWeight={600} letterSpacing={0.01}>
-              {t.text}
-            </text>
-          ))}
+          {model.sectionTitles.map((t, i) => {
+            /*
+             * Zoomed out, the title grows to stay readable (it is how you find
+             * a block on a 183-part sheet), keeping its top-left corner. The
+             * plate behind it keeps it legible over a frame that crosses it.
+             */
+            const base = SCH_TEXT.sectionTitle;
+            const size = Math.max(base, TITLE_MIN_PX * px);
+            const top = t.y - base * 0.75;
+            const w = t.text.length * size * 0.6;
+            const x0 = t.anchor === "end" ? t.x - w : t.x;
+            return (
+              <g key={i}>
+                <rect
+                  x={x0 - size * 0.15}
+                  y={top - size * 0.12}
+                  width={w + size * 0.3}
+                  height={size * 1.12}
+                  rx={size * 0.15}
+                  fill={COLORS.frameFill}
+                  // fill-opacity, not opacity: no layer, and resvg does not
+                  // choke on a plate that lies outside the picture
+                  fillOpacity={0.85}
+                />
+                <text
+                  x={t.x}
+                  y={top + size * 0.75}
+                  fontSize={size}
+                  fontWeight={600}
+                  letterSpacing={0.01}
+                  textAnchor={t.anchor ?? "start"}
+                >
+                  {t.text}
+                </text>
+              </g>
+            );
+          })}
         </g>
 
         {/* wires: power rails in green, like on a designer's sheet */}
@@ -242,7 +332,7 @@ export function SchematicSheet({
             <path
               key={w.id}
               d={w.d}
-              stroke={hl(w.net, wireKey(w.id)) ? HIGHLIGHT_COLOR : w.power ? COLORS.power : lit(w.net) ? COLORS.selected : COLORS.wire}
+              stroke={hl(w.net, wireKey(w.id)) ? HIGHLIGHT_COLOR : w.power ? rail(w) : lit(w.net) ? COLORS.selected : COLORS.wire}
               strokeWidth={lit(w.net, wireKey(w.id)) ? sw(0.03, 2.4) : sw(0.018, w.power ? 1.5 : 1.3)}
               opacity={dim(w.net, wireKey(w.id))}
               onPointerEnter={() => on.hover?.(w.net ? new Set([w.net]) : null, w.net)}
@@ -267,7 +357,7 @@ export function SchematicSheet({
               // the junction between multiple wires is bigger than the
               // attachment to a pin: two different things that must be told apart
               r={j.isNode ? sw(0.035, 3) : sw(0.02, 1.8)}
-              fill={hl(j.net, junctionKey(i)) ? HIGHLIGHT_COLOR : j.power ? COLORS.power : COLORS.wire}
+              fill={hl(j.net, junctionKey(i)) ? HIGHLIGHT_COLOR : j.power ? rail(j) : COLORS.wire}
               opacity={dim(j.net, junctionKey(i))}
             />
           ))}
@@ -281,7 +371,7 @@ export function SchematicSheet({
             const removable = linking && l.declaredAs && l.declaredAs.length > 0;
             const edge = hl(l.net, labelKey(i))
               ? HIGHLIGHT_COLOR
-              : lit(l.net) ? COLORS.selected : l.power ? COLORS.power : COLORS.labelEdge;
+              : lit(l.net) ? COLORS.selected : l.power ? rail(l) : COLORS.labelEdge;
             const remove = (e: { stopPropagation: () => void }) => {
               e.stopPropagation();
               for (const d of l.declaredAs ?? []) on.unlink?.(d);
@@ -293,7 +383,7 @@ export function SchematicSheet({
                     <path
                       d={`M${l.port.x} ${l.port.y}L${l.attach.x} ${l.attach.y}`}
                       fill="none"
-                      stroke={l.power ? COLORS.power : COLORS.labelEdge}
+                      stroke={l.power ? rail(l) : COLORS.labelEdge}
                       strokeWidth={sw(0.012)}
                       strokeDasharray={`${sw(0.05, 2.5)} ${sw(0.04, 2)}`}
                     />
@@ -324,7 +414,7 @@ export function SchematicSheet({
                   fontSize={l.textAt.size}
                   textAnchor={l.textAt.anchor}
                   transform={l.textAt.vertical ? `rotate(-90 ${l.textAt.x} ${l.textAt.y})` : undefined}
-                  fill={l.power ? COLORS.power : COLORS.label}
+                  fill={l.power ? rail(l) : COLORS.label}
                 >
                   {l.text}
                 </text>
@@ -424,7 +514,7 @@ export function SchematicSheet({
                   strokeLinejoin="round"
                 />
               ))}
-              {node.labels.map((l, i) => (
+              {node.labels.map((l, i) => showsLabel(l, view.k) && (
                 <text
                   key={i}
                   x={l.x}
@@ -433,6 +523,7 @@ export function SchematicSheet({
                   textAnchor={l.anchor}
                   fill={TONE[l.tone]}
                   fontWeight={l.tone === "name" ? 600 : 400}
+                  fontStyle={l.tone === "comment" ? "italic" : undefined}
                   transform={l.vertical ? `rotate(-90 ${l.x} ${l.y})` : undefined}
                   pointerEvents="none"
                 >
@@ -464,7 +555,7 @@ export function SchematicSheet({
                       cy={port.y}
                       r={(active ? 6 : 4) * px}
                       fill={active ? COLORS.selected : COLORS.sheet}
-                      stroke={active ? COLORS.selected : port.connected ? COLORS.wire : COLORS.power}
+                      stroke={active ? COLORS.selected : port.connected ? COLORS.wire : COLORS.unlinked}
                       strokeWidth={1.6 * px}
                       style={{ cursor: "crosshair" }}
                       onPointerDown={(e) => {
@@ -508,7 +599,14 @@ export function SchematicSheet({
         </text>
         <text x={size.w - 16} y={size.h - 14} textAnchor="end">
           {model.nodes.length} componenti · {model.wires.length} collegamenti
+          {model.labeledWires.length > 0 ? ` · ${model.labeledWires.length} fili come etichette` : ""}
         </text>
+        {/* what schematico.json had wrong: said here, never a broken page */}
+        {model.noteWarnings.slice(0, 3).map((w, i) => (
+          <text key={i} x={16} y={size.h - 30 - i * 15} fill={COLORS.warning}>
+            {w}
+          </text>
+        ))}
       </g>
     </svg>
   );

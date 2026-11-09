@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import { createHash } from "node:crypto";
 import { conRiprova } from "./db-retry";
+import { SCHEMATIC_NOTES_PATH } from "./schematic-notes";
 
 export type FsMap = Record<string, string>;
 export interface ChatMessage {
@@ -8,10 +9,16 @@ export interface ChatMessage {
   content: string;
 }
 
-/** stable hash of the project sources: validity key for the compile cache */
+/**
+ * stable hash of the project sources: validity key for the compile cache.
+ * schematico.json is not a source: it only annotates the drawing (sections,
+ * comments, net names), and writing it must not make a 183-part board stale
+ * and ask for a compile that would produce the same circuit.
+ */
 export function filesHash(fsMap: FsMap): string {
   const hash = createHash("sha256");
   for (const path of Object.keys(fsMap).sort()) {
+    if (path === SCHEMATIC_NOTES_PATH) continue;
     hash.update(path);
     hash.update("\0");
     hash.update(fsMap[path]);

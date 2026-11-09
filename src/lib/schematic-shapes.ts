@@ -26,12 +26,17 @@ export interface SchLabel {
   text: string;
   anchor: "start" | "middle" | "end";
   size: number;
-  /** name = designator, value = value or part number, pin = pin name, number = pin number */
-  tone: "name" | "value" | "pin" | "number";
+  /**
+   * name = designator, value = value or part number, pin = pin name, number =
+   * pin number, comment = the one-line note from schematico.json
+   */
+  tone: "name" | "value" | "pin" | "number" | "comment";
   /** text rotated 90 degrees, reading bottom to top: pins on the top/bottom sides */
   vertical?: boolean;
   /** placed by its component's layout (inside an IC body): the overlap pass leaves it */
   fixed?: boolean;
+  /** the whole text, when `text` was cut to fit */
+  full?: string;
 }
 
 /**
@@ -49,6 +54,7 @@ export const SCH_TEXT = {
   netLabel: 0.12,
   powerLabel: 0.11,
   sectionTitle: 0.26,
+  comment: 0.1,
 } as const;
 
 /** approximate width of a monospaced text (advance 0.6 em), in sheet units */
@@ -100,7 +106,7 @@ export function sideOf(p: Pt, box: { x: number; y: number; w: number; h: number 
 }
 
 /** shortens a text to a width, with an ellipsis: a cut name beats a name on top of another */
-function fit(text: string, size: number, budget: number): string {
+export function fit(text: string, size: number, budget: number): string {
   if (textWidth(text, size) <= budget) return text;
   const chars = Math.max(1, Math.floor(budget / (size * 0.6)) - 1);
   return `${text.slice(0, chars)}…`;
@@ -129,7 +135,12 @@ export interface ChipArt {
 export function chipArt(
   box: { x: number; y: number; w: number; h: number },
   pins: ChipPin[],
-  { name, subtitle, connector = false }: { name: string; subtitle: string | null; connector?: boolean },
+  {
+    name,
+    subtitle,
+    connector = false,
+    comment = null,
+  }: { name: string; subtitle: string | null; connector?: boolean; comment?: string | null },
 ): ChipArt {
   const stubs: string[] = [];
   const segments: Array<[Pt, Pt]> = [];
@@ -236,12 +247,19 @@ export function chipArt(
   const below = (offset: number, size: number) => bottom + bottomReach + 0.06 + size * 0.75 + offset;
   let nameY: number;
   let partY: number;
+  /** where the comment goes: the line after the value, wherever that stack is */
+  let commentY: number;
+  const commentS = SCH_TEXT.comment;
+  const commentLine = comment ? commentS + 0.06 : 0;
   if (hasBottom && !hasTop) {
-    partY = above(0);
-    nameY = above(subtitle ? partS + 0.06 : 0);
+    // everything above: the comment is the last line, the one next to the body
+    commentY = above(0);
+    partY = above(commentLine);
+    nameY = above(commentLine + (subtitle ? partS + 0.06 : 0));
   } else if (hasTop && !hasBottom) {
     nameY = below(0, nameS);
     partY = below(nameS * 0.95 + 0.04, partS);
+    commentY = below(nameS * 0.95 + 0.04 + (subtitle ? partS * 0.95 + 0.04 : 0), commentS);
   } else if (hasTop && hasBottom) {
     /*
      * Pins all around: outside there is no free side, and a designator past
@@ -258,7 +276,10 @@ export function chipArt(
     // a long part number may shrink a little to fit, not below readable
     const roomW = free.x1 - free.x0;
     const innerPartS = subtitle ? Math.min(partS, roomW / Math.max(1, subtitle.length * 0.6)) : partS;
-    const lines = nameS + (subtitle ? innerPartS + 0.08 : 0);
+    // the comment is a third line, only when it fits under the other two
+    const commentS = SCH_TEXT.comment;
+    const withComment = comment !== null && free.y1 - free.y0 >= nameS + (subtitle ? innerPartS + 0.08 : 0) + commentS + 0.08;
+    const lines = nameS + (subtitle ? innerPartS + 0.08 : 0) + (withComment ? commentS + 0.08 : 0);
     if (roomW >= textWidth(name, nameS) && innerPartS >= 0.09 && free.y1 - free.y0 >= lines) {
       const cx = (free.x0 + free.x1) / 2;
       const top = (free.y0 + free.y1) / 2 - lines / 2;
@@ -274,19 +295,55 @@ export function chipArt(
           fixed: true,
         });
       }
+      if (withComment && comment) {
+        const text = fit(comment, commentS, roomW);
+        labels.push({
+          x: cx,
+          y: top + nameS + (subtitle ? innerPartS + 0.08 : 0) + 0.08 + commentS * 0.75,
+          text,
+          anchor: "middle",
+          size: commentS,
+          tone: "comment",
+          fixed: true,
+          ...(text !== comment ? { full: comment } : {}),
+        });
+      } else if (comment) {
+        // no room inside: under the body, past the pin ends
+        labels.push(commentLabel(comment, box.x, below(0, commentS), Math.max(box.w, 1.8)));
+      }
       return { stubs, segments, marks, labels };
     }
     nameY = above(0);
     partY = below(0, partS);
+    commentY = below(subtitle ? partS * 0.95 + 0.04 : 0, commentS);
   } else {
     nameY = above(0);
     partY = below(0, partS);
+    commentY = below(subtitle ? partS * 0.95 + 0.04 : 0, commentS);
   }
   labels.push({ x: box.x, y: nameY, text: name, anchor: "start", size: nameS, tone: "name" });
   if (subtitle) {
     labels.push({ x: box.x, y: partY, text: subtitle, anchor: "start", size: partS, tone: "value" });
   }
+  if (comment) labels.push(commentLabel(comment, box.x, commentY, Math.max(box.w, 1.8)));
   return { stubs, segments, marks, labels };
+}
+
+/**
+ * The one-line comment of a part: small, under designator and value, cut
+ * with an ellipsis to the width given. Never fixed: the overlap pass may move
+ * it, and drops it rather than letting it cover a pin or a wire.
+ */
+export function commentLabel(
+  comment: string,
+  x: number,
+  y: number,
+  budget: number,
+  anchor: SchLabel["anchor"] = "start",
+): SchLabel {
+  const size = SCH_TEXT.comment;
+  const text = fit(comment, size, budget);
+  return { x, y, text, anchor, size, tone: "comment", ...(text !== comment ? { full: comment } : {}) };
 }
 
 export type NetLabelShape = "flag" | "ground" | "rail";

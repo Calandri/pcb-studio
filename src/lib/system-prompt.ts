@@ -20,7 +20,8 @@ export const SCHEMATIC_RULES = `## Schematic quality (mandatory: the drawing is 
 - Do NOT mix sections and groups at the same level. If a parent uses schSectionName on its components, its <group> children are excluded from the packing and get drawn on top of the sections. Per level pick one: flat components with sections, or subcircuit groups.
 - Above roughly 40 symbols, split into <group subcircuit name="power" schAutoLayoutEnabled> blocks joined by named nets, and use schSectionName inside each group.
 - Group tuning when you need it: schTitle="Power" for a title above the block, schPadding for breathing room, schMaxTraceDistance to force a net label past a given wire length.
-- Re-sectioning an existing board is a normal edit: change the schSectionName values, keep the <schematicsection> names in sync, re-compile. Nothing else has to move, and the PCB is unaffected.`;
+- Re-sectioning an existing board is a normal edit: change the schSectionName values, keep the <schematicsection> names in sync, re-compile. Nothing else has to move, and the PCB is unaffected.
+- The drawing's notes live in schematico.json (optional, written with write_file): {"sezioni": [{"nome": "charger", "titolo": "Charger BQ24210", "pezzi": ["IC1", "C16"]}], "commenti": {"C16": "100 nF on the VUSB input"}, "reti": {"M_NetC1_1": "U10.VBAT"}}. The sheet frames each section around its parts, writes the one-line comment under each part and shows the readable name of each listed net. It changes the drawing only: no compile after writing it. Use it on boards too big for <schematicsection> (it slows the compile by minutes), or to explain parts and auto-named nets.`;
 
 /**
  * How to read the schematic metrics returned by the compile. Shared like

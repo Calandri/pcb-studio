@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { SchematicCanvas } from "./schematic/SchematicCanvas";
+import { withSchematicNotes } from "@/lib/schematic-notes";
 import type { EditEvent, ManualEdits } from "@/lib/manual-edits";
 import type { PendingLink } from "./workspace/useManualEditor";
 
@@ -24,6 +25,7 @@ export function SchematicView({
   onUnlink,
   selection,
   onSelectionChange,
+  notes,
 }: {
   circuitJson: unknown[];
   projectId: string;
@@ -40,15 +42,20 @@ export function SchematicView({
   /** selection shared with the board view and the URL ("U3", "VREF") */
   selection?: string | null;
   onSelectionChange?: (key: string | null, component: string | null) => void;
+  /** the project's schematico.json: sections, comments and net names for the drawing */
+  notes?: string;
 }) {
   const pinnedNames = useMemo(
     () => new Set(saved.schematic_placements.map((p) => p.selector)),
     [saved],
   );
 
+  // drawing only: the notes ride along with the circuit, nothing is saved
+  const drawn = useMemo(() => withSchematicNotes(circuitJson, notes), [circuitJson, notes]);
+
   return (
     <SchematicCanvas
-      circuitJson={circuitJson}
+      circuitJson={drawn}
       projectId={projectId}
       mode={mode}
       pinnedNames={pinnedNames}

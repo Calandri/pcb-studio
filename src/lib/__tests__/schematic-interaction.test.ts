@@ -69,8 +69,12 @@ function circuit(): unknown[] {
   port("u2p2", "u2", 19.2, -0.1, 2, "left", "GND", "k_gnd");
   port("r1p1", "r1", 2.7, 0, 1, "left", "pin1", "k_sig");
   port("r1p2", "r1", 3.3, 0, 2, "right", "pin2", "k_gnd");
-  // eleven more GND pins on test points: GND becomes a rail (more than 12 pins)
-  for (let i = 0; i < 11; i++) {
+  // eleven more GND pins on test points: GND becomes a rail (more than 12 pins).
+  // TP1 sits next to U1, strapped to its GND pin by a short wire: a long rail
+  // wire is drawn as symbols (schematic-wires.ts), a strap stays a wire
+  comp("tp0", "TP1", -2, -0.1);
+  port("tp0p", "tp0", -1.5, -0.1, 1, "right", "1", "k_gnd");
+  for (let i = 1; i < 11; i++) {
     comp(`tp${i}`, `TP${i + 1}`, -10 + i, 10);
     port(`tp${i}p`, `tp${i}`, -10.5 + i, 10, 1, "left", "1", "k_gnd");
   }
@@ -91,10 +95,7 @@ function circuit(): unknown[] {
       schematic_trace_id: "w_gnd_tp1",
       source_trace_id: "st_tp0p",
       subcircuit_connectivity_map_key: "k_gnd",
-      edges: [
-        { from: { x: -0.8, y: -0.1 }, to: { x: -10.5, y: -0.1 } },
-        { from: { x: -10.5, y: -0.1 }, to: { x: -10.5, y: 10 } },
-      ],
+      edges: [{ from: { x: -0.8, y: -0.1 }, to: { x: -1.5, y: -0.1 } }],
     },
     {
       type: "schematic_trace",
