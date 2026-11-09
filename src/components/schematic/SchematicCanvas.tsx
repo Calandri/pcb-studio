@@ -1,15 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  buildSchematicModel,
-  toSchematicY,
-  type SchNode,
-  type SchematicModel,
-} from "@/lib/schematic-model";
+import { buildSchematicModel, toSchematicY, type SchNode } from "@/lib/schematic-model";
 import type { EditEvent } from "@/lib/manual-edits";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
 import { schematicOffsetsFromPending } from "./pending-offsets";
+import { SchematicSheet, fitView, sheetFrame, type SheetHandlers } from "./SchematicSheet";
 
 /**
  * The schematic sheet, drawn here instead of by @tscircuit/schematic-viewer.
@@ -20,28 +16,14 @@ import { schematicOffsetsFromPending } from "./pending-offsets";
  * node with its own events, and moving a component is a real drag with a
  * live preview.
  *
- * The geometric model lives in lib/schematic-model.ts: here there is only
- * drawing and interaction.
+ * The geometric model lives in lib/schematic-model.ts, the drawing in
+ * SchematicSheet.tsx: here there is only the interaction.
  */
 
 const GRID = 0.2; // pin pitch: the grid that makes sense to snap to
 
 /** stable default: a fresh [] at every render would recompute the offsets each time */
 const NO_EVENTS: EditEvent[] = [];
-
-const COLORS = {
-  sheet: "#0A121C",
-  sheetEdge: "#18222E",
-  grid: "#1B2735",
-  wire: "#5A6B78",
-  power: "#0BA36C",
-  outline: "#8FA0AA",
-  body: "#101A26",
-  name: "#C6D2D8",
-  value: "#7C8A94",
-  faint: "#3E4A57",
-  selected: "#3BE8B0",
-};
 
 export function SchematicCanvas({
   circuitJson,
@@ -152,18 +134,7 @@ export function SchematicCanvas({
     onFit: () => fitRef.current(),
   });
 
-  const fit = useCallback(() => {
-    const margin = 40;
-    const k = Math.min(
-      (size.w - margin * 2) / Math.max(sheet.w, 0.001),
-      (size.h - margin * 2) / Math.max(sheet.h, 0.001),
-    );
-    setView({
-      x: size.w / 2 - (sheet.x + sheet.w / 2) * k,
-      y: size.h / 2 - (sheet.y + sheet.h / 2) * k,
-      k: Math.max(k, 1),
-    });
-  }, [sheet, size, setView]);
+  const fit = useCallback(() => setView(fitView(sheet, size)), [sheet, size, setView]);
 
   useEffect(() => {
     fitRef.current = fit;
@@ -326,6 +297,16 @@ export function SchematicCanvas({
     }
   }, [model, dragOffsets, onEditEvent, marqueeUp]);
 
+  const handlers: SheetHandlers = {
+    hover: (nets, name) => {
+      setHoverNets(nets);
+      setHoverName(name);
+    },
+    nodeDown: startDrag,
+    portDown: clickPort,
+    unlink: (declared) => onUnlink?.(declared),
+  };
+
   if (model.nodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-sm text-faint">
@@ -333,11 +314,6 @@ export function SchematicCanvas({
       </div>
     );
   }
-
-  const px = 1 / view.k; // one pixel in drawing units: strokes always crisp
-  const dim = (net: string | null) =>
-    hoverNets && (!net || !hoverNets.has(net)) ? 0.12 : 1;
-  const lit = (net: string | null) => Boolean(hoverNets && net && hoverNets.has(net));
 
   return (
     <div
@@ -358,359 +334,24 @@ export function SchematicCanvas({
       onPointerLeave={endDrag}
       style={{ cursor: dragging || panning ? "grabbing" : movable ? "default" : "grab" }}
     >
-      <svg
-        width={size.w}
-        height={size.h}
-        className="block"
-        style={{ fontFamily: "var(--font-mono, 'IBM Plex Mono'), monospace" }}
-      >
-        <defs>
-          <pattern
-            id="sch-grid"
-            width={1 * view.k}
-            height={1 * view.k}
-            patternUnits="userSpaceOnUse"
-            x={view.x}
-            y={view.y}
-          >
-            <circle cx={0} cy={0} r={0.9} fill={COLORS.grid} />
-          </pattern>
-        </defs>
-
-        {/* the sheet: frame and grid, like on a technical drawing */}
-        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-          <rect
-            x={sheet.x}
-            y={sheet.y}
-            width={sheet.w}
-            height={sheet.h}
-            rx={0.3}
-            fill={COLORS.sheet}
-            stroke={COLORS.sheetEdge}
-            strokeWidth={px}
-          />
-        </g>
-        <rect
-          x={sheet.x * view.k + view.x}
-          y={sheet.y * view.k + view.y}
-          width={sheet.w * view.k}
-          height={sheet.h * view.k}
-          fill="url(#sch-grid)"
-          pointerEvents="none"
-        />
-
-        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-          {/* dividers and titles of the functional sections */}
-          <g stroke={COLORS.sheetEdge} strokeWidth={px} opacity={0.9}>
-            {model.dividers.map((d, i) => (
-              <line key={i} x1={d.x1} y1={d.y1} x2={d.x2} y2={d.y2} />
-            ))}
-          </g>
-          <g fill={COLORS.faint} pointerEvents="none">
-            {model.sectionTitles.map((t, i) => (
-              <text key={i} x={t.x} y={t.y} fontSize={0.34} letterSpacing={0.02}>
-                {t.text}
-              </text>
-            ))}
-          </g>
-
-          {/* wires: power rails in green, like on a designer's sheet */}
-          <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-            {model.wires.map((w) => (
-              <path
-                key={w.id}
-                d={w.d}
-                stroke={w.power ? COLORS.power : lit(w.net) ? COLORS.selected : COLORS.wire}
-                strokeWidth={(lit(w.net) ? 2.6 : w.power ? 1.7 : 1.4) * px}
-                opacity={dim(w.net)}
-                onPointerEnter={() => {
-                  setHoverNets(w.net ? new Set([w.net]) : null);
-                  setHoverName(w.net);
-                }}
-                onPointerLeave={() => {
-                  setHoverNets(null);
-                  setHoverName(null);
-                }}
-                onClick={(e) => {
-                  if (!linking || !w.declaredAs) return;
-                  e.stopPropagation();
-                  onUnlink?.(w.declaredAs);
-                }}
-                style={{ cursor: linking && w.declaredAs ? "pointer" : "crosshair" }}
-              >
-                {linking && w.declaredAs && <title>{`Togli: ${w.declaredAs}`}</title>}
-              </path>
-            ))}
-          </g>
-          <g pointerEvents="none">
-            {model.junctions.map((j, i) => (
-              <circle
-                key={i}
-                cx={j.x}
-                cy={j.y}
-                // the junction between multiple wires is bigger than the
-                // attachment to a pin: two different things that must be told apart
-                r={(j.isNode ? 3 : 2.2) * px}
-                fill={j.power ? COLORS.power : COLORS.wire}
-                opacity={dim(j.net)}
-              />
-            ))}
-          </g>
-
-          {/* pins: ALWAYS visible (previously only in link mode). Without the
-              attachments the symbol frame looks disconnected from the wires. */}
-          <g pointerEvents="none">
-            {model.nodes.flatMap((node) =>
-              node.ports.map((port) => (
-                <circle
-                  key={`${node.id}:${port.selector}`}
-                  cx={port.x}
-                  cy={port.y}
-                  r={1.8 * px}
-                  fill={port.power ? COLORS.power : COLORS.wire}
-                  stroke={COLORS.sheet}
-                  strokeWidth={0.6 * px}
-                  opacity={dim(port.net)}
-                />
-              )),
-            )}
-          </g>
-
-          {/* net labels: rails don't cross the sheet, they get named.
-              If the label is far from its pin (auto-label), a dashed line
-              reconnects it: otherwise you can't tell where it attaches. */}
-          <g pointerEvents="none" fill="none">
-            {model.netLabels.map((l, i) => {
-              if (!l.net) return null;
-              // the column layout already knows which pin it is: no search needed
-              let best: { x: number; y: number } | null = l.port ?? null;
-              if (!best) {
-                let bestD = Infinity;
-                for (const node of model.nodes) {
-                  for (const port of node.ports) {
-                    if (port.net !== l.net) continue;
-                    const d = Math.hypot(port.x - l.x, port.y - l.y);
-                    if (d < bestD) {
-                      bestD = d;
-                      best = { x: port.x, y: port.y };
-                    }
-                  }
-                }
-                if (!best || bestD < 0.45) return null;
-              }
-              const dot = l.power ? COLORS.power : COLORS.wire;
-              const removable = linking && l.declaredAs && l.declaredAs.length > 0;
-              return (
-                <g key={i}>
-                  <path
-                    d={`M${best.x} ${best.y}L${l.x} ${l.y}`}
-                    stroke={l.power ? COLORS.power : COLORS.faint}
-                    strokeWidth={1 * px}
-                    strokeDasharray={`${2.5 * px} ${2 * px}`}
-                    opacity={dim(l.net)}
-                  />
-                  {/* the dot at both ends is the connection point: without it,
-                      the dashed line looks like it passes near the pin by chance */}
-                  <circle cx={best.x} cy={best.y} r={2.2 * px} fill={dot} opacity={dim(l.net)} />
-                  <circle cx={l.x} cy={l.y} r={2.2 * px} fill={dot} opacity={dim(l.net)} />
-                  {/* in Link mode the dashed line can be clicked to remove the
-                      connection: label-only connections have no wire,
-                      this is the only place to grab them */}
-                  {removable && (
-                    <path
-                      d={`M${best.x} ${best.y}L${l.x} ${l.y}`}
-                      stroke="transparent"
-                      strokeWidth={10 * px}
-                      pointerEvents="stroke"
-                      style={{ cursor: "pointer" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        for (const d of l.declaredAs ?? []) onUnlink?.(d);
-                      }}
-                    >
-                      <title>{`Togli: ${(l.declaredAs ?? []).join(" · ")}`}</title>
-                    </path>
-                  )}
-                </g>
-              );
-            })}
-          </g>
-
-          {/* links drawn and not yet applied: dashed, because the real
-              wire will be drawn by the compiler after the re-routing */}
-          <g fill="none" pointerEvents="none">
-            {pendingLinks.map((l, i) => (
-              <path
-                key={i}
-                d={`M${l.ax} ${l.ay}L${l.bx} ${l.by}`}
-                stroke={COLORS.selected}
-                strokeWidth={1.8 * px}
-                strokeDasharray={`${6 * px} ${4 * px}`}
-              />
-            ))}
-            {linkFrom && cursor && (
-              <path
-                d={`M${linkFrom.x} ${linkFrom.y}L${cursor.x} ${cursor.y}`}
-                stroke={COLORS.selected}
-                strokeWidth={1.6 * px}
-                strokeDasharray={`${5 * px} ${4 * px}`}
-              />
-            )}
-          </g>
-
-          {/* net labels: rails don't cross the sheet, they get named */}
-          <g pointerEvents="none">
-            {model.netLabels.map((l, i) => (
-              <text
-                key={i}
-                // the text doesn't start at the dot: a small gap keeps
-                // the first (or last) letter of the label readable
-                x={l.x + (l.anchor === "start" ? 0.12 : -0.12)}
-                y={l.y + 0.06}
-                fontSize={0.2}
-                textAnchor={l.anchor}
-                fill={l.power ? COLORS.power : COLORS.value}
-                opacity={dim(l.net)}
-              >
-                {l.text}
-              </text>
-            ))}
-          </g>
-
-          {model.nodes.map((node) => {
-            const off = offsets[node.id];
-            const isSelected = selected.has(node.id);
-            const pinned = pinnedNames.has(node.name);
-            return (
-              <g
-                key={node.id}
-                opacity={
-                  hoverNets && !node.ports.some((p) => lit(p.net)) && hoverName !== node.name
-                    ? 0.25
-                    : 1
-                }
-                transform={off ? `translate(${off.dx} ${off.dy})` : undefined}
-                onPointerDown={(e) => startDrag(e, node)}
-                onPointerEnter={() => {
-                  const nets = node.ports
-                    .map((p) => p.net)
-                    .filter((n): n is string => Boolean(n));
-                  setHoverNets(nets.length > 0 ? new Set(nets) : null);
-                  setHoverName(node.name);
-                }}
-                onPointerLeave={() => {
-                  setHoverNets(null);
-                  setHoverName(null);
-                }}
-                style={{ cursor: movable ? "move" : "pointer" }}
-              >
-                {/* grab area: without this you only catch the thin stroke */}
-                <rect
-                  x={node.bbox.minX - 0.1}
-                  y={node.bbox.minY - 0.1}
-                  width={node.bbox.maxX - node.bbox.minX + 0.2}
-                  height={node.bbox.maxY - node.bbox.minY + 0.2}
-                  fill="transparent"
-                />
-                {node.box && (
-                  <rect
-                    x={node.box.x}
-                    y={node.box.y}
-                    width={node.box.w}
-                    height={node.box.h}
-                    rx={0.12}
-                    fill={COLORS.body}
-                    stroke={isSelected ? COLORS.selected : COLORS.outline}
-                    strokeWidth={(isSelected ? 2.4 : 1.7) * px}
-                  />
-                )}
-                {node.paths.map((p, i) => (
-                  <path
-                    key={i}
-                    d={p.d}
-                    fill={p.filled ? COLORS.outline : "none"}
-                    stroke={isSelected ? COLORS.selected : COLORS.outline}
-                    strokeWidth={(isSelected ? 2.2 : 1.5) * px}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                ))}
-                {node.labels.map((l, i) => (
-                  <text
-                    key={i}
-                    x={l.x}
-                    y={l.y}
-                    fontSize={l.size}
-                    textAnchor={l.anchor}
-                    fill={l.tone === "name" ? COLORS.name : COLORS.value}
-                    fontWeight={l.tone === "name" ? 600 : 400}
-                    transform={l.vertical ? `rotate(-90 ${l.x} ${l.y})` : undefined}
-                    pointerEvents="none"
-                  >
-                    {l.text}
-                  </text>
-                ))}
-                {linking &&
-                  node.ports.map((port) => {
-                    const active = linkFrom?.selector === port.selector;
-                    return (
-                      <circle
-                        key={port.selector}
-                        cx={port.x}
-                        cy={port.y}
-                        r={(active ? 6 : 4) * px}
-                        fill={active ? COLORS.selected : COLORS.sheet}
-                        stroke={
-                          active ? COLORS.selected : port.connected ? COLORS.wire : COLORS.power
-                        }
-                        strokeWidth={1.6 * px}
-                        style={{ cursor: "crosshair" }}
-                        onPointerDown={(e) => {
-                          e.stopPropagation();
-                          // the circle is drawn inside the group translated
-                          // by the drag: the link coordinates must live in the
-                          // same system, otherwise the rubber band starts from
-                          // the pin's old position
-                          clickPort({
-                            selector: port.selector,
-                            x: port.x + (off?.dx ?? 0),
-                            y: port.y + (off?.dy ?? 0),
-                          });
-                        }}
-                      >
-                        <title>
-                          {`${port.selector}${port.net ? ` · ${port.net}` : " · scollegato"}`}
-                        </title>
-                      </circle>
-                    );
-                  })}
-                {pinned && (
-                  <circle
-                    cx={node.bbox.maxX + 0.14}
-                    cy={node.bbox.minY - 0.02}
-                    r={0.09}
-                    fill={COLORS.selected}
-                    pointerEvents="none"
-                  >
-                    <title>Posizione fissata a mano</title>
-                  </circle>
-                )}
-              </g>
-            );
-          })}
-        </g>
-
-        {/* title block: project name and sheet, like on a real drawing */}
-        <g fill={COLORS.faint} fontSize={11} pointerEvents="none">
-          <text x={16} y={size.h - 14}>
-            {projectId}
-            {model.sectionTitles.length > 0 ? ` · ${model.sectionTitles.length} sezioni` : ""}
-          </text>
-          <text x={size.w - 16} y={size.h - 14} textAnchor="end">
-            {model.nodes.length} componenti · {model.wires.length} collegamenti
-          </text>
-        </g>
-      </svg>
+      <SchematicSheet
+        model={model}
+        sheet={sheet}
+        view={view}
+        size={size}
+        projectId={projectId}
+        offsets={offsets}
+        selected={selected}
+        pinnedNames={pinnedNames}
+        hoverNets={hoverNets}
+        hoverName={hoverName}
+        linking={linking}
+        movable={movable}
+        linkFrom={linkFrom}
+        cursor={cursor}
+        pendingLinks={pendingLinks}
+        on={handlers}
+      />
 
       {marquee && <div style={MarqueeStyle(marquee)} />}
       {zoomKey && !marquee && (
@@ -752,16 +393,4 @@ export function SchematicCanvas({
       )}
     </div>
   );
-}
-
-/** sheet frame around the drawing, with a generous margin */
-function sheetFrame(model: SchematicModel): { x: number; y: number; w: number; h: number } {
-  const b = model.bounds;
-  const margin = Math.max(1.2, (b.maxX - b.minX) * 0.06);
-  return {
-    x: b.minX - margin,
-    y: b.minY - margin,
-    w: Math.max(b.maxX - b.minX + margin * 2, 2),
-    h: Math.max(b.maxY - b.minY + margin * 2, 2),
-  };
 }
