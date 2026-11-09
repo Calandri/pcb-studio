@@ -127,3 +127,80 @@ export async function colateSenzaColli<T extends Record<string, unknown> & { typ
   }
   return out;
 }
+
+/**
+ * A pour holds ALL of its own net's copper that it touches.
+ *
+ * The clearance is for the OTHER nets. On sbb-dl-retro, with a pour clearance
+ * of 0.25 mm, 64 vias of the pour's own net had the pour's edge through their
+ * ring: the via stuck halfway out of its plane, closer to the other net's trace
+ * than the plane itself (2026-11-09). Lowering the clearance hid it and doubled
+ * the slivers. Here every via ring and pad of the pour's net that the shape
+ * touches is united to it, exactly as big as the copper already there (plus a
+ * hair): that copper exists and already keeps its own distance from the other
+ * nets, so the union adds no copper nearer to anything. Runs before the necks
+ * are taken off and once more after, because the opening rounds the joint.
+ */
+export type RamePropio =
+  | { kind: "cerchio"; x: number; y: number; r: number }
+  | { kind: "rett"; x: number; y: number; w: number; h: number; rot: number };
+
+export function abbracciaRamePropio(forme: FormaColata[], propri: RamePropio[], margineMm = 0.005): FormaColata[] {
+  if (forme.length === 0 || propri.length === 0) return forme;
+  const m = getManifoldModuleSync();
+  if (!m) return forme;
+  const daLiberare: Array<{ delete(): void }> = [];
+  const cs = <T extends { delete(): void }>(o: T): T => {
+    daLiberare.push(o);
+    return o;
+  };
+  try {
+    const pezzi = forme.map((f) =>
+      cs(
+        m.CrossSection.ofPolygons(
+          [f.outer_ring, ...(f.inner_rings ?? [])]
+            .filter((a): a is Anello => !!a && Array.isArray(a.vertices) && a.vertices.length >= 3)
+            .map((a) => a.vertices.map((v) => [v.x, v.y] as [number, number])),
+          "EvenOdd",
+        ),
+      ),
+    );
+    let tutto = cs(m.CrossSection.union(pezzi));
+    let aggiunti = 0;
+    for (const p of propri) {
+      const forma =
+        p.kind === "cerchio"
+          ? cs(cs(m.CrossSection.circle(p.r + margineMm, 48)).translate([p.x, p.y]))
+          : cs(cs(cs(m.CrossSection.square([p.w + 2 * margineMm, p.h + 2 * margineMm], true)).rotate(p.rot)).translate([p.x, p.y]));
+      const comune = cs(tutto.intersect(forma));
+      // only what the pour already reaches: a via far from the plane stays its own
+      if (comune.area() <= 1e-6) continue;
+      tutto = cs(tutto.add(forma));
+      aggiunti++;
+    }
+    if (aggiunti === 0) return forme;
+    const out: FormaColata[] = [];
+    for (const pezzo of tutto.decompose()) {
+      cs(pezzo);
+      const contorni = pezzo.toPolygons() as Array<Array<[number, number]>>;
+      const esterni = contorni.filter((c) => c.length >= 3 && areaConSegno(c) > 0);
+      if (esterni.length !== 1) {
+        if (esterni.length === 0) continue;
+        return forme;
+      }
+      const buchi = contorni.filter((c) => c.length >= 3 && areaConSegno(c) < 0);
+      out.push({ outer_ring: anello(esterni[0]), inner_rings: buchi.map(anello) });
+    }
+    return out;
+  } catch {
+    return forme;
+  } finally {
+    for (const o of daLiberare) {
+      try {
+        o.delete();
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}

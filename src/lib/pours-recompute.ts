@@ -5,7 +5,7 @@ import {
 } from "@tscircuit/copper-pour-solver";
 
 import { planeServedPorts, readPours } from "./pours";
-import { senzaColliStretti } from "./pour-necks";
+import { abbracciaRamePropio, senzaColliStretti, type RamePropio } from "./pour-necks";
 
 /**
  * THE PLANES, POURED AGAIN ONCE ALL THE COPPER IS ON THE BOARD.
@@ -379,6 +379,43 @@ function ancore(circuitJson: El[], serviti: Map<string, string>): Map<string, Ar
     for (const q of (el.route as Array<Record<string, unknown>> | undefined) ?? []) {
       metti(net, num(q.x), num(q.y));
     }
+  }
+  return out;
+}
+
+/**
+ * The copper of the pour's own net on its layer: via rings (vias cross every
+ * layer) and pads, as the shapes the pour has to hold whole.
+ */
+function ramePropio(
+  circuitJson: El[],
+  layer: string,
+  net: string,
+  netDiVia: Map<string, string>,
+  serviti: Map<string, string>,
+): RamePropio[] {
+  if (!net) return [];
+  const out: RamePropio[] = [];
+  for (const el of circuitJson) {
+    if (el.type === "pcb_via") {
+      if (netDiVia.get(String(el.pcb_via_id ?? "")) !== net) continue;
+      const x = num(el.x), y = num(el.y), d = num(el.outer_diameter);
+      if (x !== null && y !== null && d !== null && d > 0) out.push({ kind: "cerchio", x, y, r: d / 2 });
+      continue;
+    }
+    if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
+    if (serviti.get(String(el.pcb_port_id ?? "")) !== net) continue;
+    if (el.type === "pcb_smtpad" && String(el.layer ?? "top") !== layer) continue;
+    const x = num(el.x), y = num(el.y);
+    if (x === null || y === null) continue;
+    const d = num(el.outer_diameter) ?? (num(el.radius) !== null ? num(el.radius)! * 2 : null);
+    if (String(el.shape ?? "") === "circle" && d !== null) {
+      out.push({ kind: "cerchio", x, y, r: d / 2 });
+      continue;
+    }
+    const w = num(el.width) ?? num(el.rect_pad_width) ?? num(el.outer_width);
+    const h = num(el.height) ?? num(el.rect_pad_height) ?? num(el.outer_height);
+    if (w !== null && h !== null) out.push({ kind: "rett", x, y, w, h, rot: num(el.ccw_rotation) ?? 0 });
   }
   return out;
 }
@@ -789,11 +826,17 @@ export async function ricolaPiani({
       continue;
     }
 
-    // no neck narrower than a trace: see pour-necks.ts
+    // the pour's own vias and pads, whole inside it: see abbracciaRamePropio
+    const propri = ramePropio(circuitJson, String(pour.layer), String(pour.source_net_id ?? ""), netDiVia, serviti);
+    forme = abbracciaRamePropio(forme, propri);
+
+    // no neck narrower than a trace: see pour-necks.ts. AFTER the union, and the
+    // union once more after it, because the opening rounds the joint of a ring
     if (larghezzaMinimaMm && larghezzaMinimaMm > 0) {
       const prima = forme.reduce((t, f) => t + areaNetta(f), 0);
       forme = forme.flatMap((f) => senzaColliStretti(f, larghezzaMinimaMm));
       colli += Math.max(0, prima - forme.reduce((t, f) => t + areaNetta(f), 0));
+      forme = abbracciaRamePropio(forme, propri);
     }
 
     ricolate++;
