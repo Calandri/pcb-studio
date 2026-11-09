@@ -87,6 +87,27 @@ const applyMatrix = (m: ReturnType<typeof mirrorMatrix>, x: number, y: number) =
   y: m.b * x + m.d * y + m.f,
 });
 
+/**
+ * What re-frames the board: a different board (its size) once the container has
+ * been measured. Never the container's own size: see BoardCanvas, fitKey.
+ */
+export function chiaveInquadratura(
+  board: { width: number; height: number } | null,
+  misurato: boolean,
+): string | null {
+  if (!board || !misurato) return null;
+  return `${board.width}x${board.height}`;
+}
+
+/** after a resize: the same millimetre at the centre, the same scale */
+export function vistaDopoRidimensionamento(
+  v: { x: number; y: number; k: number },
+  prima: { w: number; h: number },
+  dopo: { w: number; h: number },
+): { x: number; y: number; k: number } {
+  return { k: v.k, x: v.x + (dopo.w - prima.w) / 2, y: v.y + (dopo.h - prima.h) / 2 };
+}
+
 /** standard grid pitches (mil): 0,635 = 25mil, 1,27 = 50mil, 2,54 = 100mil */
 const GRID_OPTIONS = [0.25, 0.635, 1.27, 2.54];
 const GRID_DEFAULT = 0.635;
@@ -269,12 +290,16 @@ export function BoardCanvas({
 
 
   // --- container measurement: the scale is computed in real pixels
+  const [misurato, setMisurato] = useState(false);
   useEffect(() => {
     const node = wrapRef.current;
     if (!node) return;
     const ro = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect;
-      if (width > 0 && height > 0) setSize({ w: width, h: height });
+      if (width > 0 && height > 0) {
+        setSize({ w: width, h: height });
+        setMisurato(true);
+      }
     });
     ro.observe(node);
     return () => ro.disconnect();
@@ -290,14 +315,30 @@ export function BoardCanvas({
     setView({ x: size.w / 2, y: size.h / 2, k: Math.min(ZOOM_MAX, Math.max(k, ZOOM_MIN)) });
   }, [scene, size]);
 
-  // the board is framed when the project changes or when the container changes
-  const fitKey = `${scene?.board.width}x${scene?.board.height}-${Math.round(size.w)}x${Math.round(size.h)}`;
+  /*
+   * THE ZOOM CHANGES ONLY WHEN THE PERSON ASKS (wheel, pinch, dragging the
+   * view, FIT). The board used to be re-framed every time the container
+   * changed size, and the bar under the board grew a line on hover: passing
+   * over a part zoomed the board back out (Niccolo', 2026-11-09). Now it is
+   * framed once, when the board is first measured or a different board
+   * arrives; a resize keeps the millimetre at the centre and the scale.
+   */
+  const fitKey = chiaveInquadratura(scene?.board ?? null, misurato);
   const lastFit = useRef("");
+  const sizePrima = useRef(size);
   useEffect(() => {
-    if (lastFit.current === fitKey) return;
+    if (!fitKey || lastFit.current === fitKey) return;
     lastFit.current = fitKey;
+    // framed on THIS size: the resize below must not shift it again
+    sizePrima.current = size;
     fit();
-  }, [fitKey, fit]);
+  }, [fitKey, fit, size]);
+  useEffect(() => {
+    const prima = sizePrima.current;
+    sizePrima.current = size;
+    if (!lastFit.current || (prima.w === size.w && prima.h === size.h)) return;
+    setView((v) => vistaDopoRidimensionamento(v, prima, size));
+  }, [size]);
 
   const zoomAt = useCallback((px: number, py: number, factor: number) => {
     setView((v) => {
@@ -1840,8 +1881,12 @@ function BarraSotto({
   const [aperta, setAperta] = useState(false);
   const descrizione = info ? [info.titolo, info.testo].filter(Boolean).join(" · ") : "";
   return (
-    <div className="flex flex-none flex-col gap-0.5 border-t border-[#1F2C29] bg-[#0A100F] px-3 py-1.5 text-[11px] leading-snug text-muted">
-      <div className="flex min-h-[16px] items-baseline gap-2 overflow-hidden">
+    /*
+     * FIXED height, always there, whatever it shows: a bar that grew a line on
+     * hover changed the size of the board above it (see fitKey).
+     */
+    <div className="flex h-[60px] flex-none flex-col justify-center gap-0.5 overflow-hidden border-t border-[#1F2C29] bg-[#0A100F] px-3 py-1 text-[11px] leading-snug text-muted">
+      <div className={`flex items-baseline gap-2 ${aperta ? "max-h-[32px] overflow-y-auto" : "h-[16px] overflow-hidden"}`}>
         {gruppo.length > 0 ? (
           <span className="truncate">
             <span className="font-semibold text-brand">{gruppo.length} pezzi</span>: {gruppo.join(", ")}
@@ -1880,12 +1925,12 @@ function BarraSotto({
           </button>
         )}
       </div>
-      {reti.length > 0 && (
-        <div className="truncate text-[10.5px] text-[#9DB8AC]" title={reti.join("\n")}>
+      {!aperta && (
+        <div className="h-[15px] truncate text-[10.5px] text-[#9DB8AC]" title={reti.join("\n")}>
           {reti.join("  ·  ")}
         </div>
       )}
-      <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap text-[10px] text-faint">
+      <div className="flex h-[16px] items-center gap-1 overflow-hidden whitespace-nowrap text-[10px] text-faint">
         {mode === "move" && (
           <>
             <span className="truncate">
