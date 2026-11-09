@@ -1,7 +1,13 @@
 import { withLibrary } from "./agent-tools";
 import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { extractComponents, extractIssues, type InspectComponent, type InspectIssue } from "./inspect";
+import type { Profile } from "./profile";
 import { filesHash, getCompileCache, getProject, hasBoard } from "./project-store";
+
+const profileOf = (summary: unknown): Profile | undefined => {
+  const p = (summary as { profile?: Profile } | null)?.profile;
+  return p && Array.isArray(p.spans) ? p : undefined;
+};
 
 export interface SavedBoardInspection {
   /** when the board was compiled and saved */
@@ -11,6 +17,12 @@ export interface SavedBoardInspection {
   /** the checks engine is newer than the verification in cache */
   checksStale: boolean;
   nota?: string;
+  /**
+   * Where the saved compile spent its time, and which patched libraries it
+   * loaded (summary.profile): the only way to read them from outside after a
+   * compile too long for its own HTTP answer.
+   */
+  profile?: Profile;
   issues: InspectIssue[];
   components: InspectComponent[];
 }
@@ -54,6 +66,7 @@ export async function inspectSavedBoard(
       ...(stale
         ? { nota: "i sorgenti sono cambiati dopo questa compilazione: chiama compile per vedere la scheda di questi file" }
         : {}),
+      ...(profileOf(cache.summary) ? { profile: profileOf(cache.summary) } : {}),
       issues: extractIssues(cache.circuitJson).slice(0, 60),
       components: extractComponents(cache.circuitJson, files),
     },

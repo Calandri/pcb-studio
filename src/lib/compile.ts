@@ -56,6 +56,20 @@ import {
 import { applyManualRoutes } from "./manual-routes";
 import { conContorniDichiarati, ricolaPiani, type EsitoRicolata } from "./pours-recompute";
 import { Profiler, routerPhases, type Profile } from "./profile";
+import { patchedLibraries } from "./engine-patches.mjs";
+
+/** read once per process: the files do not change while it lives */
+let patchesSeen: Profile["patches"] | null = null;
+function enginePatches(): Profile["patches"] {
+  if (!patchesSeen) {
+    try {
+      patchesSeen = patchedLibraries(process.cwd()).libraries;
+    } catch {
+      patchesSeen = [];
+    }
+  }
+  return patchesSeen;
+}
 
 /** the pour numbers, in the shape the summary declares them */
 const esitoColate = (e: EsitoRicolata): NonNullable<CompileSummary["pours"]> => ({
@@ -663,6 +677,8 @@ export async function compileProject(
       );
       early.summary.schematicPending =
         "scheda salvata prima dello schematico: lo schematico e i suoi controlli arrivano a fine compilazione";
+      // the board saved early carries its timings too: the final save may never come
+      early.summary.profile = { ...profiler.result(), patches: enginePatches() };
       early.summary.message = `${early.summary.message} (schematico in calcolo)`;
       try {
         await profiler.run("salvataggio della scheda senza schematico", () => opts.onBoard!(early));
@@ -793,7 +809,7 @@ export async function compileProject(
      * the same compile takes several times the local one, and without the
      * split nobody can tell the board from the schematic.
      */
-    summary.profile = profiler.result();
+    summary.profile = { ...profiler.result(), patches: enginePatches() };
     console.log(
       `[compile] ${summary.profile.spans.map((sp) => `${sp.name} ${(sp.ms / 1000).toFixed(1)}s`).join(", ")}; totale ${(summary.profile.totalMs / 1000).toFixed(1)}s`,
     );

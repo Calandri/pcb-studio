@@ -27,6 +27,12 @@ export interface Span {
 export interface Profile {
   spans: Span[];
   totalMs: number;
+  /**
+   * The patched tscircuit libraries as found on the machine that compiled
+   * (engine-patches.mjs): a patch that does not reach production is said
+   * here, instead of showing up only as a compile that is still slow.
+   */
+  patches?: Array<{ name: string; patched: boolean; file: string | null }>;
 }
 
 export class Profiler {
