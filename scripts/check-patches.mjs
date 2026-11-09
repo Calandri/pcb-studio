@@ -11,6 +11,8 @@
 // non conteneva la correzione, e `pnpm install --frozen-lockfile` rispondeva
 // "Already up to date". Solo `--force` riscrive le cartelle e riapplica le patch
 // (provato in locale). Costa una reinstallazione completa, e solo quando serve.
+// --production=false perche' la build di Vercel gira con NODE_ENV=production e
+// pnpm toglierebbe le devDependencies che la build usa (@tailwindcss/postcss).
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { patchedLibraries } from "../src/lib/engine-patches.mjs";
@@ -29,7 +31,7 @@ function report() {
 let ok = report();
 if (!ok && repair) {
   console.log("copia senza correzione: reinstallo le dipendenze con --force e ricontrollo");
-  execFileSync("pnpm", ["install", "--frozen-lockfile", "--force"], { stdio: "inherit" });
+  execFileSync("pnpm", ["install", "--frozen-lockfile", "--force", "--production=false"], { stdio: "inherit" });
   ok = report();
 }
 if (!ok) {
