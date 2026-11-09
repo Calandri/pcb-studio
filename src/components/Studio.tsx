@@ -755,6 +755,7 @@ export function Studio({
       to: { x: number; y: number },
       rotation?: number,
       layer?: "top" | "bottom",
+      gruppo?: string,
     ) => {
       editor.pushPending({
         edit_event_type: "edit_pcb_component_location",
@@ -764,6 +765,8 @@ export function Studio({
         ...(rotation !== undefined ? { new_rotation: rotation } : {}),
         // "Gira lato": the other face travels with the event, like the rotation
         ...(layer !== undefined ? { new_layer: layer } : {}),
+        // one gesture on many parts: undone together
+        ...(gruppo ? { gruppo } : {}),
       });
     },
     [editor],

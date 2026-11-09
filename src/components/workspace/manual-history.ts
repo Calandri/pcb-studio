@@ -146,3 +146,16 @@ export function conflictMessage(conflicts: string[], verb: "annullare" | "ripris
     one ? "e' stato cambiato" : "sono stati cambiati"
   } sul server dopo la tua modifica (dall'agente o da un'altra scheda). Ho ricaricato lo stato salvato.`;
 }
+
+/**
+ * The pending edits without the last GESTURE: one event, or every trailing
+ * event of the same `gruppo` (a multi-selection dragged, turned or flipped in
+ * one go). Cmd+Z undoes a gesture the way it was done, not one part at a time.
+ */
+export function senzaUltimoGesto<T extends { gruppo?: string }>(pending: T[]): T[] {
+  const g = pending[pending.length - 1]?.gruppo;
+  if (!g) return pending.slice(0, -1);
+  let i = pending.length;
+  while (i > 0 && pending[i - 1].gruppo === g) i--;
+  return pending.slice(0, i);
+}

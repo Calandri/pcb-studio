@@ -110,3 +110,14 @@ describe("conflictMessage", () => {
     expect(conflictMessage(["A (rame)"], "ripristinare")).toContain("e' stato cambiato");
   });
 });
+
+describe("Cmd+Z annulla un gesto intero (selezione multipla in Sposta, 2026-11-09)", () => {
+  it("toglie tutti gli eventi dello stesso gruppo in coda, e uno solo senza gruppo", async () => {
+    const { senzaUltimoGesto } = await import("../workspace/manual-history");
+    const ev = (id: string, gruppo?: string) => ({ id, ...(gruppo ? { gruppo } : {}) });
+    const pending = [ev("a"), ev("b", "g1"), ev("c", "g1"), ev("d", "g2"), ev("e", "g2"), ev("f", "g2")];
+    expect(senzaUltimoGesto(pending).map((e) => e.id)).toEqual(["a", "b", "c"]);
+    expect(senzaUltimoGesto(senzaUltimoGesto(pending)).map((e) => e.id)).toEqual(["a"]);
+    expect(senzaUltimoGesto([ev("a"), ev("b")]).map((e) => e.id)).toEqual(["a"]);
+  });
+});

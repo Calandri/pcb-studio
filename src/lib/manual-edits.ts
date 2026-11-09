@@ -883,6 +883,12 @@ export interface EditEvent {
   new_rotation?: number;
   /** the face the part goes to, if the event turns it to the other side */
   new_layer?: "top" | "bottom";
+  /**
+   * The same id on every event of one gesture on many parts (a multi-selection
+   * dragged, turned, flipped): the editor undoes them together. The server
+   * ignores it.
+   */
+  gruppo?: string;
   route?: Array<{ x: number; y: number; via?: boolean }>;
 }
 

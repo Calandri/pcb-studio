@@ -9,6 +9,7 @@ import {
 } from "@/lib/manual-edits";
 import { manualRouteKey, type ManualRoute } from "@/lib/manual-routes";
 import {
+  senzaUltimoGesto,
   conflictMessage,
   rebaseManualEdits,
   withoutSent,
@@ -347,7 +348,8 @@ export function useManualEditor({
       return;
     }
     if (pending.length > 0) {
-      setPending((p) => p.slice(0, -1));
+      // a gesture on many parts (same gruppo) is undone in one go, like it was done
+      setPending(senzaUltimoGesto);
       setViewerKey((k) => k + 1);
       return;
     }

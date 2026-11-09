@@ -153,6 +153,8 @@ export function BoardCanvas({
     rotation?: number,
     /** the other face, when the part is turned over ("Gira lato") */
     layer?: "top" | "bottom",
+    /** the same id on every event of one gesture on many parts: undone together */
+    gruppo?: string,
   ) => void;
   /**
    * The parts held still by hand, by NAME. In move mode they get a mark on the
@@ -181,7 +183,11 @@ export function BoardCanvas({
   const dragFrom = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(null);
   /** a component drag in progress (position already snapped to the grid) */
-  const [compDrag, setCompDrag] = useState<{ id: string; x: number; y: number } | null>(null);
+  /**
+   * A drag in progress: the part in hand (id, snapped position) and every part
+   * that travels with it (the multi-selection), all by the same displacement.
+   */
+  const [compDrag, setCompDrag] = useState<{ id: string; x: number; y: number; dx: number; dy: number; ids: string[] } | null>(null);
   /** the pin under the mouse: its net alone is shown (see links) */
   const [padSotto, setPadSotto] = useState<string | null>(null);
   const pezzoDi = useMemo(() => new Map((scene?.components ?? []).map((c) => [c.id, c])), [scene]);
@@ -193,7 +199,11 @@ export function BoardCanvas({
     startY: number;
     origX: number;
     origY: number;
+    /** where every part of the group was when the drag started */
+    gruppo: Array<{ id: string; x: number; y: number; rotation: number }>;
   } | null>(null);
+  /** the part under the start of a Shift box: a Shift click on it adds or removes it */
+  const marqueeSu = useRef<string | null>(null);
   /** box being drawn, in screen coordinates relative to the container */
   const [marquee, setMarquee] = useState<{
     x0: number;
@@ -351,11 +361,13 @@ export function BoardCanvas({
    */
   const effOf = useCallback(
     (c: { id: string; x: number; y: number; rotation: number }) => {
-      if (compDrag?.id === c.id) {
-        return { x: compDrag.x, y: compDrag.y, rotation: moveOverrides[c.id]?.rotation ?? c.rotation };
-      }
       const o = moveOverrides[c.id];
-      return o ? { x: o.x, y: o.y, rotation: o.rotation ?? c.rotation } : c;
+      const base = o ? { x: o.x, y: o.y, rotation: o.rotation ?? c.rotation } : c;
+      // the group in hand: every part by the same displacement as the one held
+      if (compDrag?.ids.includes(c.id)) {
+        return { x: base.x + compDrag.dx, y: base.y + compDrag.dy, rotation: base.rotation };
+      }
+      return base;
     },
     [compDrag, moveOverrides],
   );
@@ -753,17 +765,22 @@ export function BoardCanvas({
    * tscircuit does for a part on that face. A pending edit like a move: counted
    * in "Applica", undone with Cmd+Z, written to manual-edits.json as `layer`.
    */
+  /** the parts a gesture acts on: the multi-selection and the picked part, if visible */
+  const bersagli = useCallback((): string[] => {
+    const ids = new Set([pickedId, ...(selectedIds ?? [])].filter((v): v is string => Boolean(v)));
+    return [...ids].filter((id) => pezzoDi.has(id) && !nascosti.has(id));
+  }, [pickedId, selectedIds, nascosti, pezzoDi]);
+
   const giraLato = useCallback(() => {
     if (!scene) return;
-    const ids = new Set([pickedId, ...(selectedIds ?? [])].filter((v): v is string => Boolean(v)));
-    for (const id of ids) {
-      const comp = scene.components.find((c) => c.id === id);
-      if (!comp || nascosti.has(comp.id)) continue;
+    const gruppo = `g${Date.now()}`;
+    for (const id of bersagli()) {
+      const comp = pezzoDi.get(id)!;
       const cur = effOf(comp);
       const ora = latoDiPezzo(comp);
-      onMoveComponent?.(comp.id, { x: cur.x, y: cur.y }, { x: cur.x, y: cur.y }, cur.rotation, ora === "bottom" ? "top" : "bottom");
+      onMoveComponent?.(comp.id, { x: cur.x, y: cur.y }, { x: cur.x, y: cur.y }, cur.rotation, ora === "bottom" ? "top" : "bottom", gruppo);
     }
-  }, [scene, pickedId, selectedIds, nascosti, effOf, latoDiPezzo, onMoveComponent]);
+  }, [scene, bersagli, pezzoDi, effOf, latoDiPezzo, onMoveComponent]);
 
   /*
    * Keyboard, in move mode: the arrows move the selected component
@@ -777,6 +794,7 @@ export function BoardCanvas({
       if (isTypingTarget(e)) return;
       if (e.key === "Escape") {
         onPickComponent?.(null);
+        if ((selectedIds?.length ?? 0) > 0) onSelectionChange?.([]);
         return;
       }
       // F turns the part over; R stays the rotation (schematic F is its own view)
@@ -785,10 +803,9 @@ export function BoardCanvas({
         giraLato();
         return;
       }
-      const comp = pickedId ? scene.components.find((c) => c.id === pickedId) : null;
-      if (!comp || nascosti.has(comp.id)) return;
-      const cur = effOf(comp);
-      const from = { x: cur.x, y: cur.y };
+      const ids = bersagli();
+      if (ids.length === 0) return;
+      const gruppo = ids.length > 1 ? `g${Date.now()}` : undefined;
       /*
        * R turns the part, plain, no modifier: it is the key everyone presses
        * on a board editor. Routing moved to I (EditorBar). Before, rotation
@@ -802,10 +819,13 @@ export function BoardCanvas({
       if (e.key === "r" || e.key === "R") {
         e.preventDefault();
         e.stopPropagation();
-        // shift turns the other way: Shift+r arrives as "R"
+        // shift turns the other way: Shift+r arrives as "R". Each part turns in place
         const delta = e.shiftKey || e.key === "R" ? -90 : 90;
-        const rotation = (((cur.rotation + delta) % 360) + 360) % 360;
-        onMoveComponent?.(comp.id, from, from, rotation);
+        for (const id of ids) {
+          const cur = effOf(pezzoDi.get(id)!);
+          const rotation = (((cur.rotation + delta) % 360) + 360) % 360;
+          onMoveComponent?.(id, { x: cur.x, y: cur.y }, { x: cur.x, y: cur.y }, rotation, undefined, gruppo);
+        }
         return;
       }
       const step = e.shiftKey ? 0.1 : gridMm;
@@ -828,16 +848,18 @@ export function BoardCanvas({
        * vanished from the preview. Now every move says how the part is turned,
        * and the two edits stop stepping on each other.
        */
-      onMoveComponent?.(
-        comp.id,
-        from,
-        { x: snap(cur.x + d.dx, true, gridMm), y: snap(cur.y + d.dy, true, gridMm) },
-        cur.rotation,
-      );
+      for (const id of ids) {
+        const cur = effOf(pezzoDi.get(id)!);
+        // one part snaps to the grid; a group moves by the step and keeps its shape
+        const to = ids.length > 1
+          ? { x: Math.round((cur.x + d.dx) * 1000) / 1000, y: Math.round((cur.y + d.dy) * 1000) / 1000 }
+          : { x: snap(cur.x + d.dx, true, gridMm), y: snap(cur.y + d.dy, true, gridMm) };
+        onMoveComponent?.(id, { x: cur.x, y: cur.y }, to, cur.rotation, undefined, gruppo);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, scene, pickedId, effOf, onMoveComponent, onPickComponent, gridMm, nascosti, giraLato]);
+  }, [mode, scene, effOf, onMoveComponent, onPickComponent, gridMm, giraLato, bersagli, pezzoDi, selectedIds, onSelectionChange]);
 
   if (!scene) {
     return (
@@ -893,10 +915,24 @@ export function BoardCanvas({
          * be chosen. The view still pans while holding Alt, so you are not
          * trapped in the framing while selecting.
          */
-        if (selectMode !== "off" && rect && !e.altKey) {
+        /*
+         * In Sposta, Shift + drag draws the box too (empty area or over parts);
+         * plain drag still pans, Alt still means "no snap" on a part.
+         */
+        const boxInSposta = mode === "move" && e.shiftKey;
+        if ((selectMode !== "off" || boxInSposta) && rect && !e.altKey) {
           marqueeAdd.current = e.shiftKey;
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
+          if (boxInSposta) {
+            const q = toMm(x, y);
+            const sotto = scene?.components.find((c) => {
+              if (nascosti.has(c.id)) return false;
+              const p = effOf(c);
+              return Math.abs(q.x - p.x) <= c.w / 2 && Math.abs(q.y - p.y) <= c.h / 2;
+            });
+            marqueeSu.current = sotto?.id ?? null;
+          }
           setMarquee({ x0: x, y0: y, x1: x, y1: y });
           (e.target as Element).setPointerCapture?.(e.pointerId);
           return;
@@ -912,11 +948,9 @@ export function BoardCanvas({
           if (!rect) return;
           const p = toMm(e.clientX - rect.left, e.clientY - rect.top);
           const d = compDragFrom.current;
-          setCompDrag({
-            id: d.id,
-            x: snap(d.origX + (p.x - d.startX), !e.altKey, gridMm),
-            y: snap(d.origY + (p.y - d.startY), !e.altKey, gridMm),
-          });
+          const x = snap(d.origX + (p.x - d.startX), !e.altKey, gridMm);
+          const y = snap(d.origY + (p.y - d.startY), !e.altKey, gridMm);
+          setCompDrag({ id: d.id, x, y, dx: x - d.origX, dy: y - d.origY, ids: d.gruppo.map((g) => g.id) });
           return;
         }
         if (marquee) {
@@ -957,15 +991,19 @@ export function BoardCanvas({
           compDragFrom.current = null;
           const dropped = compDrag;
           setCompDrag(null);
-          if (dropped.x !== d.origX || dropped.y !== d.origY) {
-            // the rotation travels with the drag too: see the arrows above
-            const comp = scene?.components.find((x) => x.id === dropped.id);
-            onMoveComponent?.(
-              dropped.id,
-              { x: d.origX, y: d.origY },
-              { x: dropped.x, y: dropped.y },
-              comp ? effOf(comp).rotation : undefined,
-            );
+          if (dropped.dx !== 0 || dropped.dy !== 0) {
+            // every part of the group by the same displacement; the rotation travels too
+            const gruppo = d.gruppo.length > 1 ? `g${Date.now()}` : undefined;
+            for (const g of d.gruppo) {
+              onMoveComponent?.(
+                g.id,
+                { x: g.x, y: g.y },
+                { x: Math.round((g.x + dropped.dx) * 1000) / 1000, y: Math.round((g.y + dropped.dy) * 1000) / 1000 },
+                g.rotation,
+                undefined,
+                gruppo,
+              );
+            }
           }
           return;
         }
@@ -977,10 +1015,19 @@ export function BoardCanvas({
           const tiny =
             Math.abs(marquee.x1 - marquee.x0) < 4 && Math.abs(marquee.y1 - marquee.y0) < 4;
           setMarquee(null);
+          // Sposta: a Shift click on a part adds it to the selection or takes it out
+          if (tiny && mode === "move" && selectMode === "off" && marqueeSu.current) {
+            const id = marqueeSu.current;
+            const ids = selectedIds ?? [];
+            onSelectionChange?.(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+            marqueeSu.current = null;
+            return;
+          }
+          marqueeSu.current = null;
           if (box && !tiny) {
             if (selectMode === "zone") {
               onZoneChange?.(box);
-            } else if (selectMode === "components") {
+            } else if (selectMode === "components" || mode === "move") {
               const inside = scene.components
                 .filter(
                   (c) =>
@@ -996,10 +1043,13 @@ export function BoardCanvas({
           }
           return;
         }
-        // empty click in move mode (not a drag): deselect
+        // empty click in move mode (not a drag): deselect, the multi-selection too
         if (mode === "move" && dragFrom.current) {
           const moved = Math.hypot(e.clientX - dragFrom.current.x, e.clientY - dragFrom.current.y);
-          if (moved < 4) onPickComponent?.(null);
+          if (moved < 4) {
+            onPickComponent?.(null);
+            if ((selectedIds?.length ?? 0) > 0) onSelectionChange?.([]);
+          }
         }
         setDragging(false);
         dragFrom.current = null;
@@ -1407,7 +1457,7 @@ export function BoardCanvas({
             const p = effOf(c);
             const isSelected = selected.has(c.id) || pickedId === c.id;
             const isHovered = hoveredComponentId === c.id;
-            const isDragging = compDrag?.id === c.id;
+            const isDragging = Boolean(compDrag?.ids.includes(c.id));
             const isMoved = Boolean(moveOverrides[c.id]);
             return (
               <rect
@@ -1449,19 +1499,33 @@ export function BoardCanvas({
                 strokeDasharray={isMoved && !isSelected && !isHovered ? `${mmPerPx * 4} ${mmPerPx * 3}` : undefined}
                 onPointerDown={(e) => {
                   if (mode !== "move" || e.button !== 0 || selectMode !== "off") return;
+                  // Shift: the box (or the Shift click) belongs to the board, see above
+                  if (e.shiftKey) return;
                   // the component is grabbed here: the view must NOT start
                   e.stopPropagation();
                   const rect = wrapRef.current?.getBoundingClientRect();
                   if (!rect) return;
                   const at = toMm(e.clientX - rect.left, e.clientY - rect.top);
+                  /*
+                   * A part of the multi-selection drags the whole selection; any
+                   * other part drops the selection and goes alone.
+                   */
+                  const insieme = (selectedIds ?? []).includes(c.id)
+                    ? bersagli()
+                    : [c.id];
+                  if (insieme.length === 1 && (selectedIds?.length ?? 0) > 0) onSelectionChange?.([]);
                   compDragFrom.current = {
                     id: c.id,
                     startX: at.x,
                     startY: at.y,
                     origX: p.x,
                     origY: p.y,
+                    gruppo: insieme.map((id) => {
+                      const q = effOf(pezzoDi.get(id)!);
+                      return { id, x: q.x, y: q.y, rotation: q.rotation };
+                    }),
                   };
-                  setCompDrag({ id: c.id, x: p.x, y: p.y });
+                  setCompDrag({ id: c.id, x: p.x, y: p.y, dx: 0, dy: 0, ids: insieme });
                   setPadSotto(null);
                   (e.target as Element).setPointerCapture?.(e.pointerId);
                   onPickComponent?.(c.id);
@@ -1475,6 +1539,11 @@ export function BoardCanvas({
                    * what the box missed, or remove what
                    * it picked up by mistake.
                    */
+                  // in Sposta a Shift click was handled by the board (add or remove)
+                  if (mode === "move" && e.shiftKey) {
+                    e.stopPropagation();
+                    return;
+                  }
                   if (selectMode === "components") {
                     e.stopPropagation();
                     const ids = selectedIds ?? [];
@@ -1720,7 +1789,7 @@ export function BoardCanvas({
           )}
           <span className="ml-2 text-faint">
             Alt = niente snap · frecce muovono (Shift = 0,1 mm) · R ruota 90°, ⇧R −90° · F gira
-            lato · Esc deseleziona
+            lato · Shift+trascina = riquadro · Shift+clic aggiunge o toglie · Esc deseleziona
           </span>
           <span className="mt-1 flex items-center gap-1">
             <span className="text-faint">griglia</span>
