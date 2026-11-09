@@ -10,12 +10,12 @@
  * Re-importing them is a decision for whoever owns them; until then the board
  * and every export say it.
  */
-export const IMPORTATI_SPECCHIATI: ReadonlySet<string> = new Set([
+export const IMPORTATI_SPECCHIATI: ReadonlySet<string> = new Set<string>([
   "bat-bs",
   "birdy-bs",
   "altium-ht-tm-4g-hqt3x",
   "altium-queen-ht-jtkr5",
-  "tm-4l-r3",
+  // tm-4l-r3: re-imported from the original Altium files with the fix (2026-11-09)
 ]);
 
 export const AVVISO_SPECCHIATO =
