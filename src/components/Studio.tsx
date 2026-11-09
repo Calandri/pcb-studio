@@ -23,6 +23,7 @@ import { VIEW_PRESETS, type ViewFlags, type ViewPreset } from "./ViewPresets";
 import { Footer, Header, type BoardTab } from "./workspace/Chrome";
 import { LeftRail, type SchematicSummary, type SheetNet } from "./workspace/LeftRail";
 import { extractComponents } from "@/lib/inspect";
+import type { EditEvent } from "@/lib/manual-edits";
 import { BomView } from "./workspace/BomView";
 import { StatusView } from "./workspace/StatusView";
 import { PartCard } from "./workspace/PartCard";
@@ -256,6 +257,12 @@ export function Studio({
    * board back on screen.
    */
   const circuitRequest = useRef(0);
+  /**
+   * Raised by the manual editor while a background save updates the board:
+   * between its write and the board that follows, "files newer than the board"
+   * is true for a second and means nothing, and it used to switch "Sposta" off.
+   */
+  const autoSyncRef = useRef(false);
   /** createdAt of the compilation on screen: the poll compares against it */
   const compiledAtRef = useRef<string | null>(null);
   /** the first load has answered: before that the poll has nothing to compare */
@@ -489,7 +496,7 @@ export function Studio({
         if (!alive) return;
         setCompileRun((d?.running as CompileRun | null | undefined) ?? null);
         // the files can change without a compile (write_file from Claude): the score must know
-        if (d?.compile) setCircuitStale(Boolean(d.compile.stale));
+        if (d?.compile && !autoSyncRef.current) setCircuitStale(Boolean(d.compile.stale));
         if (!circuitLoadedRef.current) return;
         if (at && compiledAtRef.current !== at) {
           reloading = true;
@@ -561,7 +568,8 @@ export function Studio({
    * pressed the button. Rerouting is a separate gesture, and whoever
    * presses it knows what they are asking for.
    */
-  const onManualEditApplied = useCallback(async () => {
+  const onManualEditApplied = useCallback(
+    async (opts?: { structural?: boolean; background?: boolean }) => {
     const r = await fetch("/api/reroute-local", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -570,6 +578,10 @@ export function Studio({
       .then((res) => res.json())
       .catch(() => null);
     await loadCircuit();
+    // the background save says it in the editor bar, once: a chat line per dropped part would be noise
+    if (opts?.background) {
+      return r?.ok ? { ok: true } : { ok: false, reason: String(r?.reason ?? "motivo sconosciuto") };
+    }
     if (!r?.ok) {
       // no recompiling behind the user's back: we say what is missing and let them decide
       setChat((c) => [
@@ -584,9 +596,16 @@ export function Studio({
         },
       ]);
     }
-  }, [projectId, loadCircuit]);
+    return { ok: Boolean(r?.ok) };
+    },
+    [projectId, loadCircuit],
+  );
 
-  const editor = useManualEditor({ projectId, onApplied: onManualEditApplied });
+  const editor = useManualEditor({
+    projectId,
+    onApplied: onManualEditApplied,
+    syncingRef: autoSyncRef,
+  });
 
   /*
    * The board changed under edits not applied yet: a compile from elsewhere,
@@ -601,7 +620,13 @@ export function Studio({
   const [swappedUnderEdits, setSwappedUnderEdits] = useState(false);
   if (seenCircuit !== circuitJson) {
     setSeenCircuit(circuitJson);
-    if (seenCircuit && circuitJson && editor.dirty > 0 && !editor.busy) setSwappedUnderEdits(true);
+    // our own background save reloads the board too, with the moves in it: not a swap under the edits
+    if (seenCircuit && circuitJson && editor.dirty > 0 && !editor.busy && !editor.saving) {
+      setSwappedUnderEdits(true);
+    }
+    // a board from elsewhere (a recompile, Aggiorna) is compiled from the file,
+    // where the moves already written are: their overrides are no longer needed
+    if (seenCircuit && circuitJson && !editor.busy && !editor.saving) editor.dropSent();
   }
   if (swappedUnderEdits && editor.dirty === 0) setSwappedUnderEdits(false);
 
@@ -612,7 +637,8 @@ export function Studio({
    */
   const leavingRef = useRef(false);
   useEffect(() => {
-    if (editor.dirty === 0) return;
+    // a move being written in the background is not safe yet either
+    if (editor.dirty === 0 && !editor.saving) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (leavingRef.current) return;
       e.preventDefault();
@@ -620,7 +646,7 @@ export function Studio({
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [editor.dirty]);
+  }, [editor.dirty, editor.saving]);
 
   /*
    * The names of the parts chosen on the board. The selection arrives as
@@ -758,6 +784,47 @@ export function Studio({
    * pending, it sees them again right away as overrides, without waiting
    * for the recompilation.
    */
+  /*
+   * The NAME of every part on the board on screen, and back. Moves travel with
+   * the name: the ids are those of THIS compile, and a recompile from elsewhere
+   * before the save gave them to other parts (2026-11-09, HTL-401).
+   */
+  const partNames = useMemo(() => {
+    const byPcbId = new Map<string, string>();
+    const bySchId = new Map<string, string>();
+    const pcbIdOf = new Map<string, string>();
+    if (!circuitJson) return { byPcbId, bySchId, pcbIdOf };
+    const nomeDi = new Map<string, string>();
+    for (const e of circuitJson as Array<Record<string, unknown>>) {
+      if (e?.type === "source_component" && typeof e.name === "string" && e.name) {
+        nomeDi.set(String(e.source_component_id), e.name);
+      }
+    }
+    for (const e of circuitJson as Array<Record<string, unknown>>) {
+      const nome = nomeDi.get(String(e?.source_component_id ?? ""));
+      if (!nome) continue;
+      if (e.type === "pcb_component" && typeof e.pcb_component_id === "string") {
+        byPcbId.set(e.pcb_component_id, nome);
+        if (!pcbIdOf.has(nome)) pcbIdOf.set(nome, e.pcb_component_id);
+      } else if (e.type === "schematic_component" && typeof e.schematic_component_id === "string") {
+        bySchId.set(e.schematic_component_id, nome);
+      }
+    }
+    return { byPcbId, bySchId, pcbIdOf };
+  }, [circuitJson]);
+
+  /** a schematic move, with the name of the part as it is on the schematic on screen */
+  const pushSchematicEdit = useCallback(
+    (event: EditEvent) => {
+      const nome =
+        event.schematic_component_id !== undefined
+          ? partNames.bySchId.get(event.schematic_component_id)
+          : undefined;
+      editor.pushPending(nome ? { ...event, component_name: nome } : event);
+    },
+    [editor, partNames],
+  );
+
   const moveComponent = useCallback(
     (
       id: string,
@@ -767,9 +834,11 @@ export function Studio({
       layer?: "top" | "bottom",
       gruppo?: string,
     ) => {
+      const nome = partNames.byPcbId.get(id);
       editor.pushPending({
         edit_event_type: "edit_pcb_component_location",
         pcb_component_id: id,
+        ...(nome ? { component_name: nome } : {}),
         original_center: from,
         new_center: to,
         ...(rotation !== undefined ? { new_rotation: rotation } : {}),
@@ -779,16 +848,15 @@ export function Studio({
         ...(gruppo ? { gruppo } : {}),
       });
     },
-    [editor],
+    [editor, partNames],
   );
   const pcbMoveOverrides = useMemo(() => {
     const out: Record<string, { x: number; y: number; rotation?: number; layer?: "top" | "bottom" }> = {};
     for (const ev of editor.pending) {
-      if (
-        ev.edit_event_type === "edit_pcb_component_location" &&
-        ev.pcb_component_id &&
-        ev.new_center
-      ) {
+      // by name: after a recompile the same part has another id, and its old id
+      // may belong to another part (a part no longer on the board shows nothing)
+      const id = ev.component_name ? partNames.pcbIdOf.get(ev.component_name) : ev.pcb_component_id;
+      if (ev.edit_event_type === "edit_pcb_component_location" && id && ev.new_center) {
         /*
          * The events are MERGED, not replaced.
          *
@@ -799,12 +867,12 @@ export function Studio({
          * eyes. Systematic, on every component. Now a rotation stays until
          * someone declares a different one.
          */
-        const prima = out[ev.pcb_component_id];
+        const prima = out[id];
         const rotazione =
           ev.new_rotation !== undefined ? ev.new_rotation : prima?.rotation;
         // the face, like the rotation: a later move does not turn it back
         const lato = ev.new_layer !== undefined ? ev.new_layer : prima?.layer;
-        out[ev.pcb_component_id] = {
+        out[id] = {
           x: ev.new_center.x,
           y: ev.new_center.y,
           ...(rotazione !== undefined ? { rotation: rotazione } : {}),
@@ -813,7 +881,7 @@ export function Studio({
       }
     }
     return out;
-  }, [editor.pending]);
+  }, [editor.pending, partNames]);
 
   // "instrada" only exists on the copper: switching tabs would leave the mode
   // on while doing nothing, and the mouse would look broken
@@ -1524,7 +1592,7 @@ export function Studio({
                     projectId={projectId}
                     mode={editor.mode}
                     saved={editor.saved}
-                    onEditEvent={editor.pushPending}
+                    onEditEvent={pushSchematicEdit}
                     pendingEvents={editor.pending}
                     resetKey={editor.viewerKey}
                     pendingLinks={editor.links}

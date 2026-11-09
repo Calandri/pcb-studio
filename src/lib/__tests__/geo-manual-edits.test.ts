@@ -182,6 +182,72 @@ describe("applyEditEvents", () => {
   });
 });
 
+/*
+ * 2026-11-09, HTL-401: the board was recompiled (parts removed) between the
+ * moves and "Applica". The ids the viewer had read now belonged to other parts,
+ * and the moves landed on them or nowhere. The name read by the client wins.
+ */
+describe("applyEditEvents after a recompile in between", () => {
+  /** the board the server holds NOW: pc1 is C2, R1 has become pc7 */
+  const recompiled = (): unknown[] => [
+    { type: "source_component", source_component_id: "sc2", name: "C2" },
+    { type: "pcb_component", pcb_component_id: "pc1", source_component_id: "sc2", center: { x: 40, y: 0 }, rotation: 0 },
+    { type: "source_component", source_component_id: "sc1", name: "R1" },
+    { type: "pcb_component", pcb_component_id: "pc7", source_component_id: "sc1", center: { x: 10, y: 5 }, rotation: 0 },
+    { type: "schematic_component", schematic_component_id: "sch1", source_component_id: "sc2", center: { x: 0, y: 0 } },
+    { type: "schematic_component", schematic_component_id: "sch7", source_component_id: "sc1", center: { x: 3, y: 3 } },
+  ];
+  /** the move as the viewer sent it: the id of the OLD board, the name of the part */
+  const moveR1 = (extra: Record<string, unknown> = {}) => ({
+    edit_event_type: "edit_pcb_component_location",
+    pcb_component_id: "pc1",
+    component_name: "R1",
+    original_center: { x: 10, y: 5 },
+    new_center: { x: 12, y: 6 },
+    ...extra,
+  });
+
+  it("moves the part named by the client, not the one wearing the old id", () => {
+    const out = applyEditEvents({ circuitJson: recompiled(), main: "", edits: emptyManualEdits(), events: [moveR1({ new_rotation: 90 })] });
+    expect(out.pcb_placements).toEqual([{ selector: "R1", center: { x: 12, y: 6 }, rotation: 90 }]);
+  });
+
+  it("moves nothing when the named part is gone, instead of the id's new owner", () => {
+    const out = applyEditEvents({
+      circuitJson: recompiled(),
+      main: "",
+      edits: emptyManualEdits(),
+      events: [moveR1({ component_name: "R99" }), moveR1({ component_name: "" }), moveR1({ component_name: 7 })],
+    });
+    expect(out.pcb_placements).toEqual([]);
+  });
+
+  it("still takes the id from clients that send no name", () => {
+    const { component_name: _n, ...old } = moveR1();
+    void _n;
+    const out = applyEditEvents({ circuitJson: recompiled(), main: "", edits: emptyManualEdits(), events: [old] });
+    expect(out.pcb_placements.map((p) => p.selector)).toEqual(["C2"]);
+  });
+
+  it("does the same on the schematic", () => {
+    const out = applyEditEvents({
+      circuitJson: recompiled(),
+      main: "",
+      edits: emptyManualEdits(),
+      events: [
+        {
+          edit_event_type: "edit_schematic_component_location",
+          schematic_component_id: "sch1",
+          component_name: "R1",
+          original_center: { x: 3, y: 3 },
+          new_center: { x: 4, y: 3 },
+        },
+      ],
+    });
+    expect(out.schematic_placements).toEqual([{ selector: "R1", center: { x: 4, y: 3 } }]);
+  });
+});
+
 describe("releaseManualEdits", () => {
   it("releases the routes that start or end on the part", () => {
     const edits: ManualEdits = {

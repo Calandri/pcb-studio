@@ -876,6 +876,16 @@ export interface EditEvent {
   in_progress?: boolean;
   pcb_component_id?: string;
   schematic_component_id?: string;
+  /**
+   * The NAME of the part the move is about, read by the client on the board it
+   * was showing. Ids change at every compile: an id read on the board the
+   * person was looking at and translated on the board the server holds when
+   * the save arrives pointed at another part as soon as somebody recompiled in
+   * between (2026-11-09, HTL-401: hours of moves landed on the wrong parts or
+   * nowhere). With the name the id is not looked at; without it (old clients)
+   * the id still works as before.
+   */
+  component_name?: string;
   pcb_port_id?: string;
   original_center?: { x: number; y: number };
   new_center?: { x: number; y: number };
@@ -896,6 +906,35 @@ type El = Record<string, unknown>;
 
 const findById = (circuitJson: unknown[], type: string, idKey: string, id: string): El | null =>
   (circuitJson as El[]).find((e) => e?.type === type && e[idKey] === id) ?? null;
+
+/**
+ * The pcb/schematic element of a component by its NAME, and the name itself.
+ * A name sent by the client wins over the id: when it is there and the part is
+ * not on the board (removed, renamed), nothing is moved, rather than the part
+ * that happens to wear the old id now.
+ */
+function elementForEvent(
+  circuitJson: unknown[],
+  type: "pcb_component" | "schematic_component",
+  idKey: "pcb_component_id" | "schematic_component_id",
+  event: EditEvent,
+): { el: El; name: string } | null {
+  const wanted = event.component_name;
+  if (wanted !== undefined) {
+    if (typeof wanted !== "string" || !wanted || wanted.length > 200) return null;
+    const src = (circuitJson as El[]).find((e) => e?.type === "source_component" && e.name === wanted);
+    if (!src) return null;
+    const el = (circuitJson as El[]).find(
+      (e) => e?.type === type && e.source_component_id === src.source_component_id,
+    );
+    return el ? { el, name: wanted } : null;
+  }
+  const id = event[idKey];
+  if (typeof id !== "string") return null;
+  const el = findById(circuitJson, type, idKey, id);
+  const name = el && sourceName(circuitJson, el.source_component_id);
+  return el && name ? { el, name } : null;
+}
 
 /** source name of a component from its pcb/schematic element */
 function sourceName(circuitJson: unknown[], sourceComponentId: unknown): string | null {
@@ -1014,13 +1053,12 @@ export function applyEditEvents({
 
     if (
       event.edit_event_type === "edit_pcb_component_location" &&
-      typeof event.pcb_component_id === "string" &&
       finitePoint(event.original_center) &&
       finitePoint(event.new_center)
     ) {
-      const el = findById(circuitJson, "pcb_component", "pcb_component_id", event.pcb_component_id);
-      const name = el && sourceName(circuitJson, el.source_component_id);
-      if (!name) continue;
+      const found = elementForEvent(circuitJson, "pcb_component", "pcb_component_id", event);
+      if (!found) continue;
+      const { el, name } = found;
       const existing = out.pcb_placements.find((p) => p.selector === name)?.center;
       const attrs = attrsOf(name);
       /*
@@ -1066,18 +1104,12 @@ export function applyEditEvents({
 
     if (
       event.edit_event_type === "edit_schematic_component_location" &&
-      typeof event.schematic_component_id === "string" &&
       finitePoint(event.original_center) &&
       finitePoint(event.new_center)
     ) {
-      const el = findById(
-        circuitJson,
-        "schematic_component",
-        "schematic_component_id",
-        event.schematic_component_id,
-      );
-      const name = el && sourceName(circuitJson, el.source_component_id);
-      if (!name) continue;
+      const found = elementForEvent(circuitJson, "schematic_component", "schematic_component_id", event);
+      if (!found) continue;
+      const { name } = found;
       const existing = out.schematic_placements.find((p) => p.selector === name)?.center;
       const attrs = attrsOf(name);
       const baseX =

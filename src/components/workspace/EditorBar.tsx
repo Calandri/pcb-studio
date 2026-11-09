@@ -37,7 +37,7 @@ export function EditorBar({
   /** something the person must know before applying, e.g. the board changed under the edits */
   warning?: string | null;
 }) {
-  const { mode, setMode, counts, busy, canUndo, canRedo, error, dirty, links, unlinks } =
+  const { mode, setMode, counts, busy, saving, canUndo, canRedo, error, dirty, links, unlinks } =
     editor;
   /** two-step "release all": the first click asks, the second executes */
   const [confirmRelease, setConfirmRelease] = useState(false);
@@ -169,7 +169,7 @@ export function EditorBar({
           type="button"
           onClick={() => void editor.apply()}
           disabled={dirty === 0 || busy}
-          title="Scrive le modifiche nel progetto e ricompila (Cmd+S)"
+          title="Gli spostamenti si salvano da soli appena lasci il pezzo: qui scrivi collegamenti, piste e quello che non e' ancora partito (Cmd+S)"
           className={`rounded-[8px] px-3 py-[7px] text-[12px] font-semibold transition-colors ${
             dirty > 0 && !busy
               ? "bg-brand text-ink hover:bg-brand-strong"
@@ -219,6 +219,7 @@ export function EditorBar({
       {!stale &&
         (counts.pcb + counts.schematic + counts.traceHints + counts.routes > 0 ||
           error ||
+          saving ||
           mode !== "view") && (
         // one line, never wrapping: it sits over the board and every extra row
         // covers copper. What does not fit goes into the tooltip.
@@ -227,6 +228,14 @@ export function EditorBar({
             <span className="text-[11px] text-danger">{error}</span>
           ) : (
             <>
+              {saving && (
+                <span
+                  className="text-[11px] text-brand"
+                  title="Gli spostamenti si salvano da soli: puoi continuare a spostare"
+                >
+                  salvo...
+                </span>
+              )}
               {mode !== "view" && (
                 <span
                   className="text-[11px] text-brand"
