@@ -82,6 +82,13 @@ export function Studio({
   const [circuitStale, setCircuitStale] = useState(false);
   // the checks are newer than the cached verification: needs re-checking
   const [checksStale, setChecksStale] = useState(false);
+  /*
+   * The last compile was NOT saved (no board at all: a syntax error, an
+   * exception): what is on screen is the previous board, and it is said in
+   * red, with the time of the board shown and why the new one does not compile.
+   * Never the old board in silence (sbb-dl-frontale, 2026-11-09).
+   */
+  const [nonSalvata, setNonSalvata] = useState<{ ora: string; motivo: string; createdAt: string | null } | null>(null);
   const [rechecking, setRechecking] = useState(false);
   // until we know whether a saved compilation exists, the fallback is not
   // mounted: otherwise a compilation starts in the browser (without the
@@ -273,6 +280,8 @@ export function Studio({
     circuitLoadedRef.current = true;
     setCircuitChecked(true);
     if (!d?.compile?.circuitJson) return;
+    // a newer board has been saved since the failed compile: the warning is over
+    setNonSalvata((n) => (n && n.createdAt !== (d.compile.createdAt ?? null) ? null : n));
     compiledAtRef.current = d.compile.createdAt ?? null;
     setCircuitJson(d.compile.circuitJson as unknown[]);
     setSummary(d.compile.summary ?? null);
@@ -385,6 +394,17 @@ export function Studio({
         } else if (event === "fine") {
           finished = true;
           if (data.summary) setSummary(data.summary);
+          const fine = raw as { saved?: boolean; summary?: { message?: string; errors?: Array<{ message?: string }> } };
+          if (fine.saved === false) {
+            const quando = compiledAtRef.current;
+            setNonSalvata({
+              ora: quando ? new Date(quando).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "?",
+              motivo: String(fine.summary?.errors?.[0]?.message ?? fine.summary?.message ?? "motivo sconosciuto").slice(0, 240),
+              createdAt: quando,
+            });
+          } else {
+            setNonSalvata(null);
+          }
         }
       });
       if (!finished && !failed) {
@@ -1335,6 +1355,15 @@ export function Studio({
               backgroundSize: "28px 28px",
             }}
           />
+
+          {nonSalvata && circuitJson && (
+            <div className="absolute left-1/2 top-[70px] z-20 flex max-w-[min(640px,92%)] -translate-x-1/2 items-start gap-2.5 rounded-[10px] border border-[#5A2420] bg-[rgba(40,12,10,0.95)] px-3 py-2 backdrop-blur">
+              <span className="mt-1 h-1.5 w-1.5 flex-none rounded-full bg-danger" />
+              <span className="text-[11.5px] leading-snug text-[#FFB4AB]">
+                A schermo c&apos;e&apos; la versione delle {nonSalvata.ora}: la nuova non compila per: {nonSalvata.motivo}
+              </span>
+            </div>
+          )}
 
           {/* the checks are newer than the cached verification: re-check,
               without re-routing — the traces are not touched, only re-evaluated */}

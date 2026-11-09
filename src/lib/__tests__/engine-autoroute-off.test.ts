@@ -70,3 +70,24 @@ describe("autoroute: false, il compile non lancia l'autorouter", () => {
     ]);
   }, 120_000);
 });
+
+/*
+ * sbb-dl-frontale: due pad sovrapposti mentre si piazza (normale) e tscircuit
+ * scriveva "Autorouting was skipped": sembrava uno sbroglio fallito e la scheda
+ * nuova non veniva salvata, a schermo restava la vecchia (2026-11-09).
+ */
+describe("pad sovrapposti mentre si piazza", () => {
+  it("la scheda esce lo stesso, con le sovrapposizioni come errori e senza 'sbroglio saltato'", async () => {
+    const main = `export default () => (<board width="20mm" height="10mm">
+      <capacitor name="C20" capacitance="100nF" footprint="0402" pcbX={0} pcbY={0} />
+      <diode name="D13" footprint="0402" pcbX={0.9} pcbY={0} />
+      <trace from=".C20 > .pin2" to=".D13 > .pin2" />
+    </board>)`;
+    const { summary, circuitJson } = await compileProject({ "main.tsx": main });
+    const tipi = ((summary as { errors?: Array<{ type?: string }> }).errors ?? []).map((e) => e.type);
+    expect(circuitJson.some((e) => (e as { type: string }).type === "pcb_board")).toBe(true);
+    expect(tipi).toContain("pcb_footprint_overlap_error");
+    expect(tipi).not.toContain("pcb_autorouting_error");
+    expect(tipi).not.toContain("root_cause_first");
+  }, 120_000);
+});

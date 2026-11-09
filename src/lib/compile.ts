@@ -673,7 +673,15 @@ export async function compileProject(
       };
     }
     say({ step: "Riporto il rame che c'era", detail: "le piste non si rifanno", progress: 0.7 });
-    const conRame = carryCopper(geometry, opts.keepCopperFrom ?? []);
+    /*
+     * tscircuit writes "Autorouting was skipped because of placement errors"
+     * even here, where nobody asked for routing: two overlapping pads while
+     * placing (normal, mid-work) and the board looked like a failed routing,
+     * which kept the previous board on screen (sbb-dl-frontale, 2026-11-09).
+     * The overlaps themselves stay, as errors on the board.
+     */
+    const senzaSbroglio = geometry.filter((el) => el.type !== "pcb_autorouting_error");
+    const conRame = carryCopper(senzaSbroglio, opts.keepCopperFrom ?? []);
     const conMano = applyManualRoutes({
       circuitJson: conRame,
       routes: parsedManualEdits.pcb_routes,

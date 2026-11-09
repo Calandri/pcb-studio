@@ -413,24 +413,6 @@ async function ensureCompileCacheTable(
 }
 
 /**
- * A compile that failed because of the ROUTER must not wipe the last good one.
- *
- * It really happened: the routing service answered 500, the compile ended
- * with a single trace on the whole board, and that result overwrote a
- * complete board in the cache. From that moment there was nothing left to
- * look at, and the fault belonged to an external service.
- *
- * The rejection is deliberately NARROW: only when the new attempt carries a
- * routing error and the previous one was fine. A board that loses traces
- * because the user removed components must be saveable, so counts are not
- * what matters — the cause is.
- */
-function routingFailed(summary: unknown): boolean {
-  const errors = (summary as { errors?: Array<{ type?: string }> } | null)?.errors;
-  return Array.isArray(errors) && errors.some((e) => e?.type === "pcb_autorouting_error");
-}
-
-/**
  * A compile that produced NO BOARD: a syntax error in the sources, an
  * exception in the compiler. Its circuit is `[]`, and saved over a good row it
  * became the board everyone saw — and the one /api/export turned into empty
@@ -504,20 +486,13 @@ export async function saveCompileCache(
     }
   }
 
-  if (routingFailed(summary)) {
-    const previous = await getCompileCache(projectId).catch(() => null);
-    const previousOk =
-      previous && !routingFailed(previous.summary) &&
-      (previous.summary as { ok?: boolean } | null)?.ok === true;
-    if (previousOk) {
-      await dropPreview();
-      return {
-        saved: false,
-        keptPrevious: true,
-        reason: "lo sbroglio e' fallito: resta salvata l'ultima scheda buona",
-      };
-    }
-  }
+  /*
+   * A board WITH problems is still the board of these files, and it is saved:
+   * overlapping pads while placing are normal, and they are shown as errors on
+   * it. Keeping "the last good one" instead put the OLD board on screen with
+   * traces that no longer exist, and nothing said so (sbb-dl-frontale,
+   * 2026-11-09). Only a compile with no board at all is refused, above.
+   */
 
   const json = JSON.stringify(circuitJson);
   const sintesi = JSON.stringify(summary);
