@@ -174,9 +174,13 @@ export function leggiStrati(
           ? "maschera"
           : /courtyard/i.test(nome)
             ? "courtyard"
-            : /designator|comment/i.test(nome)
-              ? "serigrafia" // the reference printed on the board IS silkscreen
-              : /assembly|3d body|component center/i.test(nome)
+            /*
+             * "Top Designator" / "Bottom Designator" (mechanical 62-65 on TM_4L
+             * and BAT_BS) are the ASSEMBLY drawing's references, not ink: read as
+             * silkscreen, every designator came out twice (2026-11-09). What is
+             * printed is on the Overlay layers.
+             */
+            : /assembly|3d body|component center|designator|comment/i.test(nome)
                 ? "montaggio"
                 : /mechanical|keep.?out|drill|multi.?layer/i.test(nome)
                   ? "meccanico"
@@ -1030,6 +1034,13 @@ export function serigrafiaNativa(
   for (const te of arr(pcb.texts)) {
     const s = strati.get(num(te.layerId) ?? -1);
     if (s?.genere !== "serigrafia") continue;
+    /*
+     * What Altium does not print is not printed: a comment with COMMENTON=FALSE
+     * or a designator with NAMEON=FALSE arrives with visible=false. All 87
+     * comments of TM_4L ("0R 1/16W", "A7672E", "FIDUCIAL") were hidden and came
+     * out on the silkscreen (2026-11-09).
+     */
+    if (te.visible === false) continue;
     const x = num(te.x);
     const y = num(te.y);
     if (x === null || y === null) continue;
