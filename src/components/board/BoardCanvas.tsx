@@ -4,6 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import {
+  LABEL_FONT,
+  LABEL_METRICS,
+  PIN_FONT,
+  latoDi,
+  layoutNetLabels,
+  leaderEnd,
+  type LatoEtichetta,
+  type PlacedNetLabel,
+} from "./net-labels";
+import {
   HOLE_COPPER,
   LAYER_COLOR,
   PAD_COLOR,
@@ -387,8 +397,19 @@ export function BoardCanvas({
       testo: string;
       /** the pins of the focused part on that net, small, under the name: "Q3.G" */
       sotto: string;
+      /** the side of the part the pad is on: the name is pushed that way */
+      lato?: LatoEtichetta;
+      /** how far the pad reaches from its centre, mm */
+      raggio?: number;
       colore: string;
     }> = [];
+    /** the focused part where it is NOW: the side of each pad is measured from it */
+    const fuoco = scene.components.find((c) => c.id === focus);
+    const centro = fuoco ? effOf(fuoco) : null;
+    const versoDi = (pad: (typeof mine)[number], at: { x: number; y: number }) => ({
+      lato: latoDi(at.x - (centro?.x ?? at.x), at.y - (centro?.y ?? at.y)),
+      raggio: Math.max(pad.w, pad.h) / 2,
+    });
 
     /*
      * What a connection is called on screen: the NET, the same name at every
@@ -468,7 +489,7 @@ export function BoardCanvas({
             x2: a.x,
             y2: a.y,
             // the name is written once per net, not on every wire
-            ...(primo ? etichetta(pad, altri) : { testo: "", sotto: "" }),
+            ...(primo ? { ...etichetta(pad, altri), ...versoDi(pad, da) } : { testo: "", sotto: "" }),
             colore: tinta,
           });
           primo = false;
@@ -501,7 +522,7 @@ export function BoardCanvas({
           // say "these pads are the same node" have to turn with the copper
           rot: p.rot + giroDi(p.componentId),
           // the name is written once per net, not on every lit pad
-          ...(p.id === pad.id ? nome : { testo: "", sotto: "" }),
+          ...(p.id === pad.id ? { ...nome, ...versoDi(pad, da) } : { testo: "", sotto: "" }),
           colore: tintaRete,
         });
       }
@@ -509,6 +530,31 @@ export function BoardCanvas({
 
     return out;
   }, [scene, hoveredComponentId, selectedIds, effOf, nascosti]);
+
+  /*
+   * The net names, laid out in screen pixels so they never overlap and keep
+   * their size at any zoom: see net-labels.ts. They are drawn outside the
+   * flipped group, like the designators.
+   */
+  const nomiDiRete = useMemo(
+    () =>
+      layoutNetLabels(
+        links
+          .filter((l) => l.testo && l.lato)
+          .map((l) => ({
+            key: l.key,
+            x: l.x1,
+            y: l.y1,
+            lato: l.lato!,
+            raggio: l.raggio ?? 0,
+            testo: l.testo,
+            sotto: l.sotto,
+            colore: l.colore,
+          })),
+        view,
+      ),
+    [links, view],
+  );
 
   /** the same transform, but on a point in millimeters (for texts outside the flipped group) */
   const mmPointTx = useCallback(
@@ -963,7 +1009,6 @@ export function BoardCanvas({
                         strokeWidth={0.08}
                       />
                     )}
-                    {l.testo && <NomeRete l={l} />}
                   </g>
                 ) : (
                   <g key={l.key}>
@@ -979,7 +1024,6 @@ export function BoardCanvas({
                     />
                     <circle cx={l.x1} cy={l.y1} r={0.16} fill={l.colore} />
                     <circle cx={l.x2} cy={l.y2} r={0.11} fill={l.colore} opacity={0.75} />
-                    {l.testo && <NomeRete l={l} />}
                   </g>
                 ),
               )}
@@ -1286,6 +1330,14 @@ export function BoardCanvas({
               </text>
             );
           })}
+        {/* net names: on the side of their pad, never on top of each other */}
+        {nomiDiRete.length > 0 && (
+          <g pointerEvents="none">
+            {nomiDiRete.map((l) => (
+              <NomeRete key={l.key} l={l} />
+            ))}
+          </g>
+        )}
       </svg>
 
       {/* the box while it is being drawn: it lives outside the flipped SVG,
@@ -1369,28 +1421,46 @@ export function BoardCanvas({
 }
 
 /**
- * The name of a net on the board: the net, big, and under it, small, the pins
- * of the focused part that sit on it ("Q3.G"). The view flips the vertical
- * axis: without flipping it back the text reads mirrored and upside down.
+ * The name of a net, in screen pixels: the net, and under it, small, the pins
+ * of the focused part that sit on it ("Q3.G"). An opaque box, so it reads over
+ * copper; a short line to its pad when it had to move away to find room.
  */
-function NomeRete({ l }: { l: { x1: number; y1: number; testo: string; sotto: string; colore: string } }) {
-  const alone = { paintOrder: "stroke", stroke: "#0B1110", strokeWidth: 0.14 } as const;
+function NomeRete({ l }: { l: PlacedNetLabel }) {
+  const fine = leaderEnd(l);
+  const cx = l.bx + l.bw / 2;
   return (
-    <text
-      transform={`translate(${l.x1} ${l.y1 + (l.sotto ? 0.9 : 0.62)}) scale(1 -1)`}
-      fontSize={0.34}
-      textAnchor="middle"
-      fill={l.colore}
-      opacity={0.9}
-      style={alone}
-    >
-      {l.testo}
-      {l.sotto && (
-        <tspan x={0} dy={0.3} fontSize={0.22} opacity={0.75}>
-          {l.sotto}
-        </tspan>
+    <g>
+      {l.leader && (
+        <line x1={l.ax} y1={l.ay} x2={fine.x} y2={fine.y} stroke={l.colore} strokeWidth={1} opacity={0.8} />
       )}
-    </text>
+      <rect
+        x={l.bx}
+        y={l.by}
+        width={l.bw}
+        height={l.bh}
+        rx={3}
+        fill="#0B1110"
+        fillOpacity={0.94}
+        stroke={l.colore}
+        strokeOpacity={0.55}
+        strokeWidth={1}
+      />
+      <text
+        x={cx}
+        y={l.by + LABEL_METRICS.PAD_Y + LABEL_METRICS.LINE_1 - 3}
+        fontSize={LABEL_FONT}
+        textAnchor="middle"
+        fill={l.colore}
+        fontFamily="var(--font-plex-mono), monospace"
+      >
+        {l.testo}
+        {l.sotto && (
+          <tspan x={cx} dy={LABEL_METRICS.LINE_2} fontSize={PIN_FONT} opacity={0.75}>
+            {l.sotto}
+          </tspan>
+        )}
+      </text>
+    </g>
   );
 }
 
