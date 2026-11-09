@@ -182,6 +182,9 @@ export function BoardCanvas({
   const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(null);
   /** a component drag in progress (position already snapped to the grid) */
   const [compDrag, setCompDrag] = useState<{ id: string; x: number; y: number } | null>(null);
+  /** the pin under the mouse: its net alone is shown (see links) */
+  const [padSotto, setPadSotto] = useState<string | null>(null);
+  const pezzoDi = useMemo(() => new Map((scene?.components ?? []).map((c) => [c.id, c])), [scene]);
   /** snap pitch, chosen from the standard pitches */
   const [gridMm, setGridMm] = useState(GRID_DEFAULT);
   const compDragFrom = useRef<{
@@ -411,9 +414,11 @@ export function BoardCanvas({
    * It takes the nearest pad of the same net, not all of them: on ground and
    * power that would be hundreds of lines and nothing would be readable.
    */
-  const links = useMemo(() => {
-    const focus = hoveredComponentId ?? (selectedIds?.length === 1 ? selectedIds[0] : null);
-    if (!scene || !focus || nascosti.has(focus)) return [];
+  const { links, retiFocus } = useMemo(() => {
+    const vuoto = { links: [] as never[], retiFocus: [] as Array<{ net: string; colore: string; da: { x: number; y: number }; membri: Array<{ x: number; y: number }> }> };
+    const padFocus = padSotto && scene ? scene.pads.find((p) => p.id === padSotto && p.net) ?? null : null;
+    const focus = padFocus?.componentId ?? hoveredComponentId ?? (selectedIds?.length === 1 ? selectedIds[0] : null);
+    if (!scene || !focus || nascosti.has(focus)) return vuoto;
 
     /*
      * Where a pad REALLY is now, not where it was when the board was
@@ -449,9 +454,9 @@ export function BoardCanvas({
       };
     };
 
-    const mine = scene.pads.filter((p) => p.componentId === focus && p.net);
-    if (mine.length === 0) return [];
-    const pins = [...new Set(mine.map((p) => p.pin))];
+    // a pad under the mouse: only its net. Otherwise every net of the part
+    const mine = padFocus ? [padFocus] : scene.pads.filter((p) => p.componentId === focus && p.net);
+    if (mine.length === 0) return vuoto;
     const out: Array<{
       tipo: "linea" | "pad";
       key: string;
@@ -501,12 +506,28 @@ export function BoardCanvas({
     };
     /** one label per net: the first end that reaches it writes it */
     const scritte = new Set<string>();
+    /*
+     * The second line says WHERE the net goes: how many pins, and which.
+     * "VBAT_MDM" alone did not say what it was attached to, with the other
+     * pins far away or off screen (sbb-dl-retro U1, 2026-11-09). The pins of
+     * the part being looked at are counted, not listed: they are the ones lit.
+     * Ground and big nets: the count and the first few, then "+N".
+     */
+    const membri = (pad: (typeof mine)[number], altri: typeof scene.pads) => {
+      const tutti = altri.length + 1;
+      const fuori = [...new Set(altri.filter((p) => p.componentId !== focus).map(pinPieno).filter(Boolean))];
+      const grande = tutti > 20 || /^(A|D|P)?GND\w*$/i.test(pad.netName);
+      const max = grande ? 3 : 5;
+      const lista = fuori.length > max ? `${fuori.slice(0, max).join(", ")} +${fuori.length - max}` : fuori.join(", ");
+      return lista ? `${tutti} piedini: ${lista}` : `${tutti} piedini`;
+    };
     const etichetta = (pad: (typeof mine)[number], altri: typeof scene.pads) => {
       if (scritte.has(pad.net)) return { testo: "", sotto: "" };
       scritte.add(pad.net);
       const miei = elenco(mine.filter((p) => p.net === pad.net).map(pinPieno));
-      if (pad.netName) return { testo: pad.netName, sotto: miei };
-      return { testo: `${miei} > ${elenco(altri.map(pinPieno))}`, sotto: "" };
+      // its own pins first ("J4.3", "U1.EN, U1.IN"), then where the net goes
+      if (pad.netName) return { testo: pad.netName, sotto: `${miei} · ${membri(pad, altri)}` };
+      return { testo: `${miei} > ${elenco(altri.map(pinPieno))}`, sotto: altri.length > 2 ? membri(pad, altri) : "" };
     };
     /*
      * How a connection is shown depends on how many pads it touches.
@@ -540,36 +561,60 @@ export function BoardCanvas({
       perRete.set(p.net, [...(perRete.get(p.net) ?? []), p]);
     }
 
+    /*
+     * WHERE THE NET GOES: the shortest tree joining all its pins (ratsnest), in
+     * the net's colour, and every other pin of the net lit. It used to draw a
+     * line only for nets of two or three pins and to light the pads of the
+     * bigger ones, which far away or off screen said nothing.
+     */
+    const reti: typeof vuoto.retiFocus = [];
+    const fatte = new Set<string>();
     for (const pad of mine) {
       const da = posOf(pad);
-      const i0 = Math.max(0, pins.indexOf(pad.pin));
-      const tinta = `hsl(${Math.round((i0 * 360) / Math.max(1, pins.length))} 85% 62%)`;
       const altri = (perRete.get(pad.net) ?? []).filter((p) => p.id !== pad.id);
       if (altri.length === 0) continue;
+      const tinta = tintaDiRete(pad.netName || pad.net);
+      const nome = etichetta(pad, altri);
 
-      if (altri.length <= 2) {
-        let primo = true;
-        for (const other of altri) {
-          const a = posOf(other);
-          out.push({
-            tipo: "linea" as const,
-            key: `${pad.id}-${other.id}`,
-            x1: da.x,
-            y1: da.y,
-            x2: a.x,
-            y2: a.y,
-            // the name is written once per net, not on every wire
-            ...(primo ? { ...etichetta(pad, altri), ...versoDi(pad, da) } : { testo: "", sotto: "" }),
-            colore: tinta,
-          });
-          primo = false;
+      if (!fatte.has(pad.net)) {
+        fatte.add(pad.net);
+        const tutti = [pad, ...altri];
+        const pos = tutti.map(posOf);
+        // Prim: O(n^2), a few thousand steps even on ground
+        const dentro = new Array<boolean>(pos.length).fill(false);
+        const dist = new Array<number>(pos.length).fill(Infinity);
+        const da0 = new Array<number>(pos.length).fill(-1);
+        dist[0] = 0;
+        for (let k = 0; k < pos.length; k++) {
+          let u = -1;
+          for (let i = 0; i < pos.length; i++) if (!dentro[i] && (u === -1 || dist[i] < dist[u])) u = i;
+          dentro[u] = true;
+          if (da0[u] >= 0) {
+            const v = da0[u];
+            out.push({
+              tipo: "linea" as const,
+              key: `mst-${tutti[v].id}-${tutti[u].id}`,
+              x1: pos[v].x,
+              y1: pos[v].y,
+              x2: pos[u].x,
+              y2: pos[u].y,
+              testo: "",
+              sotto: "",
+              colore: tinta,
+            });
+          }
+          for (let i = 0; i < pos.length; i++) {
+            if (dentro[i]) continue;
+            const d = Math.hypot(pos[i].x - pos[u].x, pos[i].y - pos[u].y);
+            if (d < dist[i]) {
+              dist[i] = d;
+              da0[i] = u;
+            }
+          }
         }
-        continue;
+        reti.push({ net: pad.net, colore: tinta, da, membri: pos.slice(1) });
       }
 
-      // many connections: the pads get colored, all with the net tint
-      const tintaRete = tintaDiRete(pad.netName || pad.net);
-      const nome = etichetta(pad, altri);
       for (const p of [pad, ...altri]) {
         const a = posOf(p);
         out.push({
@@ -580,26 +625,17 @@ export function BoardCanvas({
           x2: p.w,
           y2: p.h,
           cerchio: p.circle,
-          /*
-           * The lit pad has to be turned like the pad underneath. Drawn straight
-           * over a pad at 45 degrees it is a green square sitting crooked on a
-           * diamond, and what it says to whoever is looking is "the rotation is
-           * not applied" — which is what it was saying, for real, on the
-           * highlight and not on the copper.
-           */
-          // the pad's own turn PLUS the one in progress: while you rotate a
-          // component to see whether its connections improve, the frames that
-          // say "these pads are the same node" have to turn with the copper
+          // turned like the pad underneath, the turn in progress included
           rot: p.rot + giroDi(p.componentId),
           // the name is written once per net, not on every lit pad
           ...(p.id === pad.id ? { ...nome, ...versoDi(pad, da) } : { testo: "", sotto: "" }),
-          colore: tintaRete,
+          colore: tinta,
         });
       }
     }
 
-    return out;
-  }, [scene, hoveredComponentId, selectedIds, effOf, nascosti, girati]);
+    return { links: out, retiFocus: reti };
+  }, [scene, hoveredComponentId, selectedIds, effOf, nascosti, girati, padSotto]);
 
   /*
    * The net names, laid out in screen pixels so they never overlap and keep
@@ -625,6 +661,40 @@ export function BoardCanvas({
       ),
     [links, view],
   );
+
+  /*
+   * The pins of a net that are OFF SCREEN: a small arrow on the edge, in the
+   * net's colour, pointing at them. One per direction, not one per pin.
+   */
+  const frecce = useMemo(() => {
+    const out: Array<{ key: string; x: number; y: number; ang: number; colore: string }> = [];
+    const M = 12;
+    for (const r of retiFocus) {
+      const ax = view.x + r.da.x * view.k;
+      const ay = view.y - r.da.y * view.k;
+      const fx = Math.min(Math.max(ax, M), size.w - M);
+      const fy = Math.min(Math.max(ay, M), size.h - M);
+      const messe: Array<{ x: number; y: number }> = [];
+      for (const m of r.membri) {
+        const mx = view.x + m.x * view.k;
+        const my = view.y - m.y * view.k;
+        if (mx >= 0 && mx <= size.w && my >= 0 && my <= size.h) continue;
+        // where the line from the pin toward the member leaves the inset frame
+        const dx = mx - fx, dy = my - fy;
+        let t = 1;
+        if (dx > 0) t = Math.min(t, (size.w - M - fx) / dx);
+        if (dx < 0) t = Math.min(t, (M - fx) / dx);
+        if (dy > 0) t = Math.min(t, (size.h - M - fy) / dy);
+        if (dy < 0) t = Math.min(t, (M - fy) / dy);
+        const x = fx + dx * Math.max(0, t), y = fy + dy * Math.max(0, t);
+        if (messe.some((q) => Math.hypot(q.x - x, q.y - y) < 22)) continue;
+        messe.push({ x, y });
+        out.push({ key: `${r.net}-${out.length}`, x, y, ang: (Math.atan2(dy, dx) * 180) / Math.PI, colore: r.colore });
+        if (out.length > 60) return out;
+      }
+    }
+    return out;
+  }, [retiFocus, view, size]);
 
   /*
    * The names of the parts in "Sposta": every part of the visible face, next
@@ -857,10 +927,29 @@ export function BoardCanvas({
           );
           return;
         }
-        if (!dragging || !dragFrom.current) return;
+        if (!dragging || !dragFrom.current) {
+          // which pin is under the mouse, among the parts that can be seen
+          const rect = wrapRef.current?.getBoundingClientRect();
+          if (rect && scene) {
+            const q = toMm(e.clientX - rect.left, e.clientY - rect.top);
+            const sotto = scene.pads.find((p) => {
+              if (!p.net || nascosti.has(p.componentId)) return false;
+              const c = pezzoDi.get(p.componentId);
+              const eff = c ? effOf(c) : null;
+              const x = p.x + (eff && c ? eff.x - c.x : 0);
+              const y = p.y + (eff && c ? eff.y - c.y : 0);
+              const r = Math.max(p.w, p.h) / 2;
+              return Math.abs(q.x - x) <= r && Math.abs(q.y - y) <= r;
+            });
+            const id = sotto?.id ?? null;
+            if (id !== padSotto) setPadSotto(id);
+          }
+          return;
+        }
         const d = dragFrom.current;
         setView((v) => ({ ...v, x: d.vx + (e.clientX - d.x), y: d.vy + (e.clientY - d.y) }));
       }}
+      onPointerLeave={() => setPadSotto(null)}
       onPointerUp={(e) => {
         // the component is dropped here: it becomes a pending edit
         if (compDragFrom.current && compDrag) {
@@ -1143,18 +1232,18 @@ export function BoardCanvas({
                   </g>
                 ) : (
                   <g key={l.key}>
+                    {/* a branch of the net's shortest tree: thin, same width at any zoom */}
                     <line
                       x1={l.x1}
                       y1={l.y1}
                       x2={l.x2}
                       y2={l.y2}
                       stroke={l.colore}
-                      strokeWidth={0.08}
-                      strokeDasharray="0.4 0.25"
-                      opacity={0.85}
+                      strokeWidth={1.3}
+                      vectorEffect="non-scaling-stroke"
+                      strokeDasharray="5 3"
+                      opacity={0.9}
                     />
-                    <circle cx={l.x1} cy={l.y1} r={0.16} fill={l.colore} />
-                    <circle cx={l.x2} cy={l.y2} r={0.11} fill={l.colore} opacity={0.75} />
                   </g>
                 ),
               )}
@@ -1373,6 +1462,7 @@ export function BoardCanvas({
                     origY: p.y,
                   };
                   setCompDrag({ id: c.id, x: p.x, y: p.y });
+                  setPadSotto(null);
                   (e.target as Element).setPointerCapture?.(e.pointerId);
                   onPickComponent?.(c.id);
                 }}
@@ -1461,6 +1551,21 @@ export function BoardCanvas({
               </text>
             );
           })}
+        {/* the pins of the focused nets that are off screen: an arrow on the edge */}
+        {frecce.length > 0 && (
+          <g pointerEvents="none">
+            {frecce.map((f) => (
+              <path
+                key={f.key}
+                d="M 7 0 L -5 -5 L -2 0 L -5 5 Z"
+                transform={`translate(${f.x} ${f.y}) rotate(${f.ang})`}
+                fill={f.colore}
+                stroke="#0B1110"
+                strokeWidth={1}
+              />
+            ))}
+          </g>
+        )}
         {/* part names in "Sposta": what is being moved, always readable */}
         {designatori.length > 0 && (
           <g pointerEvents="none">
