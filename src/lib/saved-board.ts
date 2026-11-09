@@ -1,4 +1,6 @@
+import { readCompileRun } from "./activity-store";
 import { withLibrary } from "./agent-tools";
+import type { CompileRun } from "./compile-run";
 import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { extractComponents, extractIssues, type InspectComponent, type InspectIssue } from "./inspect";
 import type { Profile } from "./profile";
@@ -23,6 +25,13 @@ export interface SavedBoardInspection {
    * compile too long for its own HTTP answer.
    */
   profile?: Profile;
+  /**
+   * The saved board is the one without schematic, saved early: a big board's
+   * compile answers then and draws the schematic in the background.
+   */
+  schematicPending?: string;
+  /** a compile of this project still running, or cut off, from the project's log */
+  compileRun: CompileRun | null;
   issues: InspectIssue[];
   components: InspectComponent[];
 }
@@ -56,6 +65,8 @@ export async function inspectSavedBoard(
     // if the comparison fails, better not to cry wolf: the board is still the saved one
   }
   const checksStale = cache.engineVersion < CHECKS_ENGINE_VERSION;
+  const pending = (cache.summary as { schematicPending?: unknown } | null)?.schematicPending;
+  const compileRun = await readCompileRun(projectId).catch(() => null);
   const createdAt = cache.createdAt as unknown;
   return {
     ok: true,
@@ -67,6 +78,8 @@ export async function inspectSavedBoard(
         ? { nota: "i sorgenti sono cambiati dopo questa compilazione: chiama compile per vedere la scheda di questi file" }
         : {}),
       ...(profileOf(cache.summary) ? { profile: profileOf(cache.summary) } : {}),
+      ...(typeof pending === "string" ? { schematicPending: pending } : {}),
+      compileRun,
       issues: extractIssues(cache.circuitJson).slice(0, 60),
       components: extractComponents(cache.circuitJson, files),
     },

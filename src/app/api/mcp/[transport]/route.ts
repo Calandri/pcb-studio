@@ -28,6 +28,8 @@ import { motivoErrore } from "@/lib/error-cause";
 import { inspectSavedBoard } from "@/lib/saved-board";
 import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 import { withSseKeepalive } from "@/lib/sse-keepalive";
+import { answerAtEarlyBoard, repliesEarly } from "@/lib/compile-early-reply";
+import { after } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -155,6 +157,46 @@ function copperToKeep(fsMap: Record<string, string>, cache: CompileCache | null)
   return (cache?.circuitJson as unknown[] | undefined) ?? undefined;
 }
 
+const EARLY_REPLY_NOTE =
+  "scheda salvata, schematico in corso: lo schematico finisce in background entro gli 800 s. " +
+  "Il risultato finale si legge con inspect_board: compiledAt cambia quando e' salvato, " +
+  "schematicPending sparisce e profile riporta i tempi; compileRun dice se il compile e' ancora in corso.";
+
+/**
+ * The rest of a compile that has already answered (see compile-early-reply.ts):
+ * the function lives until it is saved (Next's after, up to maxDuration), and
+ * the log gets its outcome, which recordTool already wrote for the early answer.
+ */
+function finishInBackground(projectId: string, rest: Promise<unknown>): void {
+  const finish = async () => {
+    const started = Date.now();
+    try {
+      const final = (await rest) as { message?: unknown } | undefined;
+      await logActivity(projectId, {
+        actor: "claude",
+        tool: "compile",
+        phase: "fine",
+        detail: `schematico salvato: ${String(final?.message ?? "").slice(0, 280)}`,
+        ms: Date.now() - started,
+      });
+    } catch (err) {
+      await logActivity(projectId, {
+        actor: "claude",
+        tool: "compile",
+        phase: "errore",
+        detail: `schematico non salvato: ${motivoErrore(err)}`,
+        ms: Date.now() - started,
+      });
+    }
+  };
+  try {
+    after(finish);
+  } catch {
+    // outside a request (tests): the promise runs on its own
+    void finish();
+  }
+}
+
 function buildHandler(viewer: Viewer) {
   /*
    * The last project touched in this MCP session. Needed because half of the
@@ -247,9 +289,12 @@ function buildHandler(viewer: Viewer) {
         "connessioni ancora aperte, congestione e geometria, piu' la qualita' dello " +
         "schematico (simboli sovrapposti, net label sopra i simboli, incroci, sezioni " +
         "funzionali). Le piste si disegnano a mano (<trace pcbPath>). Chiamalo dopo ogni " +
-        "write_file e correggi ogni errore prima di rispondere. Il risultato viene salvato " +
-        "anche se la risposta non arriva: inspect_board restituisce sempre l'ultima scheda " +
-        "salvata con compiledAt e profile (tempi e patch del compile).",
+        "write_file e correggi ogni errore prima di rispondere. Su una scheda grande " +
+        "(da 40 componenti in su) risponde appena la scheda senza schematico e' salvata, " +
+        "con schematicoInCorso: true e schematicPending: lo schematico finisce in background " +
+        "entro gli 800 s. Il risultato finale si legge sempre con inspect_board: compiledAt " +
+        "cambia, schematicPending sparisce, profile ha i tempi e compileRun dice se e' ancora " +
+        "in corso. Sulle schede piccole risponde a fine compilazione come sempre.",
       {
         projectId: z.string(),
       },
@@ -278,63 +323,77 @@ function buildHandler(viewer: Viewer) {
         const saveEarly = earlyBoardSaver(projectId, hash, inCache, fresh);
         let lastPreview = 0;
         let lastStep = "";
-        const { summary, circuitJson } = await compileProject(fsMap, {
-          keepCopperFrom: copperToKeep(fsMap, inCache),
-          // the schematic of the last board, reused when only PCB positions changed
-          schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
-          /*
-           * The board is saved as soon as it exists, before the schematic: on a
-           * big board the open page draws it within seconds, and it stays saved
-           * even if this call is cut off while the schematic is being drawn.
-           */
-          onBoard: async (early) => {
-            const r = await saveEarly(early);
-            if (r.saved) {
-              await logActivity(projectId, {
-                actor: "claude",
-                tool: "compile",
-                phase: "avvio",
-                detail: "Scheda salvata - ora lo schematico",
-              });
-            }
-          },
-          onProgress: (p) => {
+        /*
+         * A big board answers at the early save and finishes in the background
+         * (see compile-early-reply.ts); a small one answers at the end, as before.
+         */
+        const answer = await answerAtEarlyBoard<unknown, unknown>(async (answerEarly) => {
+          const { summary, circuitJson } = await compileProject(fsMap, {
+            keepCopperFrom: copperToKeep(fsMap, inCache),
+            // the schematic of the last board, reused when only PCB positions changed
+            schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
             /*
-             * Steps go to the log even without a drawing: the compilation
-             * takes minutes, and without these lines the viewer only sees
-             * "compile" for six minutes and does not know whether it is
-             * placing, routing, or finishing. Only step CHANGES, not every
-             * heartbeat.
+             * The board is saved as soon as it exists, before the schematic: on a
+             * big board the open page draws it within seconds, and it stays saved
+             * even if this call is cut off while the schematic is being drawn.
              */
-            if (p.step && p.step !== lastStep) {
-              lastStep = p.step;
-              void logActivity(projectId, {
-                actor: "claude",
-                tool: "compile",
-                phase: "avvio",
-                detail: p.detail ? `${p.step} - ${p.detail}` : p.step,
-              });
-            }
-            if (!p.circuitJson) return;
-            const now = Date.now();
-            // no more than one write every three seconds: the page polls
-            // every five, writing more would be load for nothing
-            if (now - lastPreview < 3000) return;
-            lastPreview = now;
-            void savePreviewCircuit(projectId, p.circuitJson);
-          },
-        });
-        const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).catch((err: unknown) => ({
-          saved: false,
-          reason: motivoErrore(err),
-        }));
-        // a compile that is not the board on screen must say so: the agent
-        // would otherwise reason on a result the viewer never shows
-        return text(
-          salvataggio.saved
+            onBoard: async (early) => {
+              const r = await saveEarly(early);
+              if (r.saved) {
+                await logActivity(projectId, {
+                  actor: "claude",
+                  tool: "compile",
+                  phase: "avvio",
+                  detail: "Scheda salvata - ora lo schematico",
+                });
+              }
+              if (repliesEarly(early.circuitJson)) {
+                await answerEarly({
+                  ...(early.summary as object),
+                  schematicoInCorso: true,
+                  saved: r.saved,
+                  ...(r.saved ? {} : { notSavedReason: r.reason ?? null }),
+                  nota: EARLY_REPLY_NOTE,
+                });
+              }
+            },
+            onProgress: (p) => {
+              /*
+               * Steps go to the log even without a drawing: the compilation
+               * takes minutes, and without these lines the viewer only sees
+               * "compile" for six minutes and does not know whether it is
+               * placing, routing, or finishing. Only step CHANGES, not every
+               * heartbeat.
+               */
+              if (p.step && p.step !== lastStep) {
+                lastStep = p.step;
+                void logActivity(projectId, {
+                  actor: "claude",
+                  tool: "compile",
+                  phase: "avvio",
+                  detail: p.detail ? `${p.step} - ${p.detail}` : p.step,
+                });
+              }
+              if (!p.circuitJson) return;
+              const now = Date.now();
+              // no more than one write every three seconds: the page polls
+              // every five, writing more would be load for nothing
+              if (now - lastPreview < 3000) return;
+              lastPreview = now;
+              void savePreviewCircuit(projectId, p.circuitJson);
+            },
+          });
+          const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).catch((err: unknown) => ({
+            saved: false,
+            reason: motivoErrore(err),
+          }));
+          // a compile that is not the board on screen must say so: the agent
+          // would otherwise reason on a result the viewer never shows
+          return salvataggio.saved
             ? summary
-            : { ...(summary as object), saved: false, notSavedReason: salvataggio.reason ?? null },
-        );
+            : { ...(summary as object), saved: false, notSavedReason: salvataggio.reason ?? null };
+        }, (rest) => finishInBackground(projectId, rest));
+        return text(answer.value);
       },
     );
 
