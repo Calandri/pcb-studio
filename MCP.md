@@ -17,7 +17,7 @@ mantenere, nessun costo per token lato app.
 | `read_project` | legge i file tscircuit (il codice E' il progetto) |
 | `write_file` | scrive un file (contenuto completo, niente diff) |
 | `compile` | rilegge i file senza instradare ne' piazzare, salva la scheda (prima senza schematico, poi completa), esegue il DRC, restituisce errori e geometria |
-| `inspect_board` | dall'ultima scheda salvata, senza ricompilare: problemi con posizione + componenti con coordinate e reti |
+| `inspect_board` | dall'ultima scheda salvata, senza ricompilare: problemi con posizione + componenti con coordinate e reti, `compiledAt`, `stale` e `profile` (tempi e patch dell'ultimo compile). Il risultato di un `compile` si legge sempre anche da qui, anche quando la sua risposta non arriva |
 | `search_parts` | componenti reali a magazzino su JLCPCB |
 | `import_component_from_lcsc` | footprint e simbolo reali di un part LCSC |
 | `library_list` / `library_read` / `library_save` | componenti riusabili in libreria |

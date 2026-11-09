@@ -29,6 +29,7 @@ import {
 import { motivoErrore } from "@/lib/error-cause";
 import { inspectSavedBoard } from "@/lib/saved-board";
 import { earlyBoardSaver } from "@/lib/compile-save";
+import { withSseKeepalive } from "@/lib/sse-keepalive";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -248,7 +249,9 @@ function buildHandler(viewer: Viewer) {
         "connessioni ancora aperte, congestione e geometria, piu' la qualita' dello " +
         "schematico (simboli sovrapposti, net label sopra i simboli, incroci, sezioni " +
         "funzionali). Le piste si disegnano a mano (<trace pcbPath>). Chiamalo dopo ogni " +
-        "write_file e correggi ogni errore prima di rispondere.",
+        "write_file e correggi ogni errore prima di rispondere. Il risultato viene salvato " +
+        "anche se la risposta non arriva: inspect_board restituisce sempre l'ultima scheda " +
+        "salvata con compiledAt e profile (tempi e patch del compile).",
       {
         projectId: z.string(),
       },
@@ -561,7 +564,8 @@ async function handle(req: Request): Promise<Response> {
   const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
   const identity = bearer ? await resolveApiToken(bearer) : null;
   if (!identity) return unauthorized();
-  return buildHandler(identity)(req);
+  // a compile answers after minutes: the stream must not stay silent until then (see sse-keepalive.ts)
+  return withSseKeepalive(await buildHandler(identity)(req));
 }
 
 export { handle as GET, handle as POST, handle as DELETE };
