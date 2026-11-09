@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import type { InspectComponent } from "@/lib/inspect";
+import { ETICHETTA_FONTE, LUNGHEZZA_TRE_RIGHE, descriviPezzo } from "@/lib/part-description";
 
 /**
  * Card of the selected component, bottom right above the board: designator,
@@ -52,26 +54,10 @@ export function PartCard({
         is a 16 MHz crystal: looking at the board you read "chip" and there
         was no way to tell what X1 was.
       */}
-      {(part.description || part.role) && (
-        <div className="mt-2 rounded-[9px] border border-[#2C4C42] bg-brand-wash px-2.5 py-2">
-          <div className="text-[11.5px] font-semibold text-brand">
-            {part.tags ?? part.role ?? "Componente"}
-          </div>
-          {part.description ? (
-            <p className="mt-1 text-[11px] leading-[1.45] text-[#A8B9B4]">{part.description}</p>
-          ) : (
-            part.why && (
-              <p className="mt-1 text-[11px] leading-[1.45] text-[#A8B9B4]">{part.why}</p>
-            )
-          )}
-          {!part.description && described && (
-            <p className="mt-1 text-[9.5px] text-[#5F726C]">da datasheet + connessioni</p>
-          )}
-        </div>
-      )}
+      <Descrizione part={part} />
 
       <p className="mt-2 text-[11.5px] leading-[1.4] text-[#A8B9B4]">
-        {[part.domain, part.ftype, part.value].filter(Boolean).join(" · ") ||
+        {[part.domain, part.value, part.mpn].filter(Boolean).join(" · ") ||
           "Componente della scheda"}
         {part.layer ? ` · ${part.layer === "top" ? "lato componenti" : "lato saldature"}` : ""}
       </p>
@@ -119,6 +105,44 @@ export function PartCard({
       >
         Chiedi al copilota
       </button>
+    </div>
+  );
+}
+
+/** what the part is, and where that sentence comes from (see part-description.ts) */
+function Descrizione({ part }: { part: InspectComponent }) {
+  const d = descriviPezzo(part);
+  return (
+    <div className="mt-2 rounded-[9px] border border-[#2C4C42] bg-brand-wash px-2.5 py-2">
+      <div className="text-[11.5px] font-semibold text-brand">{d.titolo}</div>
+      {d.testo && <TestoLungo testo={d.testo} className="mt-1 text-[11px] leading-[1.45] text-[#A8B9B4]" />}
+      {d.fonte && <p className="mt-1 text-[9.5px] text-[#5F726C]">{ETICHETTA_FONTE[d.fonte]}</p>}
+    </div>
+  );
+}
+
+/**
+ * A description can be long: three lines, then "altro" opens it all and
+ * "meno" closes it again.
+ */
+export function TestoLungo({ testo, className }: { testo: string; className?: string }) {
+  const [aperto, setAperto] = useState(false);
+  const lungo = testo.length > LUNGHEZZA_TRE_RIGHE;
+  return (
+    <div className={className}>
+      <p className={lungo && !aperto ? "line-clamp-3" : undefined}>{testo}</p>
+      {lungo && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setAperto((a) => !a);
+          }}
+          className="mt-0.5 text-[10px] font-semibold text-brand underline-offset-2 hover:underline"
+        >
+          {aperto ? "meno" : "altro"}
+        </button>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { TestoLungo } from "./PartCard";
 import { useCallback, useEffect, useState } from "react";
 
 /**
@@ -189,7 +190,8 @@ export function BomView({ projectId }: { projectId: string }) {
                   </div>
                   {role && (
                     <div className="mt-0.5 max-w-[260px] text-[10.5px] leading-[1.35] text-faint">
-                      {role}
+                      <TestoLungo testo={role} />
+                      <span className="text-[9px] text-[#4E625C]">generata dal datasheet</span>
                     </div>
                   )}
                 </td>

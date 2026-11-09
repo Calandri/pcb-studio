@@ -858,14 +858,9 @@ export function Studio({
       console.error("componenti non letti dal circuito:", err);
       base = [];
     }
-    // the model's descriptions (datasheet + connections) cover the heuristic
-    for (const p of base) {
-      const d = partDesc[p.name];
-      if (d) {
-        p.role = d.role;
-        p.why = d.why;
-      }
-    }
+    // the model's descriptions go next to the others, never over them: what is
+    // written in the sources wins (part-description.ts)
+    for (const p of base) p.generated = partDesc[p.name] ?? null;
     return base;
   }, [circuitJson, partDesc, fsMap]);
   // the part picked on the board and the selection on the schematic are one

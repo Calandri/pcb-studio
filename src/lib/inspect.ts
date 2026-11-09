@@ -32,6 +32,8 @@ export interface InspectComponent {
   supplier: string | null;
   /** component datasheet, when the supplier exposes it */
   datasheetUrl: string | null;
+  /** manufacturer part number declared in the sources (manufacturerPartNumber) */
+  mpn: string | null;
   ftype: string | null;
   /** what it is and why it is there, inferred from how it is connected */
   role: string | null;
@@ -46,6 +48,12 @@ export interface InspectComponent {
   tags: string | null;
   /** which part of the board it belongs to */
   domain: string | null;
+  /**
+   * The model's description (Descrivi da datasheet), kept APART from role/why:
+   * it used to overwrite them and lead the card even when the sources had a
+   * description. See part-description.ts for which one is shown.
+   */
+  generated?: { role: string; why: string } | null;
   /** real footprint on the board, in mm */
   widthMm: number | null;
   heightMm: number | null;
@@ -149,6 +157,7 @@ export function extractComponents(
       pins: (portsByComponent.get(compId) ?? []).length,
       supplier: supplierCode(source),
       datasheetUrl: datasheetUrl(supplierCode(source)),
+      mpn: source?.manufacturer_part_number ? String(source.manufacturer_part_number) : null,
       ftype: source?.ftype ? String(source.ftype).replace(/^simple_/, "") : null,
       role: roles.get(String(source?.name ?? ""))?.role ?? null,
       why: roles.get(String(source?.name ?? ""))?.why ?? null,
