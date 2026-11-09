@@ -48,6 +48,12 @@ describe("Sposta mostra e fa prendere solo i pezzi della faccia scelta", () => {
     expect(svg).toMatch(/width="1.4"/);
   });
 
+  it("un pezzo girato sotto (non ancora applicato) sparisce da Top e si prende da Bottom", () => {
+    const giro = { moveOverrides: { pc_top: { x: 0, y: 0, rotation: 0, layer: "bottom" } } };
+    expect(maniglie(disegna(giro))).toHaveLength(0);
+    expect(maniglie(disegna({ ...giro, layer: "bottom" }))).toHaveLength(2);
+  });
+
   it("in Guarda non cambia niente: tutti e due hanno il riquadro del passaggio del mouse", () => {
     const svg = renderToStaticMarkup(
       createElement(BoardCanvas, { circuitJson: CIRCUIT, flags, layer: "top", mode: "view" } as never),

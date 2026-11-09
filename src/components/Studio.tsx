@@ -707,6 +707,7 @@ export function Studio({
       from: { x: number; y: number },
       to: { x: number; y: number },
       rotation?: number,
+      layer?: "top" | "bottom",
     ) => {
       editor.pushPending({
         edit_event_type: "edit_pcb_component_location",
@@ -714,12 +715,14 @@ export function Studio({
         original_center: from,
         new_center: to,
         ...(rotation !== undefined ? { new_rotation: rotation } : {}),
+        // "Gira lato": the other face travels with the event, like the rotation
+        ...(layer !== undefined ? { new_layer: layer } : {}),
       });
     },
     [editor],
   );
   const pcbMoveOverrides = useMemo(() => {
-    const out: Record<string, { x: number; y: number; rotation?: number }> = {};
+    const out: Record<string, { x: number; y: number; rotation?: number; layer?: "top" | "bottom" }> = {};
     for (const ev of editor.pending) {
       if (
         ev.edit_event_type === "edit_pcb_component_location" &&
@@ -739,10 +742,13 @@ export function Studio({
         const prima = out[ev.pcb_component_id];
         const rotazione =
           ev.new_rotation !== undefined ? ev.new_rotation : prima?.rotation;
+        // the face, like the rotation: a later move does not turn it back
+        const lato = ev.new_layer !== undefined ? ev.new_layer : prima?.layer;
         out[ev.pcb_component_id] = {
           x: ev.new_center.x,
           y: ev.new_center.y,
           ...(rotazione !== undefined ? { rotation: rotazione } : {}),
+          ...(lato !== undefined ? { layer: lato } : {}),
         };
       }
     }

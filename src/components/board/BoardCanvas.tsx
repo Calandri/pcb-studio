@@ -54,7 +54,34 @@ export interface MoveOverride {
   x: number;
   y: number;
   rotation?: number;
+  /** the face it has been turned to ("Gira lato"), not yet recompiled */
+  layer?: "top" | "bottom";
 }
+
+/**
+ * The mirror tscircuit applies to a part on the other face, as an SVG matrix:
+ * a reflection across the part's own Y axis (the line through its origin at
+ * its rotation + 90 degrees): an 0402 at 0 degrees swaps its pads left-right,
+ * at 90 degrees top-bottom. Measured on the compiler, the same as compiling it
+ * with the other `layer`.
+ */
+export function mirrorMatrix(ox: number, oy: number, rotationDeg: number) {
+  const t = (2 * (rotationDeg + 90) * Math.PI) / 180;
+  const c2 = Math.abs(Math.cos(t)) < 1e-12 ? 0 : Math.cos(t);
+  const s2 = Math.abs(Math.sin(t)) < 1e-12 ? 0 : Math.sin(t);
+  return {
+    a: c2,
+    b: s2,
+    c: s2,
+    d: -c2,
+    e: ox - (c2 * ox + s2 * oy),
+    f: oy - (s2 * ox - c2 * oy),
+  };
+}
+const applyMatrix = (m: ReturnType<typeof mirrorMatrix>, x: number, y: number) => ({
+  x: m.a * x + m.c * y + m.e,
+  y: m.b * x + m.d * y + m.f,
+});
 
 /** standard grid pitches (mil): 0,635 = 25mil, 1,27 = 50mil, 2,54 = 100mil */
 const GRID_OPTIONS = [0.25, 0.635, 1.27, 2.54];
@@ -119,6 +146,8 @@ export function BoardCanvas({
     from: { x: number; y: number },
     to: { x: number; y: number },
     rotation?: number,
+    /** the other face, when the part is turned over ("Gira lato") */
+    layer?: "top" | "bottom",
   ) => void;
   /**
    * The parts held still by hand, by NAME. In move mode they get a mark on the
@@ -175,12 +204,35 @@ export function BoardCanvas({
    * top); both faces only when asked for. "Guarda" is untouched.
    */
   const faccia: LayerId = layer === "bottom" ? "bottom" : "top";
+  /*
+   * The parts turned to the other face and not applied yet: they are drawn
+   * mirrored on that face, and for what can be seen and grabbed they are
+   * already there.
+   */
+  const girati = useMemo(() => {
+    const out = new Set<string>();
+    if (!scene) return out;
+    for (const c of scene.components) {
+      const l = moveOverrides[c.id]?.layer;
+      if (l && l !== (c.layer === "bottom" ? "bottom" : "top")) out.add(c.id);
+    }
+    return out;
+  }, [scene, moveOverrides]);
+  const altraFaccia = (l: LayerId): LayerId => (l === "top" ? "bottom" : l === "bottom" ? "top" : l);
+  /** the face a part is on now, pending flip included */
+  const latoDiPezzo = useCallback(
+    (c: { id: string; layer: LayerId }): LayerId => (girati.has(c.id) ? altraFaccia(c.layer) : c.layer),
+    [girati],
+  );
+  /** the face of something that belongs to a part (pad, silkscreen) */
+  const latoDiParte = (componentId: string, l: LayerId): LayerId =>
+    girati.has(componentId) ? altraFaccia(l) : l;
   const nascosti = useMemo(() => {
     const out = new Set<string>();
     if (!scene || mode !== "move" || bothSides) return out;
-    for (const c of scene.components) if (c.layer !== faccia) out.add(c.id);
+    for (const c of scene.components) if (latoDiPezzo(c) !== faccia) out.add(c.id);
     return out;
-  }, [scene, mode, bothSides, faccia]);
+  }, [scene, mode, bothSides, faccia, latoDiPezzo]);
 
   // what is no longer visible leaves the selection, the hover and the pick
   useEffect(() => {
@@ -324,11 +376,17 @@ export function BoardCanvas({
       const dx = eff.x - c.x;
       const dy = eff.y - c.y;
       const dRot = (((eff.rotation - c.rotation) % 360) + 360) % 360;
-      if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9 && dRot === 0) return undefined;
+      const girato = girati.has(c.id);
+      if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9 && dRot === 0 && !girato) return undefined;
+      // turned over: mirrored first, on the part's own axis, then moved
+      const m = girato ? mirrorMatrix(c.ox, c.oy, c.rotation) : null;
       // it turns around the ORIGIN, like the compiler does: see ComponentBox.ox
-      return `translate(${dx} ${dy}) rotate(${dRot} ${c.ox} ${c.oy})`;
+      return componi(
+        `translate(${dx} ${dy}) rotate(${dRot} ${c.ox} ${c.oy})`,
+        m && `matrix(${m.a} ${m.b} ${m.c} ${m.d} ${m.e} ${m.f})`,
+      );
     },
-    [scene, effOf],
+    [scene, effOf, girati],
   );
 
   /*
@@ -368,9 +426,11 @@ export function BoardCanvas({
       if (!c) return { x: pad.x, y: pad.y };
       const eff = effOf(c);
       const giro = ((((eff.rotation - c.rotation) % 360) + 360) % 360) * (Math.PI / 180);
+      // turned over: the pad is mirrored on the part's axis first, like compTx
+      const q = girati.has(c.id) ? applyMatrix(mirrorMatrix(c.ox, c.oy, c.rotation), pad.x, pad.y) : pad;
       // same pivot as compTx: the origin, not the centre
-      const rx = pad.x - c.ox;
-      const ry = pad.y - c.oy;
+      const rx = q.x - c.ox;
+      const ry = q.y - c.oy;
       const cos = Math.cos(giro);
       const sin = Math.sin(giro);
       return {
@@ -529,7 +589,7 @@ export function BoardCanvas({
     }
 
     return out;
-  }, [scene, hoveredComponentId, selectedIds, effOf, nascosti]);
+  }, [scene, hoveredComponentId, selectedIds, effOf, nascosti, girati]);
 
   /*
    * The net names, laid out in screen pixels so they never overlap and keep
@@ -566,12 +626,31 @@ export function BoardCanvas({
       const eff = effOf(c);
       const dRot = (((eff.rotation - c.rotation) % 360) + 360) % 360;
       const rad = (dRot * Math.PI) / 180;
+      if (girati.has(c.id)) ({ x, y } = applyMatrix(mirrorMatrix(c.ox, c.oy, c.rotation), x, y));
       const rx = c.ox + (x - c.ox) * Math.cos(rad) - (y - c.oy) * Math.sin(rad);
       const ry = c.oy + (x - c.ox) * Math.sin(rad) + (y - c.oy) * Math.cos(rad);
       return { x: rx + (eff.x - c.x), y: ry + (eff.y - c.y), dRot };
     },
-    [scene, effOf],
+    [scene, effOf, girati],
   );
+
+  /*
+   * "Gira lato" (F in Sposta): the picked part, and every selected one, goes
+   * to the other face. Same place, same rotation, footprint mirrored as
+   * tscircuit does for a part on that face. A pending edit like a move: counted
+   * in "Applica", undone with Cmd+Z, written to manual-edits.json as `layer`.
+   */
+  const giraLato = useCallback(() => {
+    if (!scene) return;
+    const ids = new Set([pickedId, ...(selectedIds ?? [])].filter((v): v is string => Boolean(v)));
+    for (const id of ids) {
+      const comp = scene.components.find((c) => c.id === id);
+      if (!comp || nascosti.has(comp.id)) continue;
+      const cur = effOf(comp);
+      const ora = latoDiPezzo(comp);
+      onMoveComponent?.(comp.id, { x: cur.x, y: cur.y }, { x: cur.x, y: cur.y }, cur.rotation, ora === "bottom" ? "top" : "bottom");
+    }
+  }, [scene, pickedId, selectedIds, nascosti, effOf, latoDiPezzo, onMoveComponent]);
 
   /*
    * Keyboard, in move mode: the arrows move the selected component
@@ -585,6 +664,12 @@ export function BoardCanvas({
       if (isTypingTarget(e)) return;
       if (e.key === "Escape") {
         onPickComponent?.(null);
+        return;
+      }
+      // F turns the part over; R stays the rotation (schematic F is its own view)
+      if ((e.key === "f" || e.key === "F") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        giraLato();
         return;
       }
       const comp = pickedId ? scene.components.find((c) => c.id === pickedId) : null;
@@ -639,7 +724,7 @@ export function BoardCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, scene, pickedId, effOf, onMoveComponent, onPickComponent, gridMm, nascosti]);
+  }, [mode, scene, pickedId, effOf, onMoveComponent, onPickComponent, gridMm, nascosti, giraLato]);
 
   if (!scene) {
     return (
@@ -943,7 +1028,7 @@ export function BoardCanvas({
           {drawOrder.map((l) => (
             <g key={`pad-${l}`} opacity={layerOpacity(l)}>
               {scene.pads
-                .filter((p) => p.layer === l)
+                .filter((p) => latoDiParte(p.componentId, p.layer) === l)
                 .map((p) =>
                   p.circle ? (
                     <circle
@@ -1151,7 +1236,7 @@ export function BoardCanvas({
           {showSilk && (
             <g opacity={active === "top" || active === "bottom" ? 0.85 : 0.25}>
               {scene.silkPaths
-                .filter((p) => p.layer === (active === "bottom" ? "bottom" : "top"))
+                .filter((p) => latoDiParte(p.componentId, p.layer) === (active === "bottom" ? "bottom" : "top"))
                 .map((s) => (
                 <polyline
                   key={s.id}
@@ -1305,7 +1390,7 @@ export function BoardCanvas({
              * the 116 that are really there: the traces of the wrong side
              * disappear correctly and their labels stay.
              */
-            .filter((t) => t.layer === (active === "bottom" ? "bottom" : "top"))
+            .filter((t) => latoDiParte(t.componentId, t.layer) === (active === "bottom" ? "bottom" : "top"))
             .map((t) => {
             const m = mmPointTx(t.componentId, t.x, t.y);
             const px = view.x + m.x * view.k;
@@ -1388,13 +1473,23 @@ export function BoardCanvas({
       {mode === "move" && (
         <div className="absolute bottom-[64px] left-[18px] max-w-[480px] rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3 py-1.5 text-[11px] leading-relaxed text-muted backdrop-blur">
           {pickedId ? (
-            <span className="text-brand">componente selezionato</span>
+            <>
+              <span className="text-brand">componente selezionato</span>
+              <button
+                type="button"
+                onClick={giraLato}
+                title="Porta il pezzo sull'altra faccia: stessa posizione, impronta specchiata. Si applica con Applica (F)"
+                className="ml-2 rounded border border-[#2C4C42] px-1.5 py-px text-[10.5px] font-semibold text-brand transition-colors hover:bg-brand-wash"
+              >
+                Gira lato (F)
+              </button>
+            </>
           ) : (
             "Trascina un componente per spostarlo."
           )}
           <span className="ml-2 text-faint">
-            Alt = niente snap · frecce muovono (Shift = 0,1 mm) · R ruota 90°, ⇧R −90° · Esc
-            deseleziona
+            Alt = niente snap · frecce muovono (Shift = 0,1 mm) · R ruota 90°, ⇧R −90° · F gira
+            lato · Esc deseleziona
           </span>
           <span className="mt-1 flex items-center gap-1">
             <span className="text-faint">griglia</span>

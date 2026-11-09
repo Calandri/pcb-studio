@@ -39,6 +39,13 @@ export interface ManualPlacement {
   /** rotation in counterclockwise degrees, when the user changed it by hand */
   rotation?: number;
   /**
+   * The face, when the user turned the part to the other side by hand ("Gira
+   * lato", F in Sposta). Injected as the component's `layer` prop: tscircuit
+   * then mirrors the footprint like any part declared on that face. The
+   * rotation is kept as it is.
+   */
+  layer?: "top" | "bottom";
+  /**
    * True when the position was decided by the PLACER, not by a person.
    *
    * It is saved all the same — otherwise the layout you are looking at exists
@@ -170,10 +177,12 @@ export function parseManualEdits(raw: string | undefined | null): ManualEdits {
       if (typeof p.selector !== "string" || !p.selector) continue;
       if (!isPoint(p.center)) continue;
       const rotation = normalizeRotation(p.rotation);
+      const layer = key === "pcb_placements" ? faceOf(p.layer) : null;
       out[key].push({
         selector: p.selector,
         center: { x: round3(p.center.x), y: round3(p.center.y) },
         ...(rotation !== null ? { rotation } : {}),
+        ...(layer ? { layer } : {}),
         ...(p.auto === true ? { auto: true as const } : {}),
       });
     }
@@ -228,6 +237,10 @@ export function sameManualEdits(a: ManualEdits, b: ManualEdits): boolean {
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+/** a board face, or null for anything else */
+export const faceOf = (v: unknown): "top" | "bottom" | null =>
+  v === "top" || v === "bottom" ? v : null;
 
 /**
  * A rotation in [0, 360), rounded to the micro-degree: -90 and 270 are the
@@ -764,7 +777,11 @@ export function injectManualEdits(main: string, edits: ManualEdits): string {
   const pcb = new Map(
     edits.pcb_placements.map((p) => [
       p.selector,
-      { ...p.center, ...(p.rotation !== undefined ? { rotation: p.rotation } : {}) },
+      {
+        ...p.center,
+        ...(p.rotation !== undefined ? { rotation: p.rotation } : {}),
+        ...(p.layer ? { layer: p.layer } : {}),
+      },
     ]),
   );
   const hints = edits.manual_trace_hints;
@@ -800,6 +817,7 @@ export function injectManualEdits(main: string, edits: ManualEdits): string {
           if (p.rotation !== undefined) {
             next = upsertAttr(next, "pcbRotation", `{${p.rotation}}`);
           }
+          if (p.layer) next = upsertAttr(next, "layer", `"${p.layer}"`);
         }
       }
     }
@@ -863,6 +881,8 @@ export interface EditEvent {
   new_center?: { x: number; y: number };
   /** absolute rotation in counterclockwise degrees, if the event changes it */
   new_rotation?: number;
+  /** the face the part goes to, if the event turns it to the other side */
+  new_layer?: "top" | "bottom";
   route?: Array<{ x: number; y: number; via?: boolean }>;
 }
 
@@ -906,6 +926,7 @@ const upsertPlacement = (
   selector: string,
   center: { x: number; y: number },
   rotation?: number,
+  layer?: "top" | "bottom",
 ): ManualPlacement[] => {
   const previous = list.find((p) => p.selector === selector);
   const next = list.filter((p) => p.selector !== selector);
@@ -919,6 +940,8 @@ const upsertPlacement = (
       : previous?.rotation !== undefined
         ? { rotation: previous.rotation }
         : {}),
+    // the same for the face: a plain move does not bring the part back up
+    ...(layer ? { layer } : previous?.layer ? { layer: previous.layer } : {}),
   });
   return next;
 };
@@ -1030,6 +1053,7 @@ export function applyEditEvents({
           y: baseY + (event.new_center.y - event.original_center.y),
         },
         newRotation,
+        faceOf(event.new_layer) ?? undefined,
       );
       continue;
     }

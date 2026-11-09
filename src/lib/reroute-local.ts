@@ -257,6 +257,19 @@ export function applyPlacementsToCircuit(
     const originY = originRelY ?? centerY - frame.y;
     const cx = originRelX !== null ? originRelX + frame.x : centerX;
     const cy = originRelY !== null ? originRelY + frame.y : centerY;
+    /*
+     * A part turned to the other face cannot be mirrored on the cached board:
+     * tscircuit mirrors its footprint, swaps the layer of every pad and of the
+     * silkscreen, and writes it again. The compile does that ("Aggiorna").
+     */
+    if (placement.layer && placement.layer !== (comp.layer === "bottom" ? "bottom" : "top")) {
+      return {
+        circuitJson: out as CircuitElement[],
+        moved,
+        orphans,
+        error: `${placement.selector} passa ${placement.layer === "bottom" ? "sotto" : "sopra"}: premi Aggiorna per ricompilare, il rame non si tocca`,
+      };
+    }
     const r0 = normalizeRotation(comp.rotation) ?? 0;
     const target = normalizeRotation(placement.rotation ?? r0) ?? r0;
     /*
