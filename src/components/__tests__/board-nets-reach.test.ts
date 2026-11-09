@@ -48,12 +48,14 @@ describe("dove va una rete", () => {
     expect(pin).toMatchObject({ foro: true, pin: "pin3", netName: "VBAT_MDM", componentId: "pc_j" });
     const html = disegna("pc_j");
     expect(html).toContain(">VBAT_MDM<");
-    expect(html).toMatch(/J4\.3 · 4 piedini: U1\.IN, C2\.1, TVS1\.1/);
+    expect(html).toContain("J4.3");
+    // where the net goes: in the bar under the board
+    expect(html.slice(html.lastIndexOf("</svg>"))).toMatch(/VBAT_MDM: 4 piedini: U1\.IN, C2\.1, TVS1\.1/);
   });
 
   it("l'albero piu' corto unisce tutti i piedini della rete: 3 linee per 4 piedini", () => {
     const html = disegna("pc_u");
     expect(html.match(/<line [^>]*stroke-dasharray="5 3"/g) ?? []).toHaveLength(3);
-    expect(html).toMatch(/U1\.IN · 4 piedini: J4\.3, C2\.1, TVS1\.1/);
+    expect(html.slice(html.lastIndexOf("</svg>"))).toMatch(/VBAT_MDM: 4 piedini: J4\.3, C2\.1, TVS1\.1/);
   });
 });

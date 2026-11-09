@@ -49,10 +49,11 @@ const scritte = (focus: string) => {
 
 describe("le linee dei collegamenti portano il nome della rete", () => {
   // the second line says where the net goes: how many pins and which (2026-11-09)
-  it("da R35: GATE con i piedini dove va, e, senza rete, R35.1 > Q3.D", () => {
+  // next to the pad only the net and the pin; where it goes is in the bar under the board
+  it("da R35: GATE col pin R35.2, e, senza rete, R35.1 > Q3.D", () => {
     expect(scritte("pc_r")).toEqual(
       expect.arrayContaining([
-        ["GATE", "R35.2 · 2 piedini: Q3.G"],
+        ["GATE", "R35.2"],
         ["R35.1 > Q3.D", ""],
       ]),
     );
@@ -60,7 +61,7 @@ describe("le linee dei collegamenti portano il nome della rete", () => {
 
   it("da Q3 la stessa rete si chiama allo stesso modo", () => {
     const t = scritte("pc_q");
-    expect(t).toEqual(expect.arrayContaining([["GATE", "Q3.G · 2 piedini: R35.2"], ["Q3.D > R35.1", ""]]));
+    expect(t).toEqual(expect.arrayContaining([["GATE", "Q3.G"], ["Q3.D > R35.1", ""]]));
   });
 
   it("mai un pin da solo, mai None o undefined", () => {

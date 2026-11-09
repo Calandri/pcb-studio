@@ -941,10 +941,11 @@ export function Studio({
     const q = (summary as { schematicQuality?: SchematicSummary } | null)?.schematicQuality;
     return q ?? null;
   }, [summary]);
-  const part = useMemo(
-    () => parts.find((p) => p.id === (hoverPartId ?? partId)) ?? null,
-    [parts, hoverPartId, partId],
-  );
+  /*
+   * The card of the part that was CLICKED, in the right column: never over the
+   * board. Hovering only fills the bar under the board (BoardCanvas).
+   */
+  const part = useMemo(() => parts.find((p) => p.id === partId) ?? null, [parts, partId]);
 
   // widths actually used on the copper: without this, looking at the canvas
   // you cannot tell which trace is power and which is signal
@@ -1415,6 +1416,7 @@ export function Studio({
                       hoveredComponentId={hoverPartId}
                       onHoverComponent={setHoverPartId}
                       onPickComponent={pickPart}
+                      partInfo={partInfo}
                       // the part picked here or on the schematic: outlined.
                       // Not while Claude's panel is picking parts: there the
                       // outline means "in the selection", and it would lie
@@ -1630,8 +1632,8 @@ export function Studio({
 
           {/* what is being looked at, always readable above the canvas (not
               on the BOM, where it would cover the table rows) */}
-          {tab !== "bom" && viewNote && (
-          <div className="pointer-events-none absolute bottom-[18px] left-[34px] w-[328px] max-w-[calc(100%-68px)] rounded-[14px] border border-[#1F2C29] bg-[rgba(9,14,13,0.88)] px-3.5 py-[13px] backdrop-blur">
+          {tab !== "bom" && viewNote && editor.mode === "view" && (
+          <div className="pointer-events-none absolute bottom-[76px] left-[34px] w-[328px] max-w-[calc(100%-68px)] rounded-[14px] border border-[#1F2C29] bg-[rgba(9,14,13,0.88)] px-3.5 py-[13px] backdrop-blur">
             <div className="flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-brand" />
               <span className="text-[12px] font-bold text-[#E7EFEC]">
@@ -1688,18 +1690,6 @@ export function Studio({
           {(tab === "pcb" || tab === "cad") && parts.length > 0 && !claudeOpen && (
             <PartPicker parts={parts} selected={partId} onSelect={pickPart} />
           )}
-          {/* the component card must not open while the component is being
-              moved: it would cover the board right where one is working */}
-          {(tab === "pcb" || tab === "cad") && part && editor.mode === "view" && (
-            <PartCard
-              part={part}
-              onClose={() => pickPart(null)}
-              onAsk={ask}
-              onDescribe={() => describePart(part.name)}
-              describing={describingPart === part.name}
-              described={Boolean(partDesc[part.name])}
-            />
-          )}
 
         </section>
 
@@ -1714,6 +1704,19 @@ export function Studio({
           recompiling={recompiling}
           blocked={boardBusy}
           enclosures={enclosures}
+          top={
+            (tab === "pcb" || tab === "cad") && part && editor.mode === "view" ? (
+              <PartCard
+                docked
+                part={part}
+                onClose={() => pickPart(null)}
+                onAsk={ask}
+                onDescribe={() => describePart(part.name)}
+                describing={describingPart === part.name}
+                described={Boolean(partDesc[part.name])}
+              />
+            ) : null
+          }
         />
         {copilot && (
           <aside className="flex min-h-0 min-w-0 flex-col border-l border-line bg-surface">

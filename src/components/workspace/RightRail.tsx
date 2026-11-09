@@ -57,6 +57,7 @@ export function RightRail({
   recompiling,
   blocked = false,
   enclosures,
+  top = null,
 }: {
   tab: BoardTab;
   report: BoardReport;
@@ -71,13 +72,22 @@ export function RightRail({
   blocked?: boolean;
   /** enclosure designer (3D tab only) */
   enclosures: EnclosuresApi | null;
+  /** the card of the clicked part, at the top of the column: never over the board */
+  top?: React.ReactNode;
 }) {
   // on the 3D tab DRC and costs are not needed: the mechanical checks are what count
   if (tab === "cad" && enclosures) {
-    return <CadRail report={report} enclosures={enclosures} onAsk={onAsk} />;
+    if (!top) return <CadRail report={report} enclosures={enclosures} onAsk={onAsk} />;
+    return (
+      <div className="flex min-h-0 flex-col overflow-auto bg-sunken">
+        <div className="flex-none border-l border-line px-3.5 pt-4">{top}</div>
+        <CadRail report={report} enclosures={enclosures} onAsk={onAsk} />
+      </div>
+    );
   }
   return (
     <BoardRail
+      top={top}
       report={report}
       erc={erc}
       compiledAgo={compiledAgo}
@@ -92,6 +102,7 @@ export function RightRail({
 }
 
 function BoardRail({
+  top,
   report,
   erc,
   compiledAgo,
@@ -111,6 +122,7 @@ function BoardRail({
   onRecompile: () => void;
   recompiling: boolean;
   blocked: boolean;
+  top?: React.ReactNode;
 }) {
   const cost = estimateCost(report);
   const [open, setOpen] = useState<string | null>(null);
@@ -120,6 +132,7 @@ function BoardRail({
 
   return (
     <aside className="flex flex-col gap-[18px] overflow-auto border-l border-line bg-sunken px-3.5 py-4">
+      {top}
       <section className="flex flex-col gap-2.5">
         <div className="flex items-center justify-between">
           <div className="text-[10px] font-bold tracking-[0.11em] whitespace-nowrap text-faint">

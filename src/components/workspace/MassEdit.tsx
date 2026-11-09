@@ -145,7 +145,7 @@ export function MassEdit({
         type="button"
         onClick={() => setAperto(true)}
         title="Ricompila, fissa, sblocca — su tutta la scheda o sui pezzi scelti"
-        className="pointer-events-auto absolute bottom-[18px] left-[18px] z-20 flex items-center gap-2 rounded-[11px] border border-[#22302C] bg-[rgba(12,18,17,0.94)] px-3 py-2 text-[12.5px] font-semibold text-muted backdrop-blur transition-colors hover:border-[#2C4C42] hover:text-brand"
+        className="pointer-events-auto absolute bottom-[76px] left-[18px] z-20 flex items-center gap-2 rounded-[11px] border border-[#22302C] bg-[rgba(12,18,17,0.94)] px-3 py-2 text-[12.5px] font-semibold text-muted backdrop-blur transition-colors hover:border-[#2C4C42] hover:text-brand"
       >
         <Quadrati />
         Modifica massiva

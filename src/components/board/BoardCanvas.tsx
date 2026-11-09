@@ -15,7 +15,7 @@ import {
   type LatoEtichetta,
   type PlacedNetLabel,
 } from "./net-labels";
-import { TestoLungo } from "../workspace/PartCard";
+
 import { ETICHETTA_FONTE, type DescrizionePezzo } from "@/lib/part-description";
 import {
   HOLE_COPPER,
@@ -484,6 +484,8 @@ export function BoardCanvas({
       testo: string;
       /** the pins of the focused part on that net, small, under the name: "Q3.G" */
       sotto: string;
+      /** where the net goes ("9 piedini: U5.7, ..."): shown in the bar under the board */
+      membri?: string;
       /** the side of the part the pad is on: the name is pushed that way */
       lato?: LatoEtichetta;
       /** how far the pad reaches from its centre, mm */
@@ -538,8 +540,13 @@ export function BoardCanvas({
       scritte.add(pad.net);
       const miei = elenco(mine.filter((p) => p.net === pad.net).map(pinPieno));
       // its own pins first ("J4.3", "U1.EN, U1.IN"), then where the net goes
-      if (pad.netName) return { testo: pad.netName, sotto: `${miei} · ${membri(pad, altri)}` };
-      return { testo: `${miei} > ${elenco(altri.map(pinPieno))}`, sotto: altri.length > 2 ? membri(pad, altri) : "" };
+      /*
+       * Next to the pad only the net and the pins (small): where the net goes
+       * is written in the bar under the board. A box with "125 piedini: ..."
+       * beside the pad covered a strip of the board (Niccolo', 2026-11-09).
+       */
+      if (pad.netName) return { testo: pad.netName, sotto: miei, membri: membri(pad, altri) };
+      return { testo: `${miei} > ${elenco(altri.map(pinPieno))}`, sotto: "", membri: altri.length > 2 ? membri(pad, altri) : "" };
     };
     /*
      * How a connection is shown depends on how many pads it touches.
@@ -902,10 +909,25 @@ export function BoardCanvas({
   const showErrors = flags.is_showing_drc_errors;
   const showPaste = flags.is_showing_paste_mask;
 
+  /*
+   * THE BAR UNDER THE BOARD. What the part is, what is selected, where the
+   * nets go, the shortcuts: all here, in a strip of its own BELOW the board,
+   * never over it. The card used to open next to the part, big, over the
+   * parts and the connection lines ("IL POPUP MENTRE SPOSTO NON METTERLO
+   * DAVANTI", Niccolo', 2026-11-09). Over the board only the part names and
+   * the connection lines are drawn.
+   */
+  const inMano = compDrag && compDrag.ids.length > 1 ? compDrag.ids : null;
+  const gruppoScelto = inMano ?? (mode === "move" ? bersagli() : (selectedIds ?? []));
+  const idBarra = hoveredComponentId ?? compDrag?.id ?? pickedId ?? null;
+  const infoBarra = idBarra ? partInfo?.[idBarra] ?? null : null;
+  const retiBarra = links.filter((l) => l.testo && l.membri).map((l) => `${l.testo}: ${l.membri}`);
+
   return (
+    <div className="flex h-full w-full flex-col">
     <div
       ref={wrapRef}
-      className="relative h-full w-full overflow-hidden select-none"
+      className="relative min-h-0 w-full flex-1 overflow-hidden select-none"
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         const rect = wrapRef.current?.getBoundingClientRect();
@@ -1688,43 +1710,6 @@ export function BoardCanvas({
         )}
       </svg>
 
-      {/*
-        WHAT the part is, next to it, in "Sposta": the part under the mouse, or
-        the picked one. Beside the part, never on it, and hidden while dragging:
-        it must not get in the way of the hand. Only the picked part's card
-        takes clicks ("altro"), the hover one lets the mouse through.
-      */}
-      {(() => {
-        if (mode !== "move" || compDrag || !partInfo) return null;
-        const id = hoveredComponentId ?? pickedId;
-        const d = id ? designatori.find((x) => x.key === id) : null;
-        const info = id ? partInfo[id] : null;
-        if (!d || !info) return null;
-        const c = scene.components.find((x) => x.id === id);
-        const hw = c ? (c.w * view.k) / 2 : 0;
-        const larga = 240;
-        const aDestra = d.ax + hw + 14 + larga < size.w;
-        const left = aDestra ? d.ax + hw + 14 : Math.max(4, d.ax - hw - 14 - larga);
-        const top = Math.min(Math.max(4, d.ay - 20), Math.max(4, size.h - 140));
-        const cliccabile = id === pickedId && !hoveredComponentId;
-        return (
-          <div
-            className={`absolute z-20 w-[240px] rounded-[10px] border border-[#2C4C42] bg-[rgba(9,14,13,0.95)] px-2.5 py-2 shadow-[0_12px_30px_-12px_rgba(0,0,0,0.8)] ${
-              cliccabile ? "pointer-events-auto" : "pointer-events-none"
-            }`}
-            style={{ left, top }}
-          >
-            <div className="flex items-baseline gap-2">
-              <span className="font-mono text-[13px] font-semibold text-brand">{info.name}</span>
-              {info.valore && <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">{info.valore}</span>}
-            </div>
-            <div className="mt-0.5 text-[11.5px] font-semibold text-[#C7D6D1]">{info.titolo}</div>
-            {info.testo && <TestoLungo testo={info.testo} className="mt-0.5 text-[11px] leading-[1.4] text-[#A8B9B4]" />}
-            {info.fonte && <div className="mt-1 text-[9.5px] text-[#5F726C]">{ETICHETTA_FONTE[info.fonte]}</div>}
-          </div>
-        );
-      })()}
-
       {/* the box while it is being drawn: it lives outside the flipped SVG,
           because here the reasoning is in pixels, not millimeters */}
       {marquee && (
@@ -1764,53 +1749,19 @@ export function BoardCanvas({
         </ViewButton>
       </div>
 
-      <div className="pointer-events-none absolute bottom-[18px] left-1/2 -translate-x-1/2 font-mono text-[10px] text-[#4E625C]">
-        {Math.round(view.k)} px/mm · 1–{scene.board.layers >= 4 ? 4 : 2} uno strato · 0 tutti
-      </div>
-
-      {/* the move-mode controls: above the "Ricalcola massa" button,
-          which occupies the bottom-left corner */}
-      {mode === "move" && (
-        <div className="absolute bottom-[64px] left-[18px] max-w-[480px] rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3 py-1.5 text-[11px] leading-relaxed text-muted backdrop-blur">
-          {pickedId ? (
-            <>
-              <span className="text-brand">componente selezionato</span>
-              <button
-                type="button"
-                onClick={giraLato}
-                title="Porta il pezzo sull'altra faccia: stessa posizione, impronta specchiata. Si applica con Applica (F)"
-                className="ml-2 rounded border border-[#2C4C42] px-1.5 py-px text-[10.5px] font-semibold text-brand transition-colors hover:bg-brand-wash"
-              >
-                Gira lato (F)
-              </button>
-            </>
-          ) : (
-            "Trascina un componente per spostarlo."
-          )}
-          <span className="ml-2 text-faint">
-            Alt = niente snap · frecce muovono (Shift = 0,1 mm) · R ruota 90°, ⇧R −90° · F gira
-            lato · Shift+trascina = riquadro · Shift+clic aggiunge o toglie · Esc deseleziona
-          </span>
-          <span className="mt-1 flex items-center gap-1">
-            <span className="text-faint">griglia</span>
-            {GRID_OPTIONS.map((g) => (
-              <button
-                key={g}
-                type="button"
-                onClick={() => setGridMm(g)}
-                className={`rounded border px-1.5 py-px font-mono text-[10px] transition-colors ${
-                  gridMm === g
-                    ? "border-brand/50 bg-brand-wash text-brand"
-                    : "border-[#1F2C29] text-faint hover:text-muted"
-                }`}
-              >
-                {String(g).replace(".", ",")}
-              </button>
-            ))}
-            <span className="text-faint">mm</span>
-          </span>
-        </div>
-      )}
+    </div>
+      <BarraSotto
+        gruppo={gruppoScelto.length > 1 ? gruppoScelto.map((id) => pezzoDi.get(id)?.name ?? "").filter(Boolean) : []}
+        info={gruppoScelto.length > 1 ? null : infoBarra}
+        reti={retiBarra}
+        mode={mode}
+        pickedId={gruppoScelto.length > 1 ? null : pickedId}
+        onGira={giraLato}
+        gridMm={gridMm}
+        onGrid={setGridMm}
+        pxPerMm={Math.round(view.k)}
+        strati={scene.board.layers >= 4 ? 4 : 2}
+      />
     </div>
   );
 }
@@ -1856,6 +1807,112 @@ function NomeRete({ l }: { l: PlacedNetLabel }) {
         )}
       </text>
     </g>
+  );
+}
+
+/**
+ * The strip under the board: what is under the mouse or selected (one line,
+ * the description opens with a click), where the nets go, the shortcuts.
+ */
+function BarraSotto({
+  gruppo,
+  info,
+  reti,
+  mode,
+  pickedId,
+  onGira,
+  gridMm,
+  onGrid,
+  pxPerMm,
+  strati,
+}: {
+  gruppo: string[];
+  info: (DescrizionePezzo & { name: string }) | null;
+  reti: string[];
+  mode: "view" | "move";
+  pickedId: string | null;
+  onGira: () => void;
+  gridMm: number;
+  onGrid: (g: number) => void;
+  pxPerMm: number;
+  strati: number;
+}) {
+  const [aperta, setAperta] = useState(false);
+  const descrizione = info ? [info.titolo, info.testo].filter(Boolean).join(" · ") : "";
+  return (
+    <div className="flex flex-none flex-col gap-0.5 border-t border-[#1F2C29] bg-[#0A100F] px-3 py-1.5 text-[11px] leading-snug text-muted">
+      <div className="flex min-h-[16px] items-baseline gap-2 overflow-hidden">
+        {gruppo.length > 0 ? (
+          <span className="truncate">
+            <span className="font-semibold text-brand">{gruppo.length} pezzi</span>: {gruppo.join(", ")}
+          </span>
+        ) : info ? (
+          <>
+            <span className="flex-none font-mono font-semibold text-brand">{info.name}</span>
+            {info.valore && info.valore !== info.titolo && (
+              <span className="flex-none font-mono text-[10.5px] text-[#9DB8AC]">{info.valore}</span>
+            )}
+            {descrizione && (
+              <button
+                type="button"
+                onClick={() => setAperta((a) => !a)}
+                title={aperta ? "Chiudi" : `${descrizione}${info.fonte ? ` (${ETICHETTA_FONTE[info.fonte]})` : ""}`}
+                className={`min-w-0 text-left text-[#C7D6D1] ${aperta ? "whitespace-normal" : "truncate"}`}
+              >
+                {descrizione}
+                {aperta && info.fonte && <span className="ml-1 text-[9.5px] text-[#5F726C]">({ETICHETTA_FONTE[info.fonte]})</span>}
+              </button>
+            )}
+          </>
+        ) : (
+          <span className="text-faint">
+            {mode === "move" ? "Trascina un componente per spostarlo." : "Passa sopra un componente per sapere cos'e' e dove vanno le sue reti."}
+          </span>
+        )}
+        {mode === "move" && (pickedId || gruppo.length > 0) && (
+          <button
+            type="button"
+            onClick={onGira}
+            title="Porta sull'altra faccia: stessa posizione, impronta specchiata. Si applica con Applica (F)"
+            className="ml-auto flex-none rounded border border-[#2C4C42] px-1.5 py-px text-[10.5px] font-semibold text-brand transition-colors hover:bg-brand-wash"
+          >
+            Gira lato (F)
+          </button>
+        )}
+      </div>
+      {reti.length > 0 && (
+        <div className="truncate text-[10.5px] text-[#9DB8AC]" title={reti.join("\n")}>
+          {reti.join("  ·  ")}
+        </div>
+      )}
+      <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap text-[10px] text-faint">
+        {mode === "move" && (
+          <>
+            <span className="truncate">
+              Alt niente snap · frecce (Shift 0,1 mm) · R/⇧R ruota · F gira lato · Shift+trascina riquadro ·
+              Shift+clic aggiunge/toglie · Esc deseleziona ·
+            </span>
+            <span>griglia</span>
+            {GRID_OPTIONS.map((g) => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => onGrid(g)}
+                className={`rounded border px-1 py-px font-mono text-[9.5px] transition-colors ${
+                  gridMm === g ? "border-brand/50 bg-brand-wash text-brand" : "border-[#1F2C29] text-faint hover:text-muted"
+                }`}
+              >
+                {String(g).replace(".", ",")}
+              </button>
+            ))}
+            <span>mm ·</span>
+          </>
+        )}
+        <span className="ml-auto flex-none font-mono">
+          {pxPerMm} px/mm · 1–{strati} uno strato · 0 tutti
+        </span>
+      </div>
+    </div>
   );
 }
 

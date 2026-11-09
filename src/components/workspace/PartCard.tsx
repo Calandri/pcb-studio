@@ -16,8 +16,11 @@ export function PartCard({
   onDescribe,
   describing,
   described,
+  docked = false,
 }: {
   part: InspectComponent;
+  /** in the right column instead of over the board */
+  docked?: boolean;
   onClose: () => void;
   onAsk: (prompt: string) => void;
   /** generates the description from datasheet + connections (model) */
@@ -27,7 +30,13 @@ export function PartCard({
   described?: boolean;
 }) {
   return (
-    <div className="absolute right-[18px] bottom-[18px] max-h-[70%] w-[268px] overflow-auto rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] shadow-[0_20px_50px_-20px_rgba(0,0,0,0.8)] backdrop-blur">
+    <div
+      className={
+        docked
+          ? "w-full rounded-[12px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3 py-[11px]"
+          : "absolute right-[18px] bottom-[18px] max-h-[70%] w-[268px] overflow-auto rounded-[14px] border border-[#2C4C42] bg-[rgba(9,14,13,0.92)] px-3.5 py-[13px] shadow-[0_20px_50px_-20px_rgba(0,0,0,0.8)] backdrop-blur"
+      }
+    >
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-[15px] font-semibold text-brand">{part.name}</span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-[#6E827C]">

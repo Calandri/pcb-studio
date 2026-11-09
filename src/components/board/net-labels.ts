@@ -41,14 +41,14 @@ export interface PlacedNetLabel extends NetLabelInput {
 }
 
 /** font sizes, screen pixels: constant at every zoom */
-export const LABEL_FONT = 11;
-export const PIN_FONT = 9;
+export const LABEL_FONT = 10;
+export const PIN_FONT = 8;
 /** a monospace advance (IBM Plex Mono and the fallbacks): 0.6 em */
 const ADVANCE = 0.6;
-const PAD_X = 5;
-const PAD_Y = 3;
-const LINE_1 = 13;
-const LINE_2 = 11;
+const PAD_X = 4;
+const PAD_Y = 2;
+const LINE_1 = 12;
+const LINE_2 = 10;
 /** air between the pad's edge and the box */
 const GAP = 5;
 /** air between two boxes */

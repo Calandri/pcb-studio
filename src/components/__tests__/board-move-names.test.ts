@@ -31,12 +31,20 @@ describe("Sposta: i nomi dei pezzi e la loro scheda", () => {
     expect(disegna({ mode: "view" })).not.toMatch(/>U7<\/text>/);
   });
 
-  it("accanto al pezzo sotto il mouse: nome, descrizione, valore, da dove viene", () => {
+  // "IL POPUP MENTRE SPOSTO NON METTERLO DAVANTI" (2026-11-09): la scheda va nella barra sotto
+  it("del pezzo sotto il mouse: nome, descrizione, valore e fonte nella barra SOTTO la scheda, niente sopra", () => {
     const html = disegna({ mode: "move", hoveredComponentId: "pc_u7", partInfo: info });
-    expect(html).toContain("Espansore I/O I2C TCA6416A");
-    expect(html).toContain("TCA6416ARTWR");
-    expect(html).toContain("scritta nel progetto");
-    expect(html).toMatch(/pointer-events-none/);
+    const barra = html.slice(html.lastIndexOf("</svg>"));
+    expect(barra).toContain("Espansore I/O I2C TCA6416A");
+    expect(barra).toContain("TCA6416ARTWR");
+    expect(barra).toContain("scritta nel progetto");
+    expect(html).not.toMatch(/w-\[240px\]/);
+  });
+
+  it("selezione di piu' pezzi: 'N pezzi: ...' nella barra", () => {
+    const html = disegna({ mode: "move", selectedIds: ["pc_u7", "pc_r36"], bothSides: true, partInfo: info });
+    const barra = html.slice(html.lastIndexOf("</svg>"));
+    expect(barra).toMatch(/2 pezzi<\/span>: U7, R36/);
   });
 
   it("i nomi non si sovrappongono e stanno fuori dai pad quando c'e' posto", () => {
