@@ -831,9 +831,21 @@ export function applyManualEditsToFsMap(
   const rest = { ...fsMap };
   delete rest[MANUAL_EDITS_PATH];
   if (countManualEdits(edits).total === 0) return rest;
-  const main = rest["main.tsx"];
-  if (typeof main !== "string") return rest;
-  return { ...rest, "main.tsx": injectManualEdits(main, edits) };
+  /*
+   * EVERY .tsx of the project, not only main.tsx. A large board keeps its parts
+   * in other files (sbb-dl-retro: parti_1.tsx, imported by main.tsx), and the
+   * positions moved by hand were injected into main.tsx only, where those parts
+   * are not written: after "Aggiorna" every moved part jumped back to where the
+   * file had it (2026-11-09). A file without any of the named parts comes out
+   * unchanged. The trace hints go on the <board>, which is in main.tsx: only
+   * there.
+   */
+  const senzaHint = { ...edits, manual_trace_hints: [] };
+  for (const [path, content] of Object.entries(rest)) {
+    if (!path.endsWith(".tsx") || typeof content !== "string") continue;
+    rest[path] = injectManualEdits(content, path === "main.tsx" ? edits : senzaHint);
+  }
+  return rest;
 }
 
 // ---------------------------------------------------------------------------
