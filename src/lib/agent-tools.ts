@@ -21,6 +21,7 @@ import {
 import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { runSimulation } from "./simulate";
 import { compileProject } from "./compile";
+import { resolveDesignRules } from "./design-rules";
 import {
   ENCLOSURE_NAME_RE,
   listEnclosures,
@@ -553,8 +554,15 @@ async function runTool(
       // what tells the model whether the loop is converging or oscillating
       const previous = await getCompileCache(projectId).catch(() => null);
       const { summary, circuitJson } = await compileProject(compileFsMap, {
-        // the compile never routes: the copper already on the board is carried over
-        keepCopperFrom: (previous?.circuitJson as unknown[] | undefined) ?? undefined,
+        /*
+         * The compile never routes: a board whose copper came from the router
+         * keeps it. A board drawn in its files (autoroute false) is compiled
+         * from the files alone, as before, so a trace deleted there stays gone.
+         */
+        keepCopperFrom:
+          resolveDesignRules(compileFsMap).rules.autoroute === false
+            ? undefined
+            : ((previous?.circuitJson as unknown[] | undefined) ?? undefined),
         budgetMs: Math.min(MAX_COMPILE_MS, left - 60_000),
         // the intermediate circuit does not pass through here: it weighs
         // megabytes and the agent channel carries text. Whoever looks takes it

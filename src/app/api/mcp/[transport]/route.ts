@@ -4,6 +4,7 @@ import { logActivity, recordTool } from "@/lib/activity-store";
 import { executeTool, withLibrary } from "@/lib/agent-tools";
 import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
+import { resolveDesignRules } from "@/lib/design-rules";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { extractComponents, extractIssues } from "@/lib/inspect";
 import { getAgentKeys } from "@/lib/llm-keys";
@@ -139,6 +140,20 @@ function describeCall(tool: string, args: Record<string, unknown>): string {
   }
 }
 
+/**
+ * The copper a compile carries over, now that no compile routes (2026-11-09).
+ * A board drawn in its files (design rules `autoroute: false`, like
+ * sbb-dl-retro) is compiled from the files alone, exactly as before: carrying
+ * the cached copper would bring back a trace just deleted from the .tsx. Any
+ * other board got its copper from the router, which is gone: without the
+ * cached copper the next compile would save a board with no traces.
+ */
+async function copperToKeep(projectId: string, fsMap: Record<string, string>): Promise<unknown[] | undefined> {
+  if (resolveDesignRules(fsMap).rules.autoroute === false) return undefined;
+  const cache = await getCompileCache(projectId).catch(() => null);
+  return (cache?.circuitJson as unknown[] | undefined) ?? undefined;
+}
+
 function buildHandler(viewer: Viewer) {
   /*
    * The last project touched in this MCP session. Needed because half of the
@@ -253,12 +268,10 @@ function buildHandler(viewer: Viewer) {
          * notices on its own at the periodic check.
          */
         const fsMap = await withLibrary(await getProject(projectId));
-        // the copper already on the board: the compile never routes, it carries it over
-        const inCache = await getCompileCache(projectId).catch(() => null);
         let lastPreview = 0;
         let lastStep = "";
         const { summary, circuitJson } = await compileProject(fsMap, {
-          keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
+          keepCopperFrom: await copperToKeep(projectId, fsMap),
           onProgress: (p) => {
             /*
              * Steps go to the log even without a drawing: the compilation
@@ -315,11 +328,10 @@ function buildHandler(viewer: Viewer) {
         if ((await projectAccess(projectId, viewer)) !== "edit") {
           return deniedEdit();
         }
-        const inCache = await getCompileCache(projectId).catch(() => null);
-        const { circuitJson } = await compileProject(
-          await withLibrary(await getProject(projectId)),
-          { keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined },
-        );
+        const fsMap = await withLibrary(await getProject(projectId));
+        const { circuitJson } = await compileProject(fsMap, {
+          keepCopperFrom: await copperToKeep(projectId, fsMap),
+        });
         return text({
           issues: extractIssues(circuitJson).slice(0, 60),
           components: extractComponents(circuitJson, await getProject(projectId)),
