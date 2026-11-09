@@ -5,6 +5,7 @@ import { executeTool, withLibrary } from "@/lib/agent-tools";
 import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
+import { rilasciaPezzi } from "@/lib/manual-edits-store";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
@@ -386,6 +387,33 @@ function buildHandler(viewer: Viewer) {
       async () => {
         const { result } = await executeTool("-", "library_list", {});
         return text(result);
+      },
+    );
+
+    server.tool(
+      "release_manual_edits",
+      "Libera le posizioni tenute a mano dall'utente (manual-edits.json) dei SOLI pezzi nominati: " +
+        "tornano dove li mette il file .tsx alla prossima compilazione. Tutte le altre modifiche " +
+        "a mano restano. Usalo solo quando l'utente lo chiede per quei pezzi.",
+      {
+        projectId: z.string(),
+        names: z.array(z.string().min(1).max(120)).min(1).max(400).describe("i designator, es. [\"J1\"]"),
+        scope: z.enum(["pcb", "schematic", "all"]).optional().describe("pcb (default), schematic o all"),
+      },
+      async ({ projectId, names, scope }) => {
+        if ((await projectAccess(projectId, viewer)) !== "edit") {
+          return deniedEdit();
+        }
+        const cache = await getCompileCache(projectId).catch(() => null);
+        const { edits, written } = await rilasciaPezzi(projectId, cache, names, scope ?? "pcb");
+        return text({
+          ok: true,
+          written,
+          rimasti: {
+            pcb: edits.pcb_placements.map((p) => p.selector),
+            schematic: edits.schematic_placements.map((p) => p.selector),
+          },
+        });
       },
     );
 

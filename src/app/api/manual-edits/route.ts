@@ -1,5 +1,5 @@
-import { requireProjectAccess } from "@/lib/acl";
-import { withLibrary } from "@/lib/agent-tools";
+import { accessoDaRichiesta, requireProjectAccess } from "@/lib/acl";
+import { commitManualEdits, rilasciaPezzi } from "@/lib/manual-edits-store";
 import {
   applyEditEvents,
   countManualEdits,
@@ -7,25 +7,15 @@ import {
   emptyManualEdits,
   findOrphanEdits,
   MANUAL_EDITS_PATH,
-  nextBoardBase,
   normalizeRotation,
   parseManualEdits,
   releaseManualEdits,
-  sameManualEdits,
-  serializeManualEdits,
-  withoutManualEdits,
   type EditEvent,
   type ManualEdits,
 } from "@/lib/manual-edits";
 import { mergeManualRoutes, parseManualRoutes } from "@/lib/manual-routes";
 import { parseLength } from "@/lib/pcb-route-model";
-import {
-  filesHash,
-  getCompileCache,
-  getProject,
-  updateProjectFile,
-  type CompileCache,
-} from "@/lib/project-store";
+import { getCompileCache, getProject, projectExists, type CompileCache } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 
@@ -60,40 +50,8 @@ function payload(edits: ManualEdits, cache?: CompileCache | null, extra: Record<
   };
 }
 
-/**
- * Applies `transform` to the current file and writes it, conflict-safe.
- * `transform` may run more than once and must not have side effects; it
- * returns null when there is nothing to change. The board_base is recomputed
- * here, never taken from the client.
- */
-async function commit(
-  projectId: string,
-  cache: CompileCache | null,
-  transform: (current: ManualEdits) => ManualEdits | null,
-): Promise<{ edits: ManualEdits; written: boolean }> {
-  const files = await getProject(projectId);
-  const sources = withoutManualEdits(await withLibrary(files));
-  const sourcesHash = filesHash(sources);
-  const { written, content } = await updateProjectFile(projectId, MANUAL_EDITS_PATH, (current) => {
-    const before = parseManualEdits(current);
-    const next = transform(before);
-    if (!next) return null;
-    if (current !== null && sameManualEdits(before, next)) return null;
-    const filesHashBefore = filesHash(
-      current === null ? sources : { ...sources, [MANUAL_EDITS_PATH]: current },
-    );
-    const base = nextBoardBase({
-      cacheFilesHash: cache?.filesHash,
-      filesHashBefore,
-      sourcesHash,
-      previous: before.board_base,
-    });
-    const rest: ManualEdits = { ...next };
-    delete rest.board_base;
-    return serializeManualEdits({ ...rest, ...(base ? { board_base: base } : {}) });
-  });
-  return { edits: parseManualEdits(content), written };
-}
+/** the conflict-safe write of manual-edits.json: see lib/manual-edits-store.ts */
+const commit = commitManualEdits;
 
 const failure = (err: unknown) =>
   Response.json(
@@ -124,14 +82,29 @@ export async function POST(req: Request): Promise<Response> {
     typeof body.projectId === "string" && body.projectId.length <= 120
       ? body.projectId
       : "default";
-  const { ok } = await requireProjectAccess(projectId, "edit");
-  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
-
   const names = Array.isArray(body.names)
     ? body.names
         .filter((n): n is string => typeof n === "string" && n.length > 0 && n.length <= 120)
         .slice(0, POST_LIMITS.maxNames)
     : null;
+
+  /*
+   * Who may write. The browser session, for everything, as before. A personal
+   * token (scripts, MCP: Authorization: Bearer pcbs_...) ONLY to let go of the
+   * hand-held positions of the parts it NAMES: on sbb-dl-principale an old J1
+   * saved by hand kept overriding the file and only the browser could release
+   * it (2026-11-09). Same access rule as the session (edit rights on the
+   * project). No "release everything", no pin, no move, no write.
+   */
+  const sessione = await requireProjectAccess(projectId, "edit");
+  if (!sessione.ok) {
+    const conToken = /^Bearer\s+\S/i.test(req.headers.get("authorization") ?? "");
+    const soloRilascio = body.action === "release" && names !== null && names.length > 0;
+    // an existing project only: the access check must not create one
+    if (!conToken || !soloRilascio || !(await projectExists(projectId)) || !(await accessoDaRichiesta(req, projectId, "edit"))) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+  }
 
   /*
    * The compiled board: needed to translate viewer ids into names, to read
@@ -153,11 +126,7 @@ export async function POST(req: Request): Promise<Response> {
        * quietly released every pinned component on the board.
        */
       if (names && names.length > 0) {
-        const { edits } = await commit(projectId, cache, (current) => {
-          let next = current;
-          for (const n of names) next = releaseManualEdits(next, scope, n);
-          return next;
-        });
+        const { edits } = await rilasciaPezzi(projectId, cache, names, scope);
         return Response.json(payload(edits, cache));
       }
       const name = typeof body.name === "string" && body.name ? body.name : null;
