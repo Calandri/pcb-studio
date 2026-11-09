@@ -1,3 +1,4 @@
+import { raddrizzaPcbDoc } from "./altium-raddrizza";
 import { Worker } from "node:worker_threads";
 import {
   circuitJsonToProjectFiles,
@@ -345,6 +346,11 @@ async function parseOne(
       .map((d) => `${file.path}: ${String(d?.message ?? "")}`)
       .filter((w) => w.trim().length > 0),
   );
+  // the toolkit hands a board over mirrored in y: see altium-raddrizza.ts
+  if (altiumExtension(file.path) === ".pcbdoc") {
+    const dritto = raddrizzaPcbDoc(letto.model, letto.native);
+    return { model: dritto.model as typeof letto.model, native: dritto.native, warnings };
+  }
   return { model: letto.model, native: letto.native, warnings };
 }
 
