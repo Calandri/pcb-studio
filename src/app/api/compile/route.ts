@@ -114,8 +114,16 @@ export async function POST(req: Request): Promise<Response> {
             if (r.saved) {
               mark("scheda salvata senza schematico", t0);
               await activity("avvio", "Scheda salvata - ora lo schematico");
-              // the page unblocks the board here: the schematic goes on in the background
-              send("scheda", { saved: true });
+            }
+            /*
+             * The page unblocks the board here: the schematic goes on in the
+             * background. Also when nothing was saved because the saved board
+             * is already the complete one of these files, or a newer one: the
+             * board on screen is right, and the panel stayed for the whole
+             * schematic (prova-principale, 2026-11-09: 142 s instead of 32).
+             */
+            if (r.saved || r.keptPrevious) {
+              send("scheda", { saved: r.saved });
               schedaInviata = true;
             }
           },
