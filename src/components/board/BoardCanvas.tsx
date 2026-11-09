@@ -383,9 +383,40 @@ export function BoardCanvas({
       cerchio?: boolean;
       /** for a pad: how far it is turned, so the highlight is turned with it */
       rot?: number;
-      pin: string;
+      /** the NET's name, written once per net; empty on every other end */
+      testo: string;
+      /** the pins of the focused part on that net, small, under the name: "Q3.G" */
+      sotto: string;
       colore: string;
     }> = [];
+
+    /*
+     * What a connection is called on screen: the NET, the same name at every
+     * end. It used to be the pin at the end of the line ("G", "D", "pin2") and
+     * the net only on lit pads ("VBAT"), so one connection had three names
+     * (sbb-dl-retro, 2026-11-09). The pin stays as small text, always with its
+     * part ("Q3.G", "R35.2"), never on its own; a net with no name is called
+     * by its ends ("R35.2 > Q3.G").
+     */
+    const nomeDelPezzo = new Map(scene.components.map((c) => [c.id, c.name]));
+    const pinPieno = (p: { componentId: string; pin: string }): string => {
+      const pezzo = nomeDelPezzo.get(p.componentId) ?? "";
+      const pin = p.pin.replace(/^pin(\d+)$/i, "$1");
+      return pezzo && pin ? `${pezzo}.${pin}` : pezzo || pin;
+    };
+    const elenco = (nomi: string[], max = 2) => {
+      const unici = [...new Set(nomi.filter(Boolean))];
+      return unici.length > max ? `${unici.slice(0, max).join(", ")} +${unici.length - max}` : unici.join(", ");
+    };
+    /** one label per net: the first end that reaches it writes it */
+    const scritte = new Set<string>();
+    const etichetta = (pad: (typeof mine)[number], altri: typeof scene.pads) => {
+      if (scritte.has(pad.net)) return { testo: "", sotto: "" };
+      scritte.add(pad.net);
+      const miei = elenco(mine.filter((p) => p.net === pad.net).map(pinPieno));
+      if (pad.netName) return { testo: pad.netName, sotto: miei };
+      return { testo: `${miei} > ${elenco(altri.map(pinPieno))}`, sotto: "" };
+    };
     /*
      * How a connection is shown depends on how many pads it touches.
      *
@@ -436,8 +467,8 @@ export function BoardCanvas({
             y1: da.y,
             x2: a.x,
             y2: a.y,
-            // the pin name is written once, not on every wire
-            pin: primo ? pad.pin : "",
+            // the name is written once per net, not on every wire
+            ...(primo ? etichetta(pad, altri) : { testo: "", sotto: "" }),
             colore: tinta,
           });
           primo = false;
@@ -447,6 +478,7 @@ export function BoardCanvas({
 
       // many connections: the pads get colored, all with the net tint
       const tintaRete = tintaDiRete(pad.netName || pad.net);
+      const nome = etichetta(pad, altri);
       for (const p of [pad, ...altri]) {
         const a = posOf(p);
         out.push({
@@ -469,7 +501,7 @@ export function BoardCanvas({
           // say "these pads are the same node" have to turn with the copper
           rot: p.rot + giroDi(p.componentId),
           // the name is written once per net, not on every lit pad
-          pin: p.id === pad.id ? pad.netName || pad.pin : "",
+          ...(p.id === pad.id ? nome : { testo: "", sotto: "" }),
           colore: tintaRete,
         });
       }
@@ -931,18 +963,7 @@ export function BoardCanvas({
                         strokeWidth={0.08}
                       />
                     )}
-                    {l.pin && (
-                      <text
-                        transform={`translate(${l.x1} ${l.y1 + 0.62}) scale(1 -1)`}
-                        fontSize={0.34}
-                        textAnchor="middle"
-                        fill={l.colore}
-                        opacity={0.9}
-                        style={{ paintOrder: "stroke", stroke: "#0B1110", strokeWidth: 0.14 }}
-                      >
-                        {l.pin}
-                      </text>
-                    )}
+                    {l.testo && <NomeRete l={l} />}
                   </g>
                 ) : (
                   <g key={l.key}>
@@ -958,22 +979,7 @@ export function BoardCanvas({
                     />
                     <circle cx={l.x1} cy={l.y1} r={0.16} fill={l.colore} />
                     <circle cx={l.x2} cy={l.y2} r={0.11} fill={l.colore} opacity={0.75} />
-                    {l.pin && (
-                      /*
-                       * The view flips the vertical axis: without flipping it
-                       * back the text reads mirrored and upside down.
-                       */
-                      <text
-                        transform={`translate(${l.x1} ${l.y1 + 0.62}) scale(1 -1)`}
-                        fontSize={0.34}
-                        textAnchor="middle"
-                        fill={l.colore}
-                        opacity={0.9}
-                        style={{ paintOrder: "stroke", stroke: "#0B1110", strokeWidth: 0.14 }}
-                      >
-                        {l.pin}
-                      </text>
-                    )}
+                    {l.testo && <NomeRete l={l} />}
                   </g>
                 ),
               )}
@@ -1359,6 +1365,32 @@ export function BoardCanvas({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The name of a net on the board: the net, big, and under it, small, the pins
+ * of the focused part that sit on it ("Q3.G"). The view flips the vertical
+ * axis: without flipping it back the text reads mirrored and upside down.
+ */
+function NomeRete({ l }: { l: { x1: number; y1: number; testo: string; sotto: string; colore: string } }) {
+  const alone = { paintOrder: "stroke", stroke: "#0B1110", strokeWidth: 0.14 } as const;
+  return (
+    <text
+      transform={`translate(${l.x1} ${l.y1 + (l.sotto ? 0.9 : 0.62)}) scale(1 -1)`}
+      fontSize={0.34}
+      textAnchor="middle"
+      fill={l.colore}
+      opacity={0.9}
+      style={alone}
+    >
+      {l.testo}
+      {l.sotto && (
+        <tspan x={0} dy={0.3} fontSize={0.22} opacity={0.75}>
+          {l.sotto}
+        </tspan>
+      )}
+    </text>
   );
 }
 
