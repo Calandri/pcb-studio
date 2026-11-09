@@ -21,15 +21,14 @@ import { useCallback, useEffect, useState } from "react";
  * Closed, it is a pill: the board is the thing to look at, not the commands.
  */
 
-export type MassAction =
-  | "sposta"
-  | "sezioni"
-  | "instrada"
-  | "mancanti"
-  | "massa"
-  | "ricompila"
-  | "fissa"
-  | "sblocca";
+/*
+ * No verb here routes or places on its own any more (Niccolo', 2026-11-09:
+ * "il routing lo farai sempre tu, togli ogni AUTO"). "Sposta", "Dividi in
+ * sezioni", "Instrada", "Chiudi i mancanti" and "Ricalcola la massa" ran the
+ * placer, the router or the plane stitching: parts are moved by hand (Sposta in
+ * the editor bar) and copper is drawn by hand.
+ */
+export type MassAction = "ricompila" | "fissa" | "sblocca";
 
 export interface MassEditProps {
   /** the components chosen on the board, by name */
@@ -71,46 +70,11 @@ interface Verbo {
 
 const VERBI: Verbo[] = [
   {
-    id: "sposta",
-    nome: ["Sposta", "Sposta tutto"],
-    spiega: [
-      "li dispone senza toccare il rame",
-      "rifà la disposizione da zero: quella fatta a mano va persa",
-    ],
-    pericoloso: true,
-  },
-  {
-    id: "sezioni",
-    nome: ["Dividi in sezioni", "Dividi in sezioni"],
-    spiega: [
-      "il modello decide la pianta, poi i pezzi si sistemano dentro",
-      "il modello divide la scheda per blocchi logici e ogni pezzo va nella sua sezione: la disposizione a mano resta ferma",
-    ],
-    soloAmbito: "tutto",
-  },
-  {
-    id: "instrada",
-    nome: ["Instrada", "Instrada tutto"],
-    spiega: ["rifà solo le loro piste", "butta il rame e lo rifà: i pezzi non si muovono"],
-  },
-  {
-    id: "mancanti",
-    nome: ["Chiudi i mancanti", "Chiudi i mancanti"],
-    spiega: ["solo i collegamenti aperti", "solo i collegamenti aperti"],
-    tenue: true,
-  },
-  {
-    id: "massa",
-    nome: ["Ricalcola la massa", "Ricalcola la massa"],
-    spiega: ["rifà le via al piano", "rifà le via al piano"],
-    tenue: true,
-  },
-  {
     id: "ricompila",
     nome: ["Ricompila", "Ricompila"],
     spiega: [
       "rilegge i file e mostra la scheda vera: il rame non si tocca",
-      "rilegge i file e mostra la scheda vera: il rame resta quello che c'è, le piste si rifanno solo se glielo chiedi",
+      "rilegge i file e mostra la scheda vera: il rame resta quello che c'è, le piste non si rifanno",
     ],
     tenue: true,
     soloAmbito: "tutto",
@@ -128,7 +92,7 @@ const VERBI: Verbo[] = [
   {
     id: "sblocca",
     nome: ["Sblocca", "Sblocca tutto"],
-    spiega: ["tornano al posizionamento automatico", "tornano al posizionamento automatico"],
+    spiega: ["tornano alla posizione scritta nei file", "tornano alla posizione scritta nei file"],
     tenue: true,
     senzaAgente: true,
   },
@@ -180,7 +144,7 @@ export function MassEdit({
       <button
         type="button"
         onClick={() => setAperto(true)}
-        title="Sposta, instrada, ricompila — su tutta la scheda o sui pezzi scelti"
+        title="Ricompila, fissa, sblocca — su tutta la scheda o sui pezzi scelti"
         className="pointer-events-auto absolute bottom-[18px] left-[18px] z-20 flex items-center gap-2 rounded-[11px] border border-[#22302C] bg-[rgba(12,18,17,0.94)] px-3 py-2 text-[12.5px] font-semibold text-muted backdrop-blur transition-colors hover:border-[#2C4C42] hover:text-brand"
       >
         <Quadrati />
@@ -243,9 +207,7 @@ export function MassEdit({
 
         <div className="grid gap-1 overflow-y-auto px-3.5 pb-3.5 pt-2">
           {VERBI.filter((v) => !v.soloAmbito || v.soloAmbito === ambito).map((v) => {
-            const inutile =
-              (v.id === "sblocca" && pinned === 0) ||
-              (v.id === "sposta" && ambito === "tutto" && pinned >= total);
+            const inutile = v.id === "sblocca" && pinned === 0;
             return (
               <div
                 key={v.id}
@@ -329,7 +291,7 @@ export function MassEdit({
               <button
                 type="button"
                 onClick={() => onRun("ricompila", "tutto")}
-                title="Ricompila tutto: rilegge i file e rifà anche il rame (i componenti non si muovono)"
+                title="Ricompila: rilegge i file, il rame resta quello che c'è (i componenti non si muovono)"
                 className="text-muted underline underline-offset-2 transition-colors hover:text-text"
               >
                 ricompila

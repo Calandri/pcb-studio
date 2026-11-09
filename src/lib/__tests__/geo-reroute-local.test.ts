@@ -152,6 +152,27 @@ describe("rerouteLocal", () => {
     expect(r.result.reason).toMatch(/J1/);
   });
 
+  it("moves the part and never reroutes: the copper stays where it was (2026-11-09)", () => {
+    const trace = {
+      type: "pcb_trace",
+      pcb_trace_id: "t1",
+      route: [
+        { route_type: "wire", x: -4, y: 0, width: 0.2, layer: "top" },
+        { route_type: "wire", x: -10, y: 0, width: 0.2, layer: "top" },
+      ],
+    };
+    const before = usbBoard([trace]);
+    const r = rerouteLocal(before, {}, edits([{ selector: "J1", center: { x: 5, y: 0 } }]));
+    expect(r.result.ok).toBe(true);
+    expect(r.result.moved).toBe(1);
+    expect(r.result.rerouted).toBe(false);
+    const after = r.circuitJson as El[];
+    expect(byId(after, "pcb_plated_hole_id", "tab").x as number).toBeCloseTo(1, 9);
+    const traces = after.filter((e) => e.type === "pcb_trace");
+    expect(traces).toEqual([trace]);
+    expect(after.filter((e) => e.type === "pcb_via")).toHaveLength(0);
+  });
+
   it("reports orphan placements when nothing else can be applied", () => {
     const r = rerouteLocal(usbBoard(), {}, edits([{ selector: "R99", center: { x: 0, y: 0 } }]));
     expect(r.result.ok).toBe(false);

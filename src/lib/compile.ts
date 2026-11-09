@@ -335,8 +335,9 @@ export interface CompileOptions {
   /** time cap for the whole compilation (default 9 minutes) */
   budgetMs?: number;
   /**
-   * Tidies up the components before routing. OFF by default: placement is a
-   * decision, not a consequence.
+   * Tidies up the components before routing. IGNORED: compileProject forces it
+   * off (no automatic placement, 2026-11-09). Placement is a decision, not a
+   * consequence.
    *
    * It used to run on every compilation, and treated as untouchable only the
    * parts registered in manual-edits.json — the ones dragged with the mouse.
@@ -365,8 +366,9 @@ export interface CompileOptions {
   /** refinement rounds per zone after the arrangement has been chosen */
   placeZoneRounds?: number;
   /**
-   * Whether to lay copper. Default true; with `false` the compile stops at the
-   * geometry and the copper of the previous board is CARRIED OVER as it is.
+   * Whether to lay copper. IGNORED: compileProject forces `false` (no automatic
+   * routing, 2026-11-09), so the compile stops at the geometry and the copper
+   * of the previous board is CARRIED OVER as it is.
    *
    * "Recompile" and "route" are two different gestures. Recompiling means
    * reading the files again and showing the real board: it takes seconds. The
@@ -376,13 +378,13 @@ export interface CompileOptions {
    * every refresh and throwing away good copper.
    *
    * The carried-over copper is HONEST, not hidden: the traces of a component
-   * that has moved no longer land on its pads, and the checks say so. What
-   * fixes them is "close the missing ones", which redoes only those.
+   * that has moved no longer land on its pads, and the checks say so. They are
+   * redrawn by hand.
    */
   route?: boolean;
   /**
-   * The already compiled board whose copper to carry over when `route` is
-   * false. Without it, recompiling shows a board with no copper.
+   * The already compiled board whose copper to carry over. Without it,
+   * recompiling shows only the copper the files draw themselves.
    */
   keepCopperFrom?: unknown[];
   /**
@@ -455,8 +457,15 @@ export async function compileProject(
    * here, once, and they hold for both routing and checking.
    */
   const projectRules = resolveDesignRules(projectFsMap);
-  // a board whose copper already exists is not routed again: see DesignRules.autoroute
-  if (opts.route === undefined && projectRules.rules.autoroute === false) opts = { ...opts, route: false };
+  /*
+   * A compile never routes and never places, whoever calls it (Niccolo',
+   * 2026-11-09: "il routing lo farai sempre tu, togli ogni AUTO"). Copper is
+   * drawn by hand (<trace pcbPath>, manual-edits pcb_routes) and parts are put
+   * where a person decided; the compile reads the files, carries over the
+   * copper already on the board and checks it. On sbb-dl-retro an "Applica"
+   * looked like an autorouting run and the page hung: no path may start one.
+   */
+  opts = { ...opts, route: false, place: false };
   const profiler = new Profiler();
 
   /*
@@ -697,7 +706,7 @@ export async function compileProject(
     const orfane = danglingTraces(circuitJson);
     summary.message = orfane === 0
       ? `${summary.message} (geometria aggiornata, rame non toccato)`
-      : `${summary.message} (geometria aggiornata, rame non toccato: ${orfane} piste non arrivano piu' su un pad, chiudi i mancanti per rifare solo quelle)`;
+      : `${summary.message} (geometria aggiornata, rame non toccato: ${orfane} piste non arrivano piu' su un pad, vanno ridisegnate a mano)`;
     return { summary, circuitJson, placements: placedNow ?? undefined };
   }
 
@@ -1557,13 +1566,26 @@ export async function compileGeometryOnly(fsMap: FsMap): Promise<CircuitElement[
       stop() {},
     }),
   });
+  /*
+   * EVERY preset a <board> or a <group> may name, not only the three we use:
+   * tscircuit looks the (normalized) preset up in this map before its own
+   * switch, so a board declaring "sequential-trace", "laser_prefab" or
+   * "default" would otherwise be routed by tscircuit's router right here, in
+   * the compile that must never route.
+   */
+  const presets = [
+    "auto",
+    "auto-local",
+    "auto-cloud",
+    "default",
+    "subcircuit",
+    "sequential-trace",
+    "laser-prefab",
+    "auto-jumper",
+  ];
   const platform = {
     ...getPlatformConfig({
-      autorouterMap: {
-        auto: noRouting() as never,
-        "auto-local": noRouting() as never,
-        "auto-cloud": noRouting() as never,
-      },
+      autorouterMap: Object.fromEntries(presets.map((p) => [p, noRouting() as never])),
     }),
     autorouter: PRESET_DI_DIFETTO,
   };

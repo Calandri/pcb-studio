@@ -44,7 +44,7 @@ export async function GET(req: Request): Promise<Response> {
     "## Come funziona",
     "- Il progetto E' il codice tscircuit nei dati qui sotto: React che compila in schematico, PCB e file di produzione.",
     "- Posizioni in millimetri con pcbX/pcbY, centro scheda = (0,0). Le tracce si dichiarano con <trace from=\".R1 > .pin1\" to=\"net.VCC\" />.",
-    "- L'autorouter viene eseguito alla compilazione: se ci sono sovrapposizioni di componenti viene SALTATO e ogni connessione risulta mancante.",
+    "- La compilazione NON instrada e non sposta i pezzi: ogni pista si disegna a mano (<trace ... pcbPath={[...]} />), ogni pezzo si posiziona a mano. Una connessione senza pcbPath resta aperta.",
     "- Lo stato nei dati viene dall'ultima compilazione salvata, non da una compilazione fatta adesso.",
     "",
     "## Obiettivo",

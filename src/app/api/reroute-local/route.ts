@@ -24,10 +24,11 @@ const stamp = (v: unknown): string => (v instanceof Date ? v.toISOString() : Str
 
 /**
  * Applies manual moves WITHOUT recompiling everything: updates the positions
- * in the cached board and redoes only the copper of the touched zone.
- * Seconds instead of minutes. If something cannot be done locally it answers
- * ok:false and the client falls back to a full compile — which stays an
- * explicit user gesture, not an automatism.
+ * in the cached board and lays the hand-drawn traces on top. It never routes:
+ * the copper of a moved part stays where it was and is redrawn by hand (see
+ * lib/reroute-local.ts). Seconds instead of minutes. If something cannot be
+ * done locally it answers ok:false and the user recompiles — an explicit
+ * gesture, not an automatism.
  *
  * Two guards, because the result is saved as THE board of the current files:
  *   - the cached board must be the one of these sources, with only manual

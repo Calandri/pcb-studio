@@ -12,8 +12,7 @@ import {
 import { motivoErrore } from "@/lib/error-cause";
 
 export const runtime = "nodejs";
-// increasing-effort routing is the slow part: it gets the same time window
-// as the agentic loop, otherwise a dense board gets cut off halfway
+// a large board takes minutes just to be read again (190 parts: ~2 minutes)
 export const maxDuration = 800;
 
 /**
@@ -30,17 +29,15 @@ export const maxDuration = 800;
 export async function POST(req: Request): Promise<Response> {
   let projectId = "default";
   /*
-   * Whether to lay copper. Default NO: "recompile" means showing the real
-   * board, and it takes seconds. Routing is another gesture, and it is asked
-   * for — the agent's compile tool asks for it, the button does not.
+   * It never lays copper: "recompile" means showing the real board with the
+   * copper already on it. There is no automatic routing any more (2026-11-09),
+   * a `route` field in the body is ignored.
    */
-  let route = false;
   try {
-    const body = (await req.json()) as { projectId?: unknown; route?: unknown };
+    const body = (await req.json()) as { projectId?: unknown };
     if (typeof body.projectId === "string" && body.projectId.length <= 120) {
       projectId = body.projectId;
     }
-    if (body.route === true) route = true;
   } catch {
     // no body: recompile the default project
   }
@@ -84,14 +81,13 @@ export async function POST(req: Request): Promise<Response> {
           return;
         }
 
-        // the copper already on the board, to carry over when not routing
+        // the copper already on the board, carried over as it is
         send("passo", { step: "Recupero il rame esistente", progress: 0.04 });
         t = Date.now();
-        const inCache = route ? null : await getCompileCache(projectId).catch(() => null);
+        const inCache = await getCompileCache(projectId).catch(() => null);
         mark("getCompileCache", t);
 
         const { summary, circuitJson, variants } = await compileProject(fsMap, {
-          route,
           keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
           onProgress: (event: CompileProgress) =>
             send("passo", {

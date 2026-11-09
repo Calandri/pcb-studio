@@ -179,7 +179,7 @@ function constraints(
   }
   if (kind === "place") {
     out.push(
-      "- Criteri di un buon piazzamento: nessuna sovrapposizione fra componenti (una sovrapposizione fa saltare l'autorouter); componenti collegati fra loro vicini; spazio dove le violazioni si addensano; condensatori di disaccoppiamento accanto al piedino di alimentazione che servono; connettori sul bordo, con l'innesto verso l'esterno.",
+      "- Criteri di un buon piazzamento: nessuna sovrapposizione fra componenti; componenti collegati fra loro vicini; spazio dove le violazioni si addensano; condensatori di disaccoppiamento accanto al piedino di alimentazione che servono; connettori sul bordo, con l'innesto verso l'esterno.",
       "- Il piazzamento si giudica dai numeri della compilazione.",
     );
   } else {
@@ -188,6 +188,7 @@ function constraints(
     );
   }
   out.push(
+    "- Niente instradamento ne' piazzamento automatico: ogni pista si disegna a mano (<trace ... pcbPath={[...]} />, tratti a 0/45/90 gradi, uscite dritte dai pad), ogni pezzo si sposta a mano. La compilazione non instrada.",
     "- Le regole di fabbricazione del progetto non si allentano per far sparire le violazioni: una scheda che passa il controllo perche' il controllo e' stato allentato non si produce lo stesso.",
     "- Risposta finale: in due righe cosa e' cambiato e come sono cambiati i numeri (piste, connessioni aperte, violazioni DRC), senza riassumere il codice.",
   );

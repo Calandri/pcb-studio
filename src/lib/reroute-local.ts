@@ -1,6 +1,3 @@
-import { rerouteZoneDetailed, type Zone } from "./rip-up";
-import { SOLVERS, type VariantDef } from "./variants";
-import { stitchToPlanes } from "./house-rules";
 import { resolveDesignRules } from "./design-rules";
 import { findOrphanEdits, normalizeRotation, parseManualEdits, type OrphanEdits } from "./manual-edits";
 import { parentFrameOffset, parseLength } from "./pcb-route-model";
@@ -11,30 +8,28 @@ import type { CircuitElement } from "./route-score";
 /**
  * FAST application of manual moves.
  *
- * A full compile redoes placement + routing of the whole board: minutes. For
- * "I moved a component by two millimetres" that is absurd. Here instead we
- * work on the already compiled board: the component (with pads, holes, ports
- * and silkscreen) is translated inside the cached circuit, the copper of the
- * affected zone is ripped up and redone by the solver (rip-up.ts), the rest
- * of the board does not move. Seconds, not minutes.
+ * A full compile reads all the files again: on a large board, minutes. For "I
+ * moved a component by two millimetres" that is absurd. Here instead we work
+ * on the already compiled board: the component (with pads, holes, ports and
+ * silkscreen) is translated inside the cached circuit and the hand-drawn
+ * traces are applied on top. Seconds, not minutes.
  *
- * Honest limits, which the caller handles by falling back to a full compile:
+ * NO COPPER IS REDONE HERE (Niccolo', 2026-11-09: "il routing lo farai sempre
+ * tu, togli ogni AUTO"). This used to rip up the zone around the moved parts
+ * and reroute it with three solvers, then stitch the planes: on sbb-dl-retro
+ * (190 parts) one "Applica" ran the router for minutes, the function was cut
+ * at its time limit, nothing was saved and the page showed a stale board. The
+ * copper of a moved part stays where it was, the checks say so, and it is
+ * redrawn by hand.
+ *
+ * Honest limits, which the caller reports (the user then recompiles):
  * - rotations only in multiples of 90 degrees (rectangular pads stay rectangles);
- * - the component must exist in the cache (board never compiled = nothing);
- * - the redone copper is local: for global quality there is still the full
- *   compile, which indeed stays available on explicit request.
+ * - the component must exist in the cache (board never compiled = nothing).
  */
 
 type El = Record<string, unknown>;
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
-
-/** two solvers are enough: the fast one and the stubborn one; v3 as backup */
-const DEFS: VariantDef[] = [
-  { solver: "v6", SolverClass: SOLVERS.v6, effort: 1 },
-  { solver: "v6", SolverClass: SOLVERS.v6, effort: 5 },
-  { solver: "v3", SolverClass: SOLVERS.v3, effort: 1 },
-];
 
 const rot90 = (dRot: number) => dRot === 90 || dRot === 270;
 
@@ -319,33 +314,6 @@ export function applyPlacementsToCircuit(
   return { circuitJson: out as CircuitElement[], moved, orphans };
 }
 
-/** rectangle covering the old and new positions of every moved part */
-function zoneFromMoved(moved: MovedComponent[], board: { width: number; height: number; centerX: number; centerY: number }): Zone {
-  const MARGIN = 8;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const m of moved) {
-    for (const p of [m.from, m.to]) {
-      minX = Math.min(minX, p.x - m.w / 2);
-      maxX = Math.max(maxX, p.x + m.w / 2);
-      minY = Math.min(minY, p.y - m.h / 2);
-      maxY = Math.max(maxY, p.y + m.h / 2);
-    }
-  }
-  const bx0 = board.centerX - board.width / 2;
-  const by0 = board.centerY - board.height / 2;
-  return {
-    minX: Math.max(bx0, minX - MARGIN),
-    maxX: Math.min(bx0 + board.width, maxX + MARGIN),
-    minY: Math.max(by0, minY - MARGIN),
-    maxY: Math.min(by0 + board.height, maxY + MARGIN),
-    problems: 1,
-    reasons: ["moved_component"],
-  };
-}
-
 export interface RerouteLocalResult {
   ok: boolean;
   reason?: string;
@@ -363,15 +331,13 @@ export interface RerouteLocalResult {
 
 /**
  * The full round trip: positions from manual-edits -> updated circuit ->
- * zone rip-up and re-stitch -> hand-drawn traces applied on top (they always
- * win, they are the user's will) -> stitching to the plane -> summary.
- * Saves nothing: the caller decides (and saves the cache).
+ * hand-drawn traces applied on top (they are the user's will) -> summary.
+ * No routing, no plane stitching. Saves nothing: the caller decides (and
+ * saves the cache).
  *
  * `circuitJson` is null whenever `ok` is false: there is nothing that may be
  * saved. It used to answer ok with zero moves when a placement could not be
- * applied and hand routes existed, and to save moved pads with the OLD copper
- * when the zone could not be rerouted — a board that looked updated and was
- * not.
+ * applied and hand routes existed — a board that looked updated and was not.
  */
 export function rerouteLocal(
   circuitJson: unknown[],
@@ -389,76 +355,37 @@ export function rerouteLocal(
 
   const applied = applyPlacementsToCircuit(circuitJson, manualEditsRaw);
   if (applied?.error) return fail(applied.error);
+  const moved = applied?.moved.length ?? 0;
 
-  // no moves: there may be hand-drawn traces to apply, or nothing at all
-  if (!applied || applied.moved.length === 0) {
-    if (edits.pcb_routes.length === 0) {
-      return fail(
-        orphans.pcb_placements.length > 0
-          ? `nessuno spostamento applicabile: ${orphans.pcb_placements.join(", ")} non sono sulla scheda compilata`
-          : "niente da applicare in locale",
-      );
-    }
-    const routed = applyManualRoutes({ circuitJson, routes: edits.pcb_routes, ...vias });
-    const next = stitchToPlanes(routed.circuitJson as never, rules) as unknown as CircuitElement[];
-    return {
-      circuitJson: next,
-      result: {
-        ok: true,
-        moved: 0,
-        rerouted: false,
-        manualRoutes: routed.applied.length,
-        manualBranches: routed.branches.length,
-        drc: null,
-        orphans,
-      },
-    };
-  }
-
-  const boardEl = (applied.circuitJson as El[]).find((e) => e.type === "pcb_board");
-  const bc = (boardEl?.center as { x?: number; y?: number } | undefined) ?? {};
-  const board = {
-    width: num(boardEl?.width) ?? 100,
-    height: num(boardEl?.height) ?? 100,
-    centerX: num(bc.x) ?? 0,
-    centerY: num(bc.y) ?? 0,
-  };
-  const zone = zoneFromMoved(applied.moved, board);
-
-  let next = applied.circuitJson;
-  let rerouted = false;
-  let drc: number | null = null;
-  const redone = rerouteZoneDetailed(next, zone, DEFS, rules);
-  if (redone.status === "failed") {
+  // no moves and no hand-drawn traces: nothing to apply
+  if (moved === 0 && edits.pcb_routes.length === 0) {
     return fail(
-      `spostati ${applied.moved.length} componenti, ma il rame della zona non si e' potuto rifare (${redone.reason})`,
-      applied.moved.length,
+      orphans.pcb_placements.length > 0
+        ? `nessuno spostamento applicabile: ${orphans.pcb_placements.join(", ")} non sono sulla scheda compilata`
+        : "niente da applicare in locale",
     );
   }
-  if (redone.status === "ok") {
-    next = redone.circuitJson;
-    rerouted = true;
-    drc = redone.drc;
-  }
+
   /*
-   * Hand-drawn traces are applied AFTER the zone rip-up: their geometry is
-   * explicit intent and wins over any copper the solver redid around it. If
-   * one touches a moved pad it stays attached to the old position: the check
-   * flags it and it gets redrawn — never silently delete it.
+   * Hand-drawn traces go on top of the moved geometry: their geometry is
+   * explicit intent. If one touches a moved pad it stays attached to the old
+   * position: the check flags it and it gets redrawn — never silently deleted.
    */
-  const routed = applyManualRoutes({ circuitJson: next, routes: edits.pcb_routes, ...vias });
-  next = routed.circuitJson as CircuitElement[];
-  next = stitchToPlanes(next as never, rules) as unknown as CircuitElement[];
+  const routed = applyManualRoutes({
+    circuitJson: moved > 0 && applied ? applied.circuitJson : circuitJson,
+    routes: edits.pcb_routes,
+    ...vias,
+  });
 
   return {
-    circuitJson: next,
+    circuitJson: routed.circuitJson as CircuitElement[],
     result: {
       ok: true,
-      moved: applied.moved.length,
-      rerouted,
+      moved,
+      rerouted: false,
       manualRoutes: routed.applied.length,
       manualBranches: routed.branches.length,
-      drc,
+      drc: null,
       orphans,
     },
   };

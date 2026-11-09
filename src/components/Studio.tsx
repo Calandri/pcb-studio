@@ -132,14 +132,6 @@ export function Studio({
   const [selectMode, setSelectMode] = useState<SelectMode>("off");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [zone, setZone] = useState<BoardZone | null>(null);
-  // per-section routing variants (Fase 3.d), refreshed after compile/pick
-  const [variantSections, setVariantSections] = useState<
-    Array<{
-      section: string;
-      picked: string | null;
-      candidates: Array<{ label: string; traces: number; vias: number; lengthMm: number; drc: number }>;
-    }>
-  >([]);
   const historyRef = useRef<Array<{ role: "user" | "assistant"; content: string }>>([]);
 
   useEffect(() => {
@@ -289,13 +281,6 @@ export function Studio({
     }
   }, [projectId]);
 
-  const loadVariants = useCallback(async () => {
-    const d = await fetch(`/api/variants?projectId=${projectId}`)
-      .then((r) => r.json())
-      .catch(() => null);
-    if (d?.sections) setVariantSections(d.sections);
-  }, [projectId]);
-
   /*
    * One job on the board at a time: a compile, a mass action, or the agent's
    * turn. Nothing stopped "Ricompila" from starting while a mass action or the
@@ -383,7 +368,6 @@ export function Studio({
         ]);
       }
       await loadCircuit();
-      await loadVariants();
     } catch (err) {
       setChat((c) => [
         ...c,
@@ -394,7 +378,7 @@ export function Studio({
       setRecompileStep("");
       setRecompileProgress(null);
     }
-  }, [projectId, loadCircuit, loadVariants]);
+  }, [projectId, loadCircuit]);
 
   const recompile = useCallback(async () => {
     if (!claimBoard("ricompila")) return;
@@ -405,54 +389,9 @@ export function Studio({
     }
   }, [claimBoard, runCompile]);
 
-  /**
-   * Redoes only the ground. Moving a component or a trace by hand leaves the
-   * plane vias where they were, i.e. in the wrong place: this throws them
-   * away and redoes them on today's geometry, in a second instead of the
-   * three minutes of a full compilation.
-   */
-  /*
-   * "redoing the ground" is in flight: only the setter is read, the flag serves
-   * to keep two runs from overlapping on the same planes.
-   */
-  const [, setRegenGround] = useState(false);
   /** what the mass edit is doing, and for how long */
   const [massBusy, setMassBusy] = useState("");
   const [massSeconds, setMassSeconds] = useState(0);
-
-  const recomputeGround = useCallback(async () => {
-    setRegenGround(true);
-    try {
-      const d = await fetch("/api/ground", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId }),
-      }).then((r) => r.json());
-      if (d.error) {
-        setChat((c) => [...c, { kind: "error", text: String(d.error) }]);
-      } else {
-        setChat((c) => [
-          ...c,
-          {
-            kind: "tool",
-            name: "massa",
-            ok: d.isolated === 0,
-            detail: `${d.viasAfter} via al piano${
-              d.isolated > 0 ? `, ${d.isolated} pad ancora isolati` : ", nessun pad isolato"
-            }`,
-          },
-        ]);
-      }
-      await loadCircuit();
-    } catch (err) {
-      setChat((c) => [
-        ...c,
-        { kind: "error", text: err instanceof Error ? err.message : String(err) },
-      ]);
-    } finally {
-      setRegenGround(false);
-    }
-  }, [projectId, loadCircuit]);
 
   useEffect(() => {
     if (!recompiling) return;
@@ -499,7 +438,6 @@ export function Studio({
           try {
             previewAtRef.current = null;
             await loadCircuit();
-            if (alive) void loadVariants();
           } finally {
             reloading = false;
           }
@@ -539,7 +477,7 @@ export function Studio({
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [projectId, recompiling, loadCircuit, loadVariants]);
+  }, [projectId, recompiling, loadCircuit]);
 
   /*
    * Manual editor. Applying an edit means writing it to manual-edits.json
@@ -548,10 +486,10 @@ export function Studio({
    * no longer matches the board.
    */
   /*
-   * After a manual edit: pure moves go through the fast path (cached
-   * positions + the zone's copper redone, seconds), circuit changes go
-   * through the full compilation — which otherwise does NOT start by
-   * itself: compiling stays an explicit gesture ("Ricompila ora").
+   * After a manual edit: the fast path moves the parts on the cached board and
+   * lays the hand-drawn traces on top, in seconds. No copper is redone: the
+   * traces of a moved part stay where they were and are redrawn by hand. The
+   * full compilation does NOT start by itself: it stays an explicit gesture.
    */
   /*
    * "Applica" applies, and that is all: it takes the hand-made work and
@@ -581,9 +519,9 @@ export function Studio({
           kind: "tool",
           name: "applica",
           ok: false,
-          detail: `modifiche salvate, ma il rame non si e' potuto aggiornare qui (${
+          detail: `modifiche salvate, ma la scheda non si e' potuta aggiornare qui (${
             r?.reason ?? "motivo sconosciuto"
-          }). Premi "Ristrada" quando vuoi rifare le piste.`,
+          }). Premi "Aggiorna" per rileggere i file: il rame resta quello che c'e'.`,
         },
       ]);
     }
@@ -679,11 +617,6 @@ export function Studio({
     async (action: MassAction, scope: "selezionati" | "tutto") => {
       const soli = scope === "selezionati" ? selectedNames : [];
       const nomi: Record<MassAction, string> = {
-        sposta: "Sistemo i componenti",
-        sezioni: "Divido la scheda in sezioni",
-        instrada: "Rifaccio le piste",
-        mancanti: "Chiudo i collegamenti aperti",
-        massa: "Rifaccio la massa",
         ricompila: "Ricompilo la scheda",
         fissa: "Fisso le posizioni",
         sblocca: "Sblocco le posizioni",
@@ -696,119 +629,30 @@ export function Studio({
           await runCompile();
           return;
         }
-        if (action === "massa") {
-          await recomputeGround();
-          return;
-        }
-        if (action === "fissa" || action === "sblocca") {
-          const d = await fetch("/api/manual-edits", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(
-              action === "fissa"
-                ? { projectId, action: "pin", names: soli }
-                : scope === "selezionati"
-                  ? // solo i selezionati: con 2+ names=null rilasciava TUTTI i fissati
-                    { projectId, action: "release", scope: "pcb", names: soli }
-                  : { projectId, action: "release", scope: "pcb", name: null },
-            ),
-          }).then((r) => r.json());
-          setChat((c) => [
-            ...c,
-            d.error
-              ? { kind: "error", text: String(d.error) }
-              : {
-                  kind: "tool",
-                  name: action === "fissa" ? "fissa" : "sblocca",
-                  ok: true,
-                  detail:
-                    action === "fissa"
-                      ? `${d.fissati ?? 0} posizioni fissate: nessuna azione le muove piu'`
-                      : "posizioni sbloccate",
-                },
-          ]);
-          await loadCircuit();
-          return;
-        }
-        const res = await fetch("/api/reroute", {
+        const d = await fetch("/api/manual-edits", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            projectId,
-            mode:
-              action === "sposta"
-                ? "posiziona"
-                : action === "sezioni"
-                  ? "sezioni"
-                  : action === "instrada"
-                    ? "tutto"
-                    : "mancanti",
-            only: soli,
-          }),
-        });
-        if (!res.ok || !res.body) {
-          const e = await res.json().catch(() => null);
-          throw new Error(e?.error ?? `nessuna risposta dal server (HTTP ${res.status})`);
-        }
-
-        // event stream: "passo" = avanzamento (la scheda si aggiorna da sola
-        // via preview, qui si vede la fase), "fine" = risultato. Senza "fine"
-        // ne' "errore" lo stream si e' solo chiuso: non e' un successo.
-        let d: Record<string, unknown> = {};
-        let finished = false;
-        await readSseStream(res.body, (event, raw) => {
-          const data = raw as Record<string, unknown>;
-          if (event === "passo") {
-            setMassBusy(`${nomi[action]}${data.detail ? ` — ${String(data.detail)}` : ""}`);
-          } else if (event === "piano") {
-            /*
-             * The section plan is the model's REASONING, not a progress bar:
-             * it goes into the chat, where it stays and can be read again. It
-             * is the difference between "it moved my parts" and "it moved
-             * them there, and here is why".
-             */
-            const sezioni = Array.isArray(data.sezioni) ? (data.sezioni as Array<Record<string, unknown>>) : [];
-            setChat((c) => [
-              ...c,
-              {
-                kind: "assistant" as const,
-                text: [
-                `**Pianta della scheda** (${String(data.provider ?? "modello")}${Number(data.tentativi) > 1 ? `, ${Number(data.tentativi)} tentativi` : ""})`,
-                "",
-                String(data.ragionamento ?? ""),
-                "",
-                ...sezioni.map(
-                  (s) =>
-                    `- **${String(s.nome)}** — ${(Number(s.maxX) - Number(s.minX)).toFixed(1)}x${(Number(s.maxY) - Number(s.minY)).toFixed(1)}mm: ${String(s.perche ?? "")}`,
-                ),
-                ].join("\n"),
-              },
-            ]);
-          } else if (event === "fine") {
-            finished = true;
-            d = data;
-          } else if (event === "errore") {
-            finished = true;
-            d = { error: data.error ?? "errore sconosciuto" };
-          }
-        });
-        if (!finished) {
-          d = {
-            error: `«${nomi[action]}» è stato interrotto prima della fine (durata massima o rete). Quello che era già salvato resta: rilancialo per riprendere.`,
-          };
-        }
+          body: JSON.stringify(
+            action === "fissa"
+              ? { projectId, action: "pin", names: soli }
+              : scope === "selezionati"
+                ? // solo i selezionati: con 2+ names=null rilasciava TUTTI i fissati
+                  { projectId, action: "release", scope: "pcb", names: soli }
+                : { projectId, action: "release", scope: "pcb", name: null },
+          ),
+        }).then((r) => r.json());
         setChat((c) => [
           ...c,
           d.error
             ? { kind: "error", text: String(d.error) }
             : {
                 kind: "tool",
-                name: nomi[action].toLowerCase(),
-                ok: !d.aperte,
+                name: action === "fissa" ? "fissa" : "sblocca",
+                ok: true,
                 detail:
-                  d.aperte !== undefined
-                    ? `${d.rounds ?? 0} giri, ${d.aperte} collegamenti ancora aperti`
-                    : "fatto",
+                  action === "fissa"
+                    ? `${d.fissati ?? 0} posizioni fissate: nessuna azione le muove piu'`
+                    : "posizioni sbloccate",
               },
         ]);
         await loadCircuit();
@@ -822,7 +666,7 @@ export function Studio({
         boardJobRef.current = null;
       }
     },
-    [projectId, selectedNames, claimBoard, runCompile, recomputeGround, loadCircuit],
+    [projectId, selectedNames, claimBoard, runCompile, loadCircuit],
   );
 
   /** "aggiorna, rame intatto": same gesture as "ricompila" — geometry fresh
@@ -835,11 +679,6 @@ export function Studio({
   const askMass = useCallback(
     (action: MassAction, scope: "selezionati" | "tutto") => {
       const cosa: Record<MassAction, string> = {
-        sposta: "sistema il posizionamento",
-        sezioni: "dividi la scheda in sezioni logiche e disponi i pezzi dentro le sezioni",
-        instrada: "rifai lo sbroglio",
-        mancanti: "chiudi i collegamenti aperti",
-        massa: "rifai la massa e la cucitura al piano",
         ricompila: "ricompila la scheda e dimmi cosa non va",
         fissa: "fissa le posizioni",
         sblocca: "sblocca le posizioni",
@@ -1321,14 +1160,7 @@ export function Studio({
             });
             // render the server-validated routing (same circuit json the
             // export endpoints will use), not a fresh browser re-route
-            if (data.result?.ok) {
-              void loadCircuit();
-              void loadVariants();
-            }
-          }
-          if (data.name === "pick_variant" && data.result?.ok) {
-            void loadCircuit();
-            void loadVariants();
+            if (data.result?.ok) void loadCircuit();
           }
           if (data.name === "enclosure_save" && data.result?.ok) {
             void enclosures.reload();
@@ -1385,7 +1217,7 @@ export function Studio({
       }
       setStatus("idle");
     }
-  }, [input, status, projectId, refreshLibrary, loadCircuit, loadVariants, enclosures]);
+  }, [input, status, projectId, refreshLibrary, loadCircuit, enclosures]);
 
   const activePreset =
     VIEW_PRESETS.find((p) => p.key === preset) ?? null;
@@ -1798,40 +1630,6 @@ export function Studio({
             />
           )}
 
-          {/* per-section routing variants: chosen by asking the agent */}
-          {tab === "pcb" && variantSections.length > 0 && (
-            /* below the editor bar, which occupies the top strip */
-            <div className="absolute inset-x-[34px] top-[86px] flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-[12px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3.5 py-2 backdrop-blur">
-              {variantSections.map((sec) => (
-                <div key={sec.section} className="flex items-center gap-1.5">
-                  <span className="font-mono text-[10px] font-semibold tracking-[0.05em] text-[#5F726C]">
-                    {sec.section}
-                  </span>
-                  {sec.candidates.map((cand) => {
-                    const active = cand.label === sec.picked;
-                    return (
-                      <button
-                        key={cand.label}
-                        type="button"
-                        title={`${cand.vias} via · ${cand.lengthMm}mm · ${cand.drc} violazioni`}
-                        onClick={() =>
-                          ask(`usa la variante ${cand.label} per la sezione ${sec.section}`)
-                        }
-                        className={`rounded-[7px] border px-2 py-1 font-mono text-[10px] transition-colors ${
-                          active
-                            ? "border-[#2C4C42] bg-brand-wash text-brand"
-                            : "border-line text-muted hover:border-[#3A5A50] hover:text-text"
-                        }`}
-                      >
-                        {cand.label}
-                        {cand.drc > 0 ? ` ⚠${cand.drc}` : ""}
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          )}
         </section>
 
         <RightRail

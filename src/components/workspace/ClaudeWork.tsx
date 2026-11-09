@@ -21,8 +21,9 @@ import { RETRY_BASE_MS, isRetryableStatus, mergeActivity, nextBackoff } from "./
  * procedure: they produce text. Which tools to call, in what order, and
  * when to stop is decided by the model, which has them all. It's the house
  * LLM-first rule and it has a practical
- * effect: the `reroute_zone` tool added today gets used by yesterday's
- * commands without touching a single line of this file.
+ * effect: the tools change (the automatic `reroute_zone` is gone since
+ * 2026-11-09, copper is drawn by hand) and these commands keep working
+ * without touching a single line of this file.
  */
 
 type Kind = "place" | "route";
@@ -134,7 +135,7 @@ export function ClaudeWork({
           />
           <Command
             label="Re-instrada"
-            hint="Claude rifa' lo sbroglio: prima le zone peggiori, poi la scheda intera se serve spostare i pezzi."
+            hint="Claude ridisegna le piste a mano: prima le zone peggiori. Nessun instradamento automatico."
             state={state({ kind: "route", scope: "all" })}
             onClick={() => void copy({ kind: "route", scope: "all" })}
           />
@@ -185,7 +186,7 @@ export function ClaudeWork({
             label="Re-instrada la zona"
             hint={
               zone
-                ? "Claude rifa' il rame solo li' dentro: secondi invece di minuti, e il resto della scheda non si tocca."
+                ? "Claude ridisegna a mano il rame solo li' dentro, e il resto della scheda non si tocca."
                 : "Traccia prima il rettangolo sulla scheda."
             }
             disabled={!zone}

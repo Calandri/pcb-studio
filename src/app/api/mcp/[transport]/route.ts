@@ -11,6 +11,7 @@ import { listUserOrganizations } from "@/lib/org-store";
 import { claimProject, listAccessibleProjects, projectAccess, type Viewer } from "@/lib/acl";
 import {
   filesHash,
+  getCompileCache,
   getProject,
   saveCompileCache,
   savePreviewCircuit,
@@ -74,7 +75,7 @@ const fail = (message: string) => ({
 const denied = () => fail("nessun accesso a questo progetto");
 const deniedEdit = () => fail("serve accesso in modifica a questo progetto");
 
-const MCP_INSTRUCTIONS = `PCB Studio: you design real electronics by editing a project's tscircuit .tsx files (entry main.tsx) and compiling them. The code IS the project: read_project, write_file (full file, no diffs), then compile. The compile routes the PCB, runs DRC and electrical checks, and reports the quality of the schematic drawing. The electrical design is yours; the user can drag components and draw traces by hand in the viewer (see the manual edits section).
+const MCP_INSTRUCTIONS = `PCB Studio: you design real electronics by editing a project's tscircuit .tsx files (entry main.tsx) and compiling them. The code IS the project: read_project, write_file (full file, no diffs), then compile. The compile NEVER routes and never places parts: it reads the files, keeps the copper already on the board, runs DRC and electrical checks, and reports the quality of the schematic drawing. Every trace is drawn by hand (<trace pcbPath>, or by the user in the viewer) and every part is placed by hand. The electrical design is yours; the user can drag components and draw traces by hand in the viewer (see the manual edits section).
 
 ${TSCIRCUIT_BASICS}
 
@@ -95,7 +96,6 @@ ${SCHEMATIC_METRICS}
 - unroutedDetail gives the exact pad coordinates still to connect; congestion gives the most copper-covered board cells; ratsnest gives estimatedCrossings and the longest nets. Use them to move parts instead of guessing.
 - drcViolations (fabrication) and prcViolations (whether the board actually works: decoupling distance, dead pour islands, return vias, power trace width) are defects too: fix them before declaring the work done.
 - fabClasses / fabClass say which manufacturer class the design satisfies, cheapest first; a project with custom rules is listed first and satisfies its own class when the DRC is clean.
-- With variants=3, variantReport lists the routing candidates per section: switch with pick_variant when one looks better or the section is a closeCall.
 - footprintProvenance says where each component's pad geometry comes from. A part with an LCSC code that still uses a generic footprint is a defect: import the real one.
 - A schematic_layout_disabled error means schX/schY disabled the schematic auto layout: remove them and use schSectionName.
 - manualEdits counts the components the user pinned by hand: your coordinates no longer apply to those.
@@ -113,9 +113,7 @@ function describeCall(tool: string, args: Record<string, unknown>): string {
     case "write_file":
       return `riscrive ${s(args.path) || "un file"} (${s(args.content).length} caratteri)`;
     case "compile":
-      return args.variants ? `compila con ${args.variants} varianti` : "compila la scheda";
-    case "pick_variant":
-      return `sceglie la variante ${s(args.variant)} per la sezione ${s(args.section)}`;
+      return "compila la scheda";
     case "search_parts":
       return `cerca componenti: ${s(args.query)}`;
     case "import_component_from_lcsc":
@@ -136,8 +134,6 @@ function describeCall(tool: string, args: Record<string, unknown>): string {
       return "rilegge posizioni e problemi della scheda";
     case "read_project":
       return "legge il codice del progetto";
-    case "reroute_zone":
-      return `rifa\' il rame nella zona ${args.minX},${args.minY} - ${args.maxX},${args.maxY}`;
     default:
       return tool;
   }
@@ -230,20 +226,16 @@ function buildHandler(viewer: Viewer) {
 
     server.tool(
       "compile",
-      "Compila il progetto: instrada il PCB, esegue il DRC e restituisce errori, " +
-        "connessioni non instradate, congestione e geometria, piu' la qualita' dello " +
+      "Compila il progetto SENZA instradare e senza spostare pezzi: rilegge i file, " +
+        "tiene il rame gia' sulla scheda, esegue il DRC e restituisce errori, " +
+        "connessioni ancora aperte, congestione e geometria, piu' la qualita' dello " +
         "schematico (simboli sovrapposti, net label sopra i simboli, incroci, sezioni " +
-        "funzionali). E' lo strumento centrale: chiamalo dopo ogni write_file e correggi " +
-        "ogni errore prima di rispondere. Con variants=3 instrada ogni sezione in piu' " +
-        "modi e restituisce variantReport, da cui poi si sceglie con pick_variant.",
+        "funzionali). Le piste si disegnano a mano (<trace pcbPath>). Chiamalo dopo ogni " +
+        "write_file e correggi ogni errore prima di rispondere.",
       {
         projectId: z.string(),
-        variants: z
-          .number()
-          .optional()
-          .describe("0 = routing classico, 1 = passata conforme alle regole (default), 3 = report varianti"),
       },
-      async ({ projectId, variants }) => {
+      async ({ projectId }) => {
         // it SAVES the result and costs minutes of server: a viewer of a
         // link-shared project could overwrite the owner's board
         if ((await projectAccess(projectId, viewer)) !== "edit") {
@@ -261,10 +253,12 @@ function buildHandler(viewer: Viewer) {
          * notices on its own at the periodic check.
          */
         const fsMap = await withLibrary(await getProject(projectId));
+        // the copper already on the board: the compile never routes, it carries it over
+        const inCache = await getCompileCache(projectId).catch(() => null);
         let lastPreview = 0;
         let lastStep = "";
         const { summary, circuitJson } = await compileProject(fsMap, {
-          ...(variants === undefined ? {} : { variants }),
+          keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
           onProgress: (p) => {
             /*
              * Steps go to the log even without a drawing: the compilation
@@ -321,8 +315,10 @@ function buildHandler(viewer: Viewer) {
         if ((await projectAccess(projectId, viewer)) !== "edit") {
           return deniedEdit();
         }
+        const inCache = await getCompileCache(projectId).catch(() => null);
         const { circuitJson } = await compileProject(
           await withLibrary(await getProject(projectId)),
+          { keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined },
         );
         return text({
           issues: extractIssues(circuitJson).slice(0, 60),
@@ -364,12 +360,12 @@ function buildHandler(viewer: Viewer) {
 
     server.tool(
       "review_layout",
-      "Renderizza il PCB instradato in un'immagine e ne fa criticare il disegno da un " +
+      "Renderizza il PCB in un'immagine e ne fa criticare il disegno da un " +
         "modello di visione: componenti stipati, piste che fanno il giro largo, grappoli " +
         "di via, quasi-contatti, aree sprecate. I controlli numerici (DRC/PRC) trovano le " +
         "violazioni di regola, questo trova quello che vede solo l'occhio di un progettista. " +
-        "Chiamalo una volta dopo che il routing e' convergiuto, poi agisci sui problemi " +
-        "spostando i componenti. Richiede una compile precedente.",
+        "Chiamalo quando le piste sono disegnate, poi correggi a mano. " +
+        "Richiede una compile precedente.",
       { projectId: z.string() },
       async ({ projectId }) => {
         // a vision-model call paid by the instance
@@ -470,48 +466,6 @@ function buildHandler(viewer: Viewer) {
       { netlist: z.string() },
       async ({ netlist }) => {
         const { result } = await executeTool("-", "simulate", { netlist });
-        return text(result);
-      },
-    );
-
-    server.tool(
-      "reroute_zone",
-      "Rifa' il rame SOLO dentro un rettangolo, lasciando intatto il resto della scheda. " +
-        "Usalo quando il problema sta in un'area precisa (violazioni DRC raggruppate li', " +
-        "un giro largo, un grappolo di via) invece di ricompilare tutto, che costa minuti " +
-        "e rimescola anche il rame che andava bene. Coordinate in mm, centro scheda = 0,0, " +
-        "le stesse di pcbX/pcbY e dei punti delle violazioni DRC. Si strappano solo le " +
-        "piste INTERAMENTE contenute nel rettangolo, quindi lascia un margine attorno al " +
-        "problema. Prova piu' solutori e tiene il migliore; se nessuno migliora la scheda " +
-        "non salva niente e te lo dice. Richiede una compile precedente.",
-      {
-        projectId: z.string(),
-        minX: z.number().describe("bordo sinistro in mm"),
-        minY: z.number().describe("bordo inferiore in mm"),
-        maxX: z.number().describe("bordo destro in mm"),
-        maxY: z.number().describe("bordo superiore in mm"),
-      },
-      async ({ projectId, ...zone }) => {
-        if ((await projectAccess(projectId, viewer)) !== "edit") {
-          return deniedEdit();
-        }
-        const { result } = await executeTool(projectId, "reroute_zone", zone);
-        return text(result);
-      },
-    );
-
-    server.tool(
-      "pick_variant",
-      "Sceglie una variante di routing per una sezione, tra quelle prodotte da compile " +
-        "con variants >= 1 (campo variantReport). Chiamalo quando una sezione e' marcata " +
-        "closeCall o quando l'utente preferisce un compromesso diverso tra vias, lunghezza " +
-        "e violazioni DRC. Il viewer e gli export si aggiornano subito.",
-      { projectId: z.string(), section: z.string(), variant: z.string() },
-      async ({ projectId, section, variant }) => {
-        if ((await projectAccess(projectId, viewer)) !== "edit") {
-          return deniedEdit();
-        }
-        const { result } = await executeTool(projectId, "pick_variant", { section, variant });
         return text(result);
       },
     );

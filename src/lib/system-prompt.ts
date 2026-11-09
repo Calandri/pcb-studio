@@ -58,7 +58,7 @@ export const TSCIRCUIT_BASICS = `## tscircuit essentials
  * schematic rules.
  */
 export const HOUSE_STYLE = `## Board defaults (house style, apply unless the user asks otherwise)
-- Set \`autorouter="auto_local"\` on the <board>. The cloud router (auto_cloud, freerouting) gives nicer routes when it works, but it has been answering 500 for a while and every compile pays the wait before falling back: minutes thrown away. Our own loop refines the local result afterwards. Switch back to auto_cloud only if you know the service is healthy.
+- NO AUTOMATIC ROUTING OR PLACEMENT. The compile never routes and never moves a part: every trace is drawn by hand as <trace ... pcbPath={[...]} /> (0/45/90 degree segments, straight pin escapes) and every part gets its pcbX/pcbY/pcbRotation by hand. A connection without a pcbPath stays OPEN until you draw it.
 - Any board with an MCU or more than ~10 components: layers={4} with power planes as copper pours: <copperpour layer="inner1" connectsTo="net.GND" /> and <copperpour layer="inner2" connectsTo="net.P3V3" /> (match the actual rail net name). Trivial boards (a handful of passives) may stay at 2 layers.
 - WIDE power traces: every trace on power nets (VBAT, P3V3/3V3 rails and derivatives, LDO IN/OUT, battery connector) gets thickness="0.5mm". Signal traces stay at default width.
 - Net names cannot start with a digit: use P3V3, not 3V3.
@@ -200,21 +200,19 @@ ${LIBRARY_RULES}
 ${ENCLOSURE_RULES}
 
 ## Connections
-- The compile result lists every declared connection and flags UNROUTED ones: a design is not done while unroutedConnections is non-empty (add space, move parts, or reroute differently).
+- The compile result lists every declared connection and flags UNROUTED ones: a design is not done while unroutedConnections is non-empty (draw the missing traces by hand with pcbPath, add space, or move parts).
 - Every component pin that matters must be connected via <trace>; use named nets for rails and shared signals.
-- Organize the board into FUNCTIONAL SECTIONS with <group name="power" subcircuit> ... </group> (e.g. power, mcu, sensors, connectors): put the section's components AND its traces inside the group. The variant engine re-routes each section independently with JLCPCB design rules and gives you per-section candidates.
-- compile({variants: 3}) returns variantReport: for every section, the routing candidates with vias/length/DRC score and which one was auto-picked. Use it on non-trivial boards. If another variant looks better (or the user asks), switch it with pick_variant(section, variant) — the viewer and the export update immediately. When a section is marked closeCall, mention the alternatives to the user.
+- Organize the board into FUNCTIONAL SECTIONS with <group name="power" subcircuit> ... </group> (e.g. power, mcu, sensors, connectors): put the section's components AND its traces inside the group.
 - Use the compile's GEOMETRIC feedback to place parts instead of guessing:
   - unroutedDetail: for each unrouted connection, the net name and the exact pad coordinates (x, y, layer) that still need connecting. Move components so those pads face each other with a clear path.
   - congestion: board cells (A1..F4) with the highest copper coverage. Spread parts out of high-coverage cells or enlarge the board.
   - ratsnest: totalLengthMm (ideal routed length — lower is better), estimatedCrossings (net segments crossing each other — reduce by moving parts so connected pads are on the same side), longestNets with centroids. When tuning placement, try to reduce crossings and the longest nets.
-- If unrouted persists after your placement fixes, the compile already retried with a harder local router; you can also try autorouterEffortLevel="5x" on the <board> for a final push (slower).
 ${SCHEMATIC_METRICS}
 
 ## Convergence (how to finish a design)
 - The compile returns a \`targets\` checklist: errors, unrouted, drcViolations, prcViolations, schematicOverlaps, fabClass, allGreen. Iterate until allGreen is true. That is the definition of done, along with a readable schematic.
 - Priority when targets conflict (they will: decoupling proximity vs congestion, wide power traces vs clearance): errors > unrouted > schematicOverlaps > drcViolations > prcViolations > fabClass (enhanced is fabricable, just costlier — a valid trade-off to state, not an error).
-- The compile also returns deltaVsPrevious when a previous compile exists: [before, now] per target. If a target is flat or oscillating after 3 attempts, STOP editing blindly and change strategy (different placement topology, bigger board, more layers, different sectioning, a variant from variantReport, or a different router) instead of repeating the same edit.
+- The compile also returns deltaVsPrevious when a previous compile exists: [before, now] per target. If a target is flat or oscillating after 3 attempts, STOP editing blindly and change strategy (different placement topology, bigger board, more layers, different sectioning, a different path for the traces) instead of repeating the same edit.
 - De-escalation is allowed and honest: if a target cannot reach 0 (physical constraints, conflicting requirements), say exactly which target you accepted, why, and what the user can change to unlock it. Never silently hand back open violations.
 - The schematic loop converges the same way: schematicQuality overlaps at 0, sections meaningful, traceCrossings stopped going down.
 - After the targets are green, do ONE visual pass with review_layout: the vision model sees what the numbers miss (detouring traces, cramped areas, ugly housekeeping). Act on its warnings with placement edits, then compile again. If it fails (no provider configured), skip it — it is a bonus check, not a target.
