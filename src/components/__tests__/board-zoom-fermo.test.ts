@@ -54,3 +54,21 @@ describe("lo zoom resta dov'e'", () => {
     expect(new Set(altezze)).toEqual(new Set(["h-[60px]"]));
   });
 });
+
+describe("una vista sola per Guarda, Sposta, Instrada e i cambi di scheda", () => {
+  it("chi monta dopo trova la stessa scala e lo stesso millimetro al centro, anche se piu' stretto", async () => {
+    const { salvaVista, vistaSalvata } = await import("../board/vista-condivisa");
+    const board = "42.5x51.5";
+    const v = { x: -500, y: 900, k: 30 };
+    salvaVista("prova-salvataggio-retro", board, v, { w: 1000, h: 700 });
+    const c0 = centroMm(v, { w: 1000, h: 700 });
+    const r = vistaSalvata("prova-salvataggio-retro", board, { w: 760, h: 700 })!;
+    expect(r.k).toBe(30);
+    const c = centroMm(r, { w: 760, h: 700 });
+    expect(c.x).toBeCloseTo(c0.x, 9);
+    expect(c.y).toBeCloseTo(c0.y, 9);
+    // another board, or another project: framed as new
+    expect(vistaSalvata("prova-salvataggio-retro", "30x20", { w: 760, h: 700 })).toBeNull();
+    expect(vistaSalvata("altro-progetto", board, { w: 760, h: 700 })).toBeNull();
+  });
+});

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
+import { useVistaCondivisa } from "./vista-condivisa";
 import {
   DESIGNATOR_FONT,
   LABEL_FONT,
@@ -87,26 +88,7 @@ const applyMatrix = (m: ReturnType<typeof mirrorMatrix>, x: number, y: number) =
   y: m.b * x + m.d * y + m.f,
 });
 
-/**
- * What re-frames the board: a different board (its size) once the container has
- * been measured. Never the container's own size: see BoardCanvas, fitKey.
- */
-export function chiaveInquadratura(
-  board: { width: number; height: number } | null,
-  misurato: boolean,
-): string | null {
-  if (!board || !misurato) return null;
-  return `${board.width}x${board.height}`;
-}
-
-/** after a resize: the same millimetre at the centre, the same scale */
-export function vistaDopoRidimensionamento(
-  v: { x: number; y: number; k: number },
-  prima: { w: number; h: number },
-  dopo: { w: number; h: number },
-): { x: number; y: number; k: number } {
-  return { k: v.k, x: v.x + (dopo.w - prima.w) / 2, y: v.y + (dopo.h - prima.h) / 2 };
-}
+export { chiaveInquadratura, vistaDopoRidimensionamento } from "./vista-condivisa";
 
 /** standard grid pitches (mil): 0,635 = 25mil, 1,27 = 50mil, 2,54 = 100mil */
 const GRID_OPTIONS = [0.25, 0.635, 1.27, 2.54];
@@ -145,6 +127,7 @@ export function BoardCanvas({
   onRelease,
   bothSides = false,
   partInfo,
+  vistaKey,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -195,6 +178,8 @@ export function BoardCanvas({
    * next to the part in "Sposta" shows it.
    */
   partInfo?: Record<string, DescrizionePezzo & { name: string }>;
+  /** whose view this is (the project): shared by every canvas of the board */
+  vistaKey?: string;
 }) {
   const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -317,28 +302,11 @@ export function BoardCanvas({
 
   /*
    * THE ZOOM CHANGES ONLY WHEN THE PERSON ASKS (wheel, pinch, dragging the
-   * view, FIT). The board used to be re-framed every time the container
-   * changed size, and the bar under the board grew a line on hover: passing
-   * over a part zoomed the board back out (Niccolo', 2026-11-09). Now it is
-   * framed once, when the board is first measured or a different board
-   * arrives; a resize keeps the millimetre at the centre and the scale.
+   * view, FIT): not on hover (the bar under the board grew a line and the
+   * board was re-framed, 2026-11-09), not on a resize, not when switching
+   * Guarda/Sposta/Instrada or tab. See vista-condivisa.ts.
    */
-  const fitKey = chiaveInquadratura(scene?.board ?? null, misurato);
-  const lastFit = useRef("");
-  const sizePrima = useRef(size);
-  useEffect(() => {
-    if (!fitKey || lastFit.current === fitKey) return;
-    lastFit.current = fitKey;
-    // framed on THIS size: the resize below must not shift it again
-    sizePrima.current = size;
-    fit();
-  }, [fitKey, fit, size]);
-  useEffect(() => {
-    const prima = sizePrima.current;
-    sizePrima.current = size;
-    if (!lastFit.current || (prima.w === size.w && prima.h === size.h)) return;
-    setView((v) => vistaDopoRidimensionamento(v, prima, size));
-  }, [size]);
+  useVistaCondivisa({ chiave: vistaKey, board: scene?.board ?? null, misurato, size, view, setView, fit });
 
   const zoomAt = useCallback((px: number, py: number, factor: number) => {
     setView((v) => {

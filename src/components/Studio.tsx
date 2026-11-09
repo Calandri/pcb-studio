@@ -1408,6 +1408,7 @@ export function Studio({
                     // routing by hand, tscircuit's stays, which already knows
                     // everything about those edits.
                     <BoardCanvas
+                      vistaKey={projectId}
                       circuitJson={circuitJson}
                       flags={flags}
                       layer={layer}
@@ -1444,6 +1445,7 @@ export function Studio({
                     // grid snap. Before it was tscircuit's viewer: a canvas with
                     // no events, the move would not stick.
                     <BoardCanvas
+                      vistaKey={projectId}
                       circuitJson={circuitJson}
                       flags={flags}
                       layer={layer}

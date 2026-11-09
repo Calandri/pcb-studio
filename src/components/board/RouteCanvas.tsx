@@ -12,6 +12,7 @@ import {
 } from "@/lib/pcb-route-model";
 import type { ManualRoute } from "@/lib/manual-routes";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
+import { useVistaCondivisa } from "./vista-condivisa";
 import { isTypingTarget } from "../keyboard";
 import { LAYER_COLOR, PAD_COLOR, LAYER_ORDER, buildScene, layerForKey, type LayerId } from "./render";
 
@@ -59,6 +60,7 @@ export function RouteCanvas({
   const model = useMemo(() => buildRouteModel(circuitJson), [circuitJson]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 900, h: 600 });
+  const [misurato, setMisurato] = useState(false);
   const [layer, setLayer] = useState<LayerId>("top");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
@@ -91,7 +93,10 @@ export function RouteCanvas({
     if (!node) return;
     const ro = new ResizeObserver(([e]) => {
       const { width: w, height: h } = e.contentRect;
-      if (w > 0 && h > 0) setSize({ w, h });
+      if (w > 0 && h > 0) {
+        setSize({ w, h });
+        setMisurato(true);
+      }
     });
     ro.observe(node);
     return () => ro.disconnect();
@@ -114,13 +119,8 @@ export function RouteCanvas({
   useEffect(() => {
     fitRef.current = fit;
   }, [fit]);
-  const fitKey = `${scene?.board.width}x${scene?.board.height}-${Math.round(size.w)}x${Math.round(size.h)}`;
-  const lastFit = useRef("");
-  useEffect(() => {
-    if (lastFit.current === fitKey) return;
-    lastFit.current = fitKey;
-    fit();
-  }, [fitKey, fit]);
+  // the same view as the other canvases of the board: see vista-condivisa.ts
+  useVistaCondivisa({ chiave: projectId, board: scene?.board ?? null, misurato, size, view, setView, fit });
 
   /** screen -> millimeters, with y pointing up as in technical drawing */
   const toMm = useCallback(
