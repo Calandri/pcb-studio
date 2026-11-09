@@ -515,7 +515,7 @@ export function RouteCanvas({
 
           {usedLayers.map((l) => (
             <g key={`p-${l}`} opacity={dim(l)}>
-              {scene.pads.filter((p) => p.layer === l).map((p) => (
+              {scene.pads.filter((p) => !p.foro && p.layer === l).map((p) => (
                 p.circle
                   ? <circle key={p.id} cx={p.x} cy={p.y} r={p.w / 2} fill={PAD_COLOR[l]} />
                   : <rect key={p.id} transform={p.rot ? `rotate(${p.rot} ${p.x} ${p.y})` : undefined} x={p.x - p.w / 2} y={p.y - p.h / 2} width={p.w} height={p.h} rx={p.radius} fill={PAD_COLOR[l]} />

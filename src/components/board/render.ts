@@ -108,6 +108,13 @@ export interface Pad {
   net: string;
   /** the net name when it has one: GND, P3V3, MIC_3V3... */
   netName: string;
+  /**
+   * A through-hole pin (pcb_plated_hole with a port): a pin like any other for
+   * nets, names, highlighting and connection lines, drawn by the hole code and
+   * not as a pad. J4 on sbb-dl-retro, the button connector, had five pins with
+   * no net and no name on hover because only SMD pads were pins (2026-11-09).
+   */
+  foro?: boolean;
 }
 
 export interface Via {
@@ -503,6 +510,30 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
           componentId: String(el.pcb_component_id ?? ""),
           plated,
         });
+        // a through-hole PIN: it joins the pins, see Pad.foro
+        const port = String(el.pcb_port_id ?? "");
+        if (plated && port) {
+          const rect = String(el.shape ?? "").includes("rect") || String(el.shape ?? "").includes("pill");
+          const w = num(el.rect_pad_width) ?? num(el.outer_width) ?? num(el.outer_diameter) ?? hole * 1.6;
+          const h = num(el.rect_pad_height) ?? num(el.outer_height) ?? num(el.outer_diameter) ?? hole * 1.6;
+          scene.pads.push({
+            id: String(el.pcb_plated_hole_id ?? `foro${scene.pads.length}`),
+            x,
+            y,
+            w,
+            h,
+            radius: 0,
+            layer: "top",
+            circle: !rect,
+            rot: num(el.ccw_rotation) ?? 0,
+            maskMargin: 0,
+            componentId: String(el.pcb_component_id ?? ""),
+            pin: pinOfPort.get(port) ?? "",
+            net: netOfPort.get(port) ?? "",
+            netName: netNameOfPort.get(port) ?? "",
+            foro: true,
+          });
+        }
         break;
       }
 

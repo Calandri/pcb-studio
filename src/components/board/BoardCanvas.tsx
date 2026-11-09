@@ -647,7 +647,7 @@ export function BoardCanvas({
       }),
     );
     const pads = scene.pads
-      .filter((p) => bothSides || latoDiParte(p.componentId, p.layer) === faccia)
+      .filter((p) => bothSides || p.foro || latoDiParte(p.componentId, p.layer) === faccia)
       .map((p) => {
         const d = spostamento.get(p.componentId) ?? { dx: 0, dy: 0 };
         const x = view.x + (p.x + d.dx) * view.k;
@@ -1039,7 +1039,7 @@ export function BoardCanvas({
             drawOrder.map((l) => (
               <g key={`mask-${l}`} opacity={layerOpacity(l)}>
                 {scene.pads
-                  .filter((p) => p.layer === l && p.maskMargin > 0)
+                  .filter((p) => !p.foro && p.layer === l && p.maskMargin > 0)
                   .map((p) =>
                     p.circle ? (
                       <circle
@@ -1073,7 +1073,8 @@ export function BoardCanvas({
           {drawOrder.map((l) => (
             <g key={`pad-${l}`} opacity={layerOpacity(l)}>
               {scene.pads
-                .filter((p) => latoDiParte(p.componentId, p.layer) === l)
+                // through-hole pins are drawn with the holes
+                .filter((p) => !p.foro && latoDiParte(p.componentId, p.layer) === l)
                 .map((p) =>
                   p.circle ? (
                     <circle
