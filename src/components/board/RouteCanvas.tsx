@@ -14,7 +14,15 @@ import type { ManualRoute } from "@/lib/manual-routes";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
 import { useVistaCondivisa } from "./vista-condivisa";
 import { isTypingTarget } from "../keyboard";
-import { LAYER_COLOR, PAD_COLOR, LAYER_ORDER, buildScene, layerForKey, type LayerId } from "./render";
+import {
+  LAYER_COLOR,
+  PAD_COLOR,
+  LAYER_ORDER,
+  boardOutlinePath,
+  buildScene,
+  layerForKey,
+  type LayerId,
+} from "./render";
 
 /**
  * Manual routing.
@@ -60,6 +68,7 @@ export function RouteCanvas({
   onDetached?: (traceId: string, removed: { routes: ManualRoute[]; elements: unknown[] }) => void;
 }) {
   const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
+  const boardPath = useMemo(() => (scene ? boardOutlinePath(scene.board) : null), [scene]);
   const model = useMemo(() => buildRouteModel(circuitJson), [circuitJson]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 900, h: 600 });
@@ -468,16 +477,21 @@ export function RouteCanvas({
     >
       <svg width={size.w} height={size.h} className="block">
         <g transform={`translate(${view.x} ${view.y}) scale(${view.k} ${-view.k})`}>
-          <rect
-            x={scene.board.centerX - scene.board.width / 2}
-            y={scene.board.centerY - scene.board.height / 2}
-            width={scene.board.width}
-            height={scene.board.height}
-            rx={0.6}
-            fill="#0C1A17"
-            stroke="#2C4C42"
-            strokeWidth={mm}
-          />
+          {/* the board: its real outline when it has one, see boardOutlinePath */}
+          {boardPath ? (
+            <path d={boardPath} fill="#0C1A17" stroke="#2C4C42" strokeWidth={mm} strokeLinejoin="round" />
+          ) : (
+            <rect
+              x={scene.board.centerX - scene.board.width / 2}
+              y={scene.board.centerY - scene.board.height / 2}
+              width={scene.board.width}
+              height={scene.board.height}
+              rx={0.6}
+              fill="#0C1A17"
+              stroke="#2C4C42"
+              strokeWidth={mm}
+            />
+          )}
 
           {/*
             * Copper pours: they were completely missing here, and routing

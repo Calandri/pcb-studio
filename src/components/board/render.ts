@@ -59,6 +59,45 @@ export interface Board {
   centerY: number;
   layers: number;
   thickness: number;
+  /**
+   * The real shape of the board, in board millimetres, when the project
+   * declares one (`pcb_board.outline`): notches for a connector body, cut
+   * corners, an L. Absent on a plain rectangle, where width and height say it
+   * all.
+   */
+  outline?: Array<{ x: number; y: number }>;
+}
+
+/**
+ * The outline worth drawing: at least three points, all finite. Anything else
+ * (missing, a stub of two points, a NaN from a bad import) is no outline, and
+ * the board falls back to its rectangle instead of drawing a broken shape.
+ */
+export function readBoardOutline(raw: unknown): Array<{ x: number; y: number }> | undefined {
+  if (!Array.isArray(raw) || raw.length < 3) return undefined;
+  const out: Array<{ x: number; y: number }> = [];
+  for (const p of raw as Array<{ x?: unknown; y?: unknown } | null>) {
+    const x = p?.x;
+    const y = p?.y;
+    if (typeof x !== "number" || typeof y !== "number") return undefined;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+    out.push({ x, y });
+  }
+  return out;
+}
+
+/**
+ * The board as an SVG path, or null when it is a plain rectangle.
+ *
+ * The canvases drew `width` x `height` no matter what, so a board with a notch
+ * for the USB connector looked whole on screen: parts could be dropped into
+ * the cut and nothing said the laminate is not there. The polygon already
+ * carries its own fillets, so it is drawn as it is.
+ */
+export function boardOutlinePath(board: Board): string | null {
+  const pts = board.outline;
+  if (!pts || pts.length < 3) return null;
+  return `${pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`).join(" ")} Z`;
 }
 
 export interface TraceSeg {
@@ -278,6 +317,8 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
     layers: num(boardEl.num_layers) ?? 2,
     thickness: num(boardEl.thickness) ?? 1.6,
   };
+  const outline = readBoardOutline(boardEl.outline);
+  if (outline) board.outline = outline;
 
   /*
    * Who every pad is: the name of its pin and the connection it belongs to.

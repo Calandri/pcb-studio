@@ -23,6 +23,7 @@ import {
   LAYER_COLOR,
   PAD_COLOR,
   LAYER_ORDER,
+  boardOutlinePath,
   buildScene,
   holeCopper,
   type BoardScene,
@@ -182,6 +183,8 @@ export function BoardCanvas({
   vistaKey?: string;
 }) {
   const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
+  /** the board's real outline as an SVG path; null when it is a plain rectangle */
+  const boardPath = useMemo(() => (scene ? boardOutlinePath(scene.board) : null), [scene]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
@@ -1098,17 +1101,30 @@ export function BoardCanvas({
       <svg width={size.w} height={size.h} className="block">
         {/* mm -> pixel, with the y pointing up as in technical drawing */}
         <g transform={`translate(${view.x} ${view.y}) scale(${view.k} ${-view.k})`}>
-          {/* the board */}
-          <rect
-            x={scene.board.centerX - scene.board.width / 2}
-            y={scene.board.centerY - scene.board.height / 2}
-            width={scene.board.width}
-            height={scene.board.height}
-            rx={0.6}
-            fill={showMask ? "#0E5E43" : "#0C1A17"}
-            stroke="#2C4C42"
-            strokeWidth={mmPerPx}
-          />
+          {/*
+            The board: its real shape when the project declares an outline
+            (notches, cut corners), the rectangle otherwise.
+          */}
+          {boardPath ? (
+            <path
+              d={boardPath}
+              fill={showMask ? "#0E5E43" : "#0C1A17"}
+              stroke="#2C4C42"
+              strokeWidth={mmPerPx}
+              strokeLinejoin="round"
+            />
+          ) : (
+            <rect
+              x={scene.board.centerX - scene.board.width / 2}
+              y={scene.board.centerY - scene.board.height / 2}
+              width={scene.board.width}
+              height={scene.board.height}
+              rx={0.6}
+              fill={showMask ? "#0E5E43" : "#0C1A17"}
+              stroke="#2C4C42"
+              strokeWidth={mmPerPx}
+            />
+          )}
 
           {/* planes, traces and vias: they do not move with the parts, see RameFermo */}
           <RameFermo
@@ -1133,17 +1149,21 @@ export function BoardCanvas({
             shows as a slightly different green, and that shadow is how you tell a
             plane from empty laminate.
           */}
-          {showMask && (
-            <rect
-              x={scene.board.centerX - scene.board.width / 2}
-              y={scene.board.centerY - scene.board.height / 2}
-              width={scene.board.width}
-              height={scene.board.height}
-              rx={0.6}
-              fill="#0E5E43"
-              opacity={0.93}
-            />
-          )}
+          {showMask &&
+            (boardPath ? (
+              // the coating follows the laminate: no paint over a notch
+              <path d={boardPath} fill="#0E5E43" opacity={0.93} />
+            ) : (
+              <rect
+                x={scene.board.centerX - scene.board.width / 2}
+                y={scene.board.centerY - scene.board.height / 2}
+                width={scene.board.width}
+                height={scene.board.height}
+                rx={0.6}
+                fill="#0E5E43"
+                opacity={0.93}
+              />
+            ))}
 
           {/*
             The mask openings, when the coating is on: a ring of bare laminate
