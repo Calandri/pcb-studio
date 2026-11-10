@@ -1,6 +1,6 @@
 {
   "name": "pcb-studio",
-  "version": "0.27.10",
+  "version": "0.28.0",
   "private": true,
   "license": "GPL-3.0-or-later",
   "packageManager": "pnpm@9.15.4",
