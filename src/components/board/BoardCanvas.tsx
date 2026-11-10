@@ -1,9 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import { useVistaCondivisa } from "./vista-condivisa";
+import { GRID_DEFAULT, GRID_OPTIONS, ascoltaGriglia, grigliaSalvata, salvaGriglia } from "./griglia";
 import {
   DESIGNATOR_FONT,
   LABEL_FONT,
@@ -90,10 +91,8 @@ const applyMatrix = (m: ReturnType<typeof mirrorMatrix>, x: number, y: number) =
 });
 
 export { chiaveInquadratura, vistaDopoRidimensionamento } from "./vista-condivisa";
+export const snapToGrid = (v: number, grid: number) => Math.round(Math.round(v / grid) * grid * 1000) / 1000;
 
-/** standard grid pitches (mil): 0,635 = 25mil, 1,27 = 50mil, 2,54 = 100mil */
-const GRID_OPTIONS = [0.25, 0.635, 1.27, 2.54];
-const GRID_DEFAULT = 0.635;
 /*
  * Zoom limits in pixels per millimeter, the same for the framing and for the
  * wheel. The framing allowed 0.1 and the wheel stopped at 1: on a board too big
@@ -103,8 +102,7 @@ const GRID_DEFAULT = 0.635;
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 400;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
-const snap = (v: number, on: boolean, grid: number) =>
-  on ? r3(Math.round(v / grid) * grid) : r3(v);
+const snap = (v: number, on: boolean, grid: number) => (on ? snapToGrid(v, grid) : r3(v));
 
 export function BoardCanvas({
   circuitJson,
@@ -201,7 +199,13 @@ export function BoardCanvas({
   const [padSotto, setPadSotto] = useState<string | null>(null);
   const pezzoDi = useMemo(() => new Map((scene?.components ?? []).map((c) => [c.id, c])), [scene]);
   /** snap pitch, chosen from the standard pitches */
-  const [gridMm, setGridMm] = useState(GRID_DEFAULT);
+  // the pitch chosen last on this project in this browser (the default on the server and before mount)
+  const gridMm = useSyncExternalStore(
+    ascoltaGriglia,
+    () => grigliaSalvata(vistaKey, window.localStorage),
+    () => GRID_DEFAULT,
+  );
+  const setGridMm = useCallback((mm: number) => salvaGriglia(vistaKey, mm, window.localStorage), [vistaKey]);
   const compDragFrom = useRef<{
     id: string;
     startX: number;
@@ -870,7 +874,8 @@ export function BoardCanvas({
       for (const id of ids) {
         const cur = effOf(pezzoDi.get(id)!);
         // one part snaps to the grid; a group moves by the step and keeps its shape
-        const to = ids.length > 1
+        // and with Shift the step is 0,1 mm: snapped to a coarser grid it would not move at all
+        const to = ids.length > 1 || e.shiftKey
           ? { x: Math.round((cur.x + d.dx) * 1000) / 1000, y: Math.round((cur.y + d.dy) * 1000) / 1000 }
           : { x: snap(cur.x + d.dx, true, gridMm), y: snap(cur.y + d.dy, true, gridMm) };
         onMoveComponent?.(id, { x: cur.x, y: cur.y }, to, cur.rotation, undefined, gruppo);
