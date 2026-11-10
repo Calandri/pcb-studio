@@ -251,12 +251,68 @@ export function eseguiLimitato<T>(
   });
 }
 
+/**
+ * How the worker finds the parser: worker code, defining `caricaAltiumToolkit`.
+ *
+ * WHY NOT A BARE IMPORT. The worker is a string evaluated at run time, so the
+ * bundler never sees its `import("altium-toolkit")`, and node resolves it from
+ * the working directory. In development that works: node_modules/altium-toolkit
+ * is there. In the deployed function it is not: the build ships the package in
+ * the pnpm store (node_modules/.pnpm/altium-toolkit@x/node_modules/) and
+ * reaches it through an alias with a hash, .next/node_modules/altium-toolkit-
+ * <hash>, that only the bundled code knows. In production, 09/11/2026, every
+ * import answered "Cannot find package 'altium-toolkit' imported from
+ * /var/task/[worker eval]" and the files were read on the calling thread,
+ * without the limits this worker exists for.
+ *
+ * So the worker looks in the three places the package can be, starting from
+ * the project root it is handed, and imports the file it finds.
+ */
+export const CARICA_ALTIUM_TOOLKIT = `
+async function caricaAltiumToolkit(radice) {
+  const { createRequire } = require("node:module");
+  const { readdirSync } = require("node:fs");
+  const { join } = require("node:path");
+  const { pathToFileURL } = require("node:url");
+  const NOME = "altium-toolkit";
+  const elenca = (cartella) => {
+    try { return readdirSync(cartella).sort(); } catch { return []; }
+  };
+  /** [the folder to resolve from, the name the package has there] */
+  const tentativi = [[radice, NOME]];
+  const build = join(radice, ".next");
+  for (const voce of elenca(join(build, "node_modules"))) {
+    if (voce.startsWith(NOME + "-")) tentativi.push([build, voce]);
+  }
+  const store = join(radice, "node_modules", ".pnpm");
+  for (const voce of elenca(store)) {
+    if (voce.startsWith(NOME + "@")) tentativi.push([join(store, voce), NOME]);
+  }
+  for (const [da, nome] of tentativi) {
+    let file;
+    try {
+      file = createRequire(join(da, "package.json")).resolve(nome);
+    } catch {
+      continue;
+    }
+    return import(pathToFileURL(file).href);
+  }
+  const e = new Error(
+    "altium-toolkit non caricabile nel lettore: non trovato in " +
+      [join(radice, "node_modules"), join(build, "node_modules"), store].join(", "),
+  );
+  e.moduloMancante = true;
+  throw e;
+}
+`;
+
 /** the parse itself, as it runs inside the worker */
-const CORPO_PARSE_ALTIUM = `
+const CORPO_PARSE_ALTIUM = `${CARICA_ALTIUM_TOOLKIT}
 let Parser;
 try {
-  ({ Parser } = await import("altium-toolkit"));
+  ({ Parser } = await caricaAltiumToolkit(workerData.dati.radice));
 } catch (err) {
+  if (err && err.moduloMancante) throw err;
   const e = new Error("altium-toolkit non caricabile nel lettore: " + ((err && err.message) || err));
   e.moduloMancante = true;
   throw e;
@@ -320,6 +376,8 @@ async function parseOne(
     const esito = await eseguiLimitato<Letto>(CORPO_PARSE_ALTIUM, {
       nome: file.path,
       dati: file.data,
+      // where the worker starts looking for the parser: see CARICA_ALTIUM_TOOLKIT
+      radice: process.cwd(),
     });
     if (esito.ok) {
       letto = esito.valore;

@@ -1,8 +1,10 @@
 import { deflateSync } from "node:zlib";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { eseguiLimitato, importAltiumLibrary } from "@/lib/altium-import";
+import { CARICA_ALTIUM_TOOLKIT, eseguiLimitato, importAltiumLibrary } from "@/lib/altium-import";
 import {
   contornoNativo,
   footprintDaNativo,
@@ -247,6 +249,62 @@ return unzlibSync(new Uint8Array(workerData.dati.compresso)).length;
     const esito = await eseguiLimitato("for (;;) {}", {}, { tempoMs: 300, heapMb: 64, bufferMb: 8 });
     expect(esito.ok).toBe(false);
     expect(esito.ok === false && esito.errore).toMatch(/interrotta/);
+  });
+
+  /*
+   * Production, 09/11/2026, nine imports in a row: "lettore isolato non
+   * disponibile: Cannot find package 'altium-toolkit' imported from
+   * /var/task/[worker eval]", and every file was read WITHOUT the limits.
+   * The build does not leave the package at node_modules/altium-toolkit: it
+   * leaves it in the pnpm store, reachable through an alias with a hash in
+   * .next/node_modules. A bare import from the worker, which resolves from
+   * the working directory, finds nothing. This is that layout.
+   */
+  describe("finds the parser where the build leaves it", () => {
+    const corpoCarica = `${CARICA_ALTIUM_TOOLKIT}
+const modulo = await caricaAltiumToolkit(workerData.dati.radice);
+return typeof modulo.Parser.parse;
+`;
+    const pacchetto = realpathSync(path.join(process.cwd(), "node_modules/altium-toolkit"));
+    const conRadice = async (prepara: (radice: string) => void) => {
+      const radice = mkdtempSync(path.join(os.tmpdir(), "pcb-studio-lettore-"));
+      try {
+        prepara(radice);
+        return await eseguiLimitato<string>(corpoCarica, { radice });
+      } finally {
+        rmSync(radice, { recursive: true, force: true });
+      }
+    };
+
+    it("through the build's alias in .next/node_modules, with no node_modules/altium-toolkit", async () => {
+      const esito = await conRadice((radice) => {
+        mkdirSync(path.join(radice, ".next/node_modules"), { recursive: true });
+        symlinkSync(pacchetto, path.join(radice, ".next/node_modules/altium-toolkit-1efa61989d6c1281"), "dir");
+      });
+      expect(esito).toEqual({ ok: true, valore: "function" });
+    });
+
+    it("in the pnpm store, when the alias is not there either", async () => {
+      const esito = await conRadice((radice) => {
+        const cartella = path.join(radice, "node_modules/.pnpm/altium-toolkit@1.4.3/node_modules");
+        mkdirSync(cartella, { recursive: true });
+        symlinkSync(pacchetto, path.join(cartella, "altium-toolkit"), "dir");
+      });
+      expect(esito).toEqual({ ok: true, valore: "function" });
+    });
+
+    it("from node_modules, as in development", async () => {
+      const esito = await eseguiLimitato<string>(corpoCarica, { radice: process.cwd() });
+      expect(esito).toEqual({ ok: true, valore: "function" });
+    });
+
+    it("says the module is missing, and where it looked, when it is nowhere", async () => {
+      const esito = await conRadice(() => undefined);
+      expect(esito.ok).toBe(false);
+      expect(esito.ok === false && esito.moduloMancante).toBe(true);
+      expect(esito.ok === false && esito.errore).toMatch(/altium-toolkit non caricabile nel lettore/);
+      expect(esito.ok === false && esito.errore).toMatch(/\.next\/node_modules/);
+    });
   });
 
   it("an unreadable file is a warning, not a crash, and goes through the worker", async () => {
