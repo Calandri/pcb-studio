@@ -211,14 +211,14 @@ export function EditorBar({
           <span className="text-[11px] text-[#E3B341]">
             {compilingElsewhere !== null && !recompileBusy ? (
               <>
-                Il codice e&apos; cambiato e una compilazione e&apos; gia&apos; in corso
+                La scheda va ricompilata e una compilazione e&apos; gia&apos; in corso
                 {compilingElsewhere ? ` (${compilingElsewhere.slice(0, 60)})` : ""}: la scheda nuova
                 arriva qui da sola.
               </>
             ) : (
               <>
-                Il codice della scheda e&apos; cambiato dopo l&apos;ultima compilazione: 1–2 minuti
-                per aggiornarla, e il rame non si tocca.
+                Il codice o lo schematico sono cambiati dopo l&apos;ultima compilazione, o un pezzo
+                e&apos; stato liberato: 1–2 minuti per aggiornarla, e il rame non si tocca.
               </>
             )}
           </span>

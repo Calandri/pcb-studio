@@ -24,8 +24,9 @@ import { filesHash, type FsMap, type SavedBoardBase } from "./project-store";
  *
  *  - a source changed (a .tsx, the rules, a library part): another key, the
  *    board is of other files and only a compile brings the new one;
- *  - a part let go (released, or undone back to where the code puts it): the
- *    code position is not on the board, so only a compile can put it back;
+ *  - a part let go (released, or undone back to where the code puts it), or
+ *    only its turn or its face: what the code says is not on the board, so
+ *    only a compile can put it back;
  *  - a schematic position or a trace hint changed: the schematic on the board
  *    is the old one, another key.
  */
@@ -34,9 +35,21 @@ export function boardBaseOf(fsMap: FsMap): SavedBoardBase {
   return { key: baseKey(fsMap, edits), placed: placedNames(edits) };
 }
 
-/** the parts held by hand, by name */
+/**
+ * What is held by hand, part by part: the position (the name), and apart from
+ * it the turn (`name#rot`) and the face (`name#face`) when the hand position
+ * carries them. Each can be let go on its own: Cmd+Z on a turn writes the part
+ * back without its rotation, which means "the turn of the code", and the board
+ * cannot give that back any more than a released position.
+ */
 export function placedNames(edits: ManualEdits): string[] {
-  return [...new Set(edits.pcb_placements.map((p) => p.selector))].sort();
+  const held = new Set<string>();
+  for (const p of edits.pcb_placements) {
+    held.add(p.selector);
+    if (p.rotation !== undefined) held.add(`${p.selector}#rot`);
+    if (p.layer) held.add(`${p.selector}#face`);
+  }
+  return [...held].sort();
 }
 
 /**
@@ -65,6 +78,7 @@ export function baseHolds(saved: SavedBoardBase | null | undefined, now: SavedBo
   if (!saved) return { ok: false, why: "nessuna base", released: [] };
   if (saved.key !== now.key) return { ok: false, why: "sorgenti", released: [] };
   const held = new Set(now.placed);
-  const released = saved.placed.filter((n) => !held.has(n));
+  // by part: "U1" whether its position, its turn or its face was let go
+  const released = [...new Set(saved.placed.filter((n) => !held.has(n)).map((n) => n.replace(/#(rot|face)$/, "")))];
   return released.length > 0 ? { ok: false, why: "liberati", released } : { ok: true };
 }

@@ -44,7 +44,9 @@ describe("la base della scheda salvata", () => {
     const a = boardBaseOf(files(editsFile([{ selector: "R1", center: { x: 1, y: 0 } }])));
     const moved = boardBaseOf(files(editsFile([{ selector: "R1", center: { x: 9, y: 3 }, rotation: 90 }])));
     expect(moved.key).toBe(a.key);
-    expect(moved.placed).toEqual(["R1"]);
+    // il pezzo, e a parte la rotazione che ora porta a mano
+    expect(moved.placed).toEqual(["R1", "R1#rot"]);
+    expect(a.placed).toEqual(["R1"]);
     const code = boardBaseOf(files(editsFile([{ selector: "R1", center: { x: 1, y: 0 } }]), "export default () => null"));
     expect(code.key).not.toBe(a.key);
     const sch = boardBaseOf(
@@ -156,6 +158,50 @@ describe("aggiornamento veloce della scheda dopo uno spostamento", () => {
     const f1 = files(editsFile([{ selector: "R1", center: { x: 1, y: 0 }, layer: "bottom" }]));
     const plan = planFastUpdate({ filesHash: filesHash(f0), base: boardBaseOf(f0), circuitJson: board() }, f1, f1);
     expect(plan.kind).toBe("compile");
+  });
+
+  it("l'ultima pista a mano tolta dal file esce anche dalla scheda", () => {
+    const f0 = files(editsFile([]));
+    // la scheda porta ancora il rame di una pista a mano che il file non descrive piu'
+    const withTrace = [
+      ...board(),
+      { type: "pcb_trace", pcb_trace_id: "pcb_trace_manual_1", manual: true, manual_route_id: "k", route: [] },
+      { type: "pcb_via", pcb_via_id: "pcb_via_manual_1", manual: true, x: 0, y: 0 },
+    ];
+    // archiviata sotto l'hash di prima: e' quella che resta dopo un Cmd+Z sulla pista
+    const plan = planFastUpdate({ filesHash: "prima", base: boardBaseOf(f0), circuitJson: withTrace }, f0, f0);
+    expect(plan.kind).toBe("save");
+    if (plan.kind !== "save") return;
+    expect(plan.unchanged).toBe(false);
+    expect(plan.board.some((e) => e.type === "pcb_trace" || e.type === "pcb_via")).toBe(false);
+    // e anche quando l'hash e' gia' quello dei file: non e' "niente da fare"
+    const esatta = planFastUpdate({ filesHash: filesHash(f0), base: boardBaseOf(f0), circuitJson: withTrace }, f0, f0);
+    expect(esatta.kind).toBe("save");
+  });
+
+  it("una rotazione a mano tolta (Cmd+Z) torna quella del codice solo con la compilazione", () => {
+    const f0 = files(editsFile([{ selector: "R1", center: { x: 1, y: 0 }, rotation: 90 }]));
+    const turned = board();
+    const r1 = turned.find((e) => e.pcb_component_id === "pc1" && e.type === "pcb_component")!;
+    r1.center = { x: 1, y: 0 };
+    r1.display_offset_x = 1;
+    r1.rotation = 90;
+    // il file ora tiene R1 a mano senza rotazione: vale quella del codice
+    const f1 = files(editsFile([{ selector: "R1", center: { x: 1, y: 0 } }]));
+    const plan = planFastUpdate({ filesHash: filesHash(f0), base: boardBaseOf(f0), circuitJson: turned }, f1, f1);
+    expect(plan.kind).toBe("compile");
+    if (plan.kind === "compile") expect(plan.reason).toMatch(/R1/);
+    // una scheda salvata quando la base portava solo i nomi regge ancora
+    expect(baseHolds({ key: boardBaseOf(f0).key, placed: ["R1"] }, boardBaseOf(f0))).toEqual({ ok: true });
+  });
+
+  it("una scheda senza base non viene riarchiviata cosi' com'e': chiede la compilazione, come prima", () => {
+    const f0 = files(editsFile([{ selector: "R1", center: { x: 0, y: 0 } }, { selector: "C1", center: { x: 7, y: 0 } }]));
+    const h0 = filesHash(f0);
+    const chain = nextBoardBase({ cacheFilesHash: h0, filesHashBefore: h0, sourcesHash: filesHash(withoutManualEdits(f0)), previous: undefined });
+    // C1 liberato col token: la catena non lo vede, e sulla scheda non c'e' niente da spostare
+    const f1 = files(editsFile([{ selector: "R1", center: { x: 0, y: 0 } }], { board_base: chain }));
+    expect(planFastUpdate({ filesHash: h0, base: null, circuitJson: board() }, f1, f1).kind).toBe("compile");
   });
 
   it("una scheda salvata prima che esistesse la base vale ancora con la catena nel file", () => {

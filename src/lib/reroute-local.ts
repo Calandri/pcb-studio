@@ -388,6 +388,20 @@ export function rerouteLocal(
 
   // no moves and no hand-drawn traces: nothing to apply
   if (moved === 0 && edits.pcb_routes.length === 0) {
+    /*
+     * Unless the board still carries hand copper that the file no longer
+     * describes: the last hand-drawn trace taken out (Cmd+Z, "rilascia le
+     * piste"). That copper goes, here, and it is a change of the board: saying
+     * "nothing to apply" left the deleted trace on screen and in the exports,
+     * on a board called current.
+     */
+    const cleaned = applyManualRoutes({ circuitJson, routes: [], ...vias });
+    if (cleaned.circuitJson !== circuitJson) {
+      return {
+        circuitJson: cleaned.circuitJson as CircuitElement[],
+        result: { ok: true, moved: 0, rerouted: false, manualRoutes: 0, manualBranches: 0, drc: null, orphans },
+      };
+    }
     return fail(
       orphans.pcb_placements.length > 0
         ? `nessuno spostamento applicabile: ${orphans.pcb_placements.join(", ")} non sono sulla scheda compilata`

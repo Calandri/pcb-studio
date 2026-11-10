@@ -1,4 +1,4 @@
-import { requireProjectAccess } from "@/lib/acl";
+import { projectAccess, requireProjectAccess } from "@/lib/acl";
 import { readCompileRun } from "@/lib/activity-store";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
@@ -18,8 +18,14 @@ export const runtime = "nodejs";
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const projectId = url.searchParams.get("projectId") ?? "default";
-  const { ok } = await requireProjectAccess(projectId, "view");
+  const { ok, viewer } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  /*
+   * `editsOnly` is an invitation to bring the board up to date (the fast
+   * update, which writes): only for who may edit. A viewer keeps the plain
+   * "older than the files", as before.
+   */
+  const canEdit = (await projectAccess(projectId, viewer)) === "edit";
 
   /*
    * ?meta=1: solo i metadati della compilazione, senza circuitJson ne' summary.
@@ -47,7 +53,7 @@ export async function GET(req: Request): Promise<Response> {
     try {
       const standing = await boardStanding(projectId, cache, await withLibrary(await getProject(projectId)));
       stale = standing !== "exact";
-      editsOnly = standing === "edits";
+      editsOnly = standing === "edits" && canEdit;
     } catch {
       // se non si riesce a confrontare, meglio non gridare al lupo
     }
@@ -95,7 +101,7 @@ export async function GET(req: Request): Promise<Response> {
       try {
         const standing = await boardStanding(projectId, cache, await withLibrary(await getProject(projectId)));
         stale = standing !== "exact";
-        editsOnly = standing === "edits";
+        editsOnly = standing === "edits" && canEdit;
       } catch {
         // se non si riesce a confrontare, meglio non gridare al lupo
       }

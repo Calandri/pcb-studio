@@ -274,7 +274,7 @@ export function useManualEditor({
   const syncJobRef = useRef<Promise<void> | null>(null);
   const syncAgainRef = useRef(false);
   /** the error on the bar is the one of a board update that could not be done: it goes when one succeeds */
-  const syncErrorRef = useRef(false);
+  const syncErrorRef = useRef<string | null>(null);
   /** writes done, and writes the board had already seen when its last update started */
   const writesRef = useRef(0);
   const syncedWritesRef = useRef(0);
@@ -450,18 +450,19 @@ export function useManualEditor({
       if (r && r.ok === false) {
         // written, but the board on screen is the old one: the overrides stay
         // until a board that shows them arrives (Aggiorna, a recompile)
-        syncErrorRef.current = true;
-        setError(
-          r.needsCompile
-            ? `spostamenti salvati, la scheda li mostra dopo Aggiorna${r.reason ? `: ${r.reason}` : ""}`
-            : `spostamenti salvati, la scheda non li ha ancora seguiti${
-                r.reason ? ` (${r.reason})` : ""
-              }: riprovo da solo`,
-        );
-      } else if (syncErrorRef.current) {
-        // the board has followed: the warning of the update that could not be done is over
-        syncErrorRef.current = false;
-        setError(null);
+        const text = r.needsCompile
+          ? `spostamenti salvati, la scheda li mostra dopo Aggiorna${r.reason ? `: ${r.reason}` : ""}`
+          : `spostamenti salvati, la scheda non li ha ancora seguiti${
+              r.reason ? ` (${r.reason})` : ""
+            }: riprovo da solo`;
+        syncErrorRef.current = text;
+        setError(text);
+      } else if (syncErrorRef.current !== null) {
+        // the board has followed: the warning of the update that could not be done is over,
+        // and only that one (a save that failed meanwhile keeps its own words)
+        const mine = syncErrorRef.current;
+        syncErrorRef.current = null;
+        setError((now) => (now === mine ? null : now));
       }
     })().finally(() => {
       syncJobRef.current = null;

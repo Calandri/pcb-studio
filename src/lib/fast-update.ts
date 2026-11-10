@@ -63,7 +63,7 @@ export function planFastUpdate(
           ? `${released.slice(0, 6).join(", ")}${released.length > 6 ? "..." : ""} ${
               released.length === 1 ? "e' stato liberato" : "sono stati liberati"
             }: tornano dove li mette il codice solo con Aggiorna`
-          : "il codice della scheda e' cambiato dopo l'ultima compilazione: la scheda di questi file arriva solo con Aggiorna",
+          : "il codice o lo schematico sono cambiati dopo l'ultima compilazione: la scheda di questi file arriva solo con Aggiorna",
     };
   }
 
@@ -81,6 +81,15 @@ export function planFastUpdate(
   if (giaGiusta) {
     const result = { ...redone.result, ok: true, reason: undefined };
     if (exact) return { kind: "unchanged", result };
+    /*
+     * A board saved before the base existed is vouched for by the chain in the
+     * file, and the chain does not see a part let go (a release through the
+     * token, on a board no page has opened since): filing that board as it is
+     * would leave the part where it was. It asks for the compile, as it did.
+     */
+    if (!cached.base) {
+      return { kind: "compile", reason: redone.result.reason ?? "niente da applicare in locale", result: redone.result };
+    }
     // filed under an older hash: it goes under this one as it is, or the page calls it "older than the files"
     return {
       kind: "save",
