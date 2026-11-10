@@ -1,5 +1,7 @@
 import { withLibrary } from "./agent-tools";
+import { baseHolds, boardBaseOf } from "./board-base";
 import {
+  boardFreshness,
   MANUAL_EDITS_PATH,
   nextBoardBase,
   parseManualEdits,
@@ -9,7 +11,15 @@ import {
   withoutManualEdits,
   type ManualEdits,
 } from "./manual-edits";
-import { filesHash, getProject, updateProjectFile, type CompileCache } from "./project-store";
+import {
+  filesHash,
+  getProject,
+  stampCompileBase,
+  updateProjectFile,
+  type CompileCache,
+  type FsMap,
+  type SavedBoardBase,
+} from "./project-store";
 
 /**
  * Applies `transform` to the current manual-edits.json and writes it,
@@ -73,4 +83,36 @@ export async function rilasciaPezzi(
     for (const n of soli) next = releaseManualEdits(next, scope, n);
     return next;
   });
+}
+
+/**
+ * How the saved board stands against the files, in the three words the page
+ * and the fast update need (see board-base.ts):
+ *  - "exact": it is the board of exactly these files;
+ *  - "edits": it is the board of these files once the hand positions are
+ *    applied to it, which the fast update does in a moment and by itself;
+ *  - "stale": something else changed, and only a compile brings the new board.
+ *
+ * A board saved before the base existed gets its base here, when it is exactly
+ * the board of these files: from then on a hand move finds it.
+ */
+export async function boardStanding(
+  projectId: string,
+  saved: { filesHash: string; base?: SavedBoardBase | null },
+  /** the current files, library included */
+  full: FsMap,
+): Promise<"exact" | "edits" | "stale"> {
+  if (saved.filesHash === filesHash(full)) {
+    if (!saved.base) await stampCompileBase(projectId, saved.filesHash, boardBaseOf(full));
+    return "exact";
+  }
+  if (saved.base) return baseHolds(saved.base, boardBaseOf(full)).ok ? "edits" : "stale";
+  // a board saved before the base existed: the chain in manual-edits.json vouches for it, as it did
+  const legacy = boardFreshness({
+    cacheFilesHash: saved.filesHash,
+    filesHash: filesHash(full),
+    sourcesHash: filesHash(withoutManualEdits(full)),
+    edits: parseManualEdits(full[MANUAL_EDITS_PATH]),
+  });
+  return legacy ? "edits" : "stale";
 }

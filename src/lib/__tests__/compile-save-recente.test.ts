@@ -26,6 +26,7 @@ vi.mock("@/lib/project-store", async () => {
   };
 });
 
+import { boardBaseOf } from "@/lib/board-base";
 import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 import { schematicKeyOf, type CompileSummary } from "@/lib/compile";
 import { emptyManualEdits, MANUAL_EDITS_PATH, serializeManualEdits } from "@/lib/manual-edits";
@@ -91,7 +92,8 @@ describe("una compilazione si salva solo se e' ancora la scheda piu' nuova", () 
     expect(s.hash).toBe(filesHash(B));
     expect(s.circuitJson.map((e) => (e as { type: string }).type)).toEqual(["source_component", "pcb_board", "pcb_component", "schematic_component"]);
     expect(s.summary.schematicKey).toBe(schematicKeyOf(A));
-    expect(s.opts).toEqual({ ifUnchangedSince: { filesHash: filesHash(B), createdAt: after } });
+    // filed with the base of the files as they are now: the next hand move finds this board (board-base.ts)
+    expect(s.opts).toEqual({ ifUnchangedSince: { filesHash: filesHash(B), createdAt: after }, base: boardBaseOf(B) });
   });
 
   it("se nel frattempo e' cambiato il codice, lo schematico vecchio non si mette sulla scheda nuova", async () => {

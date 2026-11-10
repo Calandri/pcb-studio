@@ -329,6 +329,7 @@ export async function importaAltium({
      */
     const { compileProject } = await import("./compile");
     const { withLibrary } = await import("./agent-tools");
+    const { boardBaseOf } = await import("./board-base");
     try {
       const fsMap = await withLibrary(await getProject(id));
       const { summary, circuitJson } = await compileProject(fsMap, { route: false });
@@ -348,6 +349,7 @@ export async function importaAltium({
         circuitJson as unknown[],
         summary,
         CHECKS_ENGINE_VERSION,
+        { base: boardBaseOf(fsMap) },
       ).catch(() => {});
     } catch (err) {
       report.warnings.push(

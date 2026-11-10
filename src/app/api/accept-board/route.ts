@@ -1,5 +1,6 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
+import { boardBaseOf } from "@/lib/board-base";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { filesHash, getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
 
@@ -58,6 +59,8 @@ export async function POST(req: Request): Promise<Response> {
     cached.circuitJson,
     cached.summary,
     CHECKS_ENGINE_VERSION,
+    // taken as the board of these files: the hand moves made on it from now on apply to it
+    { base: boardBaseOf(fsMap) },
   );
   return Response.json({ ok: true });
 }

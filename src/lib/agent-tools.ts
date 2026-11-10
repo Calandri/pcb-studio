@@ -1,3 +1,4 @@
+import { boardBaseOf } from "./board-base";
 import { fetchDatasheetFromUrl } from "./datasheet";
 import { importComponentFromLcsc } from "./easyeda-import";
 import {
@@ -568,7 +569,7 @@ async function runTool(
         // the schematic of the last board, reused when only PCB positions changed
         schematicFrom: previous ? { circuitJson: previous.circuitJson as unknown[], summary: previous.summary } : null,
         // the board is saved as soon as it exists, before the schematic: see compile-save.ts
-        onBoard: earlyBoardSaver(projectId, filesHash(compileFsMap), previous, fresh),
+        onBoard: earlyBoardSaver(projectId, filesHash(compileFsMap), previous, fresh, boardBaseOf(compileFsMap)),
         // the intermediate circuit does not pass through here: it weighs
         // megabytes and the agent channel carries text. Whoever looks takes it
         // from the periodic check.
@@ -592,7 +593,7 @@ async function runTool(
       // fetches ?circuit=1 as soon as it receives it, and on serverless a
       // fire-and-forget write could be frozen after the response
       const hash = filesHash(compileFsMap);
-      const cached = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).then(
+      const cached = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh, boardBaseOf(compileFsMap)).then(
         (r) => r,
         (err: unknown) => ({ saved: false, keptPrevious: false, error: describeError(err) }),
       );

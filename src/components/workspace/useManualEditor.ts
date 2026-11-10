@@ -31,7 +31,12 @@ import {
 export type EditMode = "view" | "move" | "route" | "link";
 
 /** what the board update after a write answers: a background save must not shout in the chat */
-export type ApplyResult = { ok: boolean; reason?: string } | void;
+/**
+ * `needsCompile`: the board cannot follow by itself (the code changed, a part
+ * was let go, a part turned to the other face) and only "Aggiorna" brings it.
+ * Without it a failure is of the moment, and the page tries again by itself.
+ */
+export type ApplyResult = { ok: boolean; reason?: string; needsCompile?: boolean } | void;
 
 /**
  * How long a dropped part waits before saving itself: long enough to take a
@@ -268,6 +273,8 @@ export function useManualEditor({
    */
   const syncJobRef = useRef<Promise<void> | null>(null);
   const syncAgainRef = useRef(false);
+  /** the error on the bar is the one of a board update that could not be done: it goes when one succeeds */
+  const syncErrorRef = useRef(false);
   /** writes done, and writes the board had already seen when its last update started */
   const writesRef = useRef(0);
   const syncedWritesRef = useRef(0);
@@ -443,11 +450,18 @@ export function useManualEditor({
       if (r && r.ok === false) {
         // written, but the board on screen is the old one: the overrides stay
         // until a board that shows them arrives (Aggiorna, a recompile)
+        syncErrorRef.current = true;
         setError(
-          `spostamenti salvati, ma la scheda non si e' aggiornata${
-            r.reason ? ` (${r.reason})` : ""
-          }: premi Aggiorna`,
+          r.needsCompile
+            ? `spostamenti salvati, la scheda li mostra dopo Aggiorna${r.reason ? `: ${r.reason}` : ""}`
+            : `spostamenti salvati, la scheda non li ha ancora seguiti${
+                r.reason ? ` (${r.reason})` : ""
+              }: riprovo da solo`,
         );
+      } else if (syncErrorRef.current) {
+        // the board has followed: the warning of the update that could not be done is over
+        syncErrorRef.current = false;
+        setError(null);
       }
     })().finally(() => {
       syncJobRef.current = null;
@@ -466,6 +480,17 @@ export function useManualEditor({
   useEffect(() => {
     syncRef.current = syncBoard;
   }, [syncBoard]);
+
+  /**
+   * The same update, asked from outside: the page found the saved board behind
+   * the hand positions (a compile that ended on older ones, an update that
+   * lost its turn). Not while a write is in the queue or an explicit one runs:
+   * those bring the board along themselves when they are done.
+   */
+  const followBoard = useCallback(() => {
+    if (queuedRef.current > 0 || busyRef.current) return;
+    syncRef.current();
+  }, []);
 
   /** after the queue is empty: drops waiting go, then the board follows */
   const autoSaveRef = useRef<() => void>(() => {});
@@ -1013,6 +1038,8 @@ export function useManualEditor({
     dropAgreed,
     /** the board on screen is being brought up to the saved moves: what arrives meanwhile is ours */
     syncing,
+    /** brings the saved board up to the hand positions, as after a move (see followBoard) */
+    followBoard,
     error,
     viewerKey,
     links,

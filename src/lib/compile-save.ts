@@ -1,3 +1,4 @@
+import { boardBaseOf } from "./board-base";
 import { schematicMissing } from "./board-report";
 import { graftSchematic, schematicKeyOf, summarizeCircuit, type CompileSummary } from "./compile";
 import { CHECKS_ENGINE_VERSION } from "./engine-version";
@@ -10,6 +11,7 @@ import {
   type CompileCache,
   type FsMap,
   type SaveCompileResult,
+  type SavedBoardBase,
 } from "./project-store";
 
 /**
@@ -73,6 +75,8 @@ export function earlyBoardSaver(
   hash: string,
   previous: CompileCache | null,
   fresh?: { startedAt: number; filesNow: () => Promise<FsMap> },
+  /** what the compiled files give as base (boardBaseOf): saved with the board */
+  base?: SavedBoardBase,
 ): (early: { circuitJson: unknown[]; summary: CompileSummary }) => Promise<SaveCompileResult> {
   const sameAndComplete =
     previous !== null &&
@@ -89,6 +93,7 @@ export function earlyBoardSaver(
       if (v.kind !== "save") return { saved: false, keptPrevious: true, reason: v.kind === "newer" ? NEWER : CURRENT };
       return await saveCompileCache(projectId, hash, early.circuitJson, early.summary, CHECKS_ENGINE_VERSION, {
         ...(v.ifUnchangedSince ? { ifUnchangedSince: v.ifUnchangedSince } : {}),
+        ...(base ? { base } : {}),
       });
     } catch {
       return { saved: false, reason: "salvataggio anticipato fallito" };
@@ -111,11 +116,14 @@ export async function saveFinishedCompile(
   circuitJson: unknown[],
   summary: CompileSummary,
   fresh: { startedAt: number; filesNow: () => Promise<FsMap> },
+  /** what the compiled files give as base (boardBaseOf): saved with the board */
+  base?: SavedBoardBase,
 ): Promise<SaveCompileResult & { grafted?: boolean; superseded?: boolean }> {
   const v = await verdict(projectId, hash, fresh.startedAt, fresh.filesNow);
   if (v.kind === "save") {
     return saveCompileCache(projectId, hash, circuitJson, summary, CHECKS_ENGINE_VERSION, {
       ...(v.ifUnchangedSince ? { ifUnchangedSince: v.ifUnchangedSince } : {}),
+      ...(base ? { base } : {}),
     });
   }
   // not an error: the board on screen is newer than this compile, and right
@@ -133,6 +141,8 @@ export async function saveFinishedCompile(
   nuovo.message = `${nuovo.message} (schematico messo sulla scheda con gli spostamenti fatti nel frattempo)`;
   const r = await saveCompileCache(projectId, v.currentHash, grafted, nuovo, CHECKS_ENGINE_VERSION, {
     ifUnchangedSince: { filesHash: row.filesHash, createdAt: row.createdAt },
+    // the board under the schematic is the one of the files as they are now
+    base: boardBaseOf(v.files),
   });
   return r.saved ? { ...r, grafted: true } : r;
 }

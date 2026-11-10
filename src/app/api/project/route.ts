@@ -2,7 +2,6 @@ import { requireProjectAccess } from "@/lib/acl";
 import { readCompileRun } from "@/lib/activity-store";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
-  filesHash,
   getChatMessages,
   getCompileCache,
   getCompileMeta,
@@ -11,6 +10,7 @@ import {
   getProject,
 } from "@/lib/project-store";
 import { withLibrary } from "@/lib/agent-tools";
+import { boardStanding } from "@/lib/manual-edits-store";
 import { listLibraryComponents } from "@/lib/library-store";
 
 export const runtime = "nodejs";
@@ -38,8 +38,16 @@ export async function GET(req: Request): Promise<Response> {
     ]);
     if (!cache) return Response.json({ projectId, compile: null, previewAt, running });
     let stale = false;
+    /*
+     * `editsOnly`: the board differs from the files only in hand positions the
+     * fast update can apply. Not a reason to block anything or to ask for a
+     * compile: the page brings the board up to date by itself.
+     */
+    let editsOnly = false;
     try {
-      stale = cache.filesHash !== filesHash(await withLibrary(await getProject(projectId)));
+      const standing = await boardStanding(projectId, cache, await withLibrary(await getProject(projectId)));
+      stale = standing !== "exact";
+      editsOnly = standing === "edits";
     } catch {
       // se non si riesce a confrontare, meglio non gridare al lupo
     }
@@ -47,6 +55,7 @@ export async function GET(req: Request): Promise<Response> {
       projectId,
       compile: {
         stale,
+        editsOnly,
         filesHash: cache.filesHash,
         createdAt: cache.createdAt,
         engineVersion: cache.engineVersion,
@@ -80,9 +89,13 @@ export async function GET(req: Request): Promise<Response> {
      * guardava pensava che la modifica non fosse stata presa.
      */
     let stale = false;
+    // only hand positions differ: the page updates the board by itself (see ?meta=1)
+    let editsOnly = false;
     if (cache) {
       try {
-        stale = cache.filesHash !== filesHash(await withLibrary(await getProject(projectId)));
+        const standing = await boardStanding(projectId, cache, await withLibrary(await getProject(projectId)));
+        stale = standing !== "exact";
+        editsOnly = standing === "edits";
       } catch {
         // se non si riesce a confrontare, meglio non gridare al lupo
       }
@@ -92,6 +105,7 @@ export async function GET(req: Request): Promise<Response> {
       compile: cache
         ? {
             stale,
+            editsOnly,
             filesHash: cache.filesHash,
             circuitJson: cache.circuitJson,
             summary: cache.summary,

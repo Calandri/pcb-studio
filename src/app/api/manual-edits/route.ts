@@ -1,5 +1,6 @@
 import { accessoDaRichiesta, requireProjectAccess } from "@/lib/acl";
-import { commitManualEdits, rilasciaPezzi } from "@/lib/manual-edits-store";
+import { withLibrary } from "@/lib/agent-tools";
+import { boardStanding, commitManualEdits, rilasciaPezzi } from "@/lib/manual-edits-store";
 import {
   applyEditEvents,
   applyPlacementPatches,
@@ -62,6 +63,24 @@ function payload(edits: ManualEdits, cache?: CompileCache | null, extra: Record<
 
 /** the conflict-safe write of manual-edits.json: see lib/manual-edits-store.ts */
 const commit = commitManualEdits;
+
+/**
+ * A board saved before the base existed (see lib/board-base.ts) gets it here,
+ * before the first hand edit turns it from "the board of these files" into
+ * "the board of these files, give or take the hand positions". Nothing to do,
+ * and nothing read, when the board has its base already.
+ */
+async function baseBeforeEdit(
+  projectId: string,
+  meta: Awaited<ReturnType<typeof getCompileMeta>>,
+): Promise<void> {
+  if (!meta || meta.base) return;
+  try {
+    await boardStanding(projectId, meta, await withLibrary(await getProject(projectId)));
+  } catch {
+    // bookkeeping only: the edit is saved all the same
+  }
+}
 
 const failure = (err: unknown) =>
   Response.json(
@@ -134,6 +153,7 @@ export async function POST(req: Request): Promise<Response> {
     }
     try {
       const meta = await getCompileMeta(projectId);
+      await baseBeforeEdit(projectId, meta);
       let before: ReturnType<typeof applyPlacementPatches>["before"] = [];
       const { edits } = await commit(projectId, meta, (current) => {
         // may run again on a conflict: `before` is the one of the run that wrote
@@ -172,6 +192,7 @@ export async function POST(req: Request): Promise<Response> {
     }
     try {
       const meta = await getCompileMeta(projectId);
+      await baseBeforeEdit(projectId, meta);
       let replaced: ReturnType<typeof applyRoutePatch>["replaced"] = [];
       let added: ReturnType<typeof applyRoutePatch>["added"] = [];
       const { edits } = await commit(projectId, meta, (current) => {

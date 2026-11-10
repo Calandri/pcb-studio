@@ -268,6 +268,29 @@ export function Studio({
   const autoSyncRef = useRef(false);
   /** createdAt of the compilation on screen: the poll compares against it */
   const compiledAtRef = useRef<string | null>(null);
+  /**
+   * The board is behind the files only in hand positions (`editsOnly`): the
+   * page brings it up to date by itself, with the fast update, instead of
+   * switching "Sposta" off and asking for "Aggiorna" (a full compile, minutes
+   * on a big board: sbb-dl-principale, 2026-11-10). `followRef` is that update,
+   * set once the editor exists; `followFailedAtRef` is the board (its
+   * createdAt) on which it could not be done, so it is tried once per board
+   * and then said, not every five seconds.
+   */
+  const followRef = useRef<() => void>(() => {});
+  /** `left`: how many more times the page tries by itself on that board; 0 = it is said, "Aggiorna" is the way */
+  const followFailedAtRef = useRef<{ at: string | null; left: number } | null>(null);
+  /** what the server says of the saved board, turned into "needs a compile" for the page */
+  const staleFrom = useCallback((compile: { stale?: unknown; editsOnly?: unknown; createdAt?: unknown }): boolean => {
+    if (!compile.stale) return false;
+    if (!compile.editsOnly) return true;
+    const at = compile.createdAt == null ? null : String(compile.createdAt);
+    // only hand positions differ: follow them, unless that was tried on this very board and could not be done
+    const failed = followFailedAtRef.current;
+    if (failed && failed.at === at && failed.left <= 0) return true;
+    if (!autoSyncRef.current) followRef.current();
+    return false;
+  }, []);
   /** the first load has answered: before that the poll has nothing to compare */
   const circuitLoadedRef = useRef(false);
   /** previewAt of the running-compile drawing on screen, if any */
@@ -295,9 +318,9 @@ export function Studio({
     setCompileProblem(null);
     setSummary(d.compile.summary ?? null);
     // between a save and the board that follows it "older than the files" is true and means nothing
-    setCircuitStale(Boolean(d.compile.stale) && !autoSyncRef.current);
+    setCircuitStale(staleFrom(d.compile) && !autoSyncRef.current);
     setChecksStale(Boolean(d.compile.checksStale));
-  }, [projectId]);
+  }, [projectId, staleFrom]);
 
   /** re-evaluates the board with the current checks WITHOUT re-routing */
   const recheck = useCallback(async () => {
@@ -517,7 +540,7 @@ export function Studio({
         if (!alive) return;
         setCompileRun((d?.running as CompileRun | null | undefined) ?? null);
         // the files can change without a compile (write_file from Claude): the score must know
-        if (d?.compile && !autoSyncRef.current) setCircuitStale(Boolean(d.compile.stale));
+        if (d?.compile && !autoSyncRef.current) setCircuitStale(staleFrom(d.compile));
         if (!circuitLoadedRef.current) return;
         if (at && compiledAtRef.current !== at) {
           reloading = true;
@@ -564,7 +587,7 @@ export function Studio({
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [projectId, recompiling, loadCircuit]);
+  }, [projectId, recompiling, loadCircuit, staleFrom]);
 
   /*
    * Manual editor. Applying an edit means writing it to manual-edits.json
@@ -591,17 +614,46 @@ export function Studio({
    */
   const onManualEditApplied = useCallback(
     async (opts?: { structural?: boolean; background?: boolean }) => {
-    const r = await fetch("/api/reroute-local", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId }),
-    })
-      .then((res) => res.json())
-      .catch(() => null);
+    /*
+     * `retry`: another update or a compile saved a board while this one was
+     * working, and the server did not write over it. Nothing went wrong: the
+     * same question again, on that board. A few times, then it is said.
+     */
+    let r: { ok?: boolean; reason?: string; retry?: boolean; needsCompile?: boolean } | null = null;
+    for (let giro = 0; giro < 4; giro++) {
+      r = await fetch("/api/reroute-local", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      })
+        .then((res) => res.json())
+        .catch(() => null);
+      if (!r?.retry) break;
+      await new Promise((done) => setTimeout(done, 250 * (giro + 1)));
+    }
     await loadCircuit();
+    /*
+     * Tried on this board. What only a compile can do (`needsCompile`) is said
+     * at once and "Sposta" waits for "Aggiorna", as before. A failure of the
+     * moment (the network, a board saved four times in a row under it) is
+     * tried again by the poll, twice more on the same board, then said too:
+     * never every five seconds for ever.
+     */
+    const needsCompile = Boolean(r?.needsCompile);
+    if (r?.ok) {
+      followFailedAtRef.current = null;
+    } else {
+      const at = compiledAtRef.current;
+      const prima = followFailedAtRef.current;
+      const left = needsCompile ? 0 : prima && prima.at === at ? prima.left - 1 : 2;
+      followFailedAtRef.current = { at, left };
+      if (left <= 0) setCircuitStale(true);
+    }
     // the background save says it in the editor bar, once: a chat line per dropped part would be noise
     if (opts?.background) {
-      return r?.ok ? { ok: true } : { ok: false, reason: String(r?.reason ?? "motivo sconosciuto") };
+      return r?.ok
+        ? { ok: true }
+        : { ok: false, reason: String(r?.reason ?? "il server non ha risposto"), needsCompile };
     }
     if (!r?.ok) {
       // no recompiling behind the user's back: we say what is missing and let them decide
@@ -645,6 +697,10 @@ export function Studio({
     // a detached trace put back by Cmd+Z is on the saved board: it only has to be read again
     reloadBoard: loadCircuit,
   });
+  // the fast update, for the poll that finds the board behind the hand positions (see followRef)
+  useEffect(() => {
+    followRef.current = editor.followBoard;
+  }, [editor.followBoard]);
 
   /*
    * The board changed under edits not applied yet: a compile from elsewhere,
@@ -1805,6 +1861,7 @@ export function Studio({
               stale={circuitStale}
               onRecompile={() => void recompile()}
               recompileBusy={boardBusy}
+              compilingElsewhere={!recompiling && compileRun?.state === "running" ? compileRun.step : null}
               warning={
                 swappedUnderEdits
                   ? "La scheda e' cambiata mentre avevi modifiche non applicate: le hai disegnate sulla versione precedente. Controlla che i pezzi siano dove li vuoi prima di applicare, o scartale."

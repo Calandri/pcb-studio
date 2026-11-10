@@ -94,7 +94,8 @@ export async function POST(req: Request): Promise<Response> {
       circuitJson,
       summary,
       CHECKS_ENGINE_VERSION,
-      { ifUnchangedSince: { filesHash: cache.filesHash, createdAt: cache.createdAt } },
+      // the same board, re-evaluated: what it was made from does not change
+      { ifUnchangedSince: { filesHash: cache.filesHash, createdAt: cache.createdAt }, base: cache.base ?? null },
     ).catch(() => ({ saved: false, reason: "salvataggio fallito" }));
     return Response.json({
       ok: true,

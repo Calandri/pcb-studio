@@ -2,26 +2,11 @@ import { requireProjectAccess } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
 import { summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
-import {
-  boardFreshness,
-  MANUAL_EDITS_PATH,
-  parseManualEdits,
-  withoutManualEdits,
-} from "@/lib/manual-edits";
-import {
-  filesHash,
-  getCompileCache,
-  getCompileMeta,
-  getProject,
-  saveCompileCache,
-} from "@/lib/project-store";
-import { rerouteLocal } from "@/lib/reroute-local";
+import { planFastUpdate } from "@/lib/fast-update";
+import { getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
-
-/** createdAt may come back as a Date or as a string, depending on the driver */
-const stamp = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v));
 
 /**
  * Applies manual moves WITHOUT recompiling everything: updates the positions
@@ -32,12 +17,17 @@ const stamp = (v: unknown): string => (v instanceof Date ? v.toISOString() : Str
  * gesture, not an automatism.
  *
  * Two guards, because the result is saved as THE board of the current files:
- *   - the cached board must be the one of these sources, with only manual
- *     edits made on it since (see boardFreshness). If the agent rewrote
- *     main.tsx after the last compile, applying the moves to the old board and
- *     filing it under the new hash showed a stale board as current;
- *   - the cache must still be the one that was read when the work is done:
+ *   - the cached board must be the one of these sources, with only hand
+ *     positions and hand traces changed since (see lib/board-base.ts). If the
+ *     agent rewrote main.tsx after the last compile, applying the moves to the
+ *     old board and filing it under the new hash showed a stale board as
+ *     current;
+ *   - the row must still be the one that was read when the work is saved:
  *     a compile that finished in the meantime is newer, and is not overwritten.
+ *
+ * `needsCompile` in the answer means exactly that: nothing the page can do by
+ * asking again, only "Aggiorna" brings the board of these files. `retry` means
+ * the opposite: ask again.
  */
 export async function POST(req: Request): Promise<Response> {
   let projectId = "default";
@@ -55,33 +45,27 @@ export async function POST(req: Request): Promise<Response> {
 
   const cached = await getCompileCache(projectId).catch(() => null);
   if (!cached?.circuitJson) {
-    return Response.json({ ok: false, reason: "nessuna scheda compilata" });
+    return Response.json({ ok: false, reason: "nessuna scheda compilata", needsCompile: true });
   }
 
   const fsMap = await getProject(projectId);
   const full = await withLibrary(fsMap);
-  const hashNow = filesHash(full);
-  const fresh = boardFreshness({
-    cacheFilesHash: cached.filesHash,
-    filesHash: hashNow,
-    sourcesHash: filesHash(withoutManualEdits(full)),
-    edits: parseManualEdits(fsMap[MANUAL_EDITS_PATH]),
-  });
-  if (!fresh) {
-    return Response.json({
-      ok: false,
-      reason:
-        "la scheda compilata non e' quella dei file attuali (i sorgenti sono cambiati dopo l'ultima compilazione): ricompila prima di applicare gli spostamenti",
-    });
-  }
-
   const t0 = Date.now();
   try {
-    const redone = rerouteLocal(cached.circuitJson, fsMap, fsMap[MANUAL_EDITS_PATH]);
-    if (!redone.result.ok || !redone.circuitJson) {
-      return Response.json({ ...redone.result, ms: Date.now() - t0 });
+    const plan = planFastUpdate(cached, fsMap, full);
+    if (plan.kind === "compile") {
+      return Response.json({
+        ...(plan.result ?? {}),
+        ok: false,
+        needsCompile: true,
+        reason: plan.reason,
+        ms: Date.now() - t0,
+      });
     }
-    const summary = summarizeCircuit(redone.circuitJson as unknown[], fsMap);
+    if (plan.kind === "unchanged") {
+      return Response.json({ ...plan.result, unchanged: true, ms: Date.now() - t0 });
+    }
+    const summary = summarizeCircuit(plan.board as unknown[], fsMap);
     /*
      * The schematic on this board is the one of the board it was moved from:
      * moving parts does not touch it. Its key travels with it, so that the next
@@ -91,29 +75,37 @@ export async function POST(req: Request): Promise<Response> {
     const prima = (cached.summary ?? {}) as { schematicKey?: unknown; schematicPending?: unknown };
     if (typeof prima.schematicKey === "string") summary.schematicKey = prima.schematicKey;
     if (typeof prima.schematicPending === "string") summary.schematicPending = prima.schematicPending;
-    // which board is saved now: the metadata is enough, the board is megabytes
-    const latest = await getCompileMeta(projectId);
-    if (
-      !latest ||
-      latest.filesHash !== cached.filesHash ||
-      stamp(latest.createdAt) !== stamp(cached.createdAt)
-    ) {
+    /*
+     * Saved only over the row that was read: a compile that finished in the
+     * meantime is newer and is not overwritten. The check and the write are one
+     * statement (ifUnchangedSince); they used to be a read and then a write,
+     * and a board saved between the two was lost.
+     */
+    const salvata = await saveCompileCache(projectId, plan.hash, plan.board, summary, CHECKS_ENGINE_VERSION, {
+      ifUnchangedSince: { filesHash: cached.filesHash, createdAt: cached.createdAt },
+      base: plan.base,
+    });
+    if (!salvata.saved) {
+      /*
+       * Another update or a compile saved a board while this one worked. Not a
+       * failure to show: that board is newer, and the page asks again (see
+       * `retry`), on that board.
+       */
       return Response.json({
-        ...redone.result,
+        ...plan.result,
         ok: false,
-        reason:
-          "la scheda e' stata ricompilata mentre aggiornavo il rame: non salvo sopra quella nuova, riapplica le modifiche",
+        retry: true,
+        reason: "la scheda e' stata salvata di nuovo mentre la aggiornavo: riprovo su quella",
         ms: Date.now() - t0,
       });
     }
-    await saveCompileCache(
-      projectId,
-      hashNow,
-      redone.circuitJson,
+    return Response.json({
+      ...plan.result,
+      ok: true,
+      ...(plan.unchanged ? { unchanged: true } : {}),
+      ms: Date.now() - t0,
       summary,
-      CHECKS_ENGINE_VERSION,
-    );
-    return Response.json({ ...redone.result, ms: Date.now() - t0, summary });
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return Response.json({ ok: false, reason: message.slice(0, 200) });

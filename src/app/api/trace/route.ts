@@ -1,3 +1,4 @@
+import { baseHolds, boardBaseOf } from "@/lib/board-base";
 import { requireProjectAccess } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
 import { summarizeCircuit } from "@/lib/compile";
@@ -94,12 +95,21 @@ export async function POST(req: Request): Promise<Response> {
   const full = await withLibrary(fsMap);
   const sources = withoutManualEdits(full);
   const sourcesHash = filesHash(sources);
-  const fresh = boardFreshness({
-    cacheFilesHash: cached.filesHash,
-    filesHash: filesHash(full),
-    sourcesHash,
-    edits: parseManualEdits(fsMap[MANUAL_EDITS_PATH]),
-  });
+  // the board itself says what it was made from (board-base.ts); the chain in the file vouches for the older ones
+  const baseNow = boardBaseOf(full);
+  const fresh: "exact" | "edits" | false =
+    cached.filesHash === filesHash(full)
+      ? "exact"
+      : baseHolds(cached.base, baseNow).ok
+        ? "edits"
+        : cached.base
+          ? false
+          : boardFreshness({
+              cacheFilesHash: cached.filesHash,
+              filesHash: filesHash(full),
+              sourcesHash,
+              edits: parseManualEdits(fsMap[MANUAL_EDITS_PATH]),
+            });
   if (!fresh) {
     return Response.json(
       { error: "la scheda compilata non e' quella dei file attuali: ricompila prima di staccare piste" },
@@ -188,7 +198,14 @@ export async function POST(req: Request): Promise<Response> {
       { status: 409 },
     );
   }
-  await saveCompileCache(projectId, hash, result.circuitJson, summary, CHECKS_ENGINE_VERSION);
+  /*
+   * A trace taken off (or put back) changes neither the sources nor which parts
+   * are held by hand: the base of the board stays the one it had, or the one
+   * of these files when the board was exactly theirs.
+   */
+  await saveCompileCache(projectId, hash, result.circuitJson, summary, CHECKS_ENGINE_VERSION, {
+    base: cached.base ?? (fresh === "exact" ? baseNow : null),
+  });
 
   const unrouted = Array.isArray((summary as { unroutedConnections?: unknown[] }).unroutedConnections)
     ? ((summary as { unroutedConnections?: unknown[] }).unroutedConnections as unknown[]).length

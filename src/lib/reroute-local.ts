@@ -330,6 +330,12 @@ export function applyPlacementsToCircuit(
 export interface RerouteLocalResult {
   ok: boolean;
   reason?: string;
+  /**
+   * Not a failure of anything: the board already shows every hand position and
+   * there are no hand-drawn traces to lay. Whether that is fine (the board is
+   * the one of these files) is the caller's call, see the route.
+   */
+  nothing?: boolean;
   moved: number;
   rerouted: boolean;
   /** connections with a hand-drawn trace applied */
@@ -361,9 +367,19 @@ export function rerouteLocal(
   const orphans = findOrphanEdits(circuitJson, edits);
   const rules = resolveDesignRules(fsMap).rules;
   const vias = { viaDiameter: rules.minViaDiameterMm, viaHoleDiameter: rules.minViaHoleMm };
-  const fail = (reason: string, moved = 0) => ({
+  const fail = (reason: string, nothing = false) => ({
     circuitJson: null,
-    result: { ok: false, reason, moved, rerouted: false, manualRoutes: 0, manualBranches: 0, drc: null, orphans },
+    result: {
+      ok: false,
+      reason,
+      ...(nothing ? { nothing: true } : {}),
+      moved: 0,
+      rerouted: false,
+      manualRoutes: 0,
+      manualBranches: 0,
+      drc: null,
+      orphans,
+    },
   });
 
   const applied = applyPlacementsToCircuit(circuitJson, manualEditsRaw);
@@ -376,6 +392,7 @@ export function rerouteLocal(
       orphans.pcb_placements.length > 0
         ? `nessuno spostamento applicabile: ${orphans.pcb_placements.join(", ")} non sono sulla scheda compilata`
         : "niente da applicare in locale",
+      true,
     );
   }
 

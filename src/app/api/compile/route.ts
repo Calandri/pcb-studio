@@ -1,3 +1,4 @@
+import { boardBaseOf } from "@/lib/board-base";
 import { accessoDaRichiesta } from "@/lib/acl";
 import { COMPILE_START, logActivity } from "@/lib/activity-store";
 import { withLibrary } from "@/lib/agent-tools";
@@ -101,7 +102,9 @@ export async function POST(req: Request): Promise<Response> {
         mark("getCompileCache", t);
 
         const hash = filesHash(fsMap);
-        const saveEarly = earlyBoardSaver(projectId, hash, inCache, fresh);
+        // what this board is made from, apart from the hand positions: saved with it (see board-base.ts)
+        const base = boardBaseOf(fsMap);
+        const saveEarly = earlyBoardSaver(projectId, hash, inCache, fresh, base);
         /** the board is saved and the page has been told: the drawings of the schematic phase stay here */
         let schedaInviata = false;
         const { summary, circuitJson, variants } = await compileProject(fsMap, {
@@ -150,7 +153,7 @@ export async function POST(req: Request): Promise<Response> {
          * (see saveCompileCache): it is said, so whoever is watching knows the
          * board on screen is the previous one and why.
          */
-        const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).catch((err) => ({
+        const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh, base).catch((err) => ({
           saved: false,
           reason: `salvataggio fallito: ${motivoErrore(err)}`,
         }));

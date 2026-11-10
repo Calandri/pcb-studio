@@ -1,3 +1,4 @@
+import { boardBaseOf } from "@/lib/board-base";
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 import { COMPILE_START, logActivity, recordTool } from "@/lib/activity-store";
@@ -320,7 +321,9 @@ function buildHandler(viewer: Viewer) {
         const fsMap = await withLibrary(await getProject(projectId));
         const hash = filesHash(fsMap);
         const inCache = await getCompileCache(projectId).catch(() => null);
-        const saveEarly = earlyBoardSaver(projectId, hash, inCache, fresh);
+        // what this board is made from, apart from the hand positions: saved with it (see board-base.ts)
+        const base = boardBaseOf(fsMap);
+        const saveEarly = earlyBoardSaver(projectId, hash, inCache, fresh, base);
         let lastPreview = 0;
         let lastStep = "";
         /*
@@ -383,7 +386,7 @@ function buildHandler(viewer: Viewer) {
               void savePreviewCircuit(projectId, p.circuitJson);
             },
           });
-          const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh).catch((err: unknown) => ({
+          const salvataggio = await saveFinishedCompile(projectId, hash, circuitJson as unknown[], summary, fresh, base).catch((err: unknown) => ({
             saved: false,
             reason: motivoErrore(err),
           }));

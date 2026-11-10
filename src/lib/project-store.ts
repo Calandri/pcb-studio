@@ -368,6 +368,18 @@ export async function appendChatMessage(
 // deterministic, so FE and BE compiles could diverge).
 // ---------------------------------------------------------------------------
 
+/**
+ * What a saved board was made from, apart from WHERE the hand-held parts sit:
+ * `key` is the hash of everything that is not a hand position or a hand-drawn
+ * trace, `placed` the parts held by hand on it (see lib/board-base.ts). A board
+ * whose base still holds is the board of the current files once the hand
+ * positions are applied to it, whatever was saved in between.
+ */
+export interface SavedBoardBase {
+  key: string;
+  placed: string[];
+}
+
 export interface CompileCache {
   filesHash: string;
   circuitJson: unknown[];
@@ -375,6 +387,30 @@ export interface CompileCache {
   createdAt: string;
   /** version of the checks engine that produced this cache */
   engineVersion: number;
+  /** null on a board saved before the base existed: see SavedBoardBase */
+  base?: SavedBoardBase | null;
+}
+
+/**
+ * The base as the database gives it back, or nothing usable. It is written
+ * with the hash of the board it belongs to (`for`): a save that does not know
+ * the column (a function of the previous deploy still finishing a compile)
+ * replaces the board and leaves the old base behind, and that base must not
+ * vouch for a board it was not written with.
+ */
+function readBase(v: unknown, rowFilesHash: string): SavedBoardBase | null {
+  const o = (typeof v === "string" ? safeJson(v) : v) as { key?: unknown; placed?: unknown; for?: unknown } | null;
+  if (!o || typeof o !== "object" || typeof o.key !== "string" || !Array.isArray(o.placed)) return null;
+  if (o.for !== rowFilesHash) return null;
+  return { key: o.key, placed: o.placed.filter((n): n is string => typeof n === "string") };
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 let compileCacheDdlPromise: Promise<void> | null = null;
@@ -404,6 +440,8 @@ async function ensureCompileCacheTable(
     .then(
       () => sql`ALTER TABLE project_compiles ADD COLUMN IF NOT EXISTS preview_at timestamptz`,
     )
+    // what the board was made from, apart from the hand positions: see SavedBoardBase
+    .then(() => sql`ALTER TABLE project_compiles ADD COLUMN IF NOT EXISTS board_base jsonb`)
     .then(() => undefined)
     .catch((err) => {
       compileCacheDdlPromise = null;
@@ -455,6 +493,12 @@ export async function saveCompileCache(
      * back.
      */
     ifUnchangedSince?: { filesHash: string; createdAt: unknown };
+    /**
+     * What this board was made from (see SavedBoardBase). Left out, the row
+     * says nothing about it and only the old bookkeeping in manual-edits.json
+     * can vouch for the board.
+     */
+    base?: SavedBoardBase | null;
   } = {},
 ): Promise<SaveCompileResult> {
   const sql = db();
@@ -496,6 +540,7 @@ export async function saveCompileCache(
 
   const json = JSON.stringify(circuitJson);
   const sintesi = JSON.stringify(summary);
+  const base = opts.base ? JSON.stringify({ key: opts.base.key, placed: opts.base.placed, for: hash }) : null;
   const condizione = opts.ifUnchangedSince;
   if (condizione) {
     const quando =
@@ -511,13 +556,14 @@ export async function saveCompileCache(
     // the second finds its own row and returns none, which reads as "kept the previous" while the
     // board is in fact saved; a wrong word, never a lost board
     const rows = (await conRiprova(() => sql`
-      INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version)
-      VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion})
+      INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version, board_base)
+      VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion}, ${base}::jsonb)
       ON CONFLICT (project_id)
       DO UPDATE SET files_hash = EXCLUDED.files_hash,
                     circuit_json = EXCLUDED.circuit_json,
                     summary = EXCLUDED.summary,
                     engine_version = EXCLUDED.engine_version,
+                    board_base = EXCLUDED.board_base,
                     preview_circuit_json = NULL,
                     preview_at = NULL,
                     created_at = now()
@@ -536,18 +582,40 @@ export async function saveCompileCache(
 
   // the final save wins over any preview still in flight: it clears it
   await conRiprova(() => sql`
-    INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version)
-    VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion})
+    INSERT INTO project_compiles (project_id, files_hash, circuit_json, summary, engine_version, board_base)
+    VALUES (${projectId}, ${hash}, ${json}::jsonb, ${sintesi}::jsonb, ${engineVersion}, ${base}::jsonb)
     ON CONFLICT (project_id)
     DO UPDATE SET files_hash = EXCLUDED.files_hash,
                   circuit_json = EXCLUDED.circuit_json,
                   summary = EXCLUDED.summary,
                   engine_version = EXCLUDED.engine_version,
+                  board_base = EXCLUDED.board_base,
                   preview_circuit_json = NULL,
                   preview_at = NULL,
                   created_at = now()
   `);
   return { saved: true };
+}
+
+/**
+ * Writes the base on a board that has none, without touching the board: the
+ * boards saved before the base existed, when they are exactly the board of the
+ * current files. One small column, only on the row with this hash.
+ */
+export async function stampCompileBase(projectId: string, hash: string, base: SavedBoardBase): Promise<void> {
+  const sql = db();
+  if (!sql) return;
+  try {
+    await ensureCompileCacheTable(sql);
+    const json = JSON.stringify({ key: base.key, placed: base.placed, for: hash });
+    await sql`
+      UPDATE project_compiles SET board_base = ${json}::jsonb
+      WHERE project_id = ${projectId} AND files_hash = ${hash}
+        AND (board_base IS NULL OR board_base->>'for' IS DISTINCT FROM ${hash})
+    `;
+  } catch {
+    // bookkeeping: without it the board is vouched for the old way
+  }
 }
 
 /**
@@ -635,7 +703,7 @@ export async function getCompileCache(
   try {
     await ensureCompileCacheTable(sql);
     const [row] = (await sql`
-      SELECT files_hash, circuit_json, summary, created_at, engine_version
+      SELECT files_hash, circuit_json, summary, created_at, engine_version, board_base
       FROM project_compiles WHERE project_id = ${projectId}
     `) as Array<{
       files_hash: string;
@@ -643,6 +711,7 @@ export async function getCompileCache(
       summary: unknown;
       created_at: string;
       engine_version: number;
+      board_base: unknown;
     }>;
     if (!row) return null;
     return {
@@ -651,6 +720,7 @@ export async function getCompileCache(
       summary: row.summary,
       createdAt: row.created_at,
       engineVersion: Number(row.engine_version ?? 0),
+      base: readBase(row.board_base, row.files_hash),
     };
   } catch {
     return null;
@@ -665,20 +735,21 @@ export async function getCompileCache(
  */
 export async function getCompileMeta(
   projectId: string,
-): Promise<{ filesHash: string; createdAt: unknown; engineVersion: number } | null> {
+): Promise<{ filesHash: string; createdAt: unknown; engineVersion: number; base: SavedBoardBase | null } | null> {
   const sql = db();
   if (!sql) return null;
   try {
     await ensureCompileCacheTable(sql);
     const [row] = (await sql`
-      SELECT files_hash, created_at, engine_version
+      SELECT files_hash, created_at, engine_version, board_base
       FROM project_compiles WHERE project_id = ${projectId}
-    `) as Array<{ files_hash: string; created_at: string; engine_version: number }>;
+    `) as Array<{ files_hash: string; created_at: string; engine_version: number; board_base: unknown }>;
     if (!row) return null;
     return {
       filesHash: row.files_hash,
       createdAt: row.created_at,
       engineVersion: Number(row.engine_version ?? 0),
+      base: readBase(row.board_base, row.files_hash),
     };
   } catch {
     return null;

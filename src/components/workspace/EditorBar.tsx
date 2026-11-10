@@ -19,6 +19,7 @@ export function EditorBar({
   onRecompile,
   recompileBusy = false,
   warning = null,
+  compilingElsewhere = null,
 }: {
   editor: ManualEditor;
   /** on the schematic you only move things: traces are a copper affair */
@@ -36,6 +37,15 @@ export function EditorBar({
   recompileBusy?: boolean;
   /** something the person must know before applying, e.g. the board changed under the edits */
   warning?: string | null;
+  /**
+   * A compile of this project is already running somewhere (the agent via MCP,
+   * another tab, this page before a reload): its last step. The board it makes
+   * arrives here by itself, so "Aggiorna" on top of it is a second compile of
+   * minutes for the same board (sbb-dl-principale, 2026-11-10: six of them
+   * overlapping in seven minutes). It is said; the button stays, for a compile
+   * that died without a word.
+   */
+  compilingElsewhere?: string | null;
 }) {
   const { mode, setMode, counts, busy, saveState, canUndo, canRedo, error, dirty, links, unlinks } =
     editor;
@@ -199,18 +209,36 @@ export function EditorBar({
       {stale && (
         <div className="flex items-center gap-2 rounded-[10px] border border-[#4A3A1F] bg-[rgba(24,18,8,0.92)] px-3 py-1.5 backdrop-blur">
           <span className="text-[11px] text-[#E3B341]">
-            La scheda a schermo e&apos; piu&apos; vecchia dei file: 1–2 minuti per
-            aggiornarla, e il rame non si tocca.
+            {compilingElsewhere !== null && !recompileBusy ? (
+              <>
+                Il codice e&apos; cambiato e una compilazione e&apos; gia&apos; in corso
+                {compilingElsewhere ? ` (${compilingElsewhere.slice(0, 60)})` : ""}: la scheda nuova
+                arriva qui da sola.
+              </>
+            ) : (
+              <>
+                Il codice della scheda e&apos; cambiato dopo l&apos;ultima compilazione: 1–2 minuti
+                per aggiornarla, e il rame non si tocca.
+              </>
+            )}
           </span>
           {onRecompile && (
             <button
               type="button"
               onClick={onRecompile}
               disabled={recompileBusy}
-              title="Rilegge i file e mostra la scheda attuale: le piste restano le tue"
-              className="rounded-[7px] bg-[#E3B341] px-2.5 py-[5px] text-[11px] font-semibold text-ink transition-colors hover:bg-[#F0C24E] disabled:opacity-50"
+              title={
+                compilingElsewhere !== null && !recompileBusy
+                  ? "Ne avvia un'altra: serve solo se quella in corso si e' fermata"
+                  : "Rilegge i file e mostra la scheda attuale: le piste restano le tue"
+              }
+              className={`rounded-[7px] px-2.5 py-[5px] text-[11px] font-semibold transition-colors disabled:opacity-50 ${
+                compilingElsewhere !== null && !recompileBusy
+                  ? "border border-[#E3B341] text-[#E3B341] hover:bg-[rgba(227,179,65,0.12)]"
+                  : "bg-[#E3B341] text-ink hover:bg-[#F0C24E]"
+              }`}
             >
-              {recompileBusy ? "In corso..." : "Aggiorna"}
+              {recompileBusy ? "In corso..." : compilingElsewhere !== null ? "Aggiorna comunque" : "Aggiorna"}
             </button>
           )}
         </div>
