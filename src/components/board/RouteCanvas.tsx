@@ -74,6 +74,8 @@ export function RouteCanvas({
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [misurato, setMisurato] = useState(false);
   const [layer, setLayer] = useState<LayerId>("top");
+  /** the layer drawn on before this one: where V takes the trace back to, through a via */
+  const lastLayerRef = useRef<LayerId | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [hoverPad, setHoverPad] = useState<RoutePad | null>(null);
@@ -372,10 +374,20 @@ export function RouteCanvas({
         setDraft((d) => (!d || d.points.length <= 1 ? null : { ...d, points: d.points.slice(0, -1) }));
         return;
       }
+      /*
+       * V: a via, on to the layer drawn on before this one (the other face the
+       * first time). The numbers pick a layer by name; V is the key for "drop
+       * a via here and go back where I came from", the gesture of every hop.
+       */
+      const viaKey = (e.key === "v" || e.key === "V") && !e.metaKey && !e.ctrlKey && !e.altKey;
+      const back = lastLayerRef.current && lastLayerRef.current !== layer ? lastLayerRef.current : null;
       // the same keys as the board view: stackup order, so 2 is Bottom on a 2-layer board
-      const next = layerForKey(e.key, scene?.board.layers ?? 2);
+      const next = viaKey
+        ? (back ?? (layer === "bottom" ? "top" : "bottom"))
+        : layerForKey(e.key, scene?.board.layers ?? 2);
       if (!next || next === "all") return;
       e.preventDefault();
+      if (next !== layer) lastLayerRef.current = layer;
       // changing layer while drawing leaves a via at the current point:
       // it is the only way to get to the other side of the copper
       if (draft && next !== layer) {
@@ -653,7 +665,8 @@ export function RouteCanvas({
       <div className="pointer-events-none absolute bottom-4 left-4 max-w-[520px] rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3 py-1.5 text-[11px] leading-relaxed text-muted backdrop-blur">
         {note ? <span className="text-brand">{note}</span> : "Clicca un pad per partire, poi clicca per ogni angolo e chiudi su un altro pad. I pad BIANCHI sono la tua stessa net: la pista puo' chiudere solo li'. Clicca una pista esistente per selezionarla e staccarla (Canc due volte) o ridisegnarla (R due volte)."}
         <span className="ml-2 text-faint">
-          1-4 cambia strato e lascia una via · Backspace toglie l&apos;ultimo angolo · Esc annulla ·
+          1-4 cambia strato e lascia una via · V via e torna allo strato di prima · Backspace
+          toglie l&apos;ultimo angolo · Esc annulla ·
           Shift trascina la vista · + e - zoom, 0 inquadra tutto, Z e trascina per un&apos;area
         </span>
       </div>
