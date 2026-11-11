@@ -399,6 +399,15 @@ interface CircuitElement {
   [key: string]: unknown;
 }
 
+/** a board computed without its schematic: what the schematic is put on (see innestaSchematico) */
+interface SchedaCalcolata {
+  circuitJson: CircuitElement[];
+  rapportoColate: CompileSummary["pours"];
+  controlli: ControlliDellaScheda;
+  /** traces that no longer land on a pad (danglingTraces) */
+  orfane: number;
+}
+
 interface Point {
   x: number;
   y: number;
@@ -696,11 +705,13 @@ export async function compileProject(
    * Recompile without routing: the geometry is the new one, the copper is the
    * one that was already there. See CompileOptions.route. One function for the
    * early board (no schematic yet) and the final one, so the two cannot drift.
+   * The copper (rameDellaScheda) and the summary (riepilogoDellaScheda) are
+   * apart so the final board can reuse the copper and the checks of the early
+   * one: see innestaSchematico.
    */
-  const boardWithoutRouting = async (
+  const rameDellaScheda = async (
     geometry: CircuitElement[],
-    announce = false,
-  ): Promise<{ summary: CompileSummary; circuitJson: CircuitElement[] }> => {
+  ): Promise<{ circuitJson: CircuitElement[]; rapportoColate: CompileSummary["pours"] }> => {
     /*
      * tscircuit writes "Autorouting was skipped because of placement errors"
      * even here, where nobody asked for routing: two overlapping pads while
@@ -735,18 +746,35 @@ export async function compileProject(
       { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
     );
     const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
-    if (announce) say({ step: "Controllo le regole", progress: 0.95, circuitJson });
-    const summary = await summarize(circuitJson, projectFsMap);
-    summary.pours = rapportoColate;
+    return { circuitJson, rapportoColate };
+  };
+  /** the summary of a board whose copper and checks are already measured */
+  const riepilogoDellaScheda = (scheda: SchedaCalcolata, circuitJson: CircuitElement[], controlli: ControlliDellaScheda): CompileSummary => {
+    const summary = summarize(circuitJson, projectFsMap, controlli);
+    summary.pours = scheda.rapportoColate;
     summary.manualEdits = manualEdits;
     summary.manualEditsOrphans = withOrphans(summary, circuitJson, parsedManualEdits);
     if (placementReport) summary.placementReport = placementReport;
-    const orfane = danglingTraces(circuitJson);
-    summary.message = orfane === 0
+    summary.message = scheda.orfane === 0
       ? `${summary.message} (geometria aggiornata, rame non toccato)`
-      : `${summary.message} (geometria aggiornata, rame non toccato: ${orfane} piste non arrivano piu' su un pad, vanno ridisegnate a mano)`;
+      : `${summary.message} (geometria aggiornata, rame non toccato: ${scheda.orfane} piste non arrivano piu' su un pad, vanno ridisegnate a mano)`;
     conIlPerche(summary);
-    return { summary, circuitJson };
+    return summary;
+  };
+  const boardWithoutRouting = async (
+    geometry: CircuitElement[],
+    announce = false,
+  ): Promise<{ summary: CompileSummary; circuitJson: CircuitElement[]; scheda: SchedaCalcolata }> => {
+    const { circuitJson, rapportoColate } = await rameDellaScheda(geometry);
+    if (announce) say({ step: "Controllo le regole", progress: 0.95, circuitJson });
+    const scheda: SchedaCalcolata = {
+      circuitJson,
+      rapportoColate,
+      controlli: controlliDellaScheda(circuitJson, projectFsMap),
+      orfane: danglingTraces(circuitJson),
+    };
+    // a copy for this summary: the checks stay as measured, for the board the schematic goes on
+    return { summary: riepilogoDellaScheda(scheda, circuitJson, structuredClone(scheda.controlli)), circuitJson, scheda };
   };
 
   /*
@@ -762,6 +790,12 @@ export async function compileProject(
       : null;
   /** the board with the previous schematic on it, when the schematic has not changed */
   let innestata: CircuitElement[] | null = null;
+  /**
+   * The board read without its schematic and computed once (copper, pours,
+   * paste, checks): the final board is this one with the schematic put on it,
+   * see innestaSchematico.
+   */
+  let primaPassata: { pcbOnly: CircuitElement[]; scheda: SchedaCalcolata } | null = null;
   if (opts.route === false && (opts.onBoard || schemaDiPrima)) {
     say({
       step: "Leggo la scheda",
@@ -781,13 +815,16 @@ export async function compileProject(
       const early = await profiler.run("rame, colate e controlli della scheda senza schematico", () =>
         boardWithoutRouting(pcbOnly as CircuitElement[]),
       );
+      primaPassata = { pcbOnly, scheda: early.scheda };
       early.summary.schematicPending =
         "scheda salvata prima dello schematico: lo schematico e i suoi controlli arrivano a fine compilazione";
       // the board saved early carries its timings too: the final save may never come
       early.summary.profile = { ...profiler.result(), patches: enginePatches() };
       early.summary.message = `${early.summary.message} (schematico in calcolo)`;
       try {
-        await profiler.run("salvataggio della scheda senza schematico", () => opts.onBoard!(early));
+        await profiler.run("salvataggio della scheda senza schematico", () =>
+          opts.onBoard!({ circuitJson: early.circuitJson, summary: early.summary }),
+        );
       } catch {
         // saving early is a bonus: the full compile goes on and saves at the end
       }
@@ -921,7 +958,28 @@ export async function compileProject(
     }
     say({ step: "Riporto il rame che c'era", detail: "le piste non si rifanno", progress: 0.7 });
     const g = geometry;
-    const { summary, circuitJson } = await profiler.run("rame, colate e controlli", () => boardWithoutRouting(g, true));
+    /*
+     * THE COPPER AND THE CHECKS ONCE. The board saved early was computed from
+     * these same files: its copper, pours, paste and checks are the ones this
+     * geometry would give again (see innestaSchematico), so only the schematic
+     * goes on it and only the checks that read the schematic are run. Pouring
+     * the planes and running every check a second time was ~190 s on Vercel on
+     * sbb-dl-principale, and the reason its compiles never ended (11/11/2026).
+     * When the two readings of the board differ, the board is computed again
+     * from this geometry, as before.
+     */
+    const prima = primaPassata;
+    const innestato = prima
+      ? await profiler.run("schematico sulla scheda gia' calcolata e suoi controlli", () => {
+          const conSchematico = innestaSchematico(prima.scheda.circuitJson, prima.pcbOnly, g);
+          if (!conSchematico) return null;
+          say({ step: "Controllo le regole", progress: 0.95, circuitJson: conSchematico });
+          // a copy: the early summary keeps the lists it was saved with
+          return { summary: riepilogoDellaScheda(prima.scheda, conSchematico, structuredClone(prima.scheda.controlli)), circuitJson: conSchematico };
+        })
+      : null;
+    if (prima && !innestato) console.log("[compile] le due letture della scheda non coincidono: rame, colate e controlli rifatti");
+    const { summary, circuitJson } = innestato ?? (await profiler.run("rame, colate e controlli", () => boardWithoutRouting(g, true)));
     /*
      * Where the time went, in the summary and in the function log: on Vercel
      * the same compile takes several times the local one, and without the
@@ -1596,6 +1654,16 @@ export function graftSchematic(pcbOnly: CircuitElement[], previous: unknown[]): 
   const prev = previous as CircuitElement[];
   const schema = prev.filter((e) => String(e.type).startsWith("schematic_"));
   if (!schema.some((e) => e.type === "schematic_component")) return null;
+  if (!stessiSorgenti(pcbOnly, prev)) return null;
+  return [...pcbOnly.filter((e) => !String(e.type).startsWith("schematic_")), ...schema];
+}
+
+/**
+ * Whether two circuits have the same source elements the schematic points at:
+ * every component, port, net and connection with the same id and the same
+ * name.
+ */
+function stessiSorgenti(a: CircuitElement[], b: CircuitElement[]): boolean {
   const firma = (els: CircuitElement[], tipo: string, id: string) =>
     els
       .filter((e) => e.type === tipo)
@@ -1608,9 +1676,76 @@ export function graftSchematic(pcbOnly: CircuitElement[], previous: unknown[]): 
     ["source_net", "source_net_id"],
     ["source_trace", "source_trace_id"],
   ] as const) {
-    if (firma(pcbOnly, tipo, id) !== firma(prev, tipo, id)) return null;
+    if (firma(a, tipo, id) !== firma(b, tipo, id)) return false;
   }
-  return [...pcbOnly.filter((e) => !String(e.type).startsWith("schematic_")), ...schema];
+  return true;
+}
+
+/**
+ * An element as a comparable string. Two readings of the same files in one
+ * function differ in two things that are not the board: tscircuit numbers
+ * every component it renders across the whole process and writes the number
+ * into its warnings ("<trace#28(from:...)"), and some warnings get a random id
+ * (supplier_footprint_mismatch_warning_xCVCEvBItJ, measured on tm-4l-q1). So
+ * the number does not count, and neither does the own id of a warning or an
+ * error: the summary reads their type and message.
+ */
+const impronta = (e: CircuitElement): string => {
+  const tipo = String(e.type);
+  const el = tipo.endsWith("_warning") || tipo.endsWith("_error") ? { ...e, [`${tipo}_id`]: undefined } : e;
+  return JSON.stringify(el).replace(/<(\w+)#\d+/g, "<$1#");
+};
+
+/**
+ * THE SCHEMATIC PUT ON THE BOARD ALREADY COMPUTED (see compileProject). `scheda`
+ * is the board computed from `pcbOnly` (the files read without the schematic):
+ * copper carried over, hand routes, pours poured again, paste. `geometry` is
+ * the same files read with the schematic. The board that geometry would give
+ * is `scheda` itself when the two readings hold the same board, so the
+ * schematic elements of `geometry` are put into `scheda`, in the place they
+ * have in `geometry`, and nothing is poured or checked again.
+ *
+ * Only when it is certain, otherwise null and the caller computes the board
+ * again from `geometry`, as before:
+ *  - the same source elements the schematic points at (stessiSorgenti, as for
+ *    graftSchematic);
+ *  - the same elements in the two readings apart from the schematic, in any
+ *    order: the two runs may finish the pours and some warnings in a
+ *    different order (measured on tm-4l-q1), never different ones;
+ *  - the schematic sits after elements the board work did not touch: those
+ *    before it are the same in `scheda` and in `geometry`, so the result has
+ *    the order the board computed from `geometry` would have.
+ */
+export function innestaSchematico(
+  scheda: CircuitElement[],
+  pcbOnly: CircuitElement[],
+  geometry: CircuitElement[],
+): CircuitElement[] | null {
+  const loSchematico = (e: CircuitElement) => String(e.type).startsWith("schematic_");
+  if (pcbOnly.some(loSchematico) || scheda.some(loSchematico)) return null;
+  const senza = geometry.filter((e) => !loSchematico(e));
+  if (senza.length !== pcbOnly.length) return null;
+  if (!stessiSorgenti(senza, pcbOnly)) return null;
+  const a = senza.map(impronta).sort();
+  const b = pcbOnly.map(impronta).sort();
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return null;
+  /* where each schematic element sits: after how many elements of the board */
+  let ultimo = 0;
+  let k = 0;
+  for (const e of geometry) {
+    if (loSchematico(e)) ultimo = k;
+    else k++;
+  }
+  if (ultimo > scheda.length) return null;
+  for (let i = 0; i < ultimo; i++) if (impronta(scheda[i]) !== impronta(senza[i])) return null;
+  const out: CircuitElement[] = [];
+  k = 0;
+  for (const e of geometry) {
+    if (k >= ultimo && !loSchematico(e)) break;
+    if (loSchematico(e)) out.push(e);
+    else out.push(scheda[k++]);
+  }
+  return [...out, ...scheda.slice(ultimo)];
 }
 
 /**
@@ -2141,67 +2276,58 @@ function adaptSolver(
 // summary building (geometric feedback for the model)
 // ---------------------------------------------------------------------------
 
-function summarize(
-  circuitJson: CircuitElement[],
-  sources: FsMap = {},
-): CompileSummary {
-  const allErrors = circuitJson
-    .filter((el) => el.type.endsWith("_error"))
-    .map((el) => ({
-      type: el.type,
-      message: String(el.message ?? el.error_type ?? JSON.stringify(el)).slice(0, 500),
-    }));
+/**
+ * WHAT THE CHECKS MEASURE WITHOUT LOOKING AT THE SCHEMATIC: the open
+ * connections, the DRC of every fab class, pour against pour, the electrical
+ * checks, matched lengths, paste, congestion, ratsnest, footprints, ERC,
+ * placement, planes over vias, the pours' clearances. None of them reads a
+ * schematic_* element, so the board without its schematic gives the same
+ * numbers as the same board with it: a compile measures them once, on the
+ * board it saves before the schematic, and the final summary takes them from
+ * there (see compileProject). On sbb-dl-principale (156 parts, ~570 pieces of
+ * pour) measuring them twice was part of the second ~190 s of "rame, colate e
+ * controlli" that pushed every compile past the function's 800 s (11/11/2026).
+ */
+interface ControlliDellaScheda {
+  unroutedConnections: string[];
+  unroutedTotal: number;
+  connectionGroups: number;
+  unroutedDetail: UnroutedDetail[];
+  sourceTraces: number;
+  pcbTraces: number;
+  stats: CompileSummary["stats"];
+  totalTraceLengthMm: number;
+  projectRules: ReturnType<typeof resolveDesignRules>;
+  drcViolations: DrcViolation[];
+  poursTooClose: ReturnType<typeof colateCheSiToccano>;
+  /** the silkscreen clashes (see silkscreen-clearance.ts): a check of the board, it reads no schematic */
+  silkscreen: SerigrafiaInConflitto | undefined;
+  prcViolations: PrcViolation[];
+  fabClasses: CompileSummary["fabClasses"];
+  fabClass: string | null;
+  congestion: CongestionCell[];
+  ratsnest: CompileSummary["ratsnest"];
+  footprintProvenance: FootprintProvenance;
+  erc: ErcReport;
+  placement: PlacementQuality;
+  planesOverVias: ReturnType<typeof pianiSopraLeVie>;
+  pourClearances: CompileSummary["pourClearances"];
+  /** the pours' clearances and corrections, as summarize appends them to the message */
+  messaggioColate: string;
+}
 
-  /*
-   * When autorouting gets SKIPPED because of placement errors, every
-   * connection comes back missing: 11 overlaps produce a hundred
-   * trace_missing/port_not_connected that are only the consequence. Listing
-   * them all drowns the model and makes it spin on the symptoms.
-   * Here the CAUSE is put first and the others are declared derived.
-   */
-  const DERIVED = new Set(["pcb_trace_missing_error", "pcb_port_not_connected_error"]);
-  const routingSkipped = allErrors.some(
-    (e) => e.type === "pcb_autorouting_error" && /skipped/i.test(e.message),
-  );
-  const rootCauses = allErrors.filter((e) => !DERIVED.has(e.type));
-  const derivedCount = allErrors.length - rootCauses.length;
-
-  const errors = routingSkipped && derivedCount > 0
-    ? [
-        {
-          type: "root_cause_first",
-          message:
-            `L'autorouting NON e' stato eseguito a causa di ${rootCauses.length} problemi di ` +
-            `piazzamento: risolvi SOLO quelli e le ${derivedCount} connessioni mancanti ` +
-            `spariranno da sole (sono la conseguenza, non la causa). ` +
-            `Sposta i componenti che si sovrappongono e riporta tutto dentro il bordo scheda.`,
-        },
-        ...rootCauses,
-      ]
-    : allErrors;
-
-  const components = circuitJson
-    .filter((el) => el.type === "source_component")
-    .map((el) => ({
-      name: String(el.name ?? "?"),
-      ftype: el.ftype ? String(el.ftype) : undefined,
-      value: el.display_value ? String(el.display_value) : undefined,
-    }));
-
+function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): ControlliDellaScheda {
   const netNameById = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type === "source_net") {
       netNameById.set(String(el.source_net_id ?? ""), String(el.name ?? "?"));
     }
   }
-  const nets = [...netNameById.values()];
-
   const sourceTraceEls = circuitJson.filter((el) => el.type === "source_trace");
   const pcbTraceEls = circuitJson.filter((el) => el.type === "pcb_trace");
 
   const traceLabel = (el: CircuitElement) =>
     String(el.display_name ?? el.source_trace_id ?? "trace");
-  const connections = sourceTraceEls.map(traceLabel).slice(0, 40);
 
   // Routing is judged per CONNECTIVITY GROUP, pad by pad: a group is open
   // as long as one of its pads is not on the same copper as the others, even
@@ -2429,10 +2555,152 @@ function summarize(
   const fabClass = fabClasses.find((f) => f.ok)?.label ?? null;
   const congestion = computeCongestion(circuitJson);
   const ratsnest = computeRatsnest(groupInfo);
-  const schematicQuality = analyzeSchematic(circuitJson, sources);
   const footprintProvenance = analyzeFootprints(circuitJson, sources);
   const erc = runErcChecks(circuitJson);
   const placement = analyzePlacement(circuitJson, projectRules.rules);
+
+  // the vias a plane of another net covers, from what the DRC runs above measured: see pianiSopraLeVie
+  const planesOverVias = pianiSopraLeVie(circuitJson, misure);
+
+  /*
+   * The clearances the pours keep, and what was wrong in the ones declared:
+   * in the message only when a pour keeps one of its own or a declaration had
+   * to be corrected, so a board that declares nothing reads as it always did.
+   */
+  const regolaColate = projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm;
+  const distanzeColate = distanzeDelleColate(circuitJson, regolaColate);
+  const avvisiColate = distanzeDichiarate(sources, projectRules.rules.minClearanceMm).avvisi;
+  const pourClearances: CompileSummary["pourClearances"] =
+    distanzeColate.length || avvisiColate.length
+      ? {
+          regolaMm: regolaColate,
+          distanze: distanzeColate,
+          testo: descriviDistanze(distanzeColate),
+          ...(avvisiColate.length ? { avvisi: avvisiColate } : {}),
+        }
+      : undefined;
+  const colateProprie = distanzeColate.some((d) => !d.regola) ? ` Colate: ${descriviDistanze(distanzeColate)}.` : "";
+  const colateCorrette = avvisiColate.length ? ` ATTENZIONE <copperpour>: ${avvisiColate.join("; ")}.` : "";
+
+  return {
+    unroutedConnections,
+    unroutedTotal,
+    connectionGroups,
+    unroutedDetail,
+    sourceTraces,
+    pcbTraces,
+    stats,
+    totalTraceLengthMm,
+    projectRules,
+    drcViolations,
+    poursTooClose,
+    silkscreen,
+    prcViolations,
+    fabClasses,
+    fabClass,
+    congestion,
+    ratsnest,
+    footprintProvenance,
+    erc,
+    placement,
+    planesOverVias,
+    pourClearances,
+    messaggioColate: colateProprie + colateCorrette,
+  };
+}
+
+/**
+ * The summary of a compiled circuit. `scheda`: the checks of the same board
+ * already measured without its schematic (see ControlliDellaScheda): only
+ * what reads the schematic is computed here, so the result is the one a full
+ * run gives on the same circuit. The summary holds its lists as they are: a
+ * caller reusing them passes its own copy.
+ */
+function summarize(
+  circuitJson: CircuitElement[],
+  sources: FsMap = {},
+  scheda: ControlliDellaScheda = controlliDellaScheda(circuitJson, sources),
+): CompileSummary {
+  const allErrors = circuitJson
+    .filter((el) => el.type.endsWith("_error"))
+    .map((el) => ({
+      type: el.type,
+      message: String(el.message ?? el.error_type ?? JSON.stringify(el)).slice(0, 500),
+    }));
+
+  /*
+   * When autorouting gets SKIPPED because of placement errors, every
+   * connection comes back missing: 11 overlaps produce a hundred
+   * trace_missing/port_not_connected that are only the consequence. Listing
+   * them all drowns the model and makes it spin on the symptoms.
+   * Here the CAUSE is put first and the others are declared derived.
+   */
+  const DERIVED = new Set(["pcb_trace_missing_error", "pcb_port_not_connected_error"]);
+  const routingSkipped = allErrors.some(
+    (e) => e.type === "pcb_autorouting_error" && /skipped/i.test(e.message),
+  );
+  const rootCauses = allErrors.filter((e) => !DERIVED.has(e.type));
+  const derivedCount = allErrors.length - rootCauses.length;
+
+  const errors = routingSkipped && derivedCount > 0
+    ? [
+        {
+          type: "root_cause_first",
+          message:
+            `L'autorouting NON e' stato eseguito a causa di ${rootCauses.length} problemi di ` +
+            `piazzamento: risolvi SOLO quelli e le ${derivedCount} connessioni mancanti ` +
+            `spariranno da sole (sono la conseguenza, non la causa). ` +
+            `Sposta i componenti che si sovrappongono e riporta tutto dentro il bordo scheda.`,
+        },
+        ...rootCauses,
+      ]
+    : allErrors;
+
+  const components = circuitJson
+    .filter((el) => el.type === "source_component")
+    .map((el) => ({
+      name: String(el.name ?? "?"),
+      ftype: el.ftype ? String(el.ftype) : undefined,
+      value: el.display_value ? String(el.display_value) : undefined,
+    }));
+
+  const netNameById = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type === "source_net") {
+      netNameById.set(String(el.source_net_id ?? ""), String(el.name ?? "?"));
+    }
+  }
+  const nets = [...netNameById.values()];
+
+  const traceLabel = (el: CircuitElement) =>
+    String(el.display_name ?? el.source_trace_id ?? "trace");
+  const connections = circuitJson.filter((el) => el.type === "source_trace").map(traceLabel).slice(0, 40);
+
+  const {
+    unroutedConnections,
+    unroutedTotal,
+    connectionGroups,
+    unroutedDetail,
+    sourceTraces,
+    pcbTraces,
+    stats,
+    totalTraceLengthMm,
+    projectRules,
+    drcViolations,
+    poursTooClose,
+    silkscreen,
+    prcViolations,
+    fabClasses,
+    fabClass,
+    congestion,
+    ratsnest,
+    footprintProvenance,
+    erc,
+    placement,
+    planesOverVias,
+    pourClearances,
+  } = scheda;
+  const schematicQuality = analyzeSchematic(circuitJson, sources);
 
   /*
    * A schematic layout disabled by schX/schY produces an unusable drawing
@@ -2455,9 +2723,6 @@ function summarize(
         ]
       : [];
   const reportedErrors = [...schematicBlocker, ...errors];
-
-  // the vias a plane of another net covers, from what the DRC runs above measured: see pianiSopraLeVie
-  const planesOverVias = pianiSopraLeVie(circuitJson, misure);
 
   const ok = reportedErrors.length === 0;
   // convergence checklist: the agent's loop targets in one place (Fase 3.h)
@@ -2506,25 +2771,6 @@ function summarize(
   const regoleCorrette = projectRules.warnings?.length
     ? ` ATTENZIONE ${DESIGN_RULES_PATH}: ${projectRules.warnings.join("; ")}.`
     : "";
-  /*
-   * The clearances the pours keep, and what was wrong in the ones declared:
-   * in the message only when a pour keeps one of its own or a declaration had
-   * to be corrected, so a board that declares nothing reads as it always did.
-   */
-  const regolaColate = projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm;
-  const distanzeColate = distanzeDelleColate(circuitJson, regolaColate);
-  const avvisiColate = distanzeDichiarate(sources, projectRules.rules.minClearanceMm).avvisi;
-  const pourClearances: CompileSummary["pourClearances"] =
-    distanzeColate.length || avvisiColate.length
-      ? {
-          regolaMm: regolaColate,
-          distanze: distanzeColate,
-          testo: descriviDistanze(distanzeColate),
-          ...(avvisiColate.length ? { avvisi: avvisiColate } : {}),
-        }
-      : undefined;
-  const colateProprie = distanzeColate.some((d) => !d.regola) ? ` Colate: ${descriviDistanze(distanzeColate)}.` : "";
-  const colateCorrette = avvisiColate.length ? ` ATTENZIONE <copperpour>: ${avvisiColate.join("; ")}.` : "";
 
   return {
     ok,
@@ -2568,7 +2814,7 @@ function summarize(
     ...(pourClearances ? { pourClearances } : {}),
     routingAttempts: 1,
     router: "default",
-    message: message + regoleCorrette + colateProprie + colateCorrette + testoSerigrafia(silkscreen),
+    message: message + regoleCorrette + scheda.messaggioColate + testoSerigrafia(silkscreen),
   };
 }
 
