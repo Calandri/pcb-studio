@@ -58,7 +58,8 @@ export async function POST(req: Request): Promise<Response> {
     filesHash(fsMap),
     cached.circuitJson,
     cached.summary,
-    CHECKS_ENGINE_VERSION,
+    // the board is taken as it is, checks included: it keeps the engine it was made with
+    Math.min(cached.engineVersion, CHECKS_ENGINE_VERSION),
     // taken as the board of these files: the hand moves made on it from now on apply to it
     { base: boardBaseOf(fsMap) },
   );

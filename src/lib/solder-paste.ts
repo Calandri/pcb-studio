@@ -164,10 +164,91 @@ export function pastaDaiPad<T extends El>(circuitJson: T[], expansionMm = 0, opz
     const nuova = ridisegna(el, pad, e);
     if (nuova) out.push(nuova as T);
   }
+  /*
+   * THE PADS TSCIRCUIT GIVES NO PASTE TO. It writes a paste opening for round
+   * and rectangular pads and none for a pill or a turned pill: the shape of
+   * the pads of most SOIC and DFN footprints imported from LCSC. On
+   * sbb-dl-principale the flash (U10, eight pads) and U12 (six) came out of
+   * the compile with no opening at all (2026-11-11): on the stencil those
+   * parts are bare copper, and nothing said so. Their opening is the pad, like
+   * every other pad's. A pad that already has paste, one under the mask and
+   * one of a part that draws its own stencil are left as they are.
+   */
+  const giaConPasta = new Set<string>();
+  for (const el of circuitJson) {
+    if (el.type === "pcb_solder_paste" && typeof el.pcb_smtpad_id === "string") giaConPasta.add(el.pcb_smtpad_id);
+  }
+  for (const [id, pad] of pads) {
+    const shape = String(pad.shape);
+    if (shape !== "pill" && shape !== "rotated_pill") continue;
+    if (giaConPasta.has(id) || pad.is_covered_with_solder_mask === true) continue;
+    if (typeof pad.pcb_component_id === "string" && conStencil.has(pad.pcb_component_id)) continue;
+    if (num(pad.x) === null || num(pad.y) === null) continue;
+    const nuova = ridisegna(
+      {
+        type: "pcb_solder_paste",
+        pcb_solder_paste_id: `pcb_solder_paste_pad_${id}`,
+        pcb_smtpad_id: id,
+        ...(typeof pad.pcb_component_id === "string" ? { pcb_component_id: pad.pcb_component_id } : {}),
+        ...(typeof pad.subcircuit_id === "string" ? { subcircuit_id: pad.subcircuit_id } : {}),
+        layer: pad.layer === "bottom" ? "bottom" : "top",
+        // a pill either way: the turn of a turned pill travels in ccw_rotation (see ridisegna)
+        shape: "pill",
+      },
+      pad,
+      e,
+    );
+    if (nuova) out.push(nuova as T);
+  }
   for (const { comp, aperture, nome } of conStencil.values()) {
     aperture.forEach((a, i) => out.push(aperturaSullaScheda(comp, a, `${nome}_${i}`) as T));
   }
   return out;
+}
+
+/**
+ * The parts with pads that would reach the stencil with no opening: bare
+ * copper under a part that is supposed to be soldered. After pastaDaiPad it is
+ * what no rule could draw: a polygon pad (the ground ring of a bottom-port
+ * MEMS microphone), whose openings are the datasheet's and go in stencil.json.
+ * A part that draws its own stencil has said what it wants, even when that is
+ * nothing (a press-on programming footprint, a fiducial): it is not listed.
+ */
+export function padSenzaPasta(
+  circuitJson: El[],
+  stencil?: StencilProgetto,
+): Array<{ nome: string; pad: number; x: number | null; y: number | null }> {
+  const nomeDi = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type === "source_component" && typeof el.source_component_id === "string") {
+      nomeDi.set(el.source_component_id, String(el.name ?? ""));
+    }
+  }
+  const pezzo = new Map<string, { nome: string; x: number | null; y: number | null }>();
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_component" || typeof el.pcb_component_id !== "string") continue;
+    const centro = el.center as { x?: unknown; y?: unknown } | undefined;
+    pezzo.set(el.pcb_component_id, {
+      nome: nomeDi.get(String(el.source_component_id ?? "")) ?? "",
+      x: num(centro?.x),
+      y: num(centro?.y),
+    });
+  }
+  const conPasta = new Set<string>();
+  for (const el of circuitJson) {
+    if (el.type === "pcb_solder_paste" && typeof el.pcb_smtpad_id === "string") conPasta.add(el.pcb_smtpad_id);
+  }
+  const conta = new Map<string, number>();
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_smtpad" || el.is_covered_with_solder_mask === true) continue;
+    if (typeof el.pcb_smtpad_id === "string" && conPasta.has(el.pcb_smtpad_id)) continue;
+    const id = typeof el.pcb_component_id === "string" ? el.pcb_component_id : "";
+    const p = pezzo.get(id);
+    if (!p || !p.nome) continue;
+    if (stencil?.componenti[p.nome]) continue;
+    conta.set(id, (conta.get(id) ?? 0) + 1);
+  }
+  return [...conta].map(([id, pad]) => ({ nome: pezzo.get(id)!.nome, pad, x: pezzo.get(id)!.x, y: pezzo.get(id)!.y }));
 }
 
 /** a footprint opening placed where the component is: mirrored underneath, turned, moved */

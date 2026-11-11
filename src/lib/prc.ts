@@ -81,7 +81,8 @@ export interface PrcViolation {
     | "pour_island"
     | "return_via_connector"
     | "power_trace_width"
-    | "matched_length";
+    | "matched_length"
+    | "paste_missing";
   severity: "warn" | "fail";
   message: string;
   x?: number;

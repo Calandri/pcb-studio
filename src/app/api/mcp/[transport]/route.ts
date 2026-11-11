@@ -268,7 +268,11 @@ function buildHandler(viewer: Viewer) {
 
     server.tool(
       "write_file",
-      "Scrive un file del progetto con il contenuto COMPLETO (niente diff). " +
+      "Scrive un file del progetto con il contenuto COMPLETO (niente diff): i .tsx, e " +
+        "stencil.json (le aperture della lamina della pasta di un componente, nelle coordinate " +
+        "della sua impronta: {\"componenti\": {\"U2\": {\"aperture\": [{\"forma\": \"rettangolo\", " +
+        "\"x\": 0, \"y\": 0, \"w\": 0.6, \"h\": 2.5}]}}}; un componente elencato con aperture vuote " +
+        "non riceve pasta: fiducial, impronte a pressione). " +
         "Poi chiama compile per validare: e' la compilazione a dire se il progetto sta in piedi.",
       { projectId: z.string(), path: z.string(), content: z.string() },
       async ({ projectId, path, content }) => {

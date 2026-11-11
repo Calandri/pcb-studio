@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pastaDaiPad } from "@/lib/solder-paste";
+import { padSenzaPasta, pastaDaiPad } from "@/lib/solder-paste";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -137,4 +137,48 @@ describe("stencil.json and through-hole pads", () => {
       expect(a.layer).toBe(suo.layer);
     }
   }, 120000);
+});
+
+describe("pads tscircuit gives no paste to (sbb-dl-principale, 2026-11-11)", () => {
+  const parte = [
+    { type: "source_component", source_component_id: "s1", name: "U10" },
+    { type: "pcb_component", pcb_component_id: "c1", source_component_id: "s1", center: { x: 1, y: 2 }, layer: "top" },
+  ];
+  const conPezzo = (over: Record<string, unknown>) => pad({ pcb_component_id: "c1", ...over });
+
+  it("a pill pad gets its opening, as large as itself", () => {
+    const out = pastaDaiPad([...parte, conPezzo({ shape: "pill", width: 0.95, height: 0.56, radius: 0.28 })] as El[]);
+    const aperte = out.filter((e) => e.type === "pcb_solder_paste");
+    expect(aperte).toHaveLength(1);
+    expect(aperte[0]).toMatchObject({ shape: "pill", width: 0.95, height: 0.56, radius: 0.28, x: 1, y: 2, layer: "top", pcb_smtpad_id: "p1", pcb_component_id: "c1" });
+  });
+  it("a turned pill keeps its turn, and the expansion applies", () => {
+    const out = pastaDaiPad([...parte, conPezzo({ shape: "rotated_pill", width: 0.6, height: 2.2, radius: 0.3, ccw_rotation: 90, layer: "bottom" })] as El[], -0.05);
+    const [a] = out.filter((e) => e.type === "pcb_solder_paste");
+    expect(a).toMatchObject({ shape: "pill", ccw_rotation: 90, layer: "bottom" });
+    expect(Number(a.width)).toBeCloseTo(0.5);
+    expect(Number(a.height)).toBeCloseTo(2.1);
+  });
+  it("a second pass adds nothing: the opening is there", () => {
+    const una = pastaDaiPad([...parte, conPezzo({ shape: "pill", width: 0.95, height: 0.56, radius: 0.28 })] as El[]);
+    const due = pastaDaiPad(una);
+    expect(due.filter((e) => e.type === "pcb_solder_paste")).toHaveLength(1);
+  });
+  it("not under the mask, and not on a part that draws its own stencil", () => {
+    const coperta = pastaDaiPad([...parte, conPezzo({ shape: "pill", width: 0.95, height: 0.56, is_covered_with_solder_mask: true })] as El[]);
+    expect(coperta.filter((e) => e.type === "pcb_solder_paste")).toHaveLength(0);
+    const sua = pastaDaiPad([...parte, conPezzo({ shape: "pill", width: 0.95, height: 0.56 })] as El[], 0, { stencil: { componenti: { U10: { aperture: [] } } } });
+    expect(sua.filter((e) => e.type === "pcb_solder_paste")).toHaveLength(0);
+  });
+  it("a part whose pads still have no opening is named: a polygon pad has none", () => {
+    const board = pastaDaiPad([
+      ...parte,
+      conPezzo({ shape: "polygon", points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }], x: undefined, y: undefined }),
+      conPezzo({ pcb_smtpad_id: "p2", shape: "rect", width: 0.6, height: 0.5 }),
+      pasta({ pcb_smtpad_id: "p2", pcb_component_id: "c1", shape: "rect", width: 0.4, height: 0.3 }),
+    ] as El[]);
+    expect(padSenzaPasta(board)).toEqual([{ nome: "U10", pad: 1, x: 1, y: 2 }]);
+    // it draws its own stencil, even an empty one (a press-on programming footprint): it has said what it wants
+    expect(padSenzaPasta(board, { componenti: { U10: { aperture: [] } } })).toEqual([]);
+  });
 });

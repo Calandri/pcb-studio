@@ -203,7 +203,8 @@ export async function POST(req: Request): Promise<Response> {
    * are held by hand: the base of the board stays the one it had, or the one
    * of these files when the board was exactly theirs.
    */
-  await saveCompileCache(projectId, hash, result.circuitJson, summary, CHECKS_ENGINE_VERSION, {
+  // under the engine the board was made with: a detached trace does not re-evaluate it (see reroute-local)
+  await saveCompileCache(projectId, hash, result.circuitJson, summary, Math.min(cached.engineVersion, CHECKS_ENGINE_VERSION), {
     base: cached.base ?? (fresh === "exact" ? baseNow : null),
   });
 

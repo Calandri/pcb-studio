@@ -1,4 +1,5 @@
-import { projectAccess, requireProjectAccess } from "@/lib/acl";
+import { currentViewer, projectAccess } from "@/lib/acl";
+import { resolveApiToken } from "@/lib/api-tokens";
 import { readCompileRun } from "@/lib/activity-store";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
@@ -18,14 +19,23 @@ export const runtime = "nodejs";
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const projectId = url.searchParams.get("projectId") ?? "default";
-  const { ok, viewer } = await requireProjectAccess(projectId, "view");
-  if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
+  /*
+   * The browser sends a session, a script or an agent its personal token
+   * (pcbs_...): the same access rule for both, as in accessoDaRichiesta. With
+   * the token refused here, whoever drew a board through the MCP could write
+   * and compile it but not read the compiled copper back to check it
+   * (sbb-dl-principale, 2026-11-11: "verified on the summary only").
+   */
+  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  const viewer = bearer ? await resolveApiToken(bearer) : await currentViewer();
+  const level = await projectAccess(projectId, viewer);
+  if (level === "none") return Response.json({ error: "forbidden" }, { status: 403 });
   /*
    * `editsOnly` is an invitation to bring the board up to date (the fast
    * update, which writes): only for who may edit. A viewer keeps the plain
    * "older than the files", as before.
    */
-  const canEdit = (await projectAccess(projectId, viewer)) === "edit";
+  const canEdit = level === "edit";
 
   /*
    * ?meta=1: solo i metadati della compilazione, senza circuitJson ne' summary.

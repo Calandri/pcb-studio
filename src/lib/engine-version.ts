@@ -16,4 +16,7 @@
 // beyond the 15 listed, the fab class of the project's own rules, dangling traces on vias, same-net copper in the
 // placement gap, pours re-poured from their declared outline (d689551); polygonal pads measured on their outline
 // (20a62ca)
-export const CHECKS_ENGINE_VERSION = 5;
+// 6 (2026-11-11): pill and turned-pill pads get their stencil opening (tscircuit writes none: the flash and a
+// six-pad part of sbb-dl-principale had no paste at all), and a part whose pads still have no opening is a
+// "paste_missing" failure. Older boards must be recompiled or rechecked before their Gerber can be exported
+export const CHECKS_ENGINE_VERSION = 6;

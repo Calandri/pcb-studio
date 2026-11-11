@@ -1,3 +1,4 @@
+import { leggiStencil, STENCIL_PATH } from "./solder-paste";
 import { boardBaseOf } from "./board-base";
 import { fetchDatasheetFromUrl } from "./datasheet";
 import { importComponentFromLcsc } from "./easyeda-import";
@@ -382,9 +383,34 @@ async function runTool(
           fileChanged: { path, content },
         };
       }
+      /*
+       * The stencil of the project (lib/solder-paste.ts): which pads get paste
+       * and with which openings. It could only be written from the browser, so
+       * a board drawn through the MCP came out with paste on a press-on
+       * programming footprint and none on the modem (tm-4l-r3 and
+       * sbb-dl-principale, 2026-11-10). Checked whole before it is written: a
+       * file with one bad opening is refused with the reason, not half-read at
+       * the next compile.
+       */
+      if (path === STENCIL_PATH) {
+        if (content.length > MAX_FILE_CHARS) {
+          return { result: { error: `File too large (${content.length} chars, max ${MAX_FILE_CHARS})` } };
+        }
+        const { stencil, avvisi } = leggiStencil({ [STENCIL_PATH]: content });
+        if (avvisi.length > 0) {
+          return { result: { error: `${STENCIL_PATH} non valido: ${avvisi.slice(0, 5).join("; ")}` } };
+        }
+        await writeProjectFile(projectId, path, content);
+        return {
+          result: { ok: true, path, chars: content.length, components: Object.keys(stencil.componenti).length },
+          fileChanged: { path, content },
+        };
+      }
       if (!FILE_PATH_RE.test(path)) {
         return {
-          result: { error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}) are allowed` },
+          result: {
+            error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}, ${STENCIL_PATH}) are allowed`,
+          },
         };
       }
       if (content.length > MAX_FILE_CHARS) {

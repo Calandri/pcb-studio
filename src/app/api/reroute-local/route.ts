@@ -81,7 +81,13 @@ export async function POST(req: Request): Promise<Response> {
      * statement (ifUnchangedSince); they used to be a read and then a write,
      * and a board saved between the two was lost.
      */
-    const salvata = await saveCompileCache(projectId, plan.hash, plan.board, summary, CHECKS_ENGINE_VERSION, {
+    /*
+     * Under the engine the board was made with, not today's: moving parts on a
+     * saved board does not redraw its stencil or its pours, and filing it as
+     * "checked with the current engine" would let a board of before the last
+     * engine change through to the export without the recheck it needs.
+     */
+    const salvata = await saveCompileCache(projectId, plan.hash, plan.board, summary, Math.min(cached.engineVersion, CHECKS_ENGINE_VERSION), {
       ifUnchangedSince: { filesHash: cached.filesHash, createdAt: cached.createdAt },
       base: plan.base,
     });

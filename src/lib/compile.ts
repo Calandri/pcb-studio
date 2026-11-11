@@ -122,7 +122,7 @@ import {
   unrouteSections,
   type SectionVariants,
 } from "./variants";
-import { leggiStencil, pastaDaiPad } from "./solder-paste";
+import { leggiStencil, padSenzaPasta, pastaDaiPad, STENCIL_PATH } from "./solder-paste";
 
 export interface UnroutedDetail {
   /** e.g. ".R1 > .pin1 to net.VCC" */
@@ -2256,6 +2256,19 @@ function summarize(
       message: mancano
         ? `il gruppo ${e.gruppo} non si puo' appaiare, alcune reti non si misurano: ${mancano}${elenco ? ` (misurate: ${elenco})` : ""}`
         : `il gruppo ${e.gruppo} vuole le reti lunghe uguale entro ${e.tolleranzaMm}mm e ne ballano ${e.scartoMm}mm (misurato sul rame di ogni rete, non sul percorso fra i due pin come fa Altium): ${elenco}`,
+    });
+  }
+  /*
+   * A part whose pads reach the stencil with no opening is a part that is not
+   * soldered: said here, by name, because nothing else on the board shows it
+   * (see padSenzaPasta in solder-paste.ts).
+   */
+  for (const p of padSenzaPasta(circuitJson, leggiStencil(sources).stencil)) {
+    prcViolations.push({
+      rule: "paste_missing",
+      severity: "fail",
+      message: `${p.nome}: ${p.pad} ${p.pad === 1 ? "piazzola" : "piazzole"} senza apertura nella lamina della pasta, il pezzo non si salda li'. Le aperture del suo datasheet vanno scritte in ${STENCIL_PATH}`,
+      ...(p.x !== null && p.y !== null ? { x: p.x, y: p.y } : {}),
     });
   }
   // multi-ruleset: the main DRC already covers the ruleset CHOSEN by the
