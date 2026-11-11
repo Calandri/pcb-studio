@@ -65,6 +65,7 @@ import {
   type EsitoRicolata,
 } from "./pours-recompute";
 import { descriviDistanze, distanzeDelleColate, type DistanzaInUso } from "./pours";
+import { colateCheSiToccano, colateTroppoVicine, type ColateCheSiToccano } from "./pour-pour";
 import { Profiler, routerPhases, type Profile } from "./profile";
 import { patchedLibraries } from "./engine-patches.mjs";
 
@@ -320,6 +321,13 @@ export interface CompileSummary {
    * (see motoreDaSalvare). Absent when no via is in that state.
    */
   planesOverVias?: PianiSuVie;
+  /**
+   * Two pours of different nets on one layer that touch, overlap or stand
+   * closer than the larger of their two clearances (see pour-pour.ts): a
+   * short, or copper the fab cannot keep apart. The export refuses the board
+   * while it is so. Absent when every pair keeps its distance.
+   */
+  poursTooClose?: ColateCheSiToccano;
   /**
    * The board was saved without its schematic, which was still being drawn:
    * the schematic checks below say nothing yet. Absent on a complete compile.
@@ -2297,6 +2305,26 @@ function summarize(
   // what does not depend on the rules is measured in this run and read by the ones of the fab classes below
   const misure: MisureDrc = {};
   const drcViolations = runDrcChecks(circuitJson, projectRules.rules, misure);
+  /*
+   * Pour against pour, which nothing measured: a ground pour overlapping a
+   * strip of another net went through with zero errors (see pour-pour.ts).
+   * Listed with the DRC, and said apart because the export refuses it.
+   */
+  const coppieDiColate = colateTroppoVicine(circuitJson, projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm);
+  const poursTooClose = colateCheSiToccano(circuitJson, projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm);
+  if (coppieDiColate.length > 0) {
+    const prima = coppieDiColate[0];
+    drcViolations.push({
+      rule: "pour_pour_clearance",
+      message:
+        `${coppieDiColate.length > 1 ? `${coppieDiColate.length}x pour_pour_clearance: ` : ""}` +
+        `${prima.a} (${prima.reteA}) <-> ${prima.b} (${prima.reteB}) on ${prima.layer}: ` +
+        `${prima.distanzaMm.toFixed(3)}mm < min ${prima.minimoMm}mm${prima.distanzaMm === 0 ? " (the pours touch: a short)" : ""}` +
+        `${coppieDiColate.length > 1 ? ` (and ${coppieDiColate.length - 1} more)` : ""}`,
+      points: coppieDiColate.slice(0, 200).map((c) => ({ x: c.x, y: c.y })),
+      count: coppieDiColate.length,
+    });
+  }
   const prcViolations = runPrcChecks(circuitJson);
   /*
    * LE LUNGHEZZE APPAIATE, quando il progetto ne porta i gruppi: un bus arriva
@@ -2510,6 +2538,7 @@ function summarize(
     footprintProvenance,
     targets,
     ...(planesOverVias ? { planesOverVias } : {}),
+    ...(poursTooClose ? { poursTooClose } : {}),
     ...(pourClearances ? { pourClearances } : {}),
     routingAttempts: 1,
     router: "default",

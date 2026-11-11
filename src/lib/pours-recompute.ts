@@ -9,6 +9,7 @@ import { pianiSopraLeVie } from "./drc";
 import { ENGINE_VIE_PASSANTI } from "./engine-version";
 import { parseLength } from "./pcb-route-model";
 import { DISTANZA_PROPRIA, distanzaPropria, planeServedPorts, readPours } from "./pours";
+import { getManifoldModuleSync } from "@tscircuit/manifold-2d";
 import { capsula, cerchio, poligonoCresciuto, rettangoloArrotondato, type Punto } from "./pour-geometry";
 import { abbracciaRamePropio, allargaAnello, formaPulita, senzaColliStretti, type RamePropio } from "./pour-necks";
 import { vieDichiarateParziali, vieSemprePassanti } from "./via-layers";
@@ -921,7 +922,7 @@ function contornoScheda(circuitJson: El[]): Punto[] {
   const w = num(board.width);
   const h = num(board.height);
   /*
-   * The drawn outline when it IS one — three real points at least. An empty
+   * The drawn outline when it IS one: three real points at least. An empty
    * `outline: []` (what an export with no custom shape leaves) used to win
    * over width/height and give no band at all, and a point with a missing
    * coordinate went to 0.
@@ -978,10 +979,7 @@ const PEZZI_DI_TSCIRCUIT: unique symbol = Symbol("pezzi di tscircuit");
  * it takes for the board (copper-pour-solver dist/index.js, processObstacles,
  * boardOutline), and along the hand-drawn diagonal of a ground pour, a vertex
  * every 0.13mm, the squares are a staircase. The re-pour kept all of it: it
- * can only take copper away from the outline it is given. And as tscircuit
- * pours while it builds, what it could see changed from run to run: the same
- * files compiled three times gave 5206, 5603 and 6962 mm2 of ground
- * (2026-11-11). From the declared outlines, twice is the same copper.
+ * can only take copper away from the outline it is given.
  *
  * A `<copperpour>` with no outline at all is poured by tscircuit over the
  * whole board, and so it starts again from the board outline here: the band
@@ -992,9 +990,9 @@ const PEZZI_DI_TSCIRCUIT: unique symbol = Symbol("pezzi di tscircuit");
  *
  * Every declared outline is poured whether or not tscircuit gave a piece for
  * it (a strip narrower than tscircuit's two margins comes back from tscircuit
- * as nothing, and what tscircuit gives back is not the same from one run to
- * the next), unless it lies entirely off the board: that is not a shape of
- * this board (a group moved somewhere else) and is left out.
+ * as nothing), unless it lies entirely off the board: that is not a shape of
+ * this board (a group moved somewhere else) and is left out. Which pours there
+ * are depends on the files alone, never on what tscircuit made of them.
  *
  * `files`: the project's files, or the text of main.tsx alone.
  */
@@ -1069,7 +1067,6 @@ export function conContorniDichiarati(circuitJson: El[], files: unknown): El[] {
       const anello = anelloDi(p);
       return anello.length >= 3 && anello.every((v) => dentro(v.x, v.y, outline) || dalBordo(v.x, v.y, outline) < 0.01);
     });
-    // never on whether tscircuit gave pieces: that changes from run to run
     if (!sullaScheda(outline)) return;
     metti(i, d.layer!, netId, outline, pezzi);
   });
@@ -1211,6 +1208,101 @@ const areaNetta = (forma: { outer_ring?: Anello; inner_rings?: Anello[] }): numb
  */
 export const eScheggia = (forma: { outer_ring?: Anello; inner_rings?: Anello[] }, clearanceMm: number): boolean =>
   areaNetta(forma) < clearanceMm * clearanceMm;
+
+/**
+ * THE ORDER THE POURS ARE WRITTEN IN, FOR THE GERBER.
+ *
+ * circuit-json-to-gerber writes the pours in the order they come, each as a
+ * dark region for its outline and CLEAR regions for its holes, and a clear
+ * region erases whatever was drawn before it there, other pours included. So
+ * a pour whose hole covers copper of another pour must be written before it:
+ * an island of another net sitting in a hole of a plane, and, on a board whose
+ * ground is declared as overlapping tiles and strips, a tile of the same net
+ * that reaches into the hole another tile leaves around a third net (measured
+ * on sbb-dl-principale, 2026-11-11: six such pairs on the top face).
+ *
+ * The biggest first, then every pour after the pours whose holes cover it. If
+ * two pours each cover the other with a hole, no order is right, and they keep
+ * the biggest-first one.
+ */
+export function ordinePerIlGerber<T extends Record<string, unknown>>(pours: T[]): T[] {
+  type Forma = { outer_ring?: Anello; inner_rings?: Anello[] };
+  const base = pours
+    .map((el, i) => ({ el, i, a: areaNetta((el.brep_shape ?? {}) as Forma) }))
+    .sort((x, y) => y.a - x.a || x.i - y.i)
+    .map((x) => x.el);
+  const m = getManifoldModuleSync();
+  if (!m || !base.some((el) => ((el.brep_shape as Forma | undefined)?.inner_rings ?? []).length > 0)) return base;
+  const daLiberare: Array<{ delete(): void }> = [];
+  const cs = <O extends { delete(): void }>(o: O): O => {
+    daLiberare.push(o);
+    return o;
+  };
+  try {
+    const anelliDi = (el: T): Punto[][] => {
+      const f = (el.brep_shape ?? {}) as Forma;
+      return [f.outer_ring, ...(f.inner_rings ?? [])]
+        .map((a) => a?.vertices ?? [])
+        .filter((v) => v.length >= 3);
+    };
+    const scatola = (v: Punto[]) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const p of v) {
+        x0 = Math.min(x0, p.x);
+        y0 = Math.min(y0, p.y);
+        x1 = Math.max(x1, p.x);
+        y1 = Math.max(y1, p.y);
+      }
+      return { x0, y0, x1, y1 };
+    };
+    const scatole = base.map((el) => scatola((el.brep_shape as Forma | undefined)?.outer_ring?.vertices ?? []));
+    const rame = new Map<number, ReturnType<typeof m.CrossSection.ofPolygons>>();
+    const rameDi = (k: number) => {
+      let r = rame.get(k);
+      if (!r) {
+        r = cs(m.CrossSection.ofPolygons(anelliDi(base[k]).map((a) => a.map((p) => [p.x, p.y] as [number, number])), "EvenOdd"));
+        rame.set(k, r);
+      }
+      return r;
+    };
+    /** dopo[k]: the pours that must be written before pour k */
+    const dopo = base.map(() => new Set<number>());
+    base.forEach((b, j) => {
+      for (const buco of ((b.brep_shape as Forma | undefined)?.inner_rings ?? []).map((r) => r.vertices ?? [])) {
+        if (buco.length < 3) continue;
+        const sb = scatola(buco);
+        let csBuco: ReturnType<typeof m.CrossSection.ofPolygons> | null = null;
+        base.forEach((a, k) => {
+          if (k === j || String(a.layer ?? "") !== String(b.layer ?? "")) return;
+          const sa = scatole[k];
+          if (sa.x1 < sb.x0 || sa.x0 > sb.x1 || sa.y1 < sb.y0 || sa.y0 > sb.y1) return;
+          csBuco ??= cs(m.CrossSection.ofPolygons([buco.map((p) => [p.x, p.y] as [number, number])], "EvenOdd"));
+          if (cs(rameDi(k).intersect(csBuco)).area() > 1e-6) dopo[k].add(j);
+        });
+      }
+    });
+    const scritto = new Array<boolean>(base.length).fill(false);
+    const out: T[] = [];
+    while (out.length < base.length) {
+      let scelto = base.findIndex((_, k) => !scritto[k] && [...dopo[k]].every((j) => scritto[j]));
+      // a cycle: the biggest-first order decides
+      if (scelto < 0) scelto = scritto.indexOf(false);
+      scritto[scelto] = true;
+      out.push(base[scelto]);
+    }
+    return out;
+  } catch {
+    return base;
+  } finally {
+    for (const o of daLiberare) {
+      try {
+        o.delete();
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}
 
 export async function ricolaPiani({
   circuitJson,
@@ -1475,19 +1567,7 @@ export async function ricolaPiani({
     if (tenuti === 0) sparite.push(radice || String(pour.pcb_copper_pour_id ?? ""));
   }
 
-  /*
-   * The biggest first. A Gerber draws a pour's holes in clear polarity, which
-   * erases whatever was drawn before it there, other pours included
-   * (circuit-json-to-gerber writes the pours in the order they come): an
-   * island of another net sitting in a hole of a plane must come after the
-   * plane, and it is always the smaller of the two. The order the files
-   * declare them in is not that order (a script writes the strips before the
-   * planes).
-   */
-  const ordinate = nuovi
-    .map((el, i) => ({ el, i, a: areaNetta((el.brep_shape ?? {}) as { outer_ring?: Anello; inner_rings?: Anello[] }) }))
-    .sort((x, y) => y.a - x.a || x.i - y.i)
-    .map((x) => x.el);
+  const ordinate = ordinePerIlGerber(nuovi);
 
   return {
     circuitJson: [...circuitJson.filter((el) => el.type !== "pcb_copper_pour"), ...ordinate],

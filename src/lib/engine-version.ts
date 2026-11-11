@@ -36,15 +36,17 @@
 // 9 (2026-11-11): the pours are drawn like a CAD's. Every pour starts again from the outline its file declares, in any
 // file the board imports (sbb-dl-principale keeps its 296 in righe_2/3/4 and none was put back: each was re-poured from
 // tscircuit's own pour, 0.19 mm inside the outline and cut by a square at every vertex, which made the staircases, the
-// lumps at the bends and the lobes around the vias, and was not the same from one run to the next); a `<copperpour>`
-// with no outline starts from the board's. Every obstacle is grown by the clearance with round corners and arcs within 2
+// lumps at the bends and the lobes around the vias); a `<copperpour>` with no outline starts from the board's. Every obstacle is grown by the clearance with round corners and arcs within 2
 // micrometres, outside the true curve (the solver's 32-sided circles stood up to 6 micrometres inside the clearance);
 // the edge band follows the outline with no square on its vertices; own pads are held by their real shape (a pill held
 // as its bounding box brought the TM board's NetC1_1 strip within 0.019 mm of the ground plane); the opening that takes
 // out the necks uses as many segments as its radius needs, keeps the declared corners and is idempotent; every ring is
-// cleaned of what it does not need, only ever taking copper away; the pours are written biggest first. Every board's
+// cleaned of what it does not need, only ever taking copper away; the pours are written so that no hole of one, drawn
+// clear in the Gerber, erases copper of another written before it. Every board's
 // pours change shape: compile it again ("Aggiorna"). A recheck of an older board takes out necks and cleans the rings,
-// it does not pour again from the declared outlines
+// it does not pour again from the declared outlines. And two pours of different nets on one layer that touch or stand
+// closer than the larger of their two clearances are a "pour_pour_clearance" violation, and the export refuses the
+// board (nothing measured pour against pour: the server's board of 17:06 had the ground pour over the USB shield)
 export const CHECKS_ENGINE_VERSION = 9;
 
 /**
@@ -99,9 +101,29 @@ export function motoreDaSalvare(summary: unknown, precedente: number = CHECKS_EN
  */
 export function nonCertificata(summary: unknown): string | null {
   const p = pianiSuVieDi(summary);
-  if (!p) return null;
-  return (
-    `${p.detail}. La scheda NON e' certificata per l'export finche' un piano copre una via: ` +
-    `premi Aggiorna o Ricontrolla per rifare le colate, e se il piano resta sulla via sposta la via o il piano`
-  );
+  const c = colateVicineDi(summary);
+  const perche: string[] = [];
+  if (p) {
+    perche.push(
+      `${p.detail}. La scheda NON e' certificata per l'export finche' un piano copre una via: ` +
+        `premi Aggiorna o Ricontrolla per rifare le colate, e se il piano resta sulla via sposta la via o il piano`,
+    );
+  }
+  if (c) {
+    perche.push(
+      `${c.detail}. La scheda NON e' certificata per l'export finche' due colate di reti diverse si toccano ` +
+        `o stanno piu' vicine della loro distanza: correggi il contorno di una delle due (o la sua distanza) e premi Aggiorna`,
+    );
+  }
+  return perche.length > 0 ? perche.join(". ") : null;
 }
+
+/**
+ * Two pours of different nets too close on one layer (CompileSummary.poursTooClose,
+ * measured by pour-pour.ts). The export measures the board itself and refuses
+ * it, like a plane over a via; the summary says why with the words above.
+ */
+const colateVicineDi = (summary: unknown): { count: number; detail: string } | null => {
+  const c = (summary as { poursTooClose?: { count?: unknown; detail?: unknown } } | null | undefined)?.poursTooClose;
+  return c && typeof c.count === "number" && c.count > 0 ? { count: c.count, detail: String(c.detail ?? "") } : null;
+};

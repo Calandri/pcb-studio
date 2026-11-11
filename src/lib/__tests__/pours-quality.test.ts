@@ -4,7 +4,7 @@ import { compileProject } from "@/lib/compile";
 import { DESIGN_RULES_PATH } from "@/lib/design-rules";
 import { anelloPulito, capsula, cerchio, ERRORE_CORDA_MM, rettangoloArrotondato } from "@/lib/pour-geometry";
 import { abbracciaRamePropio, colateSenzaColli } from "@/lib/pour-necks";
-import { bandaDelBordo, conContorniDichiarati, fileDellaScheda, ricolaPiani } from "@/lib/pours-recompute";
+import { bandaDelBordo, conContorniDichiarati, fileDellaScheda, ordinePerIlGerber, ricolaPiani } from "@/lib/pours-recompute";
 
 /*
  * The pours of sbb-dl-principale looked rough in the viewer (2026-11-11):
@@ -284,4 +284,22 @@ describe("necks are still taken out, declared corners are kept", () => {
     // the neck is gone: nothing of the copper between x 2.05 and 2.95
     for (const p of pezzi) expect(dentro(2.5, 1, p.brep_shape.outer_ring.vertices)).toBe(false);
   }, 60_000);
+});
+
+describe("the order the pours are written in, for the Gerber", () => {
+  it("a pour whose hole covers copper of another pour comes before it, whatever their size", () => {
+    const pour = (id: string, net: string, esterno: P[], buchi: P[][] = []): El => ({
+      type: "pcb_copper_pour", pcb_copper_pour_id: id, source_net_id: net, layer: "top",
+      brep_shape: { outer_ring: { vertices: esterno }, inner_rings: buchi.map((v) => ({ vertices: v })) },
+    });
+    // a small ground tile with a hole around another net, and a bigger ground tile reaching into that hole
+    const conBuco = pour("piccola", "gnd", rett(0, 0, 4, 4), [rett(1, 0, 1, 1)]);
+    const grande = pour("grande", "gnd", rett(3, 0, 6, 6));
+    // an island of another net in the hole of a plane
+    const piano = pour("piano", "gnd", rett(20, 0, 10, 10), [rett(20, 0, 2, 2)]);
+    const isola = pour("isola", "sig", rett(20, 0, 1, 1));
+    const ids = ordinePerIlGerber([isola, grande, conBuco, piano]).map((e) => e.pcb_copper_pour_id);
+    expect(ids.indexOf("piccola")).toBeLessThan(ids.indexOf("grande"));
+    expect(ids.indexOf("piano")).toBeLessThan(ids.indexOf("isola"));
+  });
 });

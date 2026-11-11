@@ -13,10 +13,12 @@ import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
 import { pianiSopraLeVie } from "@/lib/drc";
+import { colateCheSiToccano } from "@/lib/pour-pour";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION, nonCertificata } from "@/lib/engine-version";
 import { compileGeometryOnly } from "@/lib/compile";
+import { resolveDesignRules } from "@/lib/design-rules";
 import { applyManualEditsToFsMap } from "@/lib/manual-edits";
 import {
   filesHash,
@@ -37,6 +39,12 @@ type DrillCircuitJson = Parameters<typeof convertSoupToExcellonDrillCommands>[0]
 type SchematicCircuitJson = Parameters<typeof convertCircuitJsonToSchematicSvg>[0];
 
 const KINDS = new Set(["gerber", "bom", "bom-json", "pnp", "schematic"]);
+
+/** the project's pour clearance: what a pour that declares none keeps */
+const regolaDelleColate = (fsMap: Record<string, string>): number => {
+  const r = resolveDesignRules(fsMap).rules;
+  return r.pourClearanceMm ?? r.minClearanceMm;
+};
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -86,9 +94,18 @@ export async function GET(req: Request): Promise<Response> {
    * board about to be exported is measured here, itself: the summary saved
    * with it is not asked.
    */
+  /*
+   * Nor one where two pours of different nets touch or stand closer than
+   * their distance: nothing measured pour against pour, and a ground pour over
+   * a strip of the USB shield went to the export with zero errors (see
+   * pour-pour.ts). Measured here too, on the board about to go.
+   */
   const coperta =
     fabrication && cache && hasBoard(cache.circuitJson)
-      ? nonCertificata({ planesOverVias: pianiSopraLeVie(cache.circuitJson as never) })
+      ? nonCertificata({
+          planesOverVias: pianiSopraLeVie(cache.circuitJson as never),
+          poursTooClose: colateCheSiToccano(cache.circuitJson as never, regolaDelleColate(fsMap)),
+        })
       : null;
   if (fabrication && (!cacheFresh || coperta)) {
     /*

@@ -313,6 +313,32 @@ describe("the routes that save a board from the cache leave only through vias", 
   }, 120_000);
 
   /*
+   * And a board whose pours of two different nets touch (sbb-dl-principale,
+   * 17:00-17:37 of 2026-11-11: the ground pour over the USB shield strips,
+   * zero errors) is refused the same way, whatever engine it was filed under.
+   */
+  it("export: a board where two pours of different nets touch is refused with the reason", async () => {
+    const gerber = () => esporta(new Request("http://x/api/export?projectId=p&kind=gerber"));
+    await recheck(post({ projectId: "p" }));
+    const [buona] = db.saves;
+    db.row = { ...riga(buona.circuitJson, buona.engine), summary: buona.summary };
+    expect((await gerber()).status).toBe(200);
+    const gnd = (buona.circuitJson as Array<Record<string, unknown>>).find((e) => e.type === "source_net" && e.name === "GND")!;
+    const altra = { type: "source_net", source_net_id: "n_altra", name: "ALTRA" };
+    const quadro = (x0: number, x1: number) => ({ outer_ring: { vertices: [{ x: x0, y: 3 }, { x: x1, y: 3 }, { x: x1, y: 5 }, { x: x0, y: 5 }] }, inner_rings: [] });
+    const toccano = [
+      ...buona.circuitJson,
+      altra,
+      { type: "pcb_copper_pour", pcb_copper_pour_id: "a", source_net_id: gnd.source_net_id, layer: "top", shape: "brep", brep_shape: quadro(-8, 0.05) },
+      { type: "pcb_copper_pour", pcb_copper_pour_id: "b", source_net_id: altra.source_net_id, layer: "top", shape: "brep", brep_shape: quadro(0, 8) },
+    ];
+    db.row = { ...riga(toccano, CHECKS_ENGINE_VERSION), summary: buona.summary };
+    const rifiuto = await gerber();
+    expect(rifiuto.status).toBe(409);
+    expect(((await rifiuto.json()) as { error: string }).error).toMatch(/colate di reti diverse troppo vicine \(1 si toccano: corto\).* NON e' certificata per l'export/);
+  }, 120_000);
+
+  /*
    * The fast update and a trace edit save the board under the engine it had: a
    * via drawn by hand through a plane is on a board of today's engine until the
    * planes are poured again. The export measures the board it is handed.
