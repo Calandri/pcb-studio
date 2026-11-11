@@ -162,6 +162,24 @@ describe("una compilazione si salva solo se e' ancora la scheda piu' nuova", () 
     expect(db.saves).toHaveLength(0);
   });
 
+  it("una scheda chiusa senza schematico non copre quella completa degli stessi file, ma copre una senza", async () => {
+    // the schematic did not fit in the time left (see stimaDelloSchematico): the board of these files with it stays
+    const senza = summary({ schematicPending: "lo schematico non e' partito: restavano 120 s" });
+    const pezzi = [{ type: "source_component", source_component_id: "s1", name: "R1" }, { type: "pcb_board" }];
+    db.row = { filesHash: filesHash(A), circuitJson: ours, summary: {}, createdAt: before, engineVersion: 0 };
+    const r = await saveFinishedCompile("p", filesHash(A), pezzi, senza, fresh(A));
+    expect(r.saved).toBe(false);
+    expect(r.superseded).toBe(true);
+    expect(db.saves).toHaveLength(0);
+    // the row saved is itself without schematic (the early board): the outcome goes over it
+    db.row = { filesHash: filesHash(A), circuitJson: pezzi, summary: { schematicPending: "in calcolo" }, createdAt: before, engineVersion: 0 };
+    expect((await saveFinishedCompile("p", filesHash(A), pezzi, senza, fresh(A))).saved).toBe(true);
+    // a complete board of other files: the outcome goes over it too
+    db.row = { filesHash: "altri", circuitJson: ours, summary: {}, createdAt: before, engineVersion: 0 };
+    expect((await saveFinishedCompile("p", filesHash(A), pezzi, senza, fresh(A))).saved).toBe(true);
+    expect(db.saves).toHaveLength(2);
+  });
+
   it("anche la scheda anticipata non copre quella dei file di adesso", async () => {
     db.meta = { filesHash: filesHash(B), createdAt: after, engineVersion: 0 };
     const r = await earlyBoardSaver("p", filesHash(A), null, fresh(B))({ circuitJson: ours, summary: summary() });

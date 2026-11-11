@@ -1,4 +1,5 @@
 import { CHECKS_ENGINE_VERSION, nonCertificata, type ColateDiPrima, type PianiSuVie } from "./engine-version";
+import { SCHEMATICO_NON_PARTITO } from "./compile-run";
 import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
@@ -364,6 +365,14 @@ export interface CompileSummary {
    * compile = same schematic: it is taken from here instead of drawn again.
    */
   schematicKey?: string;
+  /**
+   * What drawing the schematic cost on this board the last time it was drawn
+   * (ms): the tscircuit compile with the schematic minus the one without.
+   * Carried from compile to compile, also on a board saved without its
+   * schematic, so the next compile knows whether the schematic fits in the
+   * time it has (see stimaDelloSchematico).
+   */
+  schematicCostMs?: number;
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{
     section: string;
@@ -797,6 +806,8 @@ export async function compileProject(
    * see innestaSchematico.
    */
   let primaPassata: { pcbOnly: CircuitElement[]; scheda: SchedaCalcolata } | null = null;
+  /** what drawing the schematic cost the last time it was measured, carried to the next compile */
+  const costoDiPrima = costoDelloSchematico(opts.schematicFrom?.summary);
   if (opts.route === false && (opts.onBoard || schemaDiPrima)) {
     say({
       step: "Leggo la scheda",
@@ -804,6 +815,7 @@ export async function compileProject(
       progress: 0.05,
     });
     let pcbOnly: CircuitElement[] | null = null;
+    const inizioPcb = Date.now();
     try {
       pcbOnly = await profiler.run("scheda senza schematico (tscircuit)", () =>
         compileGeometryOnly(fsMap, { schematic: false }),
@@ -811,11 +823,35 @@ export async function compileProject(
     } catch {
       pcbOnly = null;
     }
+    const pcbMs = Date.now() - inizioPcb;
     if (pcbOnly && schemaDiPrima) innestata = graftSchematic(pcbOnly, schemaDiPrima);
     if (pcbOnly && !innestata && opts.onBoard && pcbOnly.some((el) => el.type === "pcb_board")) {
       const early = await profiler.run("rame, colate e controlli della scheda senza schematico", () =>
         boardWithoutRouting(pcbOnly as CircuitElement[]),
       );
+      if (costoDiPrima !== null) early.summary.schematicCostMs = costoDiPrima;
+      /*
+       * WHETHER THE SCHEMATIC FITS IN THE TIME LEFT. The tscircuit compile with
+       * the schematic reads the whole board again and then draws: it is CPU for
+       * minutes that nothing can interrupt, so a compile that starts it without
+       * the time ends when the platform kills the function, with no word and no
+       * outcome in the log (sbb-dl-principale, 11/11/2026: every compile
+       * "running" until the 800 s, then interrupted at 900, the schematic gone
+       * for good). When it does not fit it does not start: the board is the one
+       * just computed, saved as the outcome, and says why it has no schematic.
+       */
+      const stima = stimaDelloSchematico(costoDiPrima, pcbMs);
+      const restano = timeLeft();
+      if (restano < stima.ms) {
+        const motivo =
+          `${SCHEMATICO_NON_PARTITO}: alla fine della scheda restavano ${Math.round(restano / 1000)} s ` +
+          `e lo schematico ne chiede circa ${Math.round(stima.ms / 1000)} (${stima.perche})`;
+        early.summary.schematicPending = `${motivo}. La scheda e' salvata senza schematico e senza i suoi controlli`;
+        early.summary.message = `${early.summary.message} SCHEMATICO NON CALCOLATO: ${motivo}.`;
+        early.summary.profile = { ...profiler.result(), patches: enginePatches() };
+        console.log(`[compile] ${motivo}; scheda pronta in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+        return { summary: early.summary, circuitJson: early.circuitJson };
+      }
       primaPassata = { pcbOnly, scheda: early.scheda };
       early.summary.schematicPending =
         "scheda salvata prima dello schematico: lo schematico e i suoi controlli arrivano a fine compilazione";
@@ -987,6 +1023,9 @@ export async function compileProject(
      * split nobody can tell the board from the schematic.
      */
     summary.profile = { ...profiler.result(), patches: enginePatches() };
+    // what the schematic cost now, or the last measure when it was not drawn: the next compile decides on it
+    const costoOra = innestata ? costoDiPrima : costoDelloSchematico(summary);
+    if (costoOra !== null) summary.schematicCostMs = costoOra;
     // what this schematic was drawn from: the next compile with the same key reuses it
     if (circuitJson.some((e) => e.type === "schematic_component")) summary.schematicKey = chiaveSchema;
     if (innestata) summary.message = `${summary.message} (schematico invariato, riusato)`;
@@ -1836,6 +1875,65 @@ export function innestaSchematico(
     else out.push(scheda[k++]);
   }
   return [...out, ...scheda.slice(ultimo)];
+}
+
+/** the name of the tscircuit compile with the schematic in the profile */
+const SPAN_CON_SCHEMATICO = "scheda con schematico (tscircuit)";
+const SPAN_SENZA_SCHEMATICO = "scheda senza schematico (tscircuit)";
+
+/**
+ * What drawing the schematic cost, read from a saved summary: its own profile
+ * when that compile drew it (the compile with the schematic minus the one
+ * without, or the whole compile with the schematic when there was no early
+ * board, which is more), otherwise the measure it carries (schematicCostMs).
+ * Null when nothing ever measured it.
+ */
+export function costoDelloSchematico(summary: unknown): number | null {
+  const s = summary as { profile?: { spans?: Array<{ name?: unknown; ms?: unknown }> }; schematicCostMs?: unknown } | null | undefined;
+  const ms = (nome: string): number | null => {
+    const span = s?.profile?.spans?.find((x) => x?.name === nome);
+    return typeof span?.ms === "number" && Number.isFinite(span.ms) ? span.ms : null;
+  };
+  const con = ms(SPAN_CON_SCHEMATICO);
+  if (con !== null) {
+    const senza = ms(SPAN_SENZA_SCHEMATICO);
+    return senza !== null ? Math.max(0, con - senza) : con;
+  }
+  return typeof s?.schematicCostMs === "number" && Number.isFinite(s.schematicCostMs) ? s.schematicCostMs : null;
+}
+
+/**
+ * What drawing the schematic is assumed to cost on a board where nothing has
+ * measured it: more than the 75-146 s it took on Vercel on sbb-dl-principale
+ * (156 parts, 682 connections, 09-11/11/2026), less than what would keep that
+ * board from ever getting one after its ~300 s board pass.
+ */
+export const SCHEMATICO_SENZA_MISURA_MS = 240_000;
+/**
+ * The measure of the last schematic, with room: on Vercel the same board
+ * measured 82 and 146 s on the same day, and locally 182 s in a fresh process
+ * and much less when drawn again in the same one (sbb-dl-principale, 11/11/2026).
+ */
+export const MARGINE_SULLA_MISURA = 1.5;
+/** after the drawing: the schematic put on the board, its checks, the final save */
+export const DOPO_LO_SCHEMATICO_MS = 30_000;
+
+/**
+ * How long the rest of a compile needs once the board is saved: tscircuit
+ * reads the whole board again (`pcbMs`, measured on this very compile), then
+ * draws the schematic (the last measure with its margin, or the prudent
+ * figure), then the schematic goes on the board and is checked and saved.
+ */
+export function stimaDelloSchematico(ultimoMs: number | null, pcbMs: number): { ms: number; perche: string } {
+  const disegno = ultimoMs !== null ? Math.round(ultimoMs * MARGINE_SULLA_MISURA) : SCHEMATICO_SENZA_MISURA_MS;
+  const s = (ms: number) => Math.round(ms / 1000);
+  return {
+    ms: pcbMs + disegno + DOPO_LO_SCHEMATICO_MS,
+    perche:
+      ultimoMs !== null
+        ? `l'ultimo schematico di questa scheda e' costato ${s(ultimoMs)} s, la rilettura della scheda ${s(pcbMs)} s`
+        : `nessuno schematico misurato su questa scheda: ne conto ${s(SCHEMATICO_SENZA_MISURA_MS)} s, piu' ${s(pcbMs)} s per rileggere la scheda`,
+  };
 }
 
 /**

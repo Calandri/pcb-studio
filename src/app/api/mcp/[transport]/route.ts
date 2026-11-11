@@ -5,6 +5,7 @@ import { COMPILE_START, logActivity, recordTool } from "@/lib/activity-store";
 import { executeTool, withLibrary } from "@/lib/agent-tools";
 import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
+import { compileBudgetMs, rigaDiFine } from "@/lib/compile-run";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { rilasciaPezzi } from "@/lib/manual-edits-store";
 import { getAgentKeys } from "@/lib/llm-keys";
@@ -173,12 +174,12 @@ function finishInBackground(projectId: string, rest: Promise<unknown>): void {
   const finish = async () => {
     const started = Date.now();
     try {
-      const final = (await rest) as { message?: unknown } | undefined;
+      const final = (await rest) as { message?: unknown; schematicPending?: unknown } | undefined;
       await logActivity(projectId, {
         actor: "claude",
         tool: "compile",
         phase: "fine",
-        detail: `schematico salvato: ${String(final?.message ?? "").slice(0, 280)}`,
+        detail: typeof final?.schematicPending === "string" ? rigaDiFine(final) : `schematico salvato: ${String(final?.message ?? "").slice(0, 280)}`,
         ms: Date.now() - started,
       });
     } catch (err) {
@@ -321,6 +322,8 @@ function buildHandler(viewer: Viewer) {
          * which only makes sense once the work is finished. The open page
          * notices on its own at the periodic check.
          */
+        // the function's clock, as near as the tool sees it: the compile is told how much is left (see compileBudgetMs)
+        const requestStartedAt = Date.now();
         // the files are read now: a board saved after this moment may be of newer ones (see compile-save)
         const fresh = { startedAt: Date.now(), filesNow: async () => withLibrary(await getProject(projectId)) };
         const fsMap = await withLibrary(await getProject(projectId));
@@ -338,6 +341,8 @@ function buildHandler(viewer: Viewer) {
         const answer = await answerAtEarlyBoard<unknown, unknown>(async (answerEarly) => {
           const { summary, circuitJson } = await compileProject(fsMap, {
             keepCopperFrom: copperToKeep(fsMap, inCache),
+            // what is left of the function: the schematic does not start if it cannot end (see stimaDelloSchematico)
+            budgetMs: compileBudgetMs(requestStartedAt),
             // the schematic of the last board, reused when only PCB positions changed
             schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
             /*

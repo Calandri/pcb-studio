@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMPILE_MAX_MS, COMPILE_START, compileRunFrom } from "@/lib/compile-run";
+import { COMPILE_MAX_MS, COMPILE_START, FUNCTION_MAX_MS, compileBudgetMs, compileRunFrom, rigaDiFine } from "@/lib/compile-run";
 
 /*
  * The empty "Sbroglio" tab of fototrappola-frontale: no saved board, and
@@ -50,5 +50,25 @@ describe("compilazione in corso dal registro", () => {
     );
     expect(run?.state).toBe("running");
     expect(run?.startedAt).toBe(at(2));
+  });
+});
+
+/*
+ * sbb-dl-principale, 11/11/2026: the compile believed it had 9 minutes whatever
+ * the function had left, started the schematic at ~300 s and was killed at 800
+ * with no outcome. It is told what is left, and when it ends without the
+ * schematic the closing line of the log says so first.
+ */
+describe("il tempo che resta alla funzione e la riga di fine", () => {
+  it("una compilazione puo' spendere la vita della funzione meno il gia' passato e il margine del salvataggio", () => {
+    expect(compileBudgetMs(1_000_000, 1_010_000)).toBe(FUNCTION_MAX_MS - 10_000 - 30_000);
+  });
+
+  it("una scheda senza schematico lo dice per prima cosa, anche quando il messaggio e' lungo", () => {
+    const lungo = `Compile OK: ${"x".repeat(400)}`;
+    expect(rigaDiFine({ message: lungo })).toBe(lungo.slice(0, 300));
+    const riga = rigaDiFine({ message: lungo, schematicPending: "lo schematico non e' partito: restavano 120 s" });
+    expect(riga).toMatch(/^senza schematico: lo schematico non e' partito: restavano 120 s\. Compile OK/);
+    expect(riga.length).toBe(300);
   });
 });

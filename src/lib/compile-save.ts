@@ -123,6 +123,24 @@ export async function saveFinishedCompile(
 ): Promise<SaveCompileResult & { grafted?: boolean; superseded?: boolean }> {
   const v = await verdict(projectId, hash, fresh.startedAt, fresh.filesNow);
   if (v.kind === "save") {
+    /*
+     * A compile that ended without the schematic (it did not fit in the time
+     * left, see stimaDelloSchematico) does not replace the complete board of
+     * these same files: it would only lose a schematic that is right. The
+     * same rule as the early save (earlyBoardSaver).
+     */
+    if (summary.schematicPending) {
+      const row = await getCompileCache(projectId).catch(() => null);
+      if (
+        row &&
+        row.filesHash === hash &&
+        hasBoard(row.circuitJson) &&
+        !schematicMissing(row.circuitJson) &&
+        !(row.summary as { schematicPending?: unknown } | null)?.schematicPending
+      ) {
+        return { saved: false, keptPrevious: true, superseded: true, reason: "la scheda salvata e' gia' quella completa di questi file, con lo schematico: la tengo" };
+      }
+    }
     return saveCompileCache(projectId, hash, circuitJson, summary, motoreDaSalvare(summary), {
       ...(v.ifUnchangedSince ? { ifUnchangedSince: v.ifUnchangedSince } : {}),
       ...(base ? { base } : {}),

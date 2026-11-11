@@ -7,7 +7,7 @@ import { descriviPezzo } from "@/lib/part-description";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildBoardReport, schematicMissing, type BoardReport } from "@/lib/board-report";
-import type { CompileRun } from "@/lib/compile-run";
+import { SCHEMATICO_NON_PARTITO, type CompileRun } from "@/lib/compile-run";
 import type { ConflittoSerigrafia } from "@/lib/silkscreen-clearance";
 import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
@@ -1506,6 +1506,10 @@ export function Studio({
     () => Boolean((summary as { schematicPending?: string } | null)?.schematicPending) || schematicMissing(circuitJson),
     [summary, circuitJson],
   );
+  /** the compile did not start the schematic, it would not have ended in time: its reason (see stimaDelloSchematico) */
+  const pendingDelRiepilogo = (summary as { schematicPending?: unknown } | null)?.schematicPending;
+  const schematicoNonPartito =
+    typeof pendingDelRiepilogo === "string" && pendingDelRiepilogo.startsWith(SCHEMATICO_NON_PARTITO) ? pendingDelRiepilogo : null;
 
   return (
     <div className="grid h-dvh grid-rows-[64px_minmax(0,1fr)_60px] overflow-hidden bg-canvas text-text">
@@ -1609,7 +1613,10 @@ export function Studio({
               <span className="text-[11.5px] leading-snug text-[#E8C97A]">
                 {recompiling || compileRun?.state === "running"
                   ? "Schematico in calcolo: la scheda e' gia' salvata, lo schematico compare quando la compilazione finisce."
-                  : "Lo schematico di questa scheda non e' stato calcolato: l'ultima compilazione si e' fermata dopo aver salvato la scheda. Premi Ricompila per riprovare."}
+                  : schematicoNonPartito
+                    ? // the compile chose not to start it, and says why: "Ricompila" would choose the same
+                      `Lo schematico di questa scheda non e' stato calcolato: ${schematicoNonPartito}.`
+                    : "Lo schematico di questa scheda non e' stato calcolato: l'ultima compilazione si e' fermata dopo aver salvato la scheda. Premi Ricompila per riprovare."}
               </span>
             </div>
           )}

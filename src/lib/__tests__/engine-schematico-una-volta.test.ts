@@ -23,10 +23,14 @@ vi.mock("@/lib/pours-recompute", async () => {
 
 import {
   compileProject,
+  costoDelloSchematico,
+  DOPO_LO_SCHEMATICO_MS,
   graftSchematic,
   innestaSchematico,
+  SCHEMATICO_SENZA_MISURA_MS,
   schematicKeyOf,
   soloCioCheLeggeLoSchematico,
+  stimaDelloSchematico,
   type CompileSummary,
 } from "@/lib/compile";
 
@@ -56,7 +60,9 @@ const schematico = (cj: unknown[]) => (cj as El[]).filter((e) => e.type.startsWi
 const spans = (s: CompileSummary) => s.profile.spans.map((x) => x.name);
 /** what the checks say, without the timings */
 const controlli = (s: CompileSummary) => {
-  const { profile: _profile, ...resto } = s;
+  const resto: Partial<CompileSummary> = { ...s };
+  delete resto.profile;
+  delete resto.schematicCostMs;
   return norm(resto);
 };
 
@@ -86,6 +92,7 @@ describe("colate e controlli una volta sola per compilazione", () => {
       ]),
     );
     expect(spans(r.summary)).not.toContain("rame, colate e controlli");
+    expect(r.summary.schematicCostMs).toBeGreaterThanOrEqual(0);
   }, 180_000);
 
   it("rame, colate, pasta e controlli sono quelli di una compilazione in un passo solo", async () => {
@@ -124,6 +131,61 @@ describe("colate e controlli una volta sola per compilazione", () => {
     const due = [...pcb, { type: "source_no_ground_pin_defined_warning", message: "<chip#12(.U1)> no ground" }];
     const lettura = [src[0], sch, { ...due[2], message: "<chip#40(.U1)> no ground" }, pcb[1]];
     expect(innestaSchematico(due, due, lettura)).not.toBeNull();
+  });
+});
+
+describe("lo schematico parte solo se fa in tempo", () => {
+  it("senza il tempo per lo schematico la compilazione chiude con la scheda e dice perche'", async () => {
+    let chiamata = false;
+    const steps: string[] = [];
+    const r = await compileProject(
+      { "main.tsx": SCHEDA },
+      {
+        budgetMs: 60_000,
+        // the last schematic of this board cost ten minutes
+        schematicFrom: { circuitJson: [], summary: { schematicCostMs: 600_000 } },
+        onBoard: async () => void (chiamata = true),
+        onProgress: (p) => steps.push(p.step),
+      },
+    );
+    expect(schematico(r.circuitJson)).toHaveLength(0);
+    expect(diTipo(r.circuitJson, "pcb_copper_pour").length).toBeGreaterThan(0);
+    expect(r.summary.schematicPending).toMatch(/non e' partito/);
+    expect(r.summary.schematicPending).toMatch(/600 s/);
+    expect(r.summary.message).toMatch(/SCHEMATICO NON CALCOLATO/);
+    expect(r.summary.schematicKey).toBeUndefined();
+    // the measure stays for the next compile
+    expect(r.summary.schematicCostMs).toBe(600_000);
+    expect(spans(r.summary)).not.toContain("scheda con schematico (tscircuit)");
+    expect(steps).not.toContain("Disegno lo schematico");
+    // nothing is said "saved early, schematic on its way": the board is the outcome
+    expect(chiamata).toBe(false);
+  }, 180_000);
+
+  it("con il tempo che basta lo schematico si disegna", async () => {
+    const r = await compileProject(
+      { "main.tsx": SCHEDA },
+      { budgetMs: 600_000, schematicFrom: { circuitJson: [], summary: { schematicCostMs: 1_000 } }, onBoard: async () => {} },
+    );
+    expect(diTipo(r.circuitJson, "schematic_component")).toHaveLength(2);
+    expect(r.summary.schematicPending).toBeUndefined();
+  }, 180_000);
+
+  it("la stima usa l'ultima misura con il suo margine, o la cifra prudente quando non c'e'", () => {
+    expect(stimaDelloSchematico(null, 110_000).ms).toBe(110_000 + SCHEMATICO_SENZA_MISURA_MS + DOPO_LO_SCHEMATICO_MS);
+    expect(stimaDelloSchematico(150_000, 110_000).ms).toBe(110_000 + 225_000 + DOPO_LO_SCHEMATICO_MS);
+    expect(stimaDelloSchematico(null, 110_000).perche).toMatch(/nessuno schematico misurato/);
+  });
+
+  it("il costo dello schematico si legge dal profilo salvato, o dalla misura che il riepilogo si porta dietro", () => {
+    const profilo = (spans: Array<[string, number]>) => ({ profile: { spans: spans.map(([name, ms]) => ({ name, ms, depth: 0 })), totalMs: 0 } });
+    expect(costoDelloSchematico(profilo([["scheda senza schematico (tscircuit)", 110_000], ["scheda con schematico (tscircuit)", 245_000]]))).toBe(135_000);
+    // no early board: the whole compile with the schematic, which is more
+    expect(costoDelloSchematico(profilo([["scheda con schematico (tscircuit)", 160_000]]))).toBe(160_000);
+    // a board saved without its schematic: the measure it carries
+    expect(costoDelloSchematico({ ...profilo([["scheda senza schematico (tscircuit)", 110_000]]), schematicCostMs: 90_000 })).toBe(90_000);
+    expect(costoDelloSchematico(profilo([["scheda senza schematico (tscircuit)", 110_000]]))).toBeNull();
+    expect(costoDelloSchematico(null)).toBeNull();
   });
 });
 

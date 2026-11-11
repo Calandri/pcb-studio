@@ -3,6 +3,7 @@ import { accessoDaRichiesta } from "@/lib/acl";
 import { COMPILE_START, logActivity } from "@/lib/activity-store";
 import { withLibrary } from "@/lib/agent-tools";
 import { compileProject, type CompileProgress } from "@/lib/compile";
+import { compileBudgetMs, rigaDiFine } from "@/lib/compile-run";
 import {
   filesHash,
   getCompileCache,
@@ -28,6 +29,8 @@ export const maxDuration = 800;
  * then replies is indistinguishable from a crashed one.
  */
 export async function POST(req: Request): Promise<Response> {
+  // the function's clock starts here: the compile is told how much of it is left (see compileBudgetMs)
+  const requestStartedAt = Date.now();
   let projectId = "default";
   /*
    * It never lays copper: "recompile" means showing the real board with the
@@ -109,6 +112,8 @@ export async function POST(req: Request): Promise<Response> {
         let schedaInviata = false;
         const { summary, circuitJson, variants } = await compileProject(fsMap, {
           keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
+          // what is left of the function: the schematic does not start if it cannot end (see stimaDelloSchematico)
+          budgetMs: compileBudgetMs(requestStartedAt),
           // the schematic of the last board, reused when only PCB positions changed
           schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
           // the board is saved as soon as it exists, before the schematic: see compile-save.ts
@@ -178,7 +183,7 @@ export async function POST(req: Request): Promise<Response> {
         }
         await activity(
           "fine",
-          salvataggio.saved ? summary.message.slice(0, 300) : `non salvata: ${summary.message.slice(0, 260)}`,
+          salvataggio.saved ? rigaDiFine(summary) : `non salvata: ${rigaDiFine(summary, 260)}`,
           Date.now() - t0,
         );
         // superseded: a newer board is saved (moves made meanwhile), not a failure to show

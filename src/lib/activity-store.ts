@@ -197,6 +197,8 @@ function summarize(result: unknown): string {
   if (typeof r.error === "string") return r.error;
   const parts: string[] = [];
   const n = (v: unknown) => (typeof v === "number" ? v : null);
+  // a compile that ended without the schematic says it first, with why (see compile-run rigaDiFine): not the early answer, whose schematic is on its way
+  if (typeof r.schematicPending === "string" && r.schematicoInCorso !== true) parts.push(`senza schematico: ${r.schematicPending}`);
   if (typeof r.ok === "boolean") parts.push(r.ok ? "tutto a posto" : "con problemi");
   const traces = n(r.pcbTraces);
   if (traces !== null) parts.push(`${traces} piste`);
