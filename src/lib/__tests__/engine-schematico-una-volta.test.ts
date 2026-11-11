@@ -22,6 +22,7 @@ vi.mock("@/lib/pours-recompute", async () => {
 });
 
 import {
+  compileGeometryOnly,
   compileProject,
   costoDelloSchematico,
   DOPO_LO_SCHEMATICO_MS,
@@ -221,6 +222,31 @@ describe("la chiave dello schematico non cambia quando cambia solo il rame", () 
     // a file that is not code stays in the key as it is
     expect(schematicKeyOf({ "main.tsx": SCHEDA, "dati.json": "{\"x\":1}" })).not.toBe(schematicKeyOf({ "main.tsx": SCHEDA, "dati.json": "{\"x\":2}" }));
   });
+
+  it("il motore lo conferma: con vie, colate, serigrafie e posizioni diverse lo schematico disegnato e' lo stesso", async () => {
+    // what the key leaves out must really not reach the schematic: a newer tscircuit that changed this is said here
+    const diversa = SCHEDA.replace('pcbX={-6} pcbY={0} schSectionName="ingresso"', 'pcbX={-7} pcbY={2} pcbRotation={90} layer="bottom" schSectionName="ingresso"')
+      .replace("{ x: 12, y: -3 }, { x: 12, y: 0 }", "{ x: 11, y: -4 }, { x: 12, y: 0 }")
+      .replace(
+        "  </board>",
+        [
+          '    <via pcbX={6} pcbY={3} fromLayer="top" toLayer="bottom" outerDiameter="0.6mm" holeDiameter="0.3mm" connectsTo="net.GND" />',
+          '    <copperpour layer="bottom" connectsTo="net.SIG" outline={[{x: -11, y: -5}, {x: -1, y: -5}, {x: -1, y: -3}, {x: -11, y: -3}]} />',
+          '    <silkscreentext text="SBB" pcbX={0} pcbY={5} fontSize={0.6} layer="top" />',
+          '    <silkscreenpath route={[{x: -2, y: 5}, {x: 2, y: 5}]} strokeWidth={0.15} layer="top" />',
+          '    <fabricationnotetext text="NOTA" pcbX={0} pcbY={-5} fontSize={0.5} layer="top" />',
+          '    <keepout shape="rect" width={1} height={1} pcbX={0} pcbY={-4} layers={["top"]} />',
+          '    <hole pcbX={10} pcbY={4} diameter="1mm" />',
+          '    <cutout shape="rect" width={1} height={1} pcbX={-10} pcbY={4} />',
+          '    <fiducial name="FID1" pcbX={-10} pcbY={-4} padDiameter="1mm" />',
+          "  </board>",
+        ].join("\n"),
+      );
+    expect(schematicKeyOf({ "main.tsx": diversa })).toBe(schematicKeyOf({ "main.tsx": SCHEDA }));
+    const [a, b] = [await compileGeometryOnly({ "main.tsx": SCHEDA }), await compileGeometryOnly({ "main.tsx": diversa })];
+    expect(schematico(a).length).toBeGreaterThan(0);
+    expect(norm(schematico(b))).toBe(norm(schematico(a)));
+  }, 180_000);
 
   it("toglie solo quello che e' scritto come JSX: una via dentro un commento o una stringa resta", () => {
     expect(soloCioCheLeggeLoSchematico('<board>\n  <via pcbX={1} />\n  <R a="1" pcbX={2} />\n</board>')).toBe('<board>\n  <R a="1" />\n</board>');
