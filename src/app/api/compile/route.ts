@@ -32,16 +32,19 @@ export async function POST(req: Request): Promise<Response> {
   // the function's clock starts here: the compile is told how much of it is left (see compileBudgetMs)
   const requestStartedAt = Date.now();
   let projectId = "default";
+  /** draw the schematic even when it would not end in time (see CompileOptions.forceSchematic): the page never sends it */
+  let forceSchematic = false;
   /*
    * It never lays copper: "recompile" means showing the real board with the
    * copper already on it. There is no automatic routing any more (2026-11-09),
    * a `route` field in the body is ignored.
    */
   try {
-    const body = (await req.json()) as { projectId?: unknown };
+    const body = (await req.json()) as { projectId?: unknown; forceSchematic?: unknown };
     if (typeof body.projectId === "string" && body.projectId.length <= 120) {
       projectId = body.projectId;
     }
+    forceSchematic = body.forceSchematic === true;
   } catch {
     // no body: recompile the default project
   }
@@ -114,6 +117,7 @@ export async function POST(req: Request): Promise<Response> {
           keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
           // what is left of the function: the schematic does not start if it cannot end (see stimaDelloSchematico)
           budgetMs: compileBudgetMs(requestStartedAt),
+          forceSchematic,
           // the schematic of the last board, reused when only PCB positions changed
           schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
           // the board is saved as soon as it exists, before the schematic: see compile-save.ts

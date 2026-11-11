@@ -28,12 +28,16 @@ import {
   DOPO_LO_SCHEMATICO_MS,
   graftSchematic,
   innestaSchematico,
+  MARGINE_SUL_TETTO_MS,
+  misuraValida,
+  PEZZI_SCHEDA_GRANDE,
   SCHEMATICO_SENZA_MISURA_MS,
   schematicKeyOf,
   soloCioCheLeggeLoSchematico,
   stimaDelloSchematico,
   type CompileSummary,
 } from "@/lib/compile";
+import { COMPILE_BUDGET_PIENO_MS } from "@/lib/compile-run";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -143,48 +147,117 @@ describe("lo schematico parte solo se fa in tempo", () => {
       { "main.tsx": SCHEDA },
       {
         budgetMs: 60_000,
-        // the last schematic of this board cost ten minutes
-        schematicFrom: { circuitJson: [], summary: { schematicCostMs: 600_000 } },
+        // the last schematic of this board (2 parts) cost ten minutes
+        schematicFrom: { circuitJson: [], summary: { schematicCostMs: 600_000, schematicCostParts: 2 } },
         onBoard: async () => void (chiamata = true),
         onProgress: (p) => steps.push(p.step),
       },
     );
     expect(schematico(r.circuitJson)).toHaveLength(0);
     expect(diTipo(r.circuitJson, "pcb_copper_pour").length).toBeGreaterThan(0);
-    expect(r.summary.schematicPending).toMatch(/non e' partito/);
-    expect(r.summary.schematicPending).toMatch(/600 s/);
+    expect(r.summary.schematicPending).toMatch(/^lo schematico non e' partito: restavano \d+ s, ne servono circa \d+ \(ultimo schematico 600 s su 2 pezzi/);
     expect(r.summary.message).toMatch(/SCHEMATICO NON CALCOLATO/);
     expect(r.summary.schematicKey).toBeUndefined();
-    // the measure stays for the next compile
+    // the measure stays for the next compile, with its parts
     expect(r.summary.schematicCostMs).toBe(600_000);
+    expect(r.summary.schematicCostParts).toBe(2);
     expect(spans(r.summary)).not.toContain("scheda con schematico (tscircuit)");
     expect(steps).not.toContain("Disegno lo schematico");
     // nothing is said "saved early, schematic on its way": the board is the outcome
     expect(chiamata).toBe(false);
   }, 180_000);
 
+  it("chi compila puo' chiederlo comunque: con la stessa stima lo schematico si disegna", async () => {
+    const r = await compileProject(
+      { "main.tsx": SCHEDA },
+      {
+        budgetMs: 60_000,
+        schematicFrom: { circuitJson: [], summary: { schematicCostMs: 600_000, schematicCostParts: 2 } },
+        onBoard: async () => {},
+        forceSchematic: true,
+      },
+    );
+    expect(diTipo(r.circuitJson, "schematic_component")).toHaveLength(2);
+    expect(r.summary.schematicPending).toBeUndefined();
+    // the new measure replaces the old one
+    expect(r.summary.schematicCostMs).toBeLessThan(600_000);
+    expect(r.summary.schematicCostParts).toBe(2);
+  }, 180_000);
+
   it("con il tempo che basta lo schematico si disegna", async () => {
     const r = await compileProject(
       { "main.tsx": SCHEDA },
-      { budgetMs: 600_000, schematicFrom: { circuitJson: [], summary: { schematicCostMs: 1_000 } }, onBoard: async () => {} },
+      { budgetMs: 600_000, schematicFrom: { circuitJson: [], summary: { schematicCostMs: 1_000, schematicCostParts: 2 } }, onBoard: async () => {} },
     );
     expect(diTipo(r.circuitJson, "schematic_component")).toHaveLength(2);
     expect(r.summary.schematicPending).toBeUndefined();
   }, 180_000);
 
-  it("la stima usa l'ultima misura con il suo margine, o la cifra prudente quando non c'e'", () => {
-    expect(stimaDelloSchematico(null, 110_000).ms).toBe(110_000 + SCHEMATICO_SENZA_MISURA_MS + DOPO_LO_SCHEMATICO_MS);
-    expect(stimaDelloSchematico(150_000, 110_000).ms).toBe(110_000 + 225_000 + DOPO_LO_SCHEMATICO_MS);
-    expect(stimaDelloSchematico(null, 110_000).perche).toMatch(/nessuno schematico misurato/);
+  it("una scheda piccola compilata dall'agente con 250 s e nessuna misura ha lo schematico", async () => {
+    // review of 11/11/2026: "restavano 249 s e ne chiede circa 271", for a board done in 1 s
+    const r = await compileProject({ "main.tsx": SCHEDA }, { budgetMs: 250_000, onBoard: async () => {} });
+    expect(diTipo(r.circuitJson, "schematic_component")).toHaveLength(2);
+    expect(r.summary.schematicPending).toBeUndefined();
+    expect(r.summary.schematicCostParts).toBe(2);
+  }, 180_000);
+
+  it("una misura alta non tiene fuori per sempre una scheda che con la funzione intera ci sta", async () => {
+    // ten minutes measured once on this board: more than any function has, so the whole function is the ceiling
+    const r = await compileProject(
+      { "main.tsx": SCHEDA },
+      {
+        budgetMs: COMPILE_BUDGET_PIENO_MS,
+        schematicFrom: { circuitJson: [], summary: { schematicCostMs: 600_000, schematicCostParts: 2 } },
+        onBoard: async () => {},
+      },
+    );
+    expect(diTipo(r.circuitJson, "schematic_component")).toHaveLength(2);
+    // and the board measured again
+    expect(r.summary.schematicCostMs).toBeLessThan(600_000);
+  }, 180_000);
+
+  it("la formula: lettura + disegno + 30 s, al piu' il tetto", () => {
+    const largo = 10_000_000;
+    // 2 parts read in 1 s, nothing measured: 20 times the reading, at least 30 s
+    expect(stimaDelloSchematico({ misura: null, pezzi: 2, pcbMs: 1_000, tettoMs: largo }).ms).toBe(1_000 + 30_000 + 30_000);
+    // 39 parts read in 3 s: 60 s of drawing
+    expect(stimaDelloSchematico({ misura: null, pezzi: 39, pcbMs: 3_000, tettoMs: largo }).ms).toBe(3_000 + 60_000 + 30_000);
+    // 82 parts (big from 40), nothing measured: 240 s
+    expect(PEZZI_SCHEDA_GRANDE).toBe(40);
+    expect(stimaDelloSchematico({ misura: null, pezzi: 82, pcbMs: 40_000, tettoMs: largo }).ms).toBe(40_000 + SCHEMATICO_SENZA_MISURA_MS + DOPO_LO_SCHEMATICO_MS);
+    // 156 parts measured at 146 s on 156: x1.5
+    const misurata = stimaDelloSchematico({ misura: { ms: 146_000, pezzi: 156 }, pezzi: 156, pcbMs: 110_000, tettoMs: largo });
+    expect(misurata.ms).toBe(110_000 + 219_000 + 30_000);
+    expect(misurata.perche).toMatch(/ultimo schematico 146 s su 156 pezzi/);
+    // a measure taken on 120 parts does not hold for 156: the big board figure
+    expect(stimaDelloSchematico({ misura: { ms: 60_000, pezzi: 120 }, pezzi: 156, pcbMs: 110_000, tettoMs: largo }).ms).toBe(110_000 + 240_000 + 30_000);
+    // nor one without its parts
+    expect(stimaDelloSchematico({ misura: { ms: 60_000, pezzi: null }, pezzi: 156, pcbMs: 110_000, tettoMs: largo }).ms).toBe(110_000 + 240_000 + 30_000);
+    // at most the ceiling: a compile with the whole function after a 300 s board pass
+    const tetto = COMPILE_BUDGET_PIENO_MS - 300_000 - MARGINE_SUL_TETTO_MS;
+    const alta = stimaDelloSchematico({ misura: { ms: 300_000, pezzi: 156 }, pezzi: 156, pcbMs: 110_000, tettoMs: tetto });
+    expect(alta.ms).toBe(410_000);
+    expect(alta.perche).toMatch(/al piu' 410 s/);
+  });
+
+  it("una misura vale per una scheda con quasi gli stessi pezzi: un decimo, almeno 4", () => {
+    expect(misuraValida({ ms: 1, pezzi: 156 }, 150)).toBe(true);
+    expect(misuraValida({ ms: 1, pezzi: 156 }, 172)).toBe(true);
+    expect(misuraValida({ ms: 1, pezzi: 156 }, 173)).toBe(false);
+    expect(misuraValida({ ms: 1, pezzi: 2 }, 6)).toBe(true);
+    expect(misuraValida({ ms: 1, pezzi: 2 }, 7)).toBe(false);
+    expect(misuraValida({ ms: 1, pezzi: null }, 2)).toBe(false);
+    expect(misuraValida(null, 2)).toBe(false);
   });
 
   it("il costo dello schematico si legge dal profilo salvato, o dalla misura che il riepilogo si porta dietro", () => {
     const profilo = (spans: Array<[string, number]>) => ({ profile: { spans: spans.map(([name, ms]) => ({ name, ms, depth: 0 })), totalMs: 0 } });
-    expect(costoDelloSchematico(profilo([["scheda senza schematico (tscircuit)", 110_000], ["scheda con schematico (tscircuit)", 245_000]]))).toBe(135_000);
+    const pezzi = [{ name: "R1" }, { name: "R2" }];
+    expect(costoDelloSchematico({ ...profilo([["scheda senza schematico (tscircuit)", 110_000], ["scheda con schematico (tscircuit)", 245_000]]), components: pezzi })).toEqual({ ms: 135_000, pezzi: 2 });
     // no early board: the whole compile with the schematic, which is more
-    expect(costoDelloSchematico(profilo([["scheda con schematico (tscircuit)", 160_000]]))).toBe(160_000);
-    // a board saved without its schematic: the measure it carries
-    expect(costoDelloSchematico({ ...profilo([["scheda senza schematico (tscircuit)", 110_000]]), schematicCostMs: 90_000 })).toBe(90_000);
+    expect(costoDelloSchematico(profilo([["scheda con schematico (tscircuit)", 160_000]]))).toEqual({ ms: 160_000, pezzi: null });
+    // a board saved without its schematic: the measure it carries, with its parts
+    expect(costoDelloSchematico({ ...profilo([["scheda senza schematico (tscircuit)", 110_000]]), schematicCostMs: 90_000, schematicCostParts: 7 })).toEqual({ ms: 90_000, pezzi: 7 });
     expect(costoDelloSchematico(profilo([["scheda senza schematico (tscircuit)", 110_000]]))).toBeNull();
     expect(costoDelloSchematico(null)).toBeNull();
   });

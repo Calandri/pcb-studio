@@ -1,5 +1,6 @@
 import { CHECKS_ENGINE_VERSION, nonCertificata, type ColateDiPrima, type PianiSuVie } from "./engine-version";
-import { SCHEMATICO_NON_PARTITO } from "./compile-run";
+import { EARLY_REPLY_MIN_COMPONENTS } from "./compile-early-reply";
+import { COMPILE_BUDGET_PIENO_MS, SCHEMATICO_NON_PARTITO } from "./compile-run";
 import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
@@ -375,6 +376,8 @@ export interface CompileSummary {
    * time it has (see stimaDelloSchematico).
    */
   schematicCostMs?: number;
+  /** on how many parts schematicCostMs was measured: it holds for a board of about as many (see misuraValida) */
+  schematicCostParts?: number;
   /** per-section variant report (Fase 3.d), present when variants were generated */
   variantReport?: Array<{
     section: string;
@@ -543,6 +546,12 @@ export interface CompileOptions {
    * blocked editor for every "Aggiorna" (2026-11-09).
    */
   schematicFrom?: { circuitJson: unknown[]; summary: unknown } | null;
+  /**
+   * Draw the schematic even when the estimate says it would not end in the
+   * time left (see stimaDelloSchematico): the way out for whoever compiles
+   * and knows better, at the risk of the function being cut off.
+   */
+  forceSchematic?: boolean;
 }
 
 export interface CompileProgress {
@@ -808,8 +817,35 @@ export async function compileProject(
    * see innestaSchematico.
    */
   let primaPassata: { pcbOnly: CircuitElement[]; scheda: SchedaCalcolata } | null = null;
-  /** what drawing the schematic cost the last time it was measured, carried to the next compile */
+  /** what drawing the schematic cost the last time it was measured, and on how many parts: carried to the next compile */
   const costoDiPrima = costoDelloSchematico(opts.schematicFrom?.summary);
+  const pezziDi = (cj: CircuitElement[]) => cj.filter((e) => e.type === "source_component").length;
+  /** what drawing the schematic cost in this compile, when it drew it: see costoDelloSchematico */
+  const misuraDiOra = (pezzi: number) => costoDelloSchematico({ profile: profiler.result(), schematicCostParts: pezzi });
+  /** the measure a summary carries to the next compile, next to the parts it was taken on */
+  const portaLaMisura = (summary: CompileSummary, misura: MisuraDelloSchematico | null) => {
+    if (!misura) return;
+    summary.schematicCostMs = misura.ms;
+    if (misura.pezzi !== null) summary.schematicCostParts = misura.pezzi;
+  };
+  /**
+   * The board computed without its schematic, closed as the outcome: why it
+   * has no schematic goes in schematicPending (the page shows it, the closing
+   * line of the log says it first, see rigaDiFine) and in the message.
+   */
+  const chiudiSenzaSchematico = (
+    early: { summary: CompileSummary; circuitJson: CircuitElement[] },
+    pezzi: number,
+    motivo: string,
+  ): CompileResult => {
+    early.summary.schematicPending = motivo;
+    early.summary.message = `${early.summary.message} SCHEMATICO NON CALCOLATO: ${motivo}.`;
+    early.summary.profile = { ...profiler.result(), patches: enginePatches() };
+    portaLaMisura(early.summary, misuraDiOra(pezzi) ?? costoDiPrima);
+    console.log(`[compile] ${motivo}; chiusa senza schematico in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    return { summary: early.summary, circuitJson: early.circuitJson };
+  };
+  const secondi = (ms: number) => Math.round(ms / 1000);
   if (opts.route === false && (opts.onBoard || schemaDiPrima)) {
     say({
       step: "Leggo la scheda",
@@ -831,7 +867,8 @@ export async function compileProject(
       const early = await profiler.run("rame, colate e controlli della scheda senza schematico", () =>
         boardWithoutRouting(pcbOnly as CircuitElement[]),
       );
-      if (costoDiPrima !== null) early.summary.schematicCostMs = costoDiPrima;
+      portaLaMisura(early.summary, costoDiPrima);
+      const pezzi = pezziDi(pcbOnly);
       /*
        * WHETHER THE SCHEMATIC FITS IN THE TIME LEFT. The tscircuit compile with
        * the schematic reads the whole board again and then draws: it is CPU for
@@ -842,17 +879,19 @@ export async function compileProject(
        * for good). When it does not fit it does not start: the board is the one
        * just computed, saved as the outcome, and says why it has no schematic.
        */
-      const stima = stimaDelloSchematico(costoDiPrima, pcbMs);
+      const stima = stimaDelloSchematico({
+        misura: costoDiPrima,
+        pezzi,
+        pcbMs,
+        // what a compile with the whole function would still have at this point, minus the margin
+        tettoMs: COMPILE_BUDGET_PIENO_MS - (Date.now() - startedAt) - MARGINE_SUL_TETTO_MS,
+      });
       const restano = timeLeft();
       if (restano < stima.ms) {
-        const motivo =
-          `${SCHEMATICO_NON_PARTITO}: alla fine della scheda restavano ${Math.round(restano / 1000)} s ` +
-          `e lo schematico ne chiede circa ${Math.round(stima.ms / 1000)} (${stima.perche})`;
-        early.summary.schematicPending = `${motivo}. La scheda e' salvata senza schematico e senza i suoi controlli`;
-        early.summary.message = `${early.summary.message} SCHEMATICO NON CALCOLATO: ${motivo}.`;
-        early.summary.profile = { ...profiler.result(), patches: enginePatches() };
-        console.log(`[compile] ${motivo}; scheda pronta in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-        return { summary: early.summary, circuitJson: early.circuitJson };
+        const motivo = `${SCHEMATICO_NON_PARTITO}: restavano ${secondi(restano)} s, ne servono circa ${secondi(stima.ms)} (${stima.perche})`;
+        // whoever compiles may ask for it all the same (forceSchematic)
+        if (!opts.forceSchematic) return chiudiSenzaSchematico(early, pezzi, motivo);
+        console.log(`[compile] schematico chiesto comunque da chi compila: ${motivo}`);
       }
       primaPassata = { pcbOnly, scheda: early.scheda };
       early.summary.schematicPending =
@@ -1026,8 +1065,7 @@ export async function compileProject(
      */
     summary.profile = { ...profiler.result(), patches: enginePatches() };
     // what the schematic cost now, or the last measure when it was not drawn: the next compile decides on it
-    const costoOra = innestata ? costoDiPrima : costoDelloSchematico(summary);
-    if (costoOra !== null) summary.schematicCostMs = costoOra;
+    portaLaMisura(summary, innestata ? costoDiPrima : (misuraDiOra(pezziDi(circuitJson)) ?? costoDiPrima));
     // what this schematic was drawn from: the next compile with the same key reuses it
     if (circuitJson.some((e) => e.type === "schematic_component")) summary.schematicKey = chiaveSchema;
     if (innestata) summary.message = `${summary.message} (schematico invariato, riusato)`;
@@ -1926,34 +1964,59 @@ export function innestaSchematico(
 const SPAN_CON_SCHEMATICO = "scheda con schematico (tscircuit)";
 const SPAN_SENZA_SCHEMATICO = "scheda senza schematico (tscircuit)";
 
+/** what drawing the schematic cost once, and on how many parts (null when not known) */
+export interface MisuraDelloSchematico {
+  ms: number;
+  pezzi: number | null;
+}
+
 /**
  * What drawing the schematic cost, read from a saved summary: its own profile
  * when that compile drew it (the compile with the schematic minus the one
  * without, or the whole compile with the schematic when there was no early
  * board, which is more), otherwise the measure it carries (schematicCostMs).
- * Null when nothing ever measured it.
+ * With the parts of the board it was taken on (schematicCostParts, or the
+ * parts that summary lists). Null when nothing ever measured it.
  */
-export function costoDelloSchematico(summary: unknown): number | null {
-  const s = summary as { profile?: { spans?: Array<{ name?: unknown; ms?: unknown }> }; schematicCostMs?: unknown } | null | undefined;
-  const ms = (nome: string): number | null => {
-    const span = s?.profile?.spans?.find((x) => x?.name === nome);
-    return typeof span?.ms === "number" && Number.isFinite(span.ms) ? span.ms : null;
-  };
+export function costoDelloSchematico(summary: unknown): MisuraDelloSchematico | null {
+  const s = summary as
+    | { profile?: { spans?: Array<{ name?: unknown; ms?: unknown }> }; schematicCostMs?: unknown; schematicCostParts?: unknown; components?: unknown }
+    | null
+    | undefined;
+  const numero = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const ms = (nome: string): number | null => numero(s?.profile?.spans?.find((x) => x?.name === nome)?.ms);
+  const pezziScritti = numero(s?.schematicCostParts);
   const con = ms(SPAN_CON_SCHEMATICO);
   if (con !== null) {
     const senza = ms(SPAN_SENZA_SCHEMATICO);
-    return senza !== null ? Math.max(0, con - senza) : con;
+    return {
+      ms: senza !== null ? Math.max(0, con - senza) : con,
+      pezzi: pezziScritti ?? (Array.isArray(s?.components) ? s.components.length : null),
+    };
   }
-  return typeof s?.schematicCostMs === "number" && Number.isFinite(s.schematicCostMs) ? s.schematicCostMs : null;
+  const portata = numero(s?.schematicCostMs);
+  return portata !== null ? { ms: portata, pezzi: pezziScritti } : null;
 }
 
 /**
- * What drawing the schematic is assumed to cost on a board where nothing has
- * measured it: more than the 75-146 s it took on Vercel on sbb-dl-principale
- * (156 parts, 682 connections, 09-11/11/2026), less than what would keep that
- * board from ever getting one after its ~300 s board pass.
+ * What drawing the schematic is assumed to cost on a big board where nothing
+ * has measured it: more than the 75-146 s it took on Vercel on
+ * sbb-dl-principale (156 parts, 682 connections, 09-11/11/2026).
  */
 export const SCHEMATICO_SENZA_MISURA_MS = 240_000;
+/**
+ * From how many parts a board is big: the same threshold from which the MCP
+ * compile answers before the schematic, because from there it takes minutes.
+ */
+export const PEZZI_SCHEDA_GRANDE = EARLY_REPLY_MIN_COMPONENTS;
+/**
+ * A small board with nothing measured: its schematic counted as this many
+ * times the reading of the board without it, never less than the minimum.
+ * Measured locally (11/11/2026): up to 23 parts the schematic costs less than
+ * the reading, 39 parts with 160 connections ~10 times; twice that, for room.
+ */
+export const SCHEMATICO_PICCOLA_PER_LETTURA = 20;
+export const SCHEMATICO_PICCOLA_MINIMO_MS = 30_000;
 /**
  * The measure of the last schematic, with room: on Vercel the same board
  * measured 82 and 146 s on the same day, and locally 182 s in a fresh process
@@ -1962,23 +2025,64 @@ export const SCHEMATICO_SENZA_MISURA_MS = 240_000;
 export const MARGINE_SULLA_MISURA = 1.5;
 /** after the drawing: the schematic put on the board, its checks, the final save */
 export const DOPO_LO_SCHEMATICO_MS = 30_000;
+/**
+ * Between the estimate's ceiling and the end of what a compile with the whole
+ * function has: see stimaDelloSchematico.
+ */
+export const MARGINE_SUL_TETTO_MS = 60_000;
 
 /**
- * How long the rest of a compile needs once the board is saved: tscircuit
- * reads the whole board again (`pcbMs`, measured on this very compile), then
- * draws the schematic (the last measure with its margin, or the prudent
- * figure), then the schematic goes on the board and is checked and saved.
+ * Whether a measure taken on a board of `misurati` parts holds for one of
+ * `pezzi`: within a tenth of the parts, and at least 4. A board that grew
+ * past that is measured again.
  */
-export function stimaDelloSchematico(ultimoMs: number | null, pcbMs: number): { ms: number; perche: string } {
-  const disegno = ultimoMs !== null ? Math.round(ultimoMs * MARGINE_SULLA_MISURA) : SCHEMATICO_SENZA_MISURA_MS;
+export function misuraValida(misura: MisuraDelloSchematico | null, pezzi: number): misura is MisuraDelloSchematico & { pezzi: number } {
+  return misura !== null && misura.pezzi !== null && Math.abs(pezzi - misura.pezzi) <= Math.max(4, Math.round(misura.pezzi * 0.1));
+}
+
+/**
+ * HOW LONG THE REST OF A COMPILE NEEDS once the board is saved:
+ *
+ *   resto = lettura + disegno + 30 s, at most tetto
+ *
+ *  - lettura (`pcbMs`): tscircuit reads the whole board again, as it just did
+ *    without the schematic in this very compile;
+ *  - disegno: the last measure on this board x1.5, when it was taken on a
+ *    board with nearly as many parts (misuraValida); otherwise 240 s on a big
+ *    board (PEZZI_SCHEDA_GRANDE parts or more) and 20 times the reading, at
+ *    least 30 s, on a small one;
+ *  - 30 s: the schematic put on the board, its checks, the final save;
+ *  - tetto (`tettoMs`): what a compile that had the whole function would
+ *    have left at this point, minus a margin. An estimate above it would keep
+ *    the board from ever getting a schematic, whatever the compile: such a
+ *    board starts when it has the whole function, and its new measure decides
+ *    the next time.
+ */
+export function stimaDelloSchematico(dati: {
+  misura: MisuraDelloSchematico | null;
+  pezzi: number;
+  pcbMs: number;
+  tettoMs: number;
+}): { ms: number; perche: string } {
+  const { misura, pezzi, pcbMs, tettoMs } = dati;
   const s = (ms: number) => Math.round(ms / 1000);
-  return {
-    ms: pcbMs + disegno + DOPO_LO_SCHEMATICO_MS,
-    perche:
-      ultimoMs !== null
-        ? `l'ultimo schematico di questa scheda e' costato ${s(ultimoMs)} s, la rilettura della scheda ${s(pcbMs)} s`
-        : `nessuno schematico misurato su questa scheda: ne conto ${s(SCHEMATICO_SENZA_MISURA_MS)} s, piu' ${s(pcbMs)} s per rileggere la scheda`,
-  };
+  let disegno: number;
+  let perche: string;
+  if (misuraValida(misura, pezzi)) {
+    disegno = Math.round(misura.ms * MARGINE_SULLA_MISURA);
+    perche = `ultimo schematico ${s(misura.ms)} s su ${misura.pezzi} pezzi, x1,5`;
+  } else if (pezzi >= PEZZI_SCHEDA_GRANDE) {
+    disegno = SCHEMATICO_SENZA_MISURA_MS;
+    perche = `nessuna misura su ${pezzi} pezzi, ne conto ${s(SCHEMATICO_SENZA_MISURA_MS)} s`;
+  } else {
+    disegno = Math.max(SCHEMATICO_PICCOLA_MINIMO_MS, SCHEMATICO_PICCOLA_PER_LETTURA * pcbMs);
+    perche = `scheda piccola (${pezzi} pezzi), ${SCHEMATICO_PICCOLA_PER_LETTURA} volte la lettura e almeno ${s(SCHEMATICO_PICCOLA_MINIMO_MS)} s`;
+  }
+  const intera = pcbMs + disegno + DOPO_LO_SCHEMATICO_MS;
+  const ms = Math.min(intera, Math.max(0, tettoMs));
+  perche += `, piu' ${s(pcbMs)} s di lettura e ${s(DOPO_LO_SCHEMATICO_MS)} s per finire`;
+  if (ms < intera) perche += `; al piu' ${s(ms)} s, quanto avrebbe la funzione intera`;
+  return { ms, perche };
 }
 
 /**

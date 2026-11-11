@@ -304,8 +304,15 @@ function buildHandler(viewer: Viewer) {
         "in corso. Sulle schede piccole risponde a fine compilazione come sempre.",
       {
         projectId: z.string(),
+        forceSchematic: z
+          .boolean()
+          .optional()
+          .describe(
+            "true: disegna lo schematico anche se la stima dice che non finirebbe nel tempo della funzione " +
+              "(rischio: la funzione viene interrotta e resta la scheda senza schematico salvata prima).",
+          ),
       },
-      async ({ projectId }) => {
+      async ({ projectId, forceSchematic }) => {
         // it SAVES the result and costs minutes of server: a viewer of a
         // link-shared project could overwrite the owner's board
         if ((await projectAccess(projectId, viewer)) !== "edit") {
@@ -343,6 +350,7 @@ function buildHandler(viewer: Viewer) {
             keepCopperFrom: copperToKeep(fsMap, inCache),
             // what is left of the function: the schematic does not start if it cannot end (see stimaDelloSchematico)
             budgetMs: compileBudgetMs(requestStartedAt),
+            forceSchematic: forceSchematic === true,
             // the schematic of the last board, reused when only PCB positions changed
             schematicFrom: inCache ? { circuitJson: inCache.circuitJson as unknown[], summary: inCache.summary } : null,
             /*

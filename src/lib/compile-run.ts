@@ -18,6 +18,8 @@ export const SCHEMATICO_NON_PARTITO = "lo schematico non e' partito";
 export const FUNCTION_MAX_MS = 800_000;
 /** kept for the final save and the closing line of the log, after the compile */
 const MARGINE_DOPO_IL_COMPILE_MS = 30_000;
+/** what a compile started with the function has: the most any compile can have (see stimaDelloSchematico) */
+export const COMPILE_BUDGET_PIENO_MS = FUNCTION_MAX_MS - MARGINE_DOPO_IL_COMPILE_MS;
 
 /**
  * What a compile started now can spend: the function's life minus what the
@@ -27,7 +29,7 @@ const MARGINE_DOPO_IL_COMPILE_MS = 30_000;
  * whatever time was left.
  */
 export function compileBudgetMs(requestStartedAt: number, now = Date.now()): number {
-  return FUNCTION_MAX_MS - (now - requestStartedAt) - MARGINE_DOPO_IL_COMPILE_MS;
+  return COMPILE_BUDGET_PIENO_MS - (now - requestStartedAt);
 }
 
 /**
