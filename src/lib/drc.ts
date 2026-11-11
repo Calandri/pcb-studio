@@ -4,6 +4,7 @@ import {
   type DesignRules,
   type TipoRame,
 } from "./design-rules";
+import type { PianiSuVie } from "./engine-version";
 import { netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
 
 export interface DrcViolation {
@@ -1614,6 +1615,34 @@ export function runDrcChecks(
     }
   }
   return aggregated;
+}
+
+/**
+ * THE VIAS A PLANE OF ANOTHER NET COVERS: pad and copper touch or overlap, on
+ * any layer. Not a distance to judge against a rule but a hole in a plane with
+ * no opening, so it is said apart from the DRC list, counted and in words
+ * (CompileSummary.planesOverVias).
+ *
+ * Read from what a DRC run on this board measured (`misure`), or measured here
+ * when nobody has: the export asks the board it is about to hand over, whatever
+ * the summary saved with it says. A distance of zero is the same under every
+ * ruleset, so the default rules will do; a board with no plane is not measured.
+ */
+export function pianiSopraLeVie(circuitJson: El[], misure: MisureDrc = {}): PianiSuVie | undefined {
+  if (!misure.viaPiani) {
+    if (!circuitJson.some((el) => el.type === "pcb_copper_pour")) return undefined;
+    runDrcChecks(circuitJson, DEFAULT_DESIGN_RULES, misure);
+  }
+  const coperte = (misure.viaPiani?.righe ?? []).filter((r) => r.distanzaMm <= 0);
+  const vie = new Set(coperte.map((r) => r.via)).size;
+  if (vie === 0) return undefined;
+  const altri = coperte.length === 2 ? " e in un altro punto" : coperte.length > 2 ? ` e in altri ${coperte.length - 1} punti` : "";
+  return {
+    count: vie,
+    detail:
+      `${vie} ${vie === 1 ? "via ha" : "vie hanno"} la piazzola nel rame di un piano di un'altra rete ` +
+      `(${coperte[0].via} nel piano ${coperte[0].rete} su ${coperte[0].layer}${altri}): il piano non si e' aperto attorno al foro`,
+  };
 }
 
 /** occurrences kept with their message and point, per rule; the count goes on */

@@ -74,8 +74,11 @@ export async function POST(req: Request): Promise<Response> {
      * And a board from before every via was a through hole: its vias are
      * completed (see vieSemprePassanti), and if one of them was written on part
      * of the stack the planes are poured again, because the old engine poured
-     * them without seeing that hole (see ricolaSeLeVieEranoParziali). A board
-     * with no such via keeps its planes as they are.
+     * them without seeing that hole (see ricolaSeLeVieEranoParziali). So are
+     * the planes of a board, of any engine, on which a plane covers a via of
+     * another net: the via drawn by hand that the fast update laid without
+     * pouring, which the export refuses. Every other board keeps its planes as
+     * they are.
      */
     const regole = resolveDesignRules(progetto).rules;
     const ricolata = await ricolaSeLeVieEranoParziali({

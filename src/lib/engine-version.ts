@@ -72,9 +72,18 @@ export function motoreDaSalvare(summary: unknown, precedente: number = CHECKS_EN
   return Math.min(precedente, ENGINE_VIE_PASSANTI - 1);
 }
 
-/** why such a board is not filed under today's engine, in the words the answer shows; null when it is */
+/**
+ * Why such a board is not filed under today's engine and is not exported, in
+ * the words the answer shows, with what to do about it; null when no plane
+ * covers a via. The planes are poured again by a compile ("Aggiorna") and by a
+ * recheck ("Ricontrolla") of a board in this state; when they come back over
+ * the hole all the same, it is the via or the plane that has to move.
+ */
 export function nonCertificata(summary: unknown): string | null {
   const p = pianiSuVieDi(summary);
   if (!p) return null;
-  return `${p.detail}. La scheda NON e' certificata per l'export finche' un piano copre una via: sposta la via o il piano e premi Aggiorna`;
+  return (
+    `${p.detail}. La scheda NON e' certificata per l'export finche' un piano copre una via: ` +
+    `premi Aggiorna o Ricontrolla per rifare le colate, e se il piano resta sulla via sposta la via o il piano`
+  );
 }

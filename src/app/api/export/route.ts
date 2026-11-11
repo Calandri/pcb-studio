@@ -12,6 +12,7 @@ import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
+import { pianiSopraLeVie } from "@/lib/drc";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION, nonCertificata } from "@/lib/engine-version";
@@ -76,7 +77,20 @@ export async function GET(req: Request): Promise<Response> {
     cache.filesHash === filesHash(fsMap) &&
     cache.engineVersion >= CHECKS_ENGINE_VERSION &&
     hasBoard(cache.circuitJson);
-  if (fabrication && !cacheFresh) {
+  /*
+   * AND NO BOARD WITH A PLANE OVER A VIA, whatever saved it. The compile and
+   * the recheck keep such a board under an older engine, but the fast update
+   * and a trace edit save the board as they find it, engine included: a via
+   * drawn by hand through a plane is on a board of today's engine until the
+   * planes are poured again, and vias are drawn by hand every day. So the
+   * board about to be exported is measured here, itself: the summary saved
+   * with it is not asked.
+   */
+  const coperta =
+    fabrication && cache && hasBoard(cache.circuitJson)
+      ? nonCertificata({ planesOverVias: pianiSopraLeVie(cache.circuitJson as never) })
+      : null;
+  if (fabrication && (!cacheFresh || coperta)) {
     /*
      * NO FALLBACK FOR WHAT GOES TO THE FACTORY. It used to recompile here with
      * the bare tscircuit pipeline: a board without the user's manual edits,
@@ -91,8 +105,8 @@ export async function GET(req: Request): Promise<Response> {
         ? "l'ultima compilazione non ha prodotto una scheda"
         : cache.filesHash !== filesHash(fsMap)
           ? "i file sono cambiati dopo l'ultima compilazione"
-          : // a board kept under an older engine because a plane covers a via says that, not "older checks"
-            (nonCertificata(cache.summary) ?? "la scheda e' stata verificata con controlli piu' vecchi");
+          : // a plane over a via is said as such, with what to do about it, not as "older checks"
+            (coperta ?? "la scheda e' stata verificata con controlli piu' vecchi");
     return Response.json(
       {
         error: `ricompila la scheda prima di esportare: ${motivo}`,

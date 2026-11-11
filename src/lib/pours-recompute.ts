@@ -4,6 +4,7 @@ import {
   initializeManifoldGeometry,
 } from "@tscircuit/copper-pour-solver";
 
+import { pianiSopraLeVie } from "./drc";
 import { ENGINE_VIE_PASSANTI } from "./engine-version";
 import { planeServedPorts, readPours } from "./pours";
 import { abbracciaRamePropio, senzaColliStretti, type RamePropio } from "./pour-necks";
@@ -927,10 +928,14 @@ export async function ricolaPiani({
  * the same solver and with the project's distances, each from the piece the
  * board already has.
  *
- * Only a board that has such a via AND was made by an older engine. Every
- * other board keeps its planes to the last vertex: pouring again is not free of
- * rounding, and a board checked and about to be ordered must come out of a
- * recheck with the copper it went in with.
+ * Only a board that has such a via AND was made by an older engine, or a
+ * board on which a plane covers a via of another net today, whatever made it:
+ * a via drawn by hand and laid by the fast update, which never pours, stands in
+ * the planes it crosses until somebody pours them again, and the export
+ * refuses the board until then (pianiSopraLeVie). Every other board keeps its
+ * planes to the last vertex: pouring again is not free of rounding, and a board
+ * checked and about to be ordered must come out of a recheck with the copper it
+ * went in with.
  *
  * `ricolata` says that the planes went through the solver, NOT that they came
  * back opened. ricolaPiani keeps the shape a pour had whenever its solver
@@ -956,7 +961,8 @@ export async function ricolaSeLeVieEranoParziali({
   larghezzaMinimaMm?: number;
 }): Promise<{ circuitJson: El[]; ricolata: boolean; vieParziali: number }> {
   const vieParziali = vieDichiarateParziali(circuitJson);
-  if (vieParziali === 0 || engineVersion >= ENGINE_VIE_PASSANTI) return { circuitJson, ricolata: false, vieParziali };
+  const diUnMotoreDiPrima = vieParziali > 0 && engineVersion < ENGINE_VIE_PASSANTI;
+  if (!diUnMotoreDiPrima && !pianiSopraLeVie(circuitJson)) return { circuitJson, ricolata: false, vieParziali };
   const esito = await ricolaPiani({ circuitJson: vieSemprePassanti(circuitJson), clearanceMm, bordoMm, larghezzaMinimaMm });
   return { circuitJson: esito.circuitJson, ricolata: esito.ricolate > 0, vieParziali };
 }

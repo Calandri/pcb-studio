@@ -3,7 +3,7 @@ import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
-import { distanzaPuntoForma, ingombroForma, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame, type MisureDrc } from "./drc";
+import { distanzaPuntoForma, ingombroForma, pianiSopraLeVie, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame, type MisureDrc } from "./drc";
 import {
   controllaLunghezze,
   leggiGruppi,
@@ -2358,23 +2358,8 @@ function summarize(
       : [];
   const reportedErrors = [...schematicBlocker, ...errors];
 
-  /*
-   * The vias a plane of another net covers: pad and copper touch or overlap,
-   * on any layer. Not a distance to judge against a rule but a hole in a plane
-   * with no opening, so it is said apart from the DRC list (see planesOverVias).
-   */
-  const coperte = (misure.viaPiani?.righe ?? []).filter((r) => r.distanzaMm <= 0);
-  const vieCoperte = new Set(coperte.map((r) => r.via)).size;
-  const planesOverVias: PianiSuVie | undefined =
-    vieCoperte > 0
-      ? {
-          count: vieCoperte,
-          detail:
-            `${vieCoperte} ${vieCoperte === 1 ? "via ha" : "vie hanno"} la piazzola nel rame di un piano di un'altra rete ` +
-            `(${coperte[0].via} nel piano ${coperte[0].rete} su ${coperte[0].layer}${coperte.length === 2 ? " e in un altro punto" : coperte.length > 2 ? ` e in altri ${coperte.length - 1} punti` : ""}): ` +
-            `il piano non si e' aperto attorno al foro`,
-        }
-      : undefined;
+  // the vias a plane of another net covers, from what the DRC runs above measured: see pianiSopraLeVie
+  const planesOverVias = pianiSopraLeVie(circuitJson, misure);
 
   const ok = reportedErrors.length === 0;
   // convergence checklist: the agent's loop targets in one place (Fase 3.h)

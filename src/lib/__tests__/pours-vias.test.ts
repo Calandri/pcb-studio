@@ -180,13 +180,22 @@ describe("a via written on part of the stack still goes through every plane", ()
     expect(dalRame(r.circuitJson as El[], "inner1", giu)).toBeGreaterThanOrEqual(0.152 - 0.01);
 
     // a board made by this engine keeps its planes: they were poured seeing the hole
-    const oggi = await ricolaSeLeVieEranoParziali({ circuitJson: prima as never, engineVersion: ENGINE_VIE_PASSANTI, ...regole });
+    const aperta = r.circuitJson;
+    const oggi = await ricolaSeLeVieEranoParziali({ circuitJson: aperta as never, engineVersion: ENGINE_VIE_PASSANTI, ...regole });
     expect(oggi.ricolata).toBe(false);
-    expect(oggi.circuitJson).toBe(prima);
+    expect(oggi.circuitJson).toBe(aperta);
     // and so does an older board whose vias all went from top to bottom
-    const passanti = salvata.map((e) => (e.type === "pcb_via" ? { ...e, layers: ["top", "inner1", "inner2", "bottom"] } : e));
+    const passanti = (aperta as El[]).map((e) => (e.type === "pcb_via" ? { ...e, declared_layers: undefined } : e));
     const vecchia = await ricolaSeLeVieEranoParziali({ circuitJson: passanti as never, engineVersion: ENGINE_VIE_PASSANTI - 1, ...regole });
     expect(vecchia).toMatchObject({ ricolata: false, vieParziali: 0 });
     expect(vecchia.circuitJson).toBe(passanti);
+
+    // but a plane over a via is poured again whatever the engine and whatever the via lists: it is what a via
+    // drawn by hand looks like after the fast update, which lays it and never pours
+    const coperta = salvata.map((e) => (e.type === "pcb_via" ? { ...e, layers: ["top", "inner1", "inner2", "bottom"] } : e));
+    expect(dalRame(coperta, "inner1", giu)).toBe(0);
+    const rifatta = await ricolaSeLeVieEranoParziali({ circuitJson: coperta as never, engineVersion: ENGINE_VIE_PASSANTI, ...regole });
+    expect(rifatta).toMatchObject({ ricolata: true, vieParziali: 0 });
+    expect(dalRame(rifatta.circuitJson as El[], "inner1", giu)).toBeGreaterThanOrEqual(0.152 - 0.01);
   }, 120_000);
 });
