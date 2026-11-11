@@ -9,7 +9,8 @@ import { pianiSopraLeVie } from "./drc";
 import { ENGINE_VIE_PASSANTI } from "./engine-version";
 import { parseLength } from "./pcb-route-model";
 import { DISTANZA_PROPRIA, distanzaPropria, planeServedPorts, readPours } from "./pours";
-import { abbracciaRamePropio, allargaAnello, senzaColliStretti, type RamePropio } from "./pour-necks";
+import { capsula, cerchio, poligonoCresciuto, rettangoloArrotondato, type Punto } from "./pour-geometry";
+import { abbracciaRamePropio, allargaAnello, formaPulita, senzaColliStretti, type RamePropio } from "./pour-necks";
 import { vieDichiarateParziali, vieSemprePassanti } from "./via-layers";
 
 /**
@@ -37,6 +38,8 @@ import { vieDichiarateParziali, vieSemprePassanti } from "./via-layers";
 interface El {
   type: string;
   [key: string]: unknown;
+  /** see PEZZI_DI_TSCIRCUIT */
+  [PEZZI_DI_TSCIRCUIT]?: El[];
 }
 
 interface Anello {
@@ -106,6 +109,149 @@ function rettangoloRuotato(
 
 /** a rectangle turned by a multiple of 180° is the same rectangle */
 const senzaGiro = (gradi: number): boolean => Math.abs(((gradi % 180) + 180) % 180) < 1e-6;
+
+/**
+ * The shape of an obstacle before any clearance, carried on the pads this file
+ * hands the solver already grown (a turned rectangle, a slot, the outline of
+ * another pour), so that ostacoliEsatti can draw them again with round corners.
+ */
+export type FormaEsatta =
+  | { tipo: "rettangolo"; x: number; y: number; w: number; h: number; gradi: number }
+  | { tipo: "poligono"; punti: Punto[] };
+
+/**
+ * EVERY OBSTACLE IN ITS EXACT SHAPE, GROWN BY THE CLEARANCE.
+ *
+ * The solver turns each obstacle into a polygon itself, and that is where the
+ * pour got its coarse edges (copper-pour-solver dist/index.js): every circle
+ * is 32 points ON the circle whatever its radius (circleToPolygon), so the
+ * chords stand inside the clearance, 2 micrometres at a via and 6 at a mounting
+ * hole, and a big circle is visibly a polygon; a rectangular pad is grown into
+ * a rectangle with square corners (processObstaclesForPour), so the gap is the
+ * clearance along the sides and 1.4 times it at the corners; a polygon is
+ * grown with mitred corners (offsetPolygon); a trace is a rectangle per
+ * segment and a 32-gon per point.
+ *
+ * Here every obstacle the pour must avoid is handed over already grown, as the
+ * set of points every copper point must stay out of: a circle grown by the
+ * clearance, a rectangle or a pill grown into a rounded rectangle, a trace
+ * into one capsule per segment, a polygon grown with round corners, all drawn
+ * with as many segments as their radius needs and outside the true curve (see
+ * pour-geometry.ts). The solver subtracts a polygon whose key says neither
+ * hole nor cutout exactly as given, so it no longer draws any of them. The
+ * distance is then the clearance along every side and around every corner,
+ * never less, and at most the chord error (2 micrometres) more.
+ *
+ * Obstacles whose box does not reach the pour's box are left out: they would
+ * be subtracted from nothing, and a hand strip of a few square millimetres
+ * need not be cut against the whole board.
+ *
+ * The pads of the pour's own net stay as they are (the solver skips them), and
+ * a pad of a shape this does not know is handed back untouched, for the
+ * solver to treat as it always did.
+ */
+export function ostacoliEsatti(
+  pads: Array<Record<string, unknown>>,
+  chiaveColata: string | undefined,
+  margini: { pad: number; trace: number; cutout: number },
+  scatola?: { minX: number; minY: number; maxX: number; maxY: number },
+): Array<Record<string, unknown>> {
+  const fuori: Array<Record<string, unknown>> = [];
+  const lontano = (minX: number, minY: number, maxX: number, maxY: number): boolean =>
+    !!scatola && (maxX < scatola.minX || minX > scatola.maxX || maxY < scatola.minY || minY > scatola.maxY);
+  const scatolaDi = (punti: Punto[]) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of punti) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, minY, maxX, maxY };
+  };
+  for (const pad of pads) {
+    const chiave = String(pad.connectivityKey ?? "");
+    if (chiaveColata && chiave === chiaveColata) {
+      fuori.push(pad);
+      continue;
+    }
+    const foroOTaglio = chiave.startsWith("hole:") || chiave.startsWith("cutout:");
+    const m = foroOTaglio ? margini.cutout : margini.pad;
+    const id = String(pad.padId ?? "");
+    let anelli: Punto[][] | null = null;
+    const esatta = pad.formaEsatta as FormaEsatta | undefined;
+    const suoMargine = num(pad.margineMm);
+    const x = num(pad.x);
+    const y = num(pad.y);
+    if (esatta && suoMargine !== null) {
+      if (esatta.tipo === "rettangolo") {
+        const r = Math.max(esatta.w, esatta.h) / 2 + suoMargine;
+        if (lontano(esatta.x - r * 1.5, esatta.y - r * 1.5, esatta.x + r * 1.5, esatta.y + r * 1.5)) continue;
+        anelli = [
+          rettangoloArrotondato(esatta.x, esatta.y, esatta.w + 2 * suoMargine, esatta.h + 2 * suoMargine, suoMargine, esatta.gradi),
+        ];
+      } else {
+        const b = scatolaDi(esatta.punti);
+        if (lontano(b.minX - suoMargine, b.minY - suoMargine, b.maxX + suoMargine, b.maxY + suoMargine)) continue;
+        anelli = poligonoCresciuto(esatta.punti, suoMargine);
+      }
+    } else if (pad.shape === "circle" && x !== null && y !== null && num(pad.radius) !== null) {
+      const r = num(pad.radius)! + m;
+      if (lontano(x - r, y - r, x + r, y + r)) continue;
+      anelli = [cerchio(x, y, r)];
+    } else if (pad.shape === "rect" && pad.bounds) {
+      const b = pad.bounds as { minX: number; minY: number; maxX: number; maxY: number };
+      if (lontano(b.minX - m, b.minY - m, b.maxX + m, b.maxY + m)) continue;
+      anelli = [
+        rettangoloArrotondato((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, b.maxX - b.minX + 2 * m, b.maxY - b.minY + 2 * m, m),
+      ];
+    } else if (pad.shape === "pill" && x !== null && y !== null) {
+      const w = num(pad.width);
+      const h = num(pad.height);
+      if (w !== null && h !== null) {
+        const r = Math.max(w, h) / 2 + m;
+        if (lontano(x - r, y - r, x + r, y + r)) continue;
+        const raggio = Math.min(num(pad.radius) ?? Math.min(w, h) / 2, w / 2, h / 2);
+        anelli = [rettangoloArrotondato(x, y, w + 2 * m, h + 2 * m, raggio + m, num(pad.ccwRotation) ?? 0)];
+      }
+    } else if (pad.shape === "polygon" && Array.isArray(pad.points)) {
+      const punti = (pad.points as Punto[]).filter((p) => num(p?.x) !== null && num(p?.y) !== null);
+      const b = scatolaDi(punti);
+      const crescita = foroOTaglio ? margini.cutout : 0;
+      if (punti.length >= 3 && lontano(b.minX - crescita, b.minY - crescita, b.maxX + crescita, b.maxY + crescita)) continue;
+      // a polygon the solver subtracts as it is needs nothing: it is exact already
+      if (crescita > 0 && punti.length >= 3) anelli = poligonoCresciuto(punti, crescita);
+    } else if (pad.shape === "trace" && Array.isArray(pad.segments)) {
+      const r = (num(pad.width) ?? 0) / 2 + margini.trace;
+      const punti = (pad.segments as Punto[]).filter((p) => num(p?.x) !== null && num(p?.y) !== null);
+      const capsule: Punto[][] = [];
+      for (let i = 0; i + 1 < punti.length; i++) {
+        const a = punti[i];
+        const b = punti[i + 1];
+        if (lontano(Math.min(a.x, b.x) - r, Math.min(a.y, b.y) - r, Math.max(a.x, b.x) + r, Math.max(a.y, b.y) + r)) continue;
+        if (Math.hypot(b.x - a.x, b.y - a.y) < 1e-9 && i > 0) continue;
+        capsule.push(capsula(a, b, r));
+      }
+      if (capsule.length === 0) continue;
+      anelli = capsule;
+    }
+    if (!anelli || anelli.length === 0) {
+      fuori.push(pad);
+      continue;
+    }
+    anelli.forEach((punti, k) =>
+      fuori.push({
+        shape: "polygon",
+        padId: `${id}~${k}`,
+        layer: pad.layer,
+        // neither hole nor cutout: the solver subtracts it as it is, already grown
+        connectivityKey: `unconnected:esatto:${id}`,
+        points: punti,
+      }),
+    );
+  }
+  return fuori;
+}
 
 /** whether a through element lives on this face: its `layers`, or all of them */
 function suFaccia(el: El, faccia: string): boolean {
@@ -196,7 +342,9 @@ export function viePassanti(
  * therefore handed over already grown by the pour's clearance; a polygon
  * pad, whose outline cannot be grown by hand without getting concave corners
  * wrong, goes with a `cutout:` key, so the solver offsets it itself; a pill
- * goes as a pill, which the solver grows by the pad margin.
+ * goes as a pill, which the solver grows by the pad margin. A grown rectangle
+ * also carries the rectangle it was grown from (`formaEsatta`), so the re-pour
+ * can draw it again with round corners (see ostacoliEsatti).
  */
 export function padRuotati(
   circuitJson: El[],
@@ -215,6 +363,17 @@ export function padRuotati(
   const fuori: Array<Record<string, unknown>> = [];
   const poligono = (id: string, points: Array<{ x: number; y: number }>, chiave = `unconnected:${id}`) =>
     fuori.push({ shape: "polygon", padId: id, layer: faccia, connectivityKey: chiave, points });
+  /** a turned rectangle grown by the clearance, with the rectangle it came from */
+  const rettangolo = (id: string, x: number, y: number, w: number, h: number, gradi: number) =>
+    fuori.push({
+      shape: "polygon",
+      padId: id,
+      layer: faccia,
+      connectivityKey: `unconnected:${id}`,
+      points: rettangoloRuotato(x, y, w, h, gradi, margineMm),
+      formaEsatta: { tipo: "rettangolo", x, y, w, h, gradi } satisfies FormaEsatta,
+      margineMm,
+    });
   for (const el of circuitJson) {
     const shape = String(el.shape ?? "");
     const x = num(el.x);
@@ -229,7 +388,7 @@ export function padRuotati(
         const w = num(el.width);
         const h = num(el.height);
         if (x === null || y === null || w === null || h === null) continue;
-        poligono(id, rettangoloRuotato(x, y, w, h, num(el.ccw_rotation) ?? 0, margineMm));
+        rettangolo(id, x, y, w, h, num(el.ccw_rotation) ?? 0);
       } else if (shape === "polygon") {
         const punti = ((el.points as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [])
           .map((p) => ({ x: num(p.x), y: num(p.y) }))
@@ -269,7 +428,7 @@ export function padRuotati(
         const w = num(el.rect_pad_width);
         const h = num(el.rect_pad_height);
         if (w === null || h === null) continue;
-        poligono(id, rettangoloRuotato(x, y, w, h, num(el.rect_ccw_rotation) ?? 0, margineMm));
+        rettangolo(id, x, y, w, h, num(el.rect_ccw_rotation) ?? 0);
       } else if (shape === "hole_with_polygon_pad") {
         const rot = ((num(el.ccw_rotation) ?? 0) * Math.PI) / 180;
         const cos = Math.cos(rot);
@@ -307,7 +466,7 @@ export function padRuotati(
         });
       } else {
         // rect and square slots: a box, cut around by the hole margin
-        poligono(id, rettangoloRuotato(x, y, w, h, 0, margineMm));
+        rettangolo(id, x, y, w, h, 0);
       }
     }
   }
@@ -397,7 +556,9 @@ function ancore(circuitJson: El[], serviti: Map<string, string>): Map<string, Ar
 
 /**
  * The copper of the pour's own net on its layer: via rings (vias cross every
- * layer) and pads, as the shapes the pour has to hold whole.
+ * layer) and pads, as the shapes the pour has to hold whole, each by its real
+ * outline (see abbracciaRamePropio for what a bounding box did). A pad of a
+ * shape this does not know is left out: better not held than held by a guess.
  */
 function ramePropio(
   circuitJson: El[],
@@ -408,6 +569,10 @@ function ramePropio(
 ): RamePropio[] {
   if (!net) return [];
   const out: RamePropio[] = [];
+  const punti = (v: unknown): Punto[] =>
+    ((v as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [])
+      .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
+      .filter((p): p is Punto => p.x !== null && p.y !== null);
   for (const el of circuitJson) {
     if (el.type === "pcb_via") {
       if (netDiVia.get(String(el.pcb_via_id ?? "")) !== net) continue;
@@ -418,16 +583,51 @@ function ramePropio(
     if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
     if (serviti.get(String(el.pcb_port_id ?? "")) !== net) continue;
     if (el.type === "pcb_smtpad" && String(el.layer ?? "top") !== layer) continue;
+    if (el.type === "pcb_plated_hole" && !suFaccia(el, layer)) continue;
     const x = num(el.x), y = num(el.y);
-    if (x === null || y === null) continue;
-    const d = num(el.outer_diameter) ?? (num(el.radius) !== null ? num(el.radius)! * 2 : null);
-    if (String(el.shape ?? "") === "circle" && d !== null) {
-      out.push({ kind: "cerchio", x, y, r: d / 2 });
+    const shape = String(el.shape ?? "");
+    if (el.type === "pcb_smtpad") {
+      if (shape === "polygon") {
+        const p = punti(el.points);
+        if (p.length >= 3) out.push({ kind: "poligono", punti: p });
+        continue;
+      }
+      if (x === null || y === null) continue;
+      const w = num(el.width), h = num(el.height);
+      if (shape === "circle") {
+        const r = num(el.radius);
+        if (r !== null && r > 0) out.push({ kind: "cerchio", x, y, r });
+      } else if (w !== null && h !== null && (shape === "rect" || shape === "rotated_rect")) {
+        const raggio = num(el.rect_border_radius) ?? num(el.corner_radius) ?? 0;
+        out.push({ kind: "rett", x, y, w, h, rot: shape === "rotated_rect" ? (num(el.ccw_rotation) ?? 0) : 0, raggio });
+      } else if (w !== null && h !== null && (shape === "pill" || shape === "rotated_pill")) {
+        const raggio = num(el.radius) ?? Math.min(w, h) / 2;
+        out.push({ kind: "rett", x, y, w, h, rot: shape === "rotated_pill" ? (num(el.ccw_rotation) ?? 0) : 0, raggio });
+      }
       continue;
     }
-    const w = num(el.width) ?? num(el.rect_pad_width) ?? num(el.outer_width);
-    const h = num(el.height) ?? num(el.rect_pad_height) ?? num(el.outer_height);
-    if (w !== null && h !== null) out.push({ kind: "rett", x, y, w, h, rot: num(el.ccw_rotation) ?? 0 });
+    if (x === null || y === null) continue;
+    if (shape === "circle") {
+      const d = num(el.outer_diameter);
+      if (d !== null && d > 0) out.push({ kind: "cerchio", x, y, r: d / 2 });
+    } else if (shape === "pill" || shape === "oval") {
+      const w = num(el.outer_width), h = num(el.outer_height);
+      if (w !== null && h !== null) out.push({ kind: "rett", x, y, w, h, rot: num(el.ccw_rotation) ?? 0, raggio: Math.min(w, h) / 2 });
+    } else if (
+      shape === "circular_hole_with_rect_pad" ||
+      shape === "pill_hole_with_rect_pad" ||
+      shape === "rotated_pill_hole_with_rect_pad"
+    ) {
+      const w = num(el.rect_pad_width), h = num(el.rect_pad_height);
+      const raggio = num(el.rect_border_radius) ?? 0;
+      if (w !== null && h !== null) out.push({ kind: "rett", x, y, w, h, rot: num(el.rect_ccw_rotation) ?? 0, raggio });
+    } else if (shape === "hole_with_polygon_pad") {
+      const rot = ((num(el.ccw_rotation) ?? 0) * Math.PI) / 180;
+      const cos = Math.cos(rot), sin = Math.sin(rot);
+      // the outline is relative to the hole's position
+      const p = punti(el.pad_outline).map((q) => ({ x: x + q.x * cos - q.y * sin, y: y + q.x * sin + q.y * cos }));
+      if (p.length >= 3) out.push({ kind: "poligono", punti: p });
+    }
   }
   return out;
 }
@@ -466,6 +666,8 @@ interface CopperpourScritta {
   net?: string;
   /** the outline when it is a literal list of points; null when it is missing or built in code */
   outline: Array<{ x: number; y: number }> | null;
+  /** no `outline` at all: tscircuit pours it over the whole board */
+  senzaContorno: boolean;
   /** the `clearance` exactly as written, when it is written */
   clearance?: string;
 }
@@ -485,7 +687,8 @@ function copperpourScritte(testo: string): CopperpourScritta[] {
     // clearance="0.25mm", clearance='0.25', clearance={0.25}, clearance={"10mil"}
     const c = /\bclearance\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*([^}]*?)\s*\})/.exec(attr);
     const clearance = c ? (c[1] ?? c[2] ?? c[3]) : undefined;
-    out.push({ layer, net, outline, ...(clearance !== undefined ? { clearance } : {}) });
+    const senzaContorno = !/\boutline\s*=/.test(attr);
+    out.push({ layer, net, outline, senzaContorno, ...(clearance !== undefined ? { clearance } : {}) });
   }
   return out;
 }
@@ -676,6 +879,78 @@ export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoM
 }
 
 /**
+ * The .tsx files main.tsx reaches through its relative imports, main.tsx
+ * first and the rest in name order: the files whose `<copperpour>` are on the
+ * board. A file the board does not import (a copy kept aside, an old version)
+ * draws nothing, and its pours must not be poured.
+ */
+export function fileDellaScheda(files: Record<string, unknown>): string[] {
+  const esiste = (f: string) => typeof files[f] === "string";
+  const normalizza = (percorso: string): string => {
+    const parti: string[] = [];
+    for (const p of percorso.split("/")) {
+      if (p === "" || p === ".") continue;
+      if (p === "..") parti.pop();
+      else parti.push(p);
+    }
+    return parti.join("/");
+  };
+  const visti = new Set<string>();
+  const coda = ["main.tsx"];
+  while (coda.length > 0) {
+    const f = coda.shift()!;
+    if (visti.has(f) || !esiste(f)) continue;
+    visti.add(f);
+    const cartella = f.includes("/") ? f.slice(0, f.lastIndexOf("/") + 1) : "";
+    for (const m of (files[f] as string).matchAll(/\bfrom\s+["'](\.{1,2}\/[^"']+)["']/g)) {
+      const base = normalizza(cartella + m[1]);
+      const trovato = [base, `${base}.tsx`, `${base}.ts`, `${base}/index.tsx`, `${base}/index.ts`].find(esiste);
+      if (trovato) coda.push(trovato);
+    }
+  }
+  return [...visti].filter((f) => f.endsWith(".tsx")).sort((a, b) => (a === "main.tsx" ? -1 : b === "main.tsx" ? 1 : a < b ? -1 : 1));
+}
+
+/** the board outline: the drawn one when it is one, else the width x height rectangle */
+function contornoScheda(circuitJson: El[]): Punto[] {
+  const board = circuitJson.find((el) => el.type === "pcb_board");
+  if (!board) return [];
+  const centro = (board.center as { x?: number; y?: number } | undefined) ?? {};
+  const cx = num(centro.x) ?? 0;
+  const cy = num(centro.y) ?? 0;
+  const w = num(board.width);
+  const h = num(board.height);
+  /*
+   * The drawn outline when it IS one — three real points at least. An empty
+   * `outline: []` (what an export with no custom shape leaves) used to win
+   * over width/height and give no band at all, and a point with a missing
+   * coordinate went to 0.
+   */
+  const disegnato = Array.isArray(board.outline)
+    ? (board.outline as Array<{ x?: unknown; y?: unknown }>)
+        .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
+        .filter((p): p is Punto => p.x !== null && p.y !== null)
+    : [];
+  if (disegnato.length >= 3) return disegnato;
+  if (w === null || h === null) return [];
+  return [
+    { x: cx - w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy - h / 2 },
+    { x: cx + w / 2, y: cy + h / 2 },
+    { x: cx - w / 2, y: cy + h / 2 },
+  ];
+}
+
+/**
+ * The pieces tscircuit poured for a pour that conContorniDichiarati put back
+ * on its declared outline. Carried under a symbol, which a spread copies and
+ * JSON never writes: if the solver throws on the declared outline or gives
+ * nothing back, ricolaPiani keeps these (carved by tscircuit, at least) instead
+ * of the bare outline, which is carved around nothing.
+ */
+const PEZZI_DI_TSCIRCUIT: unique symbol = Symbol("pezzi di tscircuit");
+
+/**
  * THE POURS START AGAIN FROM THE OUTLINE THE FILE DRAWS.
  *
  * tscircuit pours a `<copperpour>` keeping its clearance (0.2mm unless the
@@ -689,43 +964,128 @@ export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoM
  *
  * Each piece tscircuit poured inside a declared outline of the same face and
  * net is replaced by one pour with that outline; ricolaPiani then cuts it
- * against the copper of the finished board, the board edge included. Pours
- * without a literal outline (a whole plane, or an outline built in code) keep
- * the shape tscircuit gave them.
+ * against the copper of the finished board, the board edge included.
+ *
+ * In EVERY file the board imports, not in main.tsx only. A board drawn by a
+ * script keeps its pours where the script writes them: sbb-dl-principale has
+ * all of its 296 in righe_2, righe_3 and righe_4, so none of them was put back
+ * and every one was poured again from what tscircuit had made of it. That
+ * shape was the outline shrunk by tscircuit's 0.2mm (0.19mm smaller on every
+ * side than drawn, measured on the P3V3_MIC strip), carved around the copper
+ * tscircuit could see with its own clearance and not the project's, and cut
+ * at every vertex of the outline by a SQUARE: the solver keeps the edge
+ * margin with a disc and an axis-aligned square at each corner of the outline
+ * it takes for the board (copper-pour-solver dist/index.js, processObstacles,
+ * boardOutline), and along the hand-drawn diagonal of a ground pour, a vertex
+ * every 0.13mm, the squares are a staircase. The re-pour kept all of it: it
+ * can only take copper away from the outline it is given. And as tscircuit
+ * pours while it builds, what it could see changed from run to run: the same
+ * files compiled three times gave 5206, 5603 and 6962 mm2 of ground
+ * (2026-11-11). From the declared outlines, twice is the same copper.
+ *
+ * A `<copperpour>` with no outline at all is poured by tscircuit over the
+ * whole board, and so it starts again from the board outline here: the band
+ * along the edge is kept by bandaDelBordo, as for every other pour. Only when
+ * every `<copperpour>` of its face and net has either a literal outline or
+ * none: an outline built in code cannot be read without running the file, and
+ * then the shape tscircuit gave back stays the best guess for those pieces.
+ *
+ * Every declared outline is poured whether or not tscircuit gave a piece for
+ * it (a strip narrower than tscircuit's two margins comes back from tscircuit
+ * as nothing, and what tscircuit gives back is not the same from one run to
+ * the next), unless it lies entirely off the board: that is not a shape of
+ * this board (a group moved somewhere else) and is left out.
+ *
+ * `files`: the project's files, or the text of main.tsx alone.
  */
-export function conContorniDichiarati(circuitJson: El[], main: unknown): El[] {
-  if (typeof main !== "string" || !main.includes("copperpour")) return circuitJson;
-  const dichiarati = contorniDichiarati(main);
-  if (!dichiarati.length) return circuitJson;
+export function conContorniDichiarati(circuitJson: El[], files: unknown): El[] {
+  const testi: string[] =
+    typeof files === "string"
+      ? [files]
+      : files && typeof files === "object"
+        ? fileDellaScheda(files as Record<string, unknown>)
+            .map((f) => (files as Record<string, unknown>)[f])
+            .filter((t): t is string => typeof t === "string")
+        : [];
+  if (!testi.some((t) => t.includes("copperpour"))) return circuitJson;
+  const scritte = testi.flatMap((t) => copperpourScritte(t)).filter((c) => c.layer && c.net);
+  if (!scritte.length) return circuitJson;
   const reteDi = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type === "source_net") reteDi.set(String(el.name ?? ""), String(el.source_net_id ?? ""));
   }
+  const scheda = contornoScheda(circuitJson);
+  let sx0 = Infinity, sy0 = Infinity, sx1 = -Infinity, sy1 = -Infinity;
+  for (const p of scheda) {
+    sx0 = Math.min(sx0, p.x);
+    sy0 = Math.min(sy0, p.y);
+    sx1 = Math.max(sx1, p.x);
+    sy1 = Math.max(sy1, p.y);
+  }
+  /* whether the outline's box meets the board's: an outline may run past the edge, the band trims it */
+  const sullaScheda = (outline: Punto[]) => {
+    if (scheda.length < 3) return true;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of outline) {
+      x0 = Math.min(x0, p.x);
+      y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x);
+      y1 = Math.max(y1, p.y);
+    }
+    return x1 >= sx0 && x0 <= sx1 && y1 >= sy0 && y0 <= sy1;
+  };
+  /* the faces and nets where an outline is built in code: their pieces cannot be told apart */
+  const inCodice = new Set(scritte.filter((c) => !c.outline && !c.senzaContorno).map((c) => `${c.layer}|${c.net}`));
   const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
   const sostituite = new Set<El>();
   const nuove: El[] = [];
-  dichiarati.forEach((d, i) => {
-    const netId = reteDi.get(d.net);
-    if (!netId) return;
-    const pezzi = pours.filter((p) => {
-      if (sostituite.has(p) || String(p.layer ?? "") !== d.layer || String(p.source_net_id ?? "") !== netId) return false;
-      const anello = (p.brep_shape as { outer_ring?: Anello } | undefined)?.outer_ring?.vertices ??
-        (p.points as Array<{ x: number; y: number }> | undefined) ?? [];
-      return anello.length >= 3 && anello.every((v) => dentro(v.x, v.y, d.outline) || dalBordo(v.x, v.y, d.outline) < 0.01);
-    });
-    const modello = pezzi[0] ?? pours.find((p) => String(p.layer ?? "") === d.layer) ?? pours[0];
+  const anelloDi = (p: El) =>
+    (p.brep_shape as { outer_ring?: Anello } | undefined)?.outer_ring?.vertices ??
+    (p.points as Array<{ x: number; y: number }> | undefined) ?? [];
+  const metti = (i: number, layer: string, netId: string, outline: Punto[], pezzi: El[]) => {
+    const modello = pezzi[0] ?? pours.find((p) => String(p.layer ?? "") === layer) ?? pours[0];
     if (!modello) return;
     pezzi.forEach((p) => sostituite.add(p));
     const nuova: El = {
       ...modello,
       pcb_copper_pour_id: `pcb_copper_pour_dichiarata_${i}`,
-      layer: d.layer,
+      layer,
       source_net_id: netId,
       shape: "brep",
-      brep_shape: { outer_ring: { vertices: d.outline }, inner_rings: [] },
+      brep_shape: { outer_ring: { vertices: outline }, inner_rings: [] },
     };
     delete nuova.points;                                  // a brep pour carries no polygon points
+    nuova[PEZZI_DI_TSCIRCUIT] = pezzi;
     nuove.push(nuova);
+  };
+  /* the literal outlines first: each takes the pieces tscircuit poured inside it */
+  scritte.forEach((d, i) => {
+    if (!d.outline) return;
+    const netId = reteDi.get(d.net!);
+    if (!netId) return;
+    const outline = d.outline;
+    const pezzi = pours.filter((p) => {
+      if (sostituite.has(p) || String(p.layer ?? "") !== d.layer || String(p.source_net_id ?? "") !== netId) return false;
+      const anello = anelloDi(p);
+      return anello.length >= 3 && anello.every((v) => dentro(v.x, v.y, outline) || dalBordo(v.x, v.y, outline) < 0.01);
+    });
+    // never on whether tscircuit gave pieces: that changes from run to run
+    if (!sullaScheda(outline)) return;
+    metti(i, d.layer!, netId, outline, pezzi);
+  });
+  /* then the whole-board ones: one per face and net, with what is left of its pieces */
+  const intere = new Set<string>();
+  scritte.forEach((d, i) => {
+    if (!d.senzaContorno || scheda.length < 3) return;
+    const k = `${d.layer}|${d.net}`;
+    if (intere.has(k) || inCodice.has(k)) return;
+    intere.add(k);
+    const netId = reteDi.get(d.net!);
+    if (!netId) return;
+    const pezzi = pours.filter(
+      (p) => !sostituite.has(p) && String(p.layer ?? "") === d.layer && String(p.source_net_id ?? "") === netId,
+    );
+    metti(i, d.layer!, netId, scheda, pezzi);
   });
   if (!nuove.length) return circuitJson;
   return [...circuitJson.filter((el) => !sostituite.has(el)), ...nuove];
@@ -746,6 +1106,13 @@ export function conContorniDichiarati(circuitJson: El[], main: unknown): El[] {
  * and a pour in the middle of the board is left alone. The key says neither hole
  * nor cutout on purpose: a polygon obstacle with such a key is subtracted
  * exactly as given, which is what a measured band has to be.
+ *
+ * One capsule per side of the outline: the side swept by a disc of the edge
+ * clearance, so the copper keeps exactly that distance from every side and
+ * every corner, an arc around a corner that goes into the board. It used to be
+ * a strip per side and an axis-aligned SQUARE on every vertex: along a rounded
+ * stretch of outline (the bay around a mounting hole of sbb-dl-principale, a
+ * vertex every 0.33mm) the squares made a staircase.
  */
 export function bandaDelBordo(
   circuitJson: El[],
@@ -753,71 +1120,19 @@ export function bandaDelBordo(
   bordoMm: number,
 ): Array<Record<string, unknown>> {
   if (bordoMm <= 0) return [];
-  const board = circuitJson.find((el) => el.type === "pcb_board");
-  if (!board) return [];
-  const centro = (board.center as { x?: number; y?: number } | undefined) ?? {};
-  const cx = num(centro.x) ?? 0;
-  const cy = num(centro.y) ?? 0;
-  const w = num(board.width);
-  const h = num(board.height);
-  /*
-   * The drawn outline when it IS one — three real points at least. An empty
-   * `outline: []` (what an export with no custom shape leaves) used to win
-   * over width/height and give no band at all, and a point with a missing
-   * coordinate went to 0.
-   */
-  const disegnato = Array.isArray(board.outline)
-    ? (board.outline as Array<{ x?: unknown; y?: unknown }>)
-        .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
-        .filter((p): p is { x: number; y: number } => p.x !== null && p.y !== null)
-    : [];
-  const contorno = disegnato.length >= 3
-    ? disegnato
-    : w !== null && h !== null
-      ? [
-          { x: cx - w / 2, y: cy - h / 2 },
-          { x: cx + w / 2, y: cy - h / 2 },
-          { x: cx + w / 2, y: cy + h / 2 },
-          { x: cx - w / 2, y: cy + h / 2 },
-        ]
-      : [];
+  const contorno = contornoScheda(circuitJson);
   if (contorno.length < 3) return [];
-
   const fuori: Array<Record<string, unknown>> = [];
   for (let i = 0; i < contorno.length; i++) {
     const a = contorno[i];
     const b = contorno[(i + 1) % contorno.length];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const l = Math.hypot(dx, dy);
-    if (l < 1e-9) continue;
-    /* the strip that follows the edge, half of it inside the board */
-    const nx = (-dy / l) * bordoMm;
-    const ny = (dx / l) * bordoMm;
+    if (Math.hypot(b.x - a.x, b.y - a.y) < 1e-9) continue;
     fuori.push({
       shape: "polygon",
       padId: `bordo_${i}`,
       layer: faccia,
       connectivityKey: `unconnected:bordo_${i}`,
-      points: [
-        { x: a.x + nx, y: a.y + ny },
-        { x: b.x + nx, y: b.y + ny },
-        { x: b.x - nx, y: b.y - ny },
-        { x: a.x - nx, y: a.y - ny },
-      ],
-    });
-    /* and a square on the corner, or the strips leave a notch where they meet */
-    fuori.push({
-      shape: "polygon",
-      padId: `angolo_${i}`,
-      layer: faccia,
-      connectivityKey: `unconnected:angolo_${i}`,
-      points: [
-        { x: a.x - bordoMm, y: a.y - bordoMm },
-        { x: a.x + bordoMm, y: a.y - bordoMm },
-        { x: a.x + bordoMm, y: a.y + bordoMm },
-        { x: a.x - bordoMm, y: a.y + bordoMm },
-      ],
+      points: capsula(a, b, bordoMm),
     });
   }
   return fuori;
@@ -869,6 +1184,8 @@ function altreColate(
     if (!cede) continue;
     const lontana = distanzaPropria(altra) ?? regolaMm;
     const anelli = lontana > suaDistanza ? allargaAnello(punti, lontana - suaDistanza) : [punti];
+    /* the outline itself and the whole gap, for the exact obstacle (see ostacoliEsatti) */
+    const esatta: FormaEsatta = { tipo: "poligono", punti: punti.map((p) => ({ x: p.x, y: p.y })) };
     anelli.forEach((anello, k) => {
       fuori.push({
         shape: "polygon",
@@ -876,6 +1193,7 @@ function altreColate(
         layer: String(questa.layer ?? ""),
         connectivityKey: `cutout:${String(altra.pcb_copper_pour_id ?? "")}`,
         points: anello.map((p) => ({ x: p.x, y: p.y })),
+        ...(k === 0 ? { formaEsatta: esatta, margineMm: Math.max(lontana, suaDistanza) } : {}),
       });
     });
   }
@@ -1013,11 +1331,34 @@ export async function ricolaPiani({
       (problema as unknown as { regionsForPour?: Array<{ connectivityKey?: string }> }).regionsForPour?.[0]
         ?.connectivityKey,
     );
-    if (mancanti.length + vicine.length + bordo.length + passanti.length > 0) {
-      const p = problema as unknown as { pads?: Array<Record<string, unknown>> };
-      p.pads = [...(p.pads ?? []), ...mancanti, ...vicine, ...bordo, ...passanti];
-      aggiunti += mancanti.length;
-      scavate += vicine.length;
+    const p = problema as unknown as {
+      pads?: Array<Record<string, unknown>>;
+      regionsForPour?: Array<{ connectivityKey?: string; padMargin?: number; traceMargin?: number; cutout_margin?: number }>;
+    };
+    p.pads = [...(p.pads ?? []), ...mancanti, ...vicine, ...bordo, ...passanti];
+    aggiunti += mancanti.length;
+    scavate += vicine.length;
+    /*
+     * And every one of them drawn here, grown by the clearance with round
+     * corners and arcs within 2 micrometres, instead of by the solver: see
+     * ostacoliEsatti. Only those that reach this pour's box.
+     */
+    {
+      const regione = p.regionsForPour?.[0];
+      const margini = {
+        pad: regione?.padMargin ?? suaDistanza,
+        trace: regione?.traceMargin ?? suaDistanza,
+        cutout: regione?.cutout_margin ?? suaDistanza,
+      };
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const q of contorno) {
+        minX = Math.min(minX, q.x);
+        minY = Math.min(minY, q.y);
+        maxX = Math.max(maxX, q.x);
+        maxY = Math.max(maxY, q.y);
+      }
+      const d = 0.01;
+      p.pads = ostacoliEsatti(p.pads, regione?.connectivityKey, margini, { minX: minX - d, minY: minY - d, maxX: maxX + d, maxY: maxY + d });
     }
 
     /*
@@ -1029,13 +1370,27 @@ export async function ricolaPiani({
      * gave nothing back, and the strip went to the Gerber as copper 0.025 mm
      * from a trace. A kept shape passes the same splinter test as a new one.
      */
+    /*
+     * A pour put back on its declared outline (conContorniDichiarati) has no
+     * old shape of its own: its outline is carved around nothing. What it keeps
+     * instead are the pieces tscircuit poured for it, under the same splinter
+     * test: carved by tscircuit at least, and a plane left over a hole by them
+     * is what keeps the board out of the export (see motoreDaSalvare).
+     */
+    const diTscircuit = pour[PEZZI_DI_TSCIRCUIT];
     const tieni = (): void => {
-      if (eScheggia(brep ?? {}, suaDistanza)) {
-        briciole++;
-        sparite.push(String(pour.pcb_copper_pour_id ?? "").replace(/(_r\d+)+$/, ""));
-        return;
+      const vecchie = diTscircuit ?? [pour];
+      let tenute = 0;
+      for (const vecchia of vecchie) {
+        const forma = (vecchia.brep_shape ?? {}) as { outer_ring?: Anello; inner_rings?: Anello[] };
+        if (eScheggia(forma, suaDistanza)) {
+          briciole++;
+          continue;
+        }
+        nuovi.push(vecchia);
+        tenute++;
       }
-      nuovi.push(pour);
+      if (tenute === 0) sparite.push(String(pour.pcb_copper_pour_id ?? "").replace(/(_r\d+)+$/, ""));
     };
     let forme: Array<{ outer_ring?: Anello; inner_rings?: Anello[] }> = [];
     try {
@@ -1055,12 +1410,16 @@ export async function ricolaPiani({
 
     // no neck narrower than a trace: see pour-necks.ts. AFTER the union, and the
     // union once more after it, because the opening rounds the joint of a ring
+    // The corners of the outline the pour was drawn with stay sharp where
+    // nothing cuts them; the corners the clearances cut are rounded.
     if (larghezzaMinimaMm && larghezzaMinimaMm > 0) {
       const prima = forme.reduce((t, f) => t + areaNetta(f), 0);
-      forme = forme.flatMap((f) => senzaColliStretti(f, larghezzaMinimaMm));
+      forme = forme.flatMap((f) => senzaColliStretti(f, larghezzaMinimaMm, contorno));
       colli += Math.max(0, prima - forme.reduce((t, f) => t + areaNetta(f), 0));
       forme = abbracciaRamePropio(forme, propri);
     }
+    // and no point a CAD would not write: see anelloPulito
+    forme = forme.map(formaPulita);
 
     ricolate++;
     /*
@@ -1105,17 +1464,33 @@ export async function ricolaPiani({
       tenuti++;
       const n = pezziDi.get(radice) ?? 0;
       pezziDi.set(radice, n + 1);
-      nuovi.push({
+      const pezzo: El = {
         ...pour,
         pcb_copper_pour_id: `${radice}_r${n}`,
         brep_shape: forma,
-      });
+      };
+      delete pezzo[PEZZI_DI_TSCIRCUIT];
+      nuovi.push(pezzo);
     });
     if (tenuti === 0) sparite.push(radice || String(pour.pcb_copper_pour_id ?? ""));
   }
 
+  /*
+   * The biggest first. A Gerber draws a pour's holes in clear polarity, which
+   * erases whatever was drawn before it there, other pours included
+   * (circuit-json-to-gerber writes the pours in the order they come): an
+   * island of another net sitting in a hole of a plane must come after the
+   * plane, and it is always the smaller of the two. The order the files
+   * declare them in is not that order (a script writes the strips before the
+   * planes).
+   */
+  const ordinate = nuovi
+    .map((el, i) => ({ el, i, a: areaNetta((el.brep_shape ?? {}) as { outer_ring?: Anello; inner_rings?: Anello[] }) }))
+    .sort((x, y) => y.a - x.a || x.i - y.i)
+    .map((x) => x.el);
+
   return {
-    circuitJson: [...circuitJson.filter((el) => el.type !== "pcb_copper_pour"), ...nuovi],
+    circuitJson: [...circuitJson.filter((el) => el.type !== "pcb_copper_pour"), ...ordinate],
     ricolate,
     areaPrimaMm2: Number(areaPrima.toFixed(1)),
     areaDopoMm2: Number(areaDopo.toFixed(1)),

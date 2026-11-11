@@ -251,6 +251,45 @@ export interface Pour {
   id: string;
   layer: LayerId;
   path: string;
+  /** the net it is copper of (source_net_id), to paint the pours of one net as one area */
+  net: string;
+}
+
+/** the pours of one net on one layer, painted together (see colatePerRete) */
+export interface ColateDiUnaRete {
+  key: string;
+  layer: LayerId;
+  net: string;
+  pours: Pour[];
+}
+
+/**
+ * THE POURS OF ONE NET ON ONE LAYER ARE ONE AREA OF COPPER.
+ *
+ * A board drawn by a script declares its ground as tiles that overlap by a
+ * tenth of a millimetre so that they fuse, and its hand strips inside the big
+ * pour: on sbb-dl-principale (2026-11-11) 197 pairs of ground pours overlap on
+ * the bottom face, 152 on the top. Electrically it is one net. But each pour
+ * was painted with its own transparency, so where two overlap the colour
+ * doubled, and a band 0.1 mm wide and 20 mm long read as a trace across the
+ * plane ("sistema ste linee di overlap dritte che sembrano piste").
+ *
+ * So the pours are grouped by layer and net, in the order they come: the
+ * canvas paints each group opaque inside and gives the group its transparency
+ * once, so overlaps do not add up and the seams disappear. Pours of two
+ * different nets stay in two groups: if they ever overlap, which is a short,
+ * the overlap still shows.
+ */
+export function colatePerRete(pours: Pour[], layer?: LayerId): ColateDiUnaRete[] {
+  const gruppi = new Map<string, ColateDiUnaRete>();
+  for (const p of pours) {
+    if (layer !== undefined && p.layer !== layer) continue;
+    const key = `${p.layer}|${p.net}`;
+    const g = gruppi.get(key);
+    if (g) g.pours.push(p);
+    else gruppi.set(key, { key, layer: p.layer, net: p.net, pours: [p] });
+  }
+  return [...gruppi.values()];
 }
 
 export interface ComponentBox {
@@ -460,6 +499,7 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
           id: String(el.pcb_copper_pour_id ?? `pour${scene.pours.length}`),
           layer: asLayer(el.layer),
           path: `${outer} ${inner}`.trim(),
+          net: String(el.source_net_id ?? ""),
         });
         break;
       }

@@ -685,10 +685,10 @@ export async function compileProject(
     });
     // the planes, poured again with the copper in place: see pours-recompute.ts
     const ricolate = await ricolaPiani({
-      // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati;
+      // from the outlines the files declare, not the shrunken ones: see conContorniDichiarati;
       // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
       circuitJson: conDistanzeProprie(
-        conContorniDichiarati(conMano.circuitJson as never, projectFsMap["main.tsx"]) as never,
+        conContorniDichiarati(conMano.circuitJson as never, projectFsMap) as never,
       ) as never,
       // a pour holds its own distance, wider than a trace's when the board says so
       clearanceMm:
@@ -1219,10 +1219,10 @@ export async function compileProject(
    * over them. See pours-recompute.ts.
    */
   const ricolate = await ricolaPiani({
-    // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati;
+    // from the outlines the files declare, not the shrunken ones: see conContorniDichiarati;
     // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
     circuitJson: conDistanzeProprie(
-      conContorniDichiarati(manual.circuitJson as never, projectFsMap["main.tsx"]) as never,
+      conContorniDichiarati(manual.circuitJson as never, projectFsMap) as never,
     ) as never,
     clearanceMm:
       projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,

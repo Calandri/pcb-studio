@@ -26,8 +26,11 @@ describe("readPours", () => {
 describe("bandaDelBordo", () => {
   it("falls back to the board rectangle when the outline is empty", () => {
     const band = bandaDelBordo([{ type: "pcb_board", center: { x: 0, y: 0 }, width: 10, height: 8, outline: [] }], "top", 0.3);
-    // four strips and four corner squares
-    expect(band).toHaveLength(8);
+    // one capsule per side: the side swept by a disc of the edge clearance
+    expect(band).toHaveLength(4);
+    const xs = band.flatMap((b) => (b.points as Array<{ x: number }>).map((p) => p.x));
+    expect(Math.max(...xs)).toBeGreaterThanOrEqual(5.3 - 1e-9);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(5.3 + 0.002 + 1e-9);
   });
 });
 

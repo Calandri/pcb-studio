@@ -20,6 +20,7 @@ import {
   LAYER_ORDER,
   boardOutlinePath,
   buildScene,
+  colatePerRete,
   layerForKey,
   type LayerId,
 } from "./render";
@@ -512,14 +513,13 @@ export function RouteCanvas({
             * the pour of the layer you are working on stands out from the
             * others.
             */}
-          {scene.pours.map((p) => (
-            <path
-              key={p.id}
-              d={p.path}
-              fillRule="evenodd"
-              fill={LAYER_COLOR[p.layer]}
-              opacity={p.layer === layer ? 0.2 : 0.07}
-            />
+          {/* one area per net and layer: the transparency on the group, see colatePerRete */}
+          {colatePerRete(scene.pours).map((g) => (
+            <g key={g.key} opacity={g.layer === layer ? 0.2 : 0.07}>
+              {g.pours.map((p) => (
+                <path key={p.id} d={p.path} fillRule="evenodd" fill={LAYER_COLOR[p.layer]} />
+              ))}
+            </g>
           ))}
 
           {usedLayers.map((l) => (

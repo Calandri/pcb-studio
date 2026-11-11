@@ -26,6 +26,7 @@ import {
   LAYER_ORDER,
   boardOutlinePath,
   buildScene,
+  colatePerRete,
   holeCopper,
   type BoardScene,
   type LayerId,
@@ -1985,9 +1986,14 @@ const RameFermo = memo(
       {/* copper planes, from bottom to top */}
       {showPours &&
         drawOrder.map((l) =>
-          scene.pours
-            .filter((p) => p.layer === l)
-            .map((p) => (
+          /*
+           * One group per net: its pours opaque inside it, the transparency
+           * on the group, so two pours of the net that overlap are one area
+           * and not a lighter band (see colatePerRete).
+           */
+          colatePerRete(scene.pours, l).map((g) => (
+            <g key={g.key} opacity={tutti || l === active ? 0.45 : (xray / 100) * 0.45}>
+            {g.pours.map((p) => (
               <path
                 key={p.id}
                 d={p.path}
@@ -2013,9 +2019,10 @@ const RameFermo = memo(
                 stroke={LAYER_COLOR[l]}
                 strokeWidth={mmPerPx * (l === active ? 1.4 : 1)}
                 strokeOpacity={tutti || l === active ? 0.85 : (xray / 100) * 0.7}
-                opacity={tutti || l === active ? 0.45 : (xray / 100) * 0.45}
               />
-            )),
+            ))}
+            </g>
+          )),
         )}
 
       {/* traces */}

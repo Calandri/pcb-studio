@@ -33,7 +33,19 @@
 // and the house rule that straightens escapes would have bent it. The same reading is fixed in the net of a trace
 // without one, the pads of a net tie (DRC and matched lengths), the dangling traces, the net of a spliced power
 // trace and the tie stubs of the plane check
-export const CHECKS_ENGINE_VERSION = 8;
+// 9 (2026-11-11): the pours are drawn like a CAD's. Every pour starts again from the outline its file declares, in any
+// file the board imports (sbb-dl-principale keeps its 296 in righe_2/3/4 and none was put back: each was re-poured from
+// tscircuit's own pour, 0.19 mm inside the outline and cut by a square at every vertex, which made the staircases, the
+// lumps at the bends and the lobes around the vias, and was not the same from one run to the next); a `<copperpour>`
+// with no outline starts from the board's. Every obstacle is grown by the clearance with round corners and arcs within 2
+// micrometres, outside the true curve (the solver's 32-sided circles stood up to 6 micrometres inside the clearance);
+// the edge band follows the outline with no square on its vertices; own pads are held by their real shape (a pill held
+// as its bounding box brought the TM board's NetC1_1 strip within 0.019 mm of the ground plane); the opening that takes
+// out the necks uses as many segments as its radius needs, keeps the declared corners and is idempotent; every ring is
+// cleaned of what it does not need, only ever taking copper away; the pours are written biggest first. Every board's
+// pours change shape: compile it again ("Aggiorna"). A recheck of an older board takes out necks and cleans the rings,
+// it does not pour again from the declared outlines
+export const CHECKS_ENGINE_VERSION = 9;
 
 /**
  * The first engine whose planes open around EVERY via, whatever layers it
