@@ -103,6 +103,7 @@ ${SCHEMATIC_METRICS}
 - unroutedDetail gives the exact pad coordinates still to connect; congestion gives the most copper-covered board cells; ratsnest gives estimatedCrossings and the longest nets. Use them to move parts instead of guessing.
 - drcViolations (fabrication) and prcViolations (whether the board actually works: decoupling distance, dead pour islands, return vias, power trace width) are defects too: fix them before declaring the work done.
 - silkscreen lists silkscreen clashes, a warning that does not stop the export: two drawings (parts, texts, board drawings) closer than minSilkscreenClearanceMm (0.15mm by default), silkscreen on bare copper, silkscreen touching a hole, each with face, the two things by name, the point and the distance. propria marks a part's own outline on its own pads.
+- courtyards is about the footprints of the parts in assembly (the declared courtyard, or body and pads plus componentCourtyardExcessMm, 0.2mm per side by default): scontri are pairs of parts on one face whose footprints overlap, an error in targets.courtyardCollisions that keeps allGreen false (the export is not refused); senzaIngombroVero, nelloSpazioDiInnesto and disegniDiScheda are warnings (no real body, standing in a connector's mating space, outline or designator written at board level).
 - fabClasses / fabClass say which manufacturer class the design satisfies, cheapest first; a project with custom rules is listed first and satisfies its own class when the DRC is clean.
 - footprintProvenance says where each component's pad geometry comes from. A part with an LCSC code that still uses a generic footprint is a defect: import the real one.
 - A schematic_layout_disabled error means schX/schY disabled the schematic auto layout: remove them and use schSectionName.
@@ -295,7 +296,8 @@ function buildHandler(viewer: Viewer) {
         "tiene il rame gia' sulla scheda, esegue il DRC e restituisce errori, " +
         "connessioni ancora aperte, congestione e geometria, piu' la qualita' dello " +
         "schematico (simboli sovrapposti, net label sopra i simboli, incroci, sezioni " +
-        "funzionali). Le piste si disegnano a mano (<trace pcbPath>). Chiamalo dopo ogni " +
+        "funzionali), e gli ingombri dei pezzi (courtyards: due pezzi che si scontrano in montaggio sono un errore). " +
+        "Le piste si disegnano a mano (<trace pcbPath>). Chiamalo dopo ogni " +
         "write_file e correggi ogni errore prima di rispondere. Su una scheda grande " +
         "(da 40 componenti in su) risponde appena la scheda senza schematico e' salvata, " +
         "con schematicoInCorso: true e schematicPending: lo schematico finisce in background " +
@@ -426,7 +428,8 @@ function buildHandler(viewer: Viewer) {
     server.tool(
       "inspect_board",
       "Fotografia dell'ULTIMA scheda compilata e salvata: problemi con posizione, " +
-        "conflitti di serigrafia (silkscreen) e componenti con coordinate e reti collegate. Non ricompila: dopo un write_file " +
+        "conflitti di serigrafia (silkscreen), ingombri dei pezzi (courtyards: pezzi che si scontrano in montaggio, " +
+        "pezzi senza ingombro vero) e componenti con coordinate e reti collegate. Non ricompila: dopo un write_file " +
         "chiama prima compile. Utile per decidere dove spostare i pezzi.",
       { projectId: z.string() },
       async ({ projectId }) => {

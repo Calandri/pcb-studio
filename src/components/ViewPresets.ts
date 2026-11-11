@@ -58,12 +58,13 @@ export const VIEW_PRESETS: ViewPreset[] = [
     key: "assembly",
     label: "Montaggio",
     description:
-      "La scheda come esce dalla fabbrica: la vernice verde copre il rame (quindi le piste non si vedono, esattamente come dal vero) e restano scoperti pad e serigrafia.",
+      "La scheda come esce dalla fabbrica: la vernice verde copre il rame (quindi le piste non si vedono, esattamente come dal vero) e restano scoperti pad e serigrafia. Con l'ingombro di ogni pezzo, per vedere se due pezzi si toccano in montaggio.",
     flags: {
       ...NONE,
       is_showing_silkscreen: true,
       is_showing_solder_mask: true,
       is_showing_paste_mask: true,
+      is_showing_courtyards: true,
     },
   },
   {
@@ -77,7 +78,7 @@ export const VIEW_PRESETS: ViewPreset[] = [
     key: "interference",
     label: "Interferenze",
     description:
-      "Ingombri dei componenti ed errori di produzione: è la vista per capire perché due pezzi non ci stanno o perché l'autorouter si blocca.",
+      "L'ingombro di ogni pezzo (il cortile del footprint, oppure corpo e piazzole più l'abbondanza, tratteggiato), rosso dove due si sovrappongono, lo spazio dove si infila la spina dei connettori, ed errori di produzione: è la vista per capire se due pezzi si scontrano in montaggio.",
     flags: {
       ...NONE,
       is_showing_courtyards: true,

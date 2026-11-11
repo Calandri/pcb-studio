@@ -58,8 +58,9 @@ const instrada = (props: Record<string, unknown>) =>
 
 /** something drawn is recognised by its own size */
 const c = (svg: string, misura: string) => svg.includes(`"${misura}"`);
-const TOP = { piazzola: "1.11", pasta: "0.91", ingombro: "2.71", serigrafia: "0.131", pista: "0.311" };
-const BOT = { piazzola: "1.22", pasta: "0.92", ingombro: "2.72", serigrafia: "0.132", pista: "0.312" };
+// the footprint of a part is drawn as a path (ingombro.ts): it is recognised by the part it belongs to
+const TOP = { piazzola: "1.11", pasta: "0.91", ingombro: "ingombro-pc_top", serigrafia: "0.131", pista: "0.311" };
+const BOT = { piazzola: "1.22", pasta: "0.92", ingombro: "ingombro-pc_bot", serigrafia: "0.132", pista: "0.312" };
 const IN1 = { pista: "0.313" };
 /** the boxes that answer the mouse in Guarda: one per part that can be pointed at */
 const riquadri = (svg: string) => svg.match(/<rect[^>]*style="cursor:pointer"[^>]*>/g) ?? [];
@@ -199,5 +200,33 @@ describe("Instrada: segue lo strato e la radiografia scelti a sinistra", () => {
     const svg = instrada({});
     expect(c(svg, TOP.pista)).toBe(true);
     expect(c(svg, BOT.pista)).toBe(false);
+  });
+});
+
+describe("i marcatori dei controlli seguono la faccia di cio' di cui parlano", () => {
+  /* a finding of the bottom (two parts that hit each other there), and one with no face (a hole) */
+  const markers = [
+    { id: "m_bot", x: 5, y: 0, message: "ingombri (bottom): R2 e R3 si scontrano", severity: "err", layer: "bottom" },
+    { id: "m_foro", x: 0, y: 3, message: "foro", severity: "warn" },
+  ];
+  const flagsErrori = { ...flags, is_showing_drc_errors: true };
+  const conMarcatori = (props: Record<string, unknown>) =>
+    renderToStaticMarkup(createElement(BoardCanvas, { circuitJson: CIRCUIT, flags: flagsErrori, mode: "view", markers, ...props } as never));
+  /** a marker is drawn as a ring at its point */
+  const anello = (svg: string, x: number, y: number) => new RegExp(`<circle cx="${x}" cy="${y}" r="[^"]+" fill="none"`).test(svg);
+
+  it("con Top il marcatore del retro non c'e', quello senza faccia si'", () => {
+    const svg = conMarcatori({ layer: "top" });
+    expect(anello(svg, 5, 0)).toBe(false);
+    expect(anello(svg, 0, 3)).toBe(true);
+  });
+
+  it("con Bottom, con Tutti e con la radiografia c'e'", () => {
+    expect(anello(conMarcatori({ layer: "bottom" }), 5, 0)).toBe(true);
+    expect(anello(conMarcatori({ layer: "all" }), 5, 0)).toBe(true);
+    const radiografia = conMarcatori({ layer: "top", xray: 40 });
+    expect(anello(radiografia, 5, 0)).toBe(true);
+    // attenuated like its face: 0,40 x 0,75
+    expect(radiografia).toMatch(/<g opacity="0\.3"[^>]*><circle cx="5" cy="0"/);
   });
 });

@@ -104,6 +104,43 @@ describe("inspect_board legge la scheda salvata", () => {
     expect(pulita.ok && pulita.result.silkscreen).toBeUndefined();
   });
 
+  it("elenca gli ingombri della compilazione salvata (pezzi che si scontrano e avvisi), i primi 60, senza rimisurarli", async () => {
+    const scontri = Array.from({ length: 70 }, (_, i) => ({
+      a: `C${i}`,
+      b: "U1",
+      faccia: "top",
+      x: i,
+      y: 0,
+      sovrapposizioneMm: 0.1,
+      distanzaInvolucriMm: 0.3,
+      eccedenzaMm: 0.2,
+      fonteA: "piazzole e corpo",
+      fonteB: "cortile",
+    }));
+    const pezzi = Array.from({ length: 65 }, (_, i) => ({ pezzo: `U${i}`, faccia: "top", x: i, y: 0 }));
+    const courtyards = {
+      count: 70,
+      eccedenzaMm: 0.2,
+      severity: "error",
+      detail: "70 coppie di pezzi si scontrano in assemblaggio",
+      scontri,
+      senzaIngombroVero: { count: 65, pezzi, detail: "65 pezzi senza ingombro vero" },
+      dedottiDalFormato: 3,
+      disegniDiScheda: { count: 0, pezzi: [], detail: "" },
+    };
+    store.cache = { filesHash: filesHash(store.files), circuitJson: circuit, summary: { courtyards }, createdAt: "2026-11-12T00:00:00Z", engineVersion: 11 };
+    const r = await inspectSavedBoard("p");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.result.courtyards).toMatchObject({ count: 70, eccedenzaMm: 0.2, detail: "70 coppie di pezzi si scontrano in assemblaggio" });
+    expect(r.result.courtyards!.scontri).toEqual(scontri.slice(0, 60));
+    expect(r.result.courtyards!.senzaIngombroVero.pezzi).toEqual(pezzi.slice(0, 60));
+    expect(r.result.courtyards!.senzaIngombroVero.count).toBe(65);
+    store.cache = { ...store.cache, summary: {} };
+    const pulita = await inspectSavedBoard("p");
+    expect(pulita.ok && pulita.result.courtyards).toBeUndefined();
+  });
+
   it("dice quando la scheda salvata e' piu' vecchia dei sorgenti", async () => {
     store.cache = {
       filesHash: "hash-di-prima",

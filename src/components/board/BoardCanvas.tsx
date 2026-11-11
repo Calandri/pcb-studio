@@ -20,6 +20,7 @@ import {
 } from "./net-labels";
 
 import { ETICHETTA_FONTE, type DescrizionePezzo } from "@/lib/part-description";
+import { forma, percorsoDellaForma, scontri, type Forma } from "@/lib/ingombro";
 import {
   HOLE_COPPER,
   LAYER_COLOR,
@@ -101,6 +102,11 @@ export const snapToGrid = (v: number, grid: number) => Math.round(Math.round(v /
  * to fit at 1 px/mm the first wheel tick JUMPED in instead of zooming out, and
  * there was no way back to the whole board except the framing button.
  */
+/** the footprints: their line, the line of two that hit each other, a connector's mating space */
+const COLORE_INGOMBRO = "#B48CFF";
+const COLORE_SCONTRO = "#FF4D5E";
+const COLORE_INNESTO = "#4FC3F7";
+
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 400;
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -129,6 +135,7 @@ export function BoardCanvas({
   bothSides = false,
   partInfo,
   vistaKey,
+  eccedenzaIngombroMm,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -181,8 +188,10 @@ export function BoardCanvas({
   partInfo?: Record<string, DescrizionePezzo & { name: string }>;
   /** whose view this is (the project): shared by every canvas of the board */
   vistaKey?: string;
+  /** the project's componentCourtyardExcessMm, for the footprints PCB Studio computes (see ingombro.ts) */
+  eccedenzaIngombroMm?: number;
 }) {
-  const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
+  const scene = useMemo(() => buildScene(circuitJson, { eccedenzaIngombroMm }), [circuitJson, eccedenzaIngombroMm]);
   /** the board's real outline as an SVG path; null when it is a plain rectangle */
   const boardPath = useMemo(() => (scene ? boardOutlinePath(scene.board) : null), [scene]);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -804,6 +813,34 @@ export function BoardCanvas({
   );
 
   /*
+   * THE PARTS THAT HIT EACH OTHER, NOW. The footprints are drawn where the parts
+   * are being held (moved, turned, turned over and not applied yet), and the
+   * ones that overlap are red while the part is still in hand: the same
+   * collision the check (component-clearance.ts) reports after the compile,
+   * computed on the same shapes moved like their part.
+   */
+  const inCollisione = useMemo(() => {
+    const out = new Set<string>();
+    if (!scene || scene.ingombri.length === 0) return out;
+    const sposta = (id: string, forme: Forma[]): Forma[] =>
+      forme.map((f) => forma(f.punti.map((q) => mmPointTx(id, q.x, q.y)), f.r));
+    const vivi = scene.ingombri.map((g) => {
+      const mosso = Boolean(moveOverrides[g.componentId]) || Boolean(compDrag?.ids.includes(g.componentId)) || girati.has(g.componentId);
+      return {
+        faccia: (latoDiParte(g.componentId, g.layer) === "bottom" ? "bottom" : "top") as "top" | "bottom",
+        forme: mosso ? sposta(g.componentId, g.forme) : g.forme,
+        fori: mosso ? sposta(g.componentId, g.fori) : g.fori,
+      };
+    });
+    for (const s of scontri(vivi)) {
+      out.add(scene.ingombri[s.a].componentId);
+      out.add(scene.ingombri[s.b].componentId);
+    }
+    return out;
+    // latoDiParte reads girati, which is in the list
+  }, [scene, mmPointTx, moveOverrides, compDrag, girati]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /*
    * "Gira lato" (F in Sposta): the picked part, and every selected one, goes
    * to the other face. Same place, same rotation, footprint mirrored as
    * tscircuit does for a part on that face. A pending edit like a move: counted
@@ -956,6 +993,8 @@ export function BoardCanvas({
   const showMask = flags.is_showing_solder_mask;
   const showPours = flags.is_showing_copper_pours;
   const showCourtyards = flags.is_showing_courtyards;
+  // the footprints: where the courtyards are shown, and while parts are being moved
+  const showIngombri = showCourtyards || mode === "move";
   const showErrors = flags.is_showing_drc_errors;
   const showPaste = flags.is_showing_paste_mask;
 
@@ -1439,44 +1478,47 @@ export function BoardCanvas({
                 );
               })}
 
-          {/* courtyards */}
-          {showCourtyards &&
-            scene.courtyards.filter((c) => !nascosti.has(c.componentId)).map((c) => {
-              // every kind of courtyard, not only rects: see footprint-bounds.ts
-              const tratto = {
-                fill: "none",
-                stroke: "#FF6B5A",
-                strokeWidth: mmPerPx,
-                strokeDasharray: `${mmPerPx * 4} ${mmPerPx * 3}`,
-                // a courtyard has no layer of its own: it is on the face of its part
-                opacity: 0.7 * layerOpacity(facciaDiPezzo.get(c.componentId) ?? active),
-              };
-              const s = c.shape;
-              if (s.kind === "circle") {
-                return <circle key={c.id} transform={compTx(c.componentId)} cx={s.x} cy={s.y} r={s.r} {...tratto} />;
-              }
-              if (s.kind === "poly") {
-                return (
-                  <polygon
-                    key={c.id}
-                    transform={compTx(c.componentId)}
-                    points={s.points.map((q) => `${q.x},${q.y}`).join(" ")}
-                    {...tratto}
-                  />
-                );
-              }
+          {/*
+            THE FOOTPRINT OF EVERY PART (ingombro.ts), where the courtyards were:
+            in the views that show them (Interferenze, Montaggio, Tutto) and in
+            Sposta. A line 0,05 mm wide on the board (at least a pixel when far
+            away), continuous for a courtyard the footprint declares, dashed for
+            one PCB Studio computed (body and pads, the excess around them), red
+            and lightly filled where two of them overlap, right now. A
+            connector's mating space dashed in its own colour. They belong to the
+            face of their part, by the rule of strati-visibili.ts.
+          */}
+          {showIngombri &&
+            scene.ingombri.filter((g) => !nascosti.has(g.componentId)).map((g) => {
+              const forza = layerOpacity(facciaDiPezzo.get(g.componentId) ?? g.layer);
+              if (forza <= 0) return null;
+              const rosso = inCollisione.has(g.componentId);
+              const linea = Math.max(0.05, mmPerPx);
+              const tratteggio = `${Math.max(0.25, mmPerPx * 5)} ${Math.max(0.15, mmPerPx * 3)}`;
               return (
-                <rect
-                  key={c.id}
-                  transform={componi(compTx(c.componentId), s.rot ? `rotate(${s.rot} ${s.x} ${s.y})` : null)}
-                  x={s.x - s.w / 2}
-                  y={s.y - s.h / 2}
-                  width={s.w}
-                  height={s.h}
-                  rx={s.r}
-                  ry={s.r}
-                  {...tratto}
-                />
+                <g key={`ing-${g.componentId}`} data-ingombro={`ingombro-${g.componentId}`} transform={compTx(g.componentId)} opacity={forza} style={{ pointerEvents: "none" }}>
+                  {g.forme.map((f, i) => (
+                    <path
+                      key={i}
+                      d={percorsoDellaForma(f)}
+                      fill={rosso ? "rgba(255,77,94,0.16)" : "none"}
+                      stroke={rosso ? COLORE_SCONTRO : COLORE_INGOMBRO}
+                      strokeWidth={linea}
+                      strokeDasharray={g.dichiarato ? undefined : tratteggio}
+                      strokeLinejoin="round"
+                    />
+                  ))}
+                  {g.innesti.map((n, i) => (
+                    <path
+                      key={`inn-${i}`}
+                      d={percorsoDellaForma(n.forma)}
+                      fill="none"
+                      stroke={COLORE_INNESTO}
+                      strokeWidth={linea}
+                      strokeDasharray={`${Math.max(0.5, mmPerPx * 8)} ${Math.max(0.25, mmPerPx * 4)}`}
+                    />
+                  ))}
+                </g>
               );
             })}
 
@@ -1627,9 +1669,14 @@ export function BoardCanvas({
 
           {/* automatic-check markers, where they really are */}
           {showErrors &&
-            markers.map((m) => (
+            markers.map((m) => {
+              // a finding on a face follows that face (strati-visibili.ts); without one it is everywhere
+              const forza = m.layer && m.layer !== "all" ? layerOpacity(m.layer) : 1;
+              if (forza <= 0) return null;
+              return (
               <g
                 key={m.id}
+                opacity={forza}
                 onMouseEnter={(e) => {
                   const rect = wrapRef.current?.getBoundingClientRect();
                   if (rect) setTip({ x: e.clientX - rect.left, y: e.clientY - rect.top, text: m.message });
@@ -1648,7 +1695,8 @@ export function BoardCanvas({
                 />
                 <circle cx={m.x} cy={m.y} r={mmPerPx * 14} fill="transparent" />
               </g>
-            ))}
+              );
+            })}
         </g>
 
         {/* designators must not be mirrored: they are drawn outside the flipped group */}

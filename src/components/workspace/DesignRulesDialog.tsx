@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ClassiRame } from "@/lib/classi-rame";
-import { COPPIE, SERIGRAFIA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
+import { COPPIE, INGOMBRO_ECCEDENZA_MM, SERIGRAFIA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
 
 /**
  * Board fabrication rules.
@@ -61,6 +61,13 @@ const FIELDS: Array<{
     hint: "fra due disegni di serigrafia e dalle piazzole scoperte: un avviso, non ferma l'export",
     puoEsserVuoto: true,
     diSerie: SERIGRAFIA_DISTANZA_MM,
+  },
+  {
+    key: "componentCourtyardExcessMm",
+    label: "Abbondanza dell'ingombro",
+    hint: "per lato, attorno a corpo e piazzole di un pezzo senza cortile: due ingombri che si sovrappongono si scontrano in montaggio e la scheda non e' pronta",
+    puoEsserVuoto: true,
+    diSerie: INGOMBRO_ECCEDENZA_MM,
   },
 ];
 

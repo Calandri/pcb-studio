@@ -9,6 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildBoardReport, schematicMissing, type BoardReport } from "@/lib/board-report";
 import { motivoSenzaSchematico, type CompileRun } from "@/lib/compile-run";
 import type { ConflittoSerigrafia } from "@/lib/silkscreen-clearance";
+import type { IngombriDeiPezzi } from "@/lib/component-clearance";
+import { eccedenzaDellIngombro, resolveDesignRules } from "@/lib/design-rules";
 import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
@@ -1082,7 +1084,7 @@ export function Studio({
     const violations =
       (summary as { drcViolations?: Array<{ rule: string; message: string; points?: Array<{ x: number; y: number }> }> } | null)
         ?.drcViolations ?? [];
-    const out: Array<{ id: string; x: number; y: number; message: string; severity: "err" | "warn" }> = [];
+    const out: Array<{ id: string; x: number; y: number; message: string; severity: "err" | "warn"; layer?: "top" | "bottom" }> = [];
     for (const v of violations) {
       for (const point of v.points ?? []) {
         out.push({
@@ -1106,10 +1108,64 @@ export function Studio({
           `serigrafia (${c.faccia}): ${c.a} <-> ${c.b}, ${c.distanzaMm.toFixed(3)}mm` +
           (c.minimoMm > 0 ? ` < ${c.minimoMm}mm` : ", tocca il foro"),
         severity: "warn",
+        layer: c.faccia,
+      });
+    }
+    /*
+     * The footprints (see component-clearance.ts), each on its face: two parts
+     * that hit each other in red like the errors, the warnings in amber.
+     */
+    const ingombri = (summary as { courtyards?: IngombriDeiPezzi } | null)?.courtyards;
+    for (const c of ingombri?.scontri ?? []) {
+      out.push({
+        id: `scontro-${out.length}`,
+        x: c.x,
+        y: c.y,
+        message:
+          `ingombri (${c.faccia}): ${c.a} e ${c.b} si scontrano in montaggio, ingombri sovrapposti di ${c.sovrapposizioneMm.toFixed(3)}mm, ` +
+          `corpo e piazzole a ${c.distanzaInvolucriMm.toFixed(3)}mm (${c.fonteA} / ${c.fonteB})`,
+        severity: "err",
+        layer: c.faccia,
+      });
+    }
+    for (const c of ingombri?.nelloSpazioDiInnesto?.pezzi ?? []) {
+      out.push({
+        id: `innesto-${out.length}`,
+        x: c.x,
+        y: c.y,
+        message: `${c.pezzo} sta dove si infila ${c.descrizione ?? "la spina"} di ${c.connettore}`,
+        severity: "warn",
+        layer: c.faccia,
+      });
+    }
+    for (const c of ingombri?.senzaIngombroVero.pezzi ?? []) {
+      out.push({
+        id: `senza-ingombro-${out.length}`,
+        x: c.x,
+        y: c.y,
+        message: `${c.pezzo}: ingombro ricavato dalle sole piazzole, metti nel footprint il corpo vero (cortile)`,
+        severity: "warn",
+        layer: c.faccia,
+      });
+    }
+    for (const c of ingombri?.disegniDiScheda.pezzi ?? []) {
+      out.push({
+        id: `disegno-di-scheda-${out.length}`,
+        x: c.x,
+        y: c.y,
+        message:
+          c.tipo === "contorno e sigla"
+            ? `il contorno e la sigla di ${c.pezzo} sono disegni di scheda: non seguono il pezzo quando lo sposti`
+            : `${c.tipo === "contorno" ? "il contorno" : "la sigla"} di ${c.pezzo} e' un disegno di scheda: non segue il pezzo quando lo sposti`,
+        severity: "warn",
+        layer: c.faccia,
       });
     }
     return out;
   }, [summary]);
+
+  /** the excess around a part the project asks (design-rules.json), for the footprints the viewer draws */
+  const eccedenzaIngombro = useMemo(() => eccedenzaDellIngombro(resolveDesignRules(fsMap ?? {}).rules), [fsMap]);
 
   /** ruleset this board was routed and checked with */
   const activeRules =
@@ -1671,6 +1727,7 @@ export function Studio({
                       layer={layer}
                       xray={xray}
                       markers={drcMarkers}
+                      eccedenzaIngombroMm={eccedenzaIngombro}
                       hoveredComponentId={hoverPartId}
                       onHoverComponent={setHoverPartId}
                       onPickComponent={pickPart}
@@ -1713,6 +1770,7 @@ export function Studio({
                       layer={layer}
                       xray={xray}
                       markers={drcMarkers}
+                      eccedenzaIngombroMm={eccedenzaIngombro}
                       hoveredComponentId={hoverPartId}
                       onHoverComponent={setHoverPartId}
                       onPickComponent={pickPart}

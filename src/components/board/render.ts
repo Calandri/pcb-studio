@@ -8,6 +8,8 @@
  */
 
 import { courtyardShape, footprintBoxes, type CourtyardShape } from "@/lib/footprint-bounds";
+import { INGOMBRO_ECCEDENZA_MM } from "@/lib/design-rules";
+import { leggiIngombri, type Forma } from "@/lib/ingombro";
 
 export interface El {
   type: string;
@@ -329,6 +331,32 @@ export interface Marker {
   y: number;
   message: string;
   severity: "err" | "warn";
+  /**
+   * The face (or layer) the finding is on: the marker follows the rule of
+   * strati-visibili.ts like what it is about. Absent or "all": on every layer
+   * (holes, vias, the edge, what touches both faces), always drawn.
+   */
+  layer?: LayerId | "all";
+}
+
+/**
+ * The footprint of a part in assembly (ingombro.ts): the declared courtyard,
+ * or the rectangle around body and pads grown by the project's excess, with
+ * the room a connector's mating part takes (spaziDiInnesto). Drawn in the
+ * views that show courtyards and in Sposta.
+ */
+export interface IngombroScena {
+  componentId: string;
+  name: string;
+  layer: "top" | "bottom";
+  forme: Forma[];
+  /** declared in the footprint (a continuous line) or computed by PCB Studio (dashed) */
+  dichiarato: boolean;
+  /** computed from the pads alone: the real body is missing */
+  senzaCorpo: boolean;
+  /** a through-hole part on the other face: its holes and rings, for the collisions only */
+  fori: Forma[];
+  innesti: Array<{ forma: Forma; descrizione: string | null }>;
 }
 
 export interface BoardScene {
@@ -342,6 +370,8 @@ export interface BoardScene {
   silkPaths: SilkPath[];
   silkTexts: SilkText[];
   courtyards: Courtyard[];
+  /** the footprint of every part (see IngombroScena) */
+  ingombri: IngombroScena[];
   components: ComponentBox[];
 }
 
@@ -353,7 +383,11 @@ const asLayer = (v: unknown, fallback: LayerId = "top"): LayerId => {
   return s === "top" || s === "bottom" || s === "inner1" || s === "inner2" ? s : fallback;
 };
 
-export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
+export function buildScene(
+  circuitJson: unknown[] | null,
+  /** the project's componentCourtyardExcessMm, for the footprints PCB Studio computes */
+  opts: { eccedenzaIngombroMm?: number } = {},
+): BoardScene | null {
   if (!circuitJson) return null;
   const elements = circuitJson as El[];
 
@@ -474,6 +508,16 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
     silkPaths: [],
     silkTexts: [],
     courtyards: [],
+    ingombri: leggiIngombri(elements, opts.eccedenzaIngombroMm ?? INGOMBRO_ECCEDENZA_MM).map((p) => ({
+      componentId: p.id,
+      name: p.nome,
+      layer: p.faccia,
+      forme: p.forme,
+      dichiarato: p.fonte === "cortile",
+      senzaCorpo: p.senzaCorpo,
+      fori: p.fori,
+      innesti: p.innesti,
+    })),
     components: [],
   };
 

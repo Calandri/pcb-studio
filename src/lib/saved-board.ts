@@ -7,6 +7,7 @@ import { extractComponents, extractIssues, type InspectComponent, type InspectIs
 import { descriviDistanze, distanzeDelleColate } from "./pours";
 import type { Profile } from "./profile";
 import type { SerigrafiaInConflitto } from "./silkscreen-clearance";
+import type { IngombriDeiPezzi } from "./component-clearance";
 import { filesHash, getCompileCache, getProject, hasBoard } from "./project-store";
 
 const profileOf = (summary: unknown): Profile | undefined => {
@@ -49,6 +50,14 @@ export interface SavedBoardInspection {
    * by an engine before 10 (checksStale: Ricontrolla measures it).
    */
   silkscreen?: SerigrafiaInConflitto;
+  /**
+   * The footprints of the parts the saved compile measured (summary.courtyards,
+   * see component-clearance.ts): pairs that hit each other in assembly (an
+   * error), parts with no real footprint, parts in a connector's mating space,
+   * outlines written at board level; the first 60 of each. Absent when there
+   * is nothing to say, and on a board checked by an engine before 11.
+   */
+  courtyards?: IngombriDeiPezzi;
   issues: InspectIssue[];
   components: InspectComponent[];
 }
@@ -89,6 +98,7 @@ export async function inspectSavedBoard(
   const distanze = distanzeDelleColate(cache.circuitJson as unknown[], regole.pourClearanceMm ?? regole.minClearanceMm);
   const avvisi = (cache.summary as { pourClearances?: { avvisi?: unknown } } | null)?.pourClearances?.avvisi;
   const serigrafia = (cache.summary as { silkscreen?: SerigrafiaInConflitto } | null)?.silkscreen;
+  const ingombri = (cache.summary as { courtyards?: IngombriDeiPezzi } | null)?.courtyards;
   return {
     ok: true,
     result: {
@@ -111,6 +121,19 @@ export async function inspectSavedBoard(
         : {}),
       ...(serigrafia && typeof serigrafia.count === "number"
         ? { silkscreen: { ...serigrafia, conflitti: (serigrafia.conflitti ?? []).slice(0, 60) } }
+        : {}),
+      ...(ingombri && typeof ingombri.count === "number"
+        ? {
+            courtyards: {
+              ...ingombri,
+              scontri: (ingombri.scontri ?? []).slice(0, 60),
+              senzaIngombroVero: { ...ingombri.senzaIngombroVero, pezzi: (ingombri.senzaIngombroVero?.pezzi ?? []).slice(0, 60) },
+              disegniDiScheda: { ...ingombri.disegniDiScheda, pezzi: (ingombri.disegniDiScheda?.pezzi ?? []).slice(0, 60) },
+              ...(ingombri.nelloSpazioDiInnesto
+                ? { nelloSpazioDiInnesto: { ...ingombri.nelloSpazioDiInnesto, pezzi: ingombri.nelloSpazioDiInnesto.pezzi.slice(0, 60) } }
+                : {}),
+            },
+          }
         : {}),
       issues: extractIssues(cache.circuitJson).slice(0, 60),
       components: extractComponents(cache.circuitJson, files),
