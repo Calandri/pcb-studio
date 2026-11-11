@@ -50,6 +50,7 @@ import {
   emptyManualEdits,
   findOrphanEdits,
   injectManualEdits,
+  parseJsxAttrs,
   parseManualEdits,
   readAttr,
   scanJsxTags,
@@ -1630,18 +1631,99 @@ export function readConstraints(main: string): Map<string, string> {
 }
 
 /**
- * What the schematic depends on: every file but the hand-held PCB positions.
- * The sources, the library, the schematic notes, the schematic placements and
- * the engine: change any of these and the schematic is drawn again; move,
- * turn or flip parts on the board and it is not.
+ * What the schematic depends on: every file but the hand-held PCB positions,
+ * and in the code files nothing that only the copper reads (see
+ * soloCioCheLeggeLoSchematico). The sources, the library, the schematic notes,
+ * the schematic placements and the engine: change any of these and the
+ * schematic is drawn again; move, turn or flip parts on the board, draw a
+ * trace's path, add a via or a pour, and it is not.
  */
 export function schematicKeyOf(projectFsMap: FsMap): string {
   const edits = parseManualEdits(projectFsMap[MANUAL_EDITS_PATH]);
   const rest: Record<string, string> = {};
-  for (const [k, v] of Object.entries(projectFsMap)) if (k !== MANUAL_EDITS_PATH) rest[k] = v;
+  for (const [k, v] of Object.entries(projectFsMap)) {
+    if (k === MANUAL_EDITS_PATH) continue;
+    rest[k] = /\.[jt]sx?$/.test(k) ? soloCioCheLeggeLoSchematico(v) : v;
+  }
   rest["__schematic_placements__"] = JSON.stringify(edits.schematic_placements);
   rest["__engine__"] = String(CHECKS_ENGINE_VERSION);
   return filesHash(rest);
+}
+
+/**
+ * Elements only the copper reads: whole, with whatever they carry. Each one
+ * checked against the engine (tscircuit as pinned here): with or without it
+ * the schematic_* elements of a board are the same, and so are its components,
+ * nets and connections. A via adds ports of its own, which no schematic
+ * element points at (see stessiSorgenti).
+ */
+const SOLO_RAME_ELEMENTI = new Set([
+  "via",
+  "copperpour",
+  "silkscreentext",
+  "silkscreenpath",
+  "silkscreenline",
+  "silkscreenrect",
+  "silkscreencircle",
+  "fabricationnotepath",
+  "fabricationnotetext",
+  "keepout",
+  "cutout",
+  "hole",
+  "fiducial",
+]);
+/**
+ * Attributes only the copper reads, on any element: where a part or a pad is
+ * and on which side (pcbX, pcbY, pcbRotation, layer), the path and the width
+ * of a hand-drawn trace (pcbPath, pcbPathRelativeTo, thickness). The trace
+ * itself stays, with its from and to: it is a wire of the schematic.
+ */
+const SOLO_RAME_ATTRIBUTI = new Set(["pcbX", "pcbY", "pcbRotation", "layer", "pcbPath", "pcbPathRelativeTo", "thickness"]);
+
+/**
+ * A code file without what only the copper reads, when it is written as a
+ * JSX literal: the elements and attributes above go, with the blank before
+ * them, so a file with one via more or one pcbX less reads the same. Anything
+ * else stays as it is: what starts with sch, the symbols, pinLabels, names,
+ * values, connections, footprints and their pads, expressions, comments. In
+ * doubt an element or an attribute stays: a schematic drawn again costs
+ * minutes, an old one reused is wrong. graftSchematic then checks the
+ * components, ports, nets and connections before reusing anything.
+ */
+export function soloCioCheLeggeLoSchematico(src: string): string {
+  if (!src.includes("<")) return src;
+  const tagli: Array<[number, number]> = [];
+  /** the blank before a cut: spaces and tabs, and one line break (with what indents it) */
+  const conIlBianco = (inizio: number): number => {
+    let i = inizio;
+    while (i > 0 && (src[i - 1] === " " || src[i - 1] === "\t")) i--;
+    if (i > 0 && src[i - 1] === "\n") i--;
+    if (i > 0 && src[i - 1] === "\r") i--;
+    return i;
+  };
+  for (const tag of scanJsxTags(src, { includeNested: true })) {
+    if (SOLO_RAME_ELEMENTI.has(tag.name)) {
+      tagli.push([conIlBianco(tag.start), tag.closeEnd ?? tag.end]);
+      continue;
+    }
+    for (const a of parseJsxAttrs(src.slice(tag.attrsStart, tag.attrsEnd))) {
+      if (!SOLO_RAME_ATTRIBUTI.has(a.name) || a.valueStart === -1) continue;
+      // attributes may sit one per line: any blank before them goes
+      let i = tag.attrsStart + a.nameStart;
+      while (i > tag.attrsStart && /\s/.test(src[i - 1])) i--;
+      tagli.push([i, tag.attrsStart + a.valueEnd]);
+    }
+  }
+  if (tagli.length === 0) return src;
+  tagli.sort((x, y) => x[0] - y[0] || y[1] - x[1]);
+  let out = "";
+  let da = 0;
+  for (const [inizio, fine] of tagli) {
+    if (fine <= da) continue;
+    out += src.slice(da, Math.max(da, inizio));
+    da = Math.max(da, fine);
+  }
+  return out + src.slice(da);
 }
 
 /**
@@ -1661,22 +1743,30 @@ export function graftSchematic(pcbOnly: CircuitElement[], previous: unknown[]): 
 /**
  * Whether two circuits have the same source elements the schematic points at:
  * every component, port, net and connection with the same id and the same
- * name.
+ * name. The ports of a <via> do not count: a via has ports (top, bottom, pin1)
+ * and no symbol, and no schematic element points at them, so adding vias on
+ * the board leaves the schematic as it is. They are numbered after the parts'
+ * ports only when the vias come after the parts in the files: when they do
+ * not, the parts' ports move and the comparison says no.
  */
 function stessiSorgenti(a: CircuitElement[], b: CircuitElement[]): boolean {
-  const firma = (els: CircuitElement[], tipo: string, id: string) =>
+  const dellaVia = (els: CircuitElement[]) =>
+    new Set(els.filter((e) => e.type === "source_manually_placed_via").map((e) => String(e.source_manually_placed_via_id ?? "")));
+  const firma = (els: CircuitElement[], vie: Set<string>, tipo: string, id: string) =>
     els
-      .filter((e) => e.type === tipo)
+      .filter((e) => e.type === tipo && !(tipo === "source_port" && vie.has(String(e.source_component_id ?? ""))))
       .map((e) => `${String(e[id])}|${String(e.name ?? "")}|${String(e.source_component_id ?? "")}`)
       .sort()
       .join("\n");
+  const vieA = dellaVia(a);
+  const vieB = dellaVia(b);
   for (const [tipo, id] of [
     ["source_component", "source_component_id"],
     ["source_port", "source_port_id"],
     ["source_net", "source_net_id"],
     ["source_trace", "source_trace_id"],
   ] as const) {
-    if (firma(a, tipo, id) !== firma(b, tipo, id)) return false;
+    if (firma(a, vieA, tipo, id) !== firma(b, vieB, tipo, id)) return false;
   }
   return true;
 }

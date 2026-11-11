@@ -23,7 +23,10 @@ vi.mock("@/lib/pours-recompute", async () => {
 
 import {
   compileProject,
+  graftSchematic,
   innestaSchematico,
+  schematicKeyOf,
+  soloCioCheLeggeLoSchematico,
   type CompileSummary,
 } from "@/lib/compile";
 
@@ -124,3 +127,78 @@ describe("colate e controlli una volta sola per compilazione", () => {
   });
 });
 
+describe("la chiave dello schematico non cambia quando cambia solo il rame", () => {
+  const k = schematicKeyOf({ "main.tsx": SCHEDA });
+  const con = (da: string, a: string) => {
+    expect(SCHEDA.includes(da), da).toBe(true);
+    return schematicKeyOf({ "main.tsx": SCHEDA.replace(da, a) });
+  };
+
+  it("stessa chiave se cambia il percorso di una pista, una via, una colata, una posizione o una serigrafia", () => {
+    expect(con("{ x: 12, y: -3 }, { x: 12, y: 0 }", "{ x: 11, y: -4 }, { x: 12, y: 0 }")).toBe(k);
+    expect(con('thickness="0.25mm"', 'thickness="0.3mm"')).toBe(k);
+    expect(con("<trace from=\".R1 > .pin2\" to=\"net.GND\" />", "<trace from=\".R1 > .pin2\" to=\"net.GND\" pcbPath={[{ x: 1, y: 1 }]} />")).toBe(k);
+    expect(con("    <via pcbX={-6}", "    <via pcbX={2} pcbY={4} connectsTo=\"net.GND\" />\n    <via pcbX={-6}")).toBe(k);
+    expect(con("    <via pcbX={-6} pcbY={3} fromLayer=\"top\" toLayer=\"bottom\" outerDiameter=\"0.6mm\" holeDiameter=\"0.3mm\" connectsTo=\"net.SIG\" />\n", "")).toBe(k);
+    expect(con("{x: 0.5, y: -5}, {x: 11, y: -5}", "{x: 0.7, y: -5}, {x: 11, y: -5}")).toBe(k);
+    expect(con("  </board>", '    <copperpour layer="inner1" connectsTo="net.GND" outline={[{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}]} />\n  </board>')).toBe(k);
+    expect(con('pcbX={-6} pcbY={0} schSectionName="ingresso"', 'pcbX={-7.5} pcbY={1} pcbRotation={90} layer="bottom" schSectionName="ingresso"')).toBe(k);
+    expect(con('pcbX={6} pcbY={0} schSectionName="uscita"', 'schSectionName="uscita"')).toBe(k);
+    expect(con("  </board>", '    <silkscreentext text="SBB" pcbX={0} pcbY={5} />\n    <keepout shape="rect" width={1} height={1} pcbX={0} pcbY={0} />\n    <hole pcbX={9} pcbY={4} diameter="1mm" />\n  </board>')).toBe(k);
+  });
+
+  it("chiave diversa se cambia un collegamento, un valore, un attributo sch, un pinLabels o un pezzo", () => {
+    expect(con('to="net.SIG" />', 'to="net.GND" />')).not.toBe(k);
+    expect(con('<trace from=".R1 > .pin2" to="net.GND" />', "")).not.toBe(k);
+    expect(con('name="R2" resistance="1k"', 'name="R2" resistance="4.7k"')).not.toBe(k);
+    expect(con('schSectionName="uscita"', 'schSectionName="carico"')).not.toBe(k);
+    expect(con('schSectionName="uscita"', 'schSectionName="uscita" schRotation={90}')).not.toBe(k);
+    expect(con("  </board>", '    <chip name="U1" footprint="soic8" pinLabels={{ pin1: "VCC" }} pcbX={0} pcbY={4} />\n  </board>')).not.toBe(k);
+    const conChip = SCHEDA.replace("  </board>", '    <chip name="U1" footprint="soic8" pinLabels={{ pin1: "VCC" }} />\n  </board>');
+    expect(schematicKeyOf({ "main.tsx": conChip.replace('pin1: "VCC"', 'pin1: "VDD"') })).not.toBe(schematicKeyOf({ "main.tsx": conChip }));
+    // a file that is not code stays in the key as it is
+    expect(schematicKeyOf({ "main.tsx": SCHEDA, "dati.json": "{\"x\":1}" })).not.toBe(schematicKeyOf({ "main.tsx": SCHEDA, "dati.json": "{\"x\":2}" }));
+  });
+
+  it("toglie solo quello che e' scritto come JSX: una via dentro un commento o una stringa resta", () => {
+    expect(soloCioCheLeggeLoSchematico('<board>\n  <via pcbX={1} />\n  <R a="1" pcbX={2} />\n</board>')).toBe('<board>\n  <R a="1" />\n</board>');
+    const commento = "// <via pcbX={1} />\nconst s = \"<via pcbX={1} />\"\n";
+    expect(soloCioCheLeggeLoSchematico(commento)).toBe(commento);
+  });
+});
+
+describe("una via in piu' non fa ridisegnare lo schematico", () => {
+  it("l'innesto ignora le porte delle vie e guarda quelle dei pezzi", () => {
+    const prima = [
+      { type: "source_component", source_component_id: "s1", name: "R1" },
+      { type: "source_port", source_port_id: "source_port_0", name: "pin1", source_component_id: "s1" },
+      { type: "schematic_component", schematic_component_id: "x" },
+    ];
+    const conVia = [
+      prima[0],
+      prima[1],
+      { type: "source_manually_placed_via", source_manually_placed_via_id: "v0" },
+      { type: "source_port", source_port_id: "source_port_1", name: "top", source_component_id: "v0" },
+      { type: "pcb_board" },
+    ];
+    expect(graftSchematic(conVia as never, prima)).not.toBeNull();
+    const altraPorta = [prima[0], { ...prima[1], name: "pin2" }, { type: "pcb_board" }];
+    expect(graftSchematic(altraPorta as never, prima)).toBeNull();
+  });
+
+  it("dopo una via e una colata aggiunte lo schematico salvato si riusa", async () => {
+    const prima = await compileProject({ "main.tsx": SCHEDA });
+    const dopoFile = SCHEDA.replace(
+      "  </board>",
+      `    <via pcbX={6} pcbY={3} fromLayer="top" toLayer="bottom" outerDiameter="0.6mm" holeDiameter="0.3mm" connectsTo="net.SIG" />\n    <copperpour layer="bottom" connectsTo="net.GND" outline={[{x: -11, y: -5}, {x: -0.5, y: -5}, {x: -0.5, y: 5}, {x: -11, y: 5}]} />\n  </board>`,
+    );
+    const dopo = await compileProject(
+      { "main.tsx": dopoFile },
+      { schematicFrom: { circuitJson: prima.circuitJson, summary: prima.summary }, onBoard: async () => {} },
+    );
+    expect(dopo.summary.message).toMatch(/schematico invariato/);
+    expect(spans(dopo.summary)).not.toContain("scheda con schematico (tscircuit)");
+    expect(diTipo(dopo.circuitJson, "pcb_via")).toHaveLength(2);
+    expect(norm(schematico(dopo.circuitJson))).toBe(norm(schematico(prima.circuitJson)));
+  }, 240_000);
+});
