@@ -122,6 +122,22 @@ export interface DesignRules {
    * checks: the same board, in a minute.
    */
   autoroute?: boolean;
+  /**
+   * HOW FAR THE SILKSCREEN STAYS from another silkscreen drawing and from bare
+   * copper (the mask openings of pads, plated holes and fiducials), edge to
+   * edge, as it prints (see silkscreen-clearance.ts). Missing:
+   * SERIGRAFIA_DISTANZA_MM, the 0.15 mm the fabs quote for silkscreen.
+   */
+  minSilkscreenClearanceMm?: number;
+}
+
+/** the silkscreen clearance of a project that writes none (Niccolo', 2026-11-11) */
+export const SERIGRAFIA_DISTANZA_MM = 0.15;
+
+/** the silkscreen clearance the project asks, or the default */
+export function distanzaDellaSerigrafia(rules: DesignRules): number {
+  const v = rules.minSilkscreenClearanceMm;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : SERIGRAFIA_DISTANZA_MM;
 }
 
 /** what a clearance rule can talk about */
@@ -260,9 +276,13 @@ export interface ProjectRules {
 export const MAX_POUR_CLEARANCE_MM = 5;
 
 const LIMITS: Record<
-  | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "autoPlaneVias" | "pasteOnPlatedHoles" | "autoroute">
+  | Exclude<
+      keyof DesignRules,
+      "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "minSilkscreenClearanceMm" | "autoPlaneVias" | "pasteOnPlatedHoles" | "autoroute"
+    >
   | "pourClearanceMm"
-  | "pasteExpansionMm",
+  | "pasteExpansionMm"
+  | "minSilkscreenClearanceMm",
   { min: number; max: number }
 > = {
   minTraceWidthMm: { min: 0.05, max: 2 },
@@ -280,6 +300,8 @@ const LIMITS: Record<
   // a tenth of a millimetre either way is already a lot of paste: beyond
   // that it is a typo, not a stencil
   pasteExpansionMm: { min: -0.1, max: 0.1 },
+  // zero: only silkscreen that touches counts; beyond a millimetre it is a typo
+  minSilkscreenClearanceMm: { min: 0, max: 1 },
 };
 
 /**

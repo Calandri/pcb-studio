@@ -51,7 +51,13 @@
 // different nets on one layer that touch or stand closer than the larger of their two clearances are a
 // "pour_pour_clearance" violation, and the export refuses the board (nothing measured pour against pour: the
 // server's board of 17:06 had the ground pour over the USB shield)
-export const CHECKS_ENGINE_VERSION = 9;
+// 10 (2026-11-11): the silkscreen is measured (silkscreen-clearance.ts): against another drawing and against bare
+// copper closer than the project's minSilkscreenClearanceMm (0.15 mm unless design-rules.json says otherwise), and
+// over the holes of vias and bare holes. Nothing measured it: on tm-4l-q1 the outlines of two parts overlapped and the
+// designators ran over other outlines and over vias with every check green. It is a warning (CompileSummary.silkscreen):
+// not in the DRC count nor in the fab class, it does not stop the export and does not keep a board under an older
+// engine. Copper and pours do not change: a board of engine 9 comes to 10 with a recheck ("Ricontrolla"), no compile
+export const CHECKS_ENGINE_VERSION = 10;
 
 /**
  * The first engine whose pours start again from the outlines the files

@@ -25,6 +25,7 @@ import {
 import {
   DEFAULT_DESIGN_RULES,
   DESIGN_RULES_PATH,
+  distanzaDellaSerigrafia,
   FAB_RULESETS,
   resolveDesignRules,
   type DesignRules,
@@ -66,6 +67,7 @@ import {
 } from "./pours-recompute";
 import { descriviDistanze, distanzeDelleColate, type DistanzaInUso } from "./pours";
 import { colateCheSiToccano, colateTroppoVicine, type ColateCheSiToccano } from "./pour-pour";
+import { serigrafiaInConflitto, testoSerigrafia, type SerigrafiaInConflitto } from "./silkscreen-clearance";
 import { Profiler, routerPhases, type Profile } from "./profile";
 import { patchedLibraries } from "./engine-patches.mjs";
 
@@ -344,6 +346,13 @@ export interface CompileSummary {
    * while it is so. Absent when every pair keeps its distance.
    */
   poursTooClose?: ColateCheSiToccano;
+  /**
+   * Silkscreen closer than minSilkscreenClearanceMm to another drawing or to
+   * bare copper, or over a hole (see silkscreen-clearance.ts). A warning: not
+   * in the DRC count nor in the fab class, and the export goes on. Absent when
+   * the silkscreen is clear.
+   */
+  silkscreen?: SerigrafiaInConflitto;
   /**
    * The board was saved without its schematic, which was still being drawn:
    * the schematic checks below say nothing yet. Absent on a complete compile.
@@ -2339,6 +2348,8 @@ function summarize(
       count: coppieDiColate.length,
     });
   }
+  // the silkscreen, which nothing measured: a warning kept apart from the DRC (see silkscreen-clearance.ts)
+  const silkscreen = serigrafiaInConflitto(circuitJson, distanzaDellaSerigrafia(projectRules.rules));
   const prcViolations = runPrcChecks(circuitJson);
   /*
    * LE LUNGHEZZE APPAIATE, quando il progetto ne porta i gruppi: un bus arriva
@@ -2553,10 +2564,11 @@ function summarize(
     targets,
     ...(planesOverVias ? { planesOverVias } : {}),
     ...(poursTooClose ? { poursTooClose } : {}),
+    ...(silkscreen ? { silkscreen } : {}),
     ...(pourClearances ? { pourClearances } : {}),
     routingAttempts: 1,
     router: "default",
-    message: message + regoleCorrette + colateProprie + colateCorrette,
+    message: message + regoleCorrette + colateProprie + colateCorrette + testoSerigrafia(silkscreen),
   };
 }
 

@@ -70,6 +70,8 @@ interface SummaryLike {
   /** the board was saved before its schematic: the schematic checks are not done */
   schematicPending?: string;
   components?: Array<{ name: string }>;
+  /** silkscreen clashes, a warning apart from the DRC (see silkscreen-clearance.ts) */
+  silkscreen?: { count?: number; detail?: string };
 }
 
 /**
@@ -178,6 +180,8 @@ export function buildBoardReport(
   const prc = summary?.prcViolations ?? [];
   const lunghezze = prc.filter((v) => /matched_length/i.test(v.rule ?? ""));
   const elettrici = prc.filter((v) => !/matched_length/i.test(v.rule ?? ""));
+  // the silkscreen: a warning, the export goes on; the list stops at the nearest, the count does not
+  const serigrafia = typeof summary?.silkscreen?.count === "number" ? summary.silkscreen.count : 0;
 
   const row = (
     id: string,
@@ -226,6 +230,17 @@ export function buildBoardReport(
       "interference",
       "warn",
     ),
+    {
+      id: "serigrafia",
+      name: "Serigrafia",
+      count: serigrafia === 0 ? "ok" : `${serigrafia} ${serigrafia === 1 ? "segnalazione" : "segnalazioni"}`,
+      severity: serigrafia === 0 ? "ok" : "warn",
+      detail:
+        serigrafia === 0
+          ? "Nessun disegno sopra un altro, sulle piazzole o sui fori."
+          : String(summary?.silkscreen?.detail ?? "").slice(0, 130),
+      preset: "everything",
+    },
     {
       id: "routing",
       name: "Collegamenti completati",

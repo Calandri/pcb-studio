@@ -368,7 +368,7 @@ function raggioEsterno(b: Box): number {
  * ten times finer than the best fab process, and below it a difference is
  * arithmetic, not copper.
  */
-const TOLLERANZA_MM = 0.001;
+export const TOLLERANZA_MM = 0.001;
 
 /*
  * AND A HUNDREDTH for a poured plane. The solver cuts the circle around a via

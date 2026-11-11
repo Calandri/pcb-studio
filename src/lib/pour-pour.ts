@@ -60,8 +60,8 @@ const dPS = (p: Punto, a: Punto, b: Punto): { d: number; q: Punto } => {
   return { d: Math.hypot(p.x - q.x, p.y - q.y), q };
 };
 const orient = (a: Punto, b: Punto, c: Punto) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-/** distance between two segments, with the point of the first that is nearest */
-function dSS(a: Punto, b: Punto, c: Punto, d: Punto): { d: number; p: Punto } {
+/** distance between two segments, with the point of the first that is nearest (the silkscreen check measures with it too) */
+export function dSS(a: Punto, b: Punto, c: Punto, d: Punto): { d: number; p: Punto } {
   const o1 = orient(a, b, c), o2 = orient(a, b, d), o3 = orient(c, d, a), o4 = orient(c, d, b);
   if (o1 * o2 < 0 && o3 * o4 < 0) {
     const t = o3 / (o3 - o4);
