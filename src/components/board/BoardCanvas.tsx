@@ -102,6 +102,21 @@ export const snapToGrid = (v: number, grid: number) => Math.round(Math.round(v /
  * to fit at 1 px/mm the first wheel tick JUMPED in instead of zooming out, and
  * there was no way back to the whole board except the framing button.
  */
+/**
+ * HOW FAR A KEY TURNS THE PARTS in Sposta, in degrees counterclockwise, or null
+ * when it is not a turn: R 90, Shift+R 90 the other way (Shift+r arrives as
+ * "R"), Alt+R 45 and Alt+Shift+R 45 the other way ("se voglio ruotare di 45
+ * gradi e non 90 si puo'?", Niccolo', 2026-11-12). On a Mac Option+R arrives as
+ * another character ("®"): with Alt the key is the physical one, KeyR. cmd+R
+ * stays a quarter turn, and stopped, so the browser does not reload underneath.
+ */
+export function rotazioneDaTasto(e: Pick<KeyboardEvent, "key" | "code" | "shiftKey" | "altKey">): number | null {
+  const r = e.key === "r" || e.key === "R" || (e.altKey && e.code === "KeyR");
+  if (!r) return null;
+  const verso = e.shiftKey || e.key === "R" ? -1 : 1;
+  return (e.altKey ? 45 : 90) * verso;
+}
+
 /** the footprints: their line, the line of two that hit each other, a connector's mating space */
 const COLORE_INGOMBRO = "#B48CFF";
 const COLORE_SCONTRO = "#FF4D5E";
@@ -866,7 +881,7 @@ export function BoardCanvas({
   /*
    * Keyboard, in move mode: the arrows move the selected component
    * by one grid pitch (Shift = fine pitch), R rotates it by 90° counter-
-   * clockwise (Shift+R = clockwise), Esc deselects it. Every keypress is a
+   * clockwise (Shift+R = clockwise, Alt+R by 45°), Esc deselects it. Every keypress is a
    * pending edit, like a drag: everything is applied at once.
    */
   useEffect(() => {
@@ -897,11 +912,11 @@ export function BoardCanvas({
        * cmd+R keeps working out of habit, and keeps being stopped so the
        * browser does not reload underneath.
        */
-      if (e.key === "r" || e.key === "R") {
+      const delta = rotazioneDaTasto(e);
+      if (delta !== null) {
         e.preventDefault();
         e.stopPropagation();
-        // shift turns the other way: Shift+r arrives as "R". Each part turns in place
-        const delta = e.shiftKey || e.key === "R" ? -90 : 90;
+        // each part turns in place
         for (const id of ids) {
           const cur = effOf(pezzoDi.get(id)!);
           const rotation = (((cur.rotation + delta) % 360) + 360) % 360;
@@ -1988,7 +2003,7 @@ function BarraSotto({
         {mode === "move" && (
           <>
             <span className="truncate">
-              Alt niente snap · frecce (Shift 0,1 mm) · R/⇧R ruota · F gira lato · Shift+trascina riquadro ·
+              Alt niente snap · frecce (Shift 0,1 mm) · R/⇧R ruota · ⌥R 45° · F gira lato · Shift+trascina riquadro ·
               Shift+clic aggiunge/toglie · Esc deseleziona ·
             </span>
             <span>griglia</span>
