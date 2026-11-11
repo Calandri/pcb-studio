@@ -854,7 +854,6 @@ export async function compileProject(
     console.log(`[compile] ${motivo}; chiusa senza schematico in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
     return { summary: early.summary, circuitJson: early.circuitJson };
   };
-  const secondi = (ms: number) => Math.round(ms / 1000);
   if (opts.route === false && (opts.onBoard || schemaDiPrima)) {
     say({
       step: "Leggo la scheda",
@@ -899,7 +898,7 @@ export async function compileProject(
       });
       const restano = timeLeft();
       if (restano < stima.ms) {
-        const motivo = `${SCHEMATICO_NON_PARTITO}: restavano ${secondi(restano)} s, ne servono circa ${secondi(stima.ms)} (${stima.perche})`;
+        const motivo = motivoNonPartito(restano, stima);
         // whoever compiles may ask for it all the same (forceSchematic)
         if (!opts.forceSchematic) return chiudiSenzaSchematico(early, pezzi, motivo);
         console.log(`[compile] schematico chiesto comunque da chi compila: ${motivo}`);
@@ -1085,7 +1084,7 @@ export async function compileProject(
         return chiudiSenzaSchematico(
           prima.early,
           prima.pezzi,
-          `${SCHEMATICO_NON_INNESTATO}: le due letture della scheda non coincidono e rifarla chiede circa ${secondi(serve)} s, ne restavano ${secondi(restano)}`,
+          motivoNonInnestato(serve, restano),
         );
       }
       console.log("[compile] le due letture della scheda non coincidono: rame, colate e controlli rifatti");
@@ -2032,6 +2031,18 @@ export function costoDelloSchematico(summary: unknown): MisuraDelloSchematico | 
 }
 
 /**
+ * Why a compile closed without the schematic, as schematicPending says it and
+ * the closing line of the log keeps it whole (see rigaDiFine): short on
+ * purpose, the numbers in seconds.
+ */
+export function motivoNonPartito(restano: number, stima: { ms: number; perche: string }): string {
+  return `${SCHEMATICO_NON_PARTITO}: restavano ${Math.round(restano / 1000)} s, ne servono circa ${Math.round(stima.ms / 1000)} (${stima.perche})`;
+}
+export function motivoNonInnestato(serve: number, restano: number): string {
+  return `${SCHEMATICO_NON_INNESTATO}: le due letture della scheda non coincidono e rifarla chiede circa ${Math.round(serve / 1000)} s, ne restavano ${Math.round(restano / 1000)}`;
+}
+
+/**
  * What a board saved again without a compile (Sposta, a trace taken off,
  * Ricontrolla, the schematic put on a board moved meanwhile) keeps from the
  * summary it had: its schematic is the same one, and so are the files it was
@@ -2125,18 +2136,18 @@ export function stimaDelloSchematico(dati: {
   let perche: string;
   if (misuraValida(misura, pezzi)) {
     disegno = Math.round(misura.ms * MARGINE_SULLA_MISURA);
-    perche = `ultimo schematico ${s(misura.ms)} s su ${misura.pezzi} pezzi, x1,5`;
+    perche = `ultimo schematico ${s(misura.ms)} s su ${misura.pezzi} pezzi x1,5`;
   } else if (pezzi >= PEZZI_SCHEDA_GRANDE) {
     disegno = SCHEMATICO_SENZA_MISURA_MS;
-    perche = `nessuna misura su ${pezzi} pezzi, ne conto ${s(SCHEMATICO_SENZA_MISURA_MS)} s`;
+    perche = `nessuna misura su ${pezzi} pezzi: ${s(SCHEMATICO_SENZA_MISURA_MS)} s`;
   } else {
     disegno = Math.max(SCHEMATICO_PICCOLA_MINIMO_MS, SCHEMATICO_PICCOLA_PER_LETTURA * pcbMs);
-    perche = `scheda piccola (${pezzi} pezzi), ${SCHEMATICO_PICCOLA_PER_LETTURA} volte la lettura e almeno ${s(SCHEMATICO_PICCOLA_MINIMO_MS)} s`;
+    perche = `scheda piccola (${pezzi} pezzi): ${SCHEMATICO_PICCOLA_PER_LETTURA} volte la lettura, almeno ${s(SCHEMATICO_PICCOLA_MINIMO_MS)} s`;
   }
   const intera = pcbMs + disegno + DOPO_LO_SCHEMATICO_MS;
   const ms = Math.min(intera, Math.max(0, tettoMs));
-  perche += `, piu' ${s(pcbMs)} s di lettura e ${s(DOPO_LO_SCHEMATICO_MS)} s per finire`;
-  if (ms < intera) perche += `; al piu' ${s(ms)} s, quanto avrebbe la funzione intera`;
+  perche += `, + lettura ${s(pcbMs)} s + ${s(DOPO_LO_SCHEMATICO_MS)} s`;
+  if (ms < intera) perche += `; tetto ${s(ms)} s, la funzione intera`;
   return { ms, perche };
 }
 

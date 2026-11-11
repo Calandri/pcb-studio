@@ -51,16 +51,20 @@ export function compileBudgetMs(requestStartedAt: number, now = Date.now()): num
 
 /**
  * The line a compile closes the log with. A board saved without its schematic
- * says so first, with the reason: the summary's message is long and the log
- * keeps its first 300 characters, where that sentence did not arrive.
+ * says so first, with the reason, whole: the summary's message is long and the
+ * log keeps its first 300 characters, so what gets cut is the message, never
+ * the reason (the reasons are written short for this, see stimaDelloSchematico).
+ * `completa`: what a board with its schematic says before its message.
  */
-export function rigaDiFine(summary: { message?: unknown; schematicPending?: unknown }, max = 300): string {
+export function rigaDiFine(
+  summary: { message?: unknown; schematicPending?: unknown },
+  max = 300,
+  completa = "",
+): string {
   const message = String(summary.message ?? "");
-  const testo =
-    typeof summary.schematicPending === "string" && summary.schematicPending
-      ? `senza schematico: ${summary.schematicPending}. ${message}`
-      : message;
-  return testo.slice(0, max);
+  if (typeof summary.schematicPending !== "string" || !summary.schematicPending) return `${completa}${message}`.slice(0, max);
+  const perche = `senza schematico: ${summary.schematicPending}.`;
+  return perche.length >= max ? perche.slice(0, max) : `${perche} ${message}`.slice(0, max);
 }
 
 /**

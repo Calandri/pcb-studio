@@ -71,4 +71,13 @@ describe("il tempo che resta alla funzione e la riga di fine", () => {
     expect(riga).toMatch(/^senza schematico: lo schematico non e' partito: restavano 120 s\. Compile OK/);
     expect(riga.length).toBe(300);
   });
+
+  it("si taglia il messaggio, mai il motivo; e una scheda completa dice cosa e' successo prima del messaggio", () => {
+    const motivo = `lo schematico non e' partito: ${"m".repeat(240)}`;
+    const riga = rigaDiFine({ message: `Compile OK ${"x".repeat(400)}`, schematicPending: motivo }, 300);
+    expect(riga.startsWith(`senza schematico: ${motivo}. Compile`)).toBe(true);
+    expect(riga.length).toBe(300);
+    expect(rigaDiFine({ message: "Compile OK" }, 300, "schematico salvato: ")).toBe("schematico salvato: Compile OK");
+    expect(rigaDiFine({ message: "Compile OK", schematicPending: "x" }, 300, "schematico salvato: ")).toBe("senza schematico: x. Compile OK");
+  });
 });

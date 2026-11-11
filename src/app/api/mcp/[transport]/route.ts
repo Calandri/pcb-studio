@@ -179,7 +179,7 @@ function finishInBackground(projectId: string, rest: Promise<unknown>): void {
         actor: "claude",
         tool: "compile",
         phase: "fine",
-        detail: typeof final?.schematicPending === "string" ? rigaDiFine(final) : `schematico salvato: ${String(final?.message ?? "").slice(0, 280)}`,
+        detail: rigaDiFine(final ?? {}, 300, "schematico salvato: "),
         ms: Date.now() - started,
       });
     } catch (err) {
@@ -301,7 +301,12 @@ function buildHandler(viewer: Viewer) {
         "con schematicoInCorso: true e schematicPending: lo schematico finisce in background " +
         "entro gli 800 s. Il risultato finale si legge sempre con inspect_board: compiledAt " +
         "cambia, schematicPending sparisce, profile ha i tempi e compileRun dice se e' ancora " +
-        "in corso. Sulle schede piccole risponde a fine compilazione come sempre.",
+        "in corso. Sulle schede piccole risponde a fine compilazione come sempre. " +
+        "Puo' finire SENZA SCHEMATICO, con la scheda salvata e schematicPending che dice perche': " +
+        "\"lo schematico non e' partito\" (la stima del disegno non stava nel tempo della funzione) o " +
+        "\"lo schematico non e' stato messo sulla scheda\" (rifare la scheda non stava nel tempo). " +
+        "Rame e controlli della scheda ci sono, mancano lo schematico e i suoi controlli: " +
+        "si ricompila con piu' tempo (dalla pagina) o con forceSchematic: true.",
       {
         projectId: z.string(),
         forceSchematic: z

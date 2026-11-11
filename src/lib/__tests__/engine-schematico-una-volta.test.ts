@@ -32,6 +32,8 @@ import {
   innestaSchematico,
   MARGINE_SUL_TETTO_MS,
   misuraValida,
+  motivoNonInnestato,
+  motivoNonPartito,
   PEZZI_SCHEDA_GRANDE,
   SCHEMATICO_SENZA_MISURA_MS,
   schematicKeyOf,
@@ -39,7 +41,7 @@ import {
   stimaDelloSchematico,
   type CompileSummary,
 } from "@/lib/compile";
-import { COMPILE_BUDGET_PIENO_MS, SCHEMATICO_NON_INNESTATO } from "@/lib/compile-run";
+import { COMPILE_BUDGET_PIENO_MS, rigaDiFine, SCHEMATICO_NON_INNESTATO } from "@/lib/compile-run";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -296,7 +298,22 @@ describe("lo schematico parte solo se fa in tempo", () => {
     const tetto = COMPILE_BUDGET_PIENO_MS - 300_000 - MARGINE_SUL_TETTO_MS;
     const alta = stimaDelloSchematico({ misura: { ms: 300_000, pezzi: 156 }, pezzi: 156, pcbMs: 110_000, tettoMs: tetto });
     expect(alta.ms).toBe(410_000);
-    expect(alta.perche).toMatch(/al piu' 410 s/);
+    expect(alta.perche).toMatch(/tetto 410 s/);
+  });
+
+  it("il motivo piu' lungo sta intero nella riga di fine del registro, anche di una scheda non salvata", () => {
+    const enorme = 9_999_000;
+    const motivi = [
+      motivoNonPartito(enorme, stimaDelloSchematico({ misura: { ms: enorme, pezzi: 999 }, pezzi: 999, pcbMs: enorme, tettoMs: enorme })),
+      motivoNonPartito(enorme, stimaDelloSchematico({ misura: null, pezzi: 39, pcbMs: enorme, tettoMs: enorme - 1 })),
+      motivoNonPartito(enorme, stimaDelloSchematico({ misura: { ms: 1, pezzi: 1 }, pezzi: 999, pcbMs: enorme, tettoMs: enorme - 1 })),
+      motivoNonInnestato(enorme, enorme),
+    ];
+    for (const motivo of motivi) {
+      // /api/compile writes "non salvata: " and then the line cut at 260
+      const riga = `non salvata: ${rigaDiFine({ message: "x".repeat(400), schematicPending: motivo }, 260)}`;
+      expect(riga, motivo).toContain(`senza schematico: ${motivo}.`);
+    }
   });
 
   it("una misura vale per una scheda con quasi gli stessi pezzi: un decimo, almeno 4", () => {
