@@ -4,6 +4,7 @@ import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
 import { distanzaPuntoForma, ingombroForma, pianiSopraLeVie, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame, type MisureDrc } from "./drc";
+import { stessoStrato, stratoDelPad } from "./pcb-route-model";
 import {
   controllaLunghezze,
   leggiGruppi,
@@ -1672,16 +1673,22 @@ function carryCopper(geometry: CircuitElement[], vecchio: unknown[]): CircuitEle
 /** traces whose ends no longer land on a pad: copper of parts that have moved */
 export function danglingTraces(circuitJson: CircuitElement[]): number {
   const REACH = 0.3;
-  const pad: Array<{ x: number; y: number }> = [];
+  /*
+   * Every pad, port and via by its points, with the layer it is on (see
+   * stratoDelPad): an end on the bottom near the centre of a top pad is not on
+   * that pad, and counted as landed it hid a trace that ends on nothing.
+   */
+  const pad: Array<{ x: number; y: number; strato: string | null }> = [];
   for (const el of circuitJson) {
     if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole" && el.type !== "pcb_port" && el.type !== "pcb_via") continue;
+    const strato = stratoDelPad(el);
     const punti = Array.isArray(el.points)
       ? (el.points as Array<{ x?: unknown; y?: unknown }>)
       : [{ x: el.x, y: el.y }];
     for (const p of punti) {
       const x = num(p.x);
       const y = num(p.y);
-      if (x !== null && y !== null) pad.push({ x, y });
+      if (x !== null && y !== null) pad.push({ x, y, strato });
     }
   }
   /* the copper of every pad, by face: a long pad is entered far from its centre */
@@ -1706,7 +1713,7 @@ export function danglingTraces(circuitJson: CircuitElement[]): number {
     return d;
   };
   const vicinoAUnPad = (x: number, y: number, layer: string) =>
-    pad.some((p) => Math.abs(p.x - x) <= REACH && Math.abs(p.y - y) <= REACH) ||
+    pad.some((p) => stessoStrato(p.strato, layer || null) && Math.abs(p.x - x) <= REACH && Math.abs(p.y - y) <= REACH) ||
     rame.some((r) => (r.layer === null || r.layer === layer) && distanzaPuntoForma(r.forma, x, y) <= 0.01) ||
     colate.some((c) => c.layer === layer && dentroAnello(x, y, c.anello));
   /*
@@ -1723,7 +1730,7 @@ export function danglingTraces(circuitJson: CircuitElement[]): number {
       const p = route[i];
       const x = num(p.x);
       const y = num(p.y);
-      if (p.route_type === "via" && x !== null && y !== null) pad.push({ x, y });
+      if (p.route_type === "via" && x !== null && y !== null) pad.push({ x, y, strato: null });
       const q = route[i + 1];
       if (!q || p.route_type !== "wire" || q.route_type !== "wire") continue;
       const bx = num(q.x);

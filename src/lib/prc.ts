@@ -13,6 +13,7 @@
 import { eMassa, ePotenza } from "./net-roles";
 import { insidePour, readPours } from "./pours";
 import { distanzaPuntoForma, rameDelPad, type FormaRame } from "./drc";
+import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 
 /** the outer ring of a pour, whatever shape it was written as */
 function anelloDi(pour: El): Array<{ x: number; y: number }> | null {
@@ -595,12 +596,13 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
       net = maps.groupNet.get(group) ?? null;
     }
     if (!net) {
-      // spliced traces (variant engine): infer the net from a touched pad
+      // spliced traces (variant engine): infer the net from a touched pad, on the trace's layer
       const route = (el.route as Array<Record<string, unknown>> | undefined) ?? [];
       outer: for (const p of route) {
         if (p.route_type !== "wire") continue;
         for (const el2 of circuitJson) {
           if (el2.type !== "pcb_smtpad" && el2.type !== "pcb_plated_hole") continue;
+          if (!stessoStrato(stratoDelPad(el2), stratoDelPunto(p))) continue;
           const x2 = num(el2.x);
           const y2 = num(el2.y);
           if (x2 === null || y2 === null) continue;

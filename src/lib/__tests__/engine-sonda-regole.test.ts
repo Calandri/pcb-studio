@@ -138,6 +138,45 @@ describe("dangling traces: a hand-drawn trace may end on a via or on another tra
     ];
     expect(danglingTraces(c as never)).toBe(1);
   });
+
+  it("an end on the bottom under a top pad ends on nothing, a through hole is reached from both faces", () => {
+    const sotto = {
+      type: "pcb_trace",
+      pcb_trace_id: "sotto",
+      route: [
+        { route_type: "wire", x: 0, y: 0.1, width: 0.2, layer: "bottom" },
+        { route_type: "wire", x: 0, y: 4, width: 0.2, layer: "bottom" },
+      ],
+    };
+    const fondo = { ...pad, x: 0, y: 4, layer: "bottom" };
+    // the centre of the top pad is 0.1 mm away: by position alone the trace had landed
+    expect(danglingTraces([pad, fondo, sotto] as never)).toBe(1);
+    const foro = { type: "pcb_plated_hole", shape: "circle", x: 0, y: 0, outer_diameter: 0.6, hole_diameter: 0.3 };
+    expect(danglingTraces([foro, fondo, sotto] as never)).toBe(0);
+  });
+});
+
+describe("power_trace_width: a spliced trace takes its net from a pad on its own layer", () => {
+  const c: El[] = [
+    { type: "source_net", source_net_id: "n_p3v3", name: "P3V3" },
+    { type: "source_trace", source_trace_id: "st", subcircuit_connectivity_map_key: "k_p3v3", connected_source_net_ids: ["n_p3v3"], connected_source_port_ids: ["sp1"] },
+    { type: "pcb_port", pcb_port_id: "pp1", source_port_id: "sp1" },
+    { ...pin("p1", 0, 0, 0.6), pcb_port_id: "pp1" },
+  ];
+  // no source trace: the variant engine's splice, whose net is read from the pad it touches
+  const giunta = (layer: string): El => ({
+    type: "pcb_trace",
+    pcb_trace_id: "giunta",
+    route: [
+      { route_type: "wire", x: 0, y: 0, width: 0.25, layer },
+      { route_type: "wire", x: 0, y: -3, width: 0.25, layer },
+    ],
+  });
+
+  it("is the thin supply on the pad's face, and not P3V3 on the other one", () => {
+    expect(runPrcChecks([...c, giunta("top")]).map((v) => v.rule)).toContain("power_trace_width");
+    expect(runPrcChecks([...c, giunta("bottom")]).map((v) => v.rule)).not.toContain("power_trace_width");
+  });
 });
 
 describe("a board that names no autorouter", () => {

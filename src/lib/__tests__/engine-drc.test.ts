@@ -161,6 +161,62 @@ describe("coverage: tie stubs, bare holes, the real edge", () => {
     expect(rules(runDrcChecks([...circuit, senzaChiave as El]))).toContain("trace_pad_clearance");
   });
 
+  it("names a stub with no key by the pad under its end on its own layer, not by the one over it", () => {
+    // the top pad of net B lies over the bottom pad of net A, and comes first in the file
+    const stub: El = {
+      type: "pcb_trace",
+      pcb_trace_id: "pcb_trace_plane_2",
+      route: [
+        { route_type: "wire", x: 0, y: 0, width: 0.25, layer: "bottom" },
+        { route_type: "wire", x: 2, y: 0, width: 0.25, layer: "bottom" },
+      ],
+    };
+    const circuit = [
+      board(),
+      net("A", ["sp_a"]),
+      net("B", ["sp_b"]),
+      port("a", 0, 0),
+      port("b", 0, 0),
+      pad("b", 0, 0, 0.4, 0.4),
+      pad("a", 0, 0, 0.4, 0.4, { layer: "bottom" }),
+      stub,
+    ];
+    // taken for net B, the stub was reported over its own pad
+    expect(rules(runDrcChecks(circuit))).not.toContain("trace_pad_clearance");
+  });
+
+  it("exempts a net tie only toward the nets of the pads it lands on, on its own layer", () => {
+    // the bridge joins A and B on the top; a pad of C on the bottom lies under its end
+    const ponte: El = {
+      type: "pcb_trace",
+      pcb_trace_id: "nt",
+      netTie: true,
+      route: [
+        { route_type: "wire", x: 0, y: 0, width: 0.2, layer: "top" },
+        { route_type: "wire", x: 0.6, y: 0, width: 0.2, layer: "top" },
+      ],
+    };
+    const circuit = [
+      board(),
+      net("A", ["sp_a"]),
+      net("B", ["sp_b"]),
+      net("C", ["sp_c", "sp_c2"]),
+      port("a", 0, 0),
+      port("b", 0.6, 0),
+      port("c", 0.6, 0),
+      port("c2", 0.3, 0.25),
+      pad("a", 0, 0),
+      pad("b", 0.6, 0),
+      pad("c", 0.6, 0, 0.2, 0.2, { layer: "bottom" }),
+      // a pad of C on the top, 0.05mm from the bridge
+      pad("c2", 0.3, 0.25, 0.1, 0.2),
+      ponte,
+    ];
+    const vicini = runDrcChecks(circuit).filter((v) => v.rule === "trace_pad_clearance");
+    // C taken for one of the bridged nets exempted the bridge from it on the top as well
+    expect(vicini.map((v) => v.message).join("\n")).toContain("nt over pad_c2");
+  });
+
   it("checks bare holes against the edge and against other drills", () => {
     const hole = (id: string, x: number, y: number): El => ({
       type: "pcb_hole",
@@ -231,6 +287,45 @@ describe("pin_escape on a rotated pad", () => {
 
   it("leaving horizontally from that pad is the crooked one", () => {
     expect(escapes([board(), pad, trace(1.5, 0)])).toHaveLength(1);
+  });
+});
+
+/*
+ * sbb-dl-principale, 2026-11-11: OSPI_IO7 enters the ball IC6.E1 on the bottom,
+ * straight. In plan view the top pad C4.2, turned by 135 degrees, lies over the
+ * ball and comes first in the file: the check measured the entry against its
+ * edges and reported 45 degrees.
+ */
+describe("pin_escape reads the pad on the layer of the trace", () => {
+  // the two pads as they sit on that board, the ball moved to the origin
+  const c4: El = { type: "pcb_smtpad", shape: "rotated_rect", pcb_smtpad_id: "c4_2", x: -0.2248, y: -0.0922, width: 0.6, height: 0.64, ccw_rotation: 135, layer: "top" };
+  const ball: El = { type: "pcb_smtpad", shape: "circle", pcb_smtpad_id: "ic6_e1", x: 0, y: 0, radius: 0.185, layer: "bottom" };
+  const trace = (layer: string, tx: number, ty: number): El => ({
+    type: "pcb_trace",
+    pcb_trace_id: `t_${layer}`,
+    route: [
+      { route_type: "wire", x: 0, y: 0, width: 0.2, layer },
+      { route_type: "wire", x: tx, y: ty, width: 0.2, layer },
+    ],
+  });
+  const escapes = (c: El[]) => runDrcChecks(c).filter((v) => v.rule === "pin_escape");
+
+  it("a straight entry into a bottom pad is straight, whatever top pad lies over it", () => {
+    expect(escapes([board(), c4, ball, trace("bottom", 0, -0.5)])).toEqual([]);
+  });
+
+  it("a crooked entry into that pad is still reported (measured on C4.2 it read as straight)", () => {
+    const found = escapes([board(), c4, ball, trace("bottom", 0.4, -0.4)]);
+    expect(found).toHaveLength(1);
+    expect(found[0].points).toEqual([{ x: 0, y: 0 }]);
+  });
+
+  it("a through-hole pad is left from both faces, and judged from both", () => {
+    const thp: El = { type: "pcb_plated_hole", shape: "circle", pcb_plated_hole_id: "j1", x: 0, y: 0, outer_diameter: 1.2, hole_diameter: 0.6, layers: ["top", "bottom"] };
+    for (const layer of ["top", "bottom"]) {
+      expect(escapes([board(), thp, trace(layer, 0, -2)])).toEqual([]);
+      expect(escapes([board(), thp, trace(layer, 1.5, -1.5)])).toHaveLength(1);
+    }
   });
 });
 

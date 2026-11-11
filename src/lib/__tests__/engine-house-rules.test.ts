@@ -135,3 +135,21 @@ describe("straightenPinEscapes on a rotated pad", () => {
     expect(by).toBeCloseTo(-bx, 6);
   });
 });
+
+describe("straightenPinEscapes reads the pad on the layer of the trace", () => {
+  it("leaves a straight entry into a bottom ball alone, whatever top pad lies over it", () => {
+    // sbb-dl-principale: C4.2 on the top, turned by 135 degrees, over the ball IC6.E1 on the bottom
+    const c4: El = { type: "pcb_smtpad", shape: "rotated_rect", pcb_smtpad_id: "c4_2", x: -0.2248, y: -0.0922, width: 0.6, height: 0.64, ccw_rotation: 135, layer: "top" };
+    const ball: El = { type: "pcb_smtpad", shape: "circle", pcb_smtpad_id: "ic6_e1", x: 0, y: 0, radius: 0.185, layer: "bottom" };
+    const trace: El = {
+      type: "pcb_trace",
+      pcb_trace_id: "ospi_io7",
+      route: [
+        { route_type: "wire", x: 0, y: 0, width: 0.2, layer: "bottom" },
+        { route_type: "wire", x: 0, y: -0.5, width: 0.2, layer: "bottom" },
+      ],
+    };
+    // read on C4.2 the entry was 45 degrees off, and a bend was inserted into straight copper
+    expect(routeOf(straightenPinEscapes([c4, ball, trace]), "ospi_io7")).toHaveLength(2);
+  });
+});

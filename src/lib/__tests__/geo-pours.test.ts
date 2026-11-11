@@ -73,6 +73,28 @@ describe("padsOffPlane", () => {
     const off = padsOffPlane(cj, readPours(cj));
     expect(off.map((o) => o.pad)).toEqual(["gnd"]);
   });
+
+  it("counts a tie stub only on the pad's face", () => {
+    const cj: El[] = [
+      { type: "source_net", source_net_id: "n_gnd", name: "GND" },
+      { type: "source_trace", source_trace_id: "t", connected_source_port_ids: ["s1"], connected_source_net_ids: ["n_gnd"] },
+      { type: "pcb_port", pcb_port_id: "pp1", source_port_id: "s1" },
+      { type: "pcb_smtpad", shape: "rect", pcb_smtpad_id: "gnd", pcb_port_id: "pp1", layer: "top", x: 20.5, y: 20.5, width: 1, height: 1 },
+      { type: "pcb_copper_pour", source_net_id: "n_gnd", layer: "top", brep_shape: { outer_ring: { vertices: square(0, 0, 10, 10) } } },
+    ];
+    const stub = (layer: string): El => ({
+      type: "pcb_trace",
+      pcb_trace_id: "pcb_trace_plane_1",
+      route: [
+        { route_type: "wire", x: 20.5, y: 20.5, width: 0.25, layer },
+        { route_type: "wire", x: 22, y: 20.5, width: 0.25, layer },
+      ],
+    });
+    const off = (els: El[]) => padsOffPlane(els, readPours(els)).map((o) => o.pad);
+    expect(off([...cj, stub("top")])).toEqual([]);
+    // a stub on the bottom passes under the pad and joins nothing of it
+    expect(off([...cj, stub("bottom")])).toEqual(["gnd"]);
+  });
 });
 
 describe("tutteLeVia", () => {

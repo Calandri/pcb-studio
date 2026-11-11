@@ -27,7 +27,13 @@
 // Older boards must be recompiled or rechecked before their Gerber can be exported: a recheck pours again the planes
 // of a board that has such a via. And a board that still has a plane over a via of another net, because the planes
 // could not be poured again, is not filed under this engine by the compile or by the recheck (see motoreDaSalvare)
-export const CHECKS_ENGINE_VERSION = 7;
+// 8 (2026-11-11): a trace is paired with a pad by position only on the layer of that trace (a through hole on every
+// layer, see stratoDelPad). pin_escape took the first pad under the end in plan view: on sbb-dl-principale a bottom
+// trace entering the ball IC6.E1 straight was measured against the top pad C4.2 over it and reported at 45 degrees,
+// and the house rule that straightens escapes would have bent it. The same reading is fixed in the net of a trace
+// without one, the pads of a net tie (DRC and matched lengths), the dangling traces, the net of a spliced power
+// trace and the tie stubs of the plane check
+export const CHECKS_ENGINE_VERSION = 8;
 
 /**
  * The first engine whose planes open around EVERY via, whatever layers it

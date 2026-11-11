@@ -9,7 +9,7 @@
  */
 
 import { eMassa } from "./net-roles";
-import { padGeometry, padHalfExtents } from "./pcb-route-model";
+import { padGeometry, padHalfExtents, stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 import { stratiDiRame } from "./via-layers";
 
 export interface PourShape {
@@ -338,16 +338,17 @@ export function padsOffPlane(
    * one of these is connected however far the via ended up: on a crowded board
    * the via has to step out to find room, and measuring only "a via within a
    * millimetre" declared adrift a pad that had its own copper going straight
-   * into the plane.
+   * into the plane. On the stub's own layer: a stub into a bottom pad does not
+   * join the top pad lying over it.
    */
-  const capiDiCollegamento: Array<{ x: number; y: number }> = [];
+  const capiDiCollegamento: Array<{ x: number; y: number; strato: string | null }> = [];
   for (const el of els) {
     if (el.type !== "pcb_trace") continue;
     if (!String(el.pcb_trace_id ?? "").startsWith("pcb_trace_plane_")) continue;
     for (const p of ((el.route as Array<Record<string, unknown>> | undefined) ?? [])) {
       const x = num(p.x);
       const y = num(p.y);
-      if (x !== null && y !== null) capiDiCollegamento.push({ x, y });
+      if (x !== null && y !== null) capiDiCollegamento.push({ x, y, strato: stratoDelPunto(p) });
     }
   }
   const vias = tutteLeVia(circuitJson, netDiChiave);
@@ -428,7 +429,7 @@ export function padsOffPlane(
     // our own stub going into the pad: that copper reaches the plane by
     // construction, wherever the via had to step out to
     const conCollegamento = capiDiCollegamento.some(
-      (c) => Math.abs(c.x - x) <= hw + 0.05 && Math.abs(c.y - y) <= hh + 0.05,
+      (c) => stessoStrato(c.strato, stratoDelPad(el)) && Math.abs(c.x - x) <= hw + 0.05 && Math.abs(c.y - y) <= hh + 0.05,
     );
     if (conCollegamento) continue;
     /*

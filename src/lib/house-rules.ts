@@ -5,6 +5,7 @@
  */
 import { DEFAULT_DESIGN_RULES } from "./design-rules";
 import { distanzaPuntoForma, escapeOffAxisDeg, ingombroForma, nelPad, rameDelForo } from "./drc";
+import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 import {
   insidePour,
   marginInsidePour,
@@ -65,8 +66,10 @@ function puntoDiPiega(
  */
 export function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElement[] {
   const pads = circuitJson.filter((el) => el.type === "pcb_smtpad");
-  const padAt = (x: number, y: number): CircuitElement | null =>
+  // the pad on the layer of the stretch, as the check reads it (see stratoDelPad)
+  const padAt = (x: number, y: number, strato: string | null): CircuitElement | null =>
     pads.find((el) => {
+      if (!stessoStrato(stratoDelPad(el), strato)) return false;
       const px = num(el.x);
       const py = num(el.y);
       if (px === null || py === null) return false;
@@ -103,7 +106,7 @@ export function straightenPinEscapes(circuitJson: CircuitElement[]): CircuitElem
       if (x === null || y === null || tx === null || ty === null) continue;
 
       if (Math.hypot(tx - x, ty - y) < 1e-6) continue;
-      const pad = padAt(x, y);
+      const pad = padAt(x, y, stratoDelPunto(from, to));
       if (!pad) continue;
       // in the pad's own axes: a rotated pad is exited along ITS edges
       const [dx, dy] = nelPad(pad, tx - x, ty - y);

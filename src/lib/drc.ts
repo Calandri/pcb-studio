@@ -5,6 +5,7 @@ import {
   type TipoRame,
 } from "./design-rules";
 import type { PianiSuVie } from "./engine-version";
+import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 import { netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
 
 export interface DrcViolation {
@@ -838,7 +839,7 @@ export function runDrcChecks(
    * starts from. Before, a trace without `source_trace_id` was skipped by every
    * clearance check: the stub could cross another net's pad and nobody said so.
    */
-  let gruppoDelPadSotto: (x: number, y: number) => string | null = () => null;
+  let gruppoDelPadSotto: (x: number, y: number, strato: string | null) => string | null = () => null;
   const groupOfTrace = (el: El): string | null => {
     const st = String(el.source_trace_id ?? "");
     if (st) return groupOfSourceTrace.get(st) || risolviChiave(String(el.subcircuit_connectivity_map_key ?? ""));
@@ -847,9 +848,13 @@ export function runDrcChecks(
     const route = ((el.route as Array<Record<string, unknown>> | undefined) ?? []).filter(
       (p) => num(p.x) !== null && num(p.y) !== null,
     );
-    for (const p of [route[0], route[route.length - 1]]) {
+    // the pad under an end on the end's own layer: the one over it on the other face is another net
+    for (const [p, vicino] of [
+      [route[0], route[1]],
+      [route[route.length - 1], route[route.length - 2]],
+    ]) {
       if (!p) continue;
-      const g = gruppoDelPadSotto(num(p.x)!, num(p.y)!);
+      const g = gruppoDelPadSotto(num(p.x)!, num(p.y)!, stratoDelPunto(p, vicino));
       if (g) return g;
     }
     return null;
@@ -997,9 +1002,9 @@ export function runDrcChecks(
       });
     }
   }
-  gruppoDelPadSotto = (x, y) => {
+  gruppoDelPadSotto = (x, y, strato) => {
     for (const b of boxes) {
-      if (b.group === null || b.kind !== "pad") continue;
+      if (b.group === null || b.kind !== "pad" || !stessoStrato(b.layer, strato)) continue;
       if (x < b.minX - 0.01 || x > b.maxX + 0.01 || y < b.minY - 0.01 || y > b.maxY + 0.01) continue;
       return b.group;
     }
@@ -1096,7 +1101,8 @@ export function runDrcChecks(
       if (x === null || y === null) continue;
       for (const b of boxes) {
         if (b.group === null) continue;
-        // the pad the bridge lands on: its centre within the pad, generously
+        // the pad the bridge lands on, on the bridge's layer: its centre within the pad, generously
+        if (!stessoStrato(b.layer, stratoDelPunto(p))) continue;
         const dx = Math.max(b.minX - x, x - b.maxX, 0);
         const dy = Math.max(b.minY - y, y - b.maxY, 0);
         if (Math.hypot(dx, dy) <= 0.2) gruppi.add(b.group);
@@ -1239,9 +1245,17 @@ export function runDrcChecks(
    * thing worth catching.
    */
   const ESCAPE_MAX_DEG = 12;
-  const padAt = (x: number, y: number): El | null =>
+  /*
+   * The pad the trace leaves is one ON THE LAYER of that segment (see
+   * stratoDelPad): the first pad under the point in plan view used to do, and
+   * on sbb-dl-principale it was the top capacitor pad lying over the bottom
+   * ball the trace enters. A through hole is copper on every layer and is left
+   * from either side.
+   */
+  const padAt = (x: number, y: number, strato: string | null): El | null =>
     circuitJson.find((el) => {
       if (el.type === "pcb_smtpad") {
+        if (!stessoStrato(stratoDelPad(el), strato)) return false;
         const px = num(el.x);
         const py = num(el.y);
         if (px === null || py === null) return false;
@@ -1272,7 +1286,7 @@ export function runDrcChecks(
     ] as Array<[Record<string, unknown>, Record<string, unknown>]>) {
       const x = num(from.x)!;
       const y = num(from.y)!;
-      const pad = padAt(x, y);
+      const pad = padAt(x, y, stratoDelPunto(from, to));
       if (!pad) continue;
       const dx = num(to.x)! - x;
       const dy = num(to.y)! - y;

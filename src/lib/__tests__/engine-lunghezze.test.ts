@@ -50,3 +50,38 @@ describe("matched lengths: a net that cannot be measured is reported", () => {
     expect(out[0].dentro).toBe(false);
   });
 });
+
+describe("matched lengths: a net tie joins the pads on its own layer", () => {
+  /** a pad of a net, with the port and the source trace that name its net */
+  const padDi = (nome: string, id: string, x: number, layer: string): El[] => [
+    { type: "source_trace", source_trace_id: `st_${id}`, subcircuit_connectivity_map_key: `k_${nome}`, connected_source_port_ids: [`sp_${id}`], connected_source_net_ids: [] },
+    { type: "pcb_port", pcb_port_id: `pp_${id}`, source_port_id: `sp_${id}` },
+    { type: "pcb_smtpad", shape: "rect", pcb_smtpad_id: id, pcb_port_id: `pp_${id}`, x, y: 0, width: 0.3, height: 0.3, layer },
+  ];
+  const ponte: El = {
+    type: "pcb_trace",
+    pcb_trace_id: "nt",
+    netTie: true,
+    route: [
+      { route_type: "wire", x: 20, y: 0, width: 0.3, layer: "top" },
+      { route_type: "wire", x: 20.5, y: 0, width: 0.3, layer: "top" },
+    ],
+  };
+
+  it("stitches the two halves it bridges, not a pad of the other face under it", () => {
+    const circuit = [
+      ...rete("D0", 10, 5),
+      ...rete("D1a", 6, 6),
+      ...rete("D1b", 4, 7),
+      // a pad of D0 on the bottom, right under the bridge's end, first in the file
+      ...padDi("D0", "d0_sotto", 20, "bottom"),
+      ...padDi("D1a", "nt_1", 20, "top"),
+      ...padDi("D1b", "nt_2", 20.5, "top"),
+      ponte,
+    ];
+    const [esito] = controllaLunghezze(circuit, [{ nome: "BUS", tolleranzaMm: 1, reti: ["D0", "D1a", "D1b"] }]);
+    // stitched to D0 the halves read 14 mm against 6
+    expect(esito.misure.map((m) => m.net).sort()).toEqual(["D0", "D1a+D1b"]);
+    expect(esito.dentro).toBe(true);
+  });
+});

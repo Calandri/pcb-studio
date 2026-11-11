@@ -31,6 +31,8 @@
  *    far finta che siano la stessa misura.
  */
 
+import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
+
 interface El {
   type: string;
   [key: string]: unknown;
@@ -205,6 +207,8 @@ function lunghezzePerRete(circuitJson: El[]): {
       let vicino: { d: number; net: string } | null = null;
       for (const pad of circuitJson) {
         if (pad.type !== "pcb_smtpad" && pad.type !== "pcb_plated_hole") continue;
+        // a pad of the other face under the bridge is not one of its two (see stratoDelPad)
+        if (!stessoStrato(stratoDelPad(pad), stratoDelPunto(p))) continue;
         const px = num(pad.x);
         const py = num(pad.y);
         if (px === null || py === null) continue;

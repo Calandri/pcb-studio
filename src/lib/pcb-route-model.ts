@@ -464,6 +464,49 @@ export function padHalfExtents(g: PadGeometry): { hw: number; hh: number } {
   return { hw: (g.w * cc + g.h * ss) / 2, hh: (g.w * ss + g.h * cc) / 2 };
 }
 
+/*
+ * THE LAYER, for a check that pairs a trace with a pad by position.
+ *
+ * Seen from above, a pad of the top face can lie right over a ball of the
+ * bottom one, and a trace touches only the copper of its own layer. Matched by
+ * position alone, a trace on the bottom entering a BGA ball took the top pad
+ * of the capacitor above it for its pad: on sbb-dl-principale (2026-11-11) the
+ * pin_escape check measured the straight entry into IC6.E1 against the edges of
+ * C4.2, turned by 135 degrees, and reported a 45-degree escape that the copper
+ * does not have. Every module that pairs the two reads the layers here.
+ */
+
+/**
+ * The layer a pad's copper is on: an SMT pad on its own face, a port on the one
+ * layer it lists. null for copper on every layer (a through hole, a via) and
+ * for a pad that names no layer, which then pairs as before, with anything.
+ */
+export function stratoDelPad(e: Record<string, unknown>): string | null {
+  if (e.type === "pcb_smtpad") return e.layer ? String(e.layer) : null;
+  if (e.type === "pcb_port") {
+    const strati = Array.isArray(e.layers) ? e.layers : [];
+    return strati.length === 1 ? String(strati[0]) : null;
+  }
+  return null;
+}
+
+/**
+ * The layer of a trace's copper at one point of its route: the point's wire.
+ * A via point is copper on every layer, so it is null unless `vicino`, the
+ * next point toward the inside of the route, names the wire that leaves it: an
+ * end of the route that is a via leaves it on that layer. null as well when
+ * the route does not say.
+ */
+export function stratoDelPunto(p: Record<string, unknown>, vicino?: Record<string, unknown>): string | null {
+  if (p.route_type !== "via" && p.layer) return String(p.layer);
+  return vicino && vicino.route_type !== "via" && vicino.layer ? String(vicino.layer) : null;
+}
+
+/** whether copper on these two layers can touch: null stands for every layer */
+export function stessoStrato(a: string | null, b: string | null): boolean {
+  return a === null || b === null || a === b;
+}
+
 /**
  * The origin of the frame a component's pcbX/pcbY are measured in.
  *
