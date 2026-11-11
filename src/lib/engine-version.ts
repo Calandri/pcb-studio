@@ -65,6 +65,9 @@
 // in the fab class, and the export goes on; tscircuit's pcb_courtyard_overlap_error of such a pair is not counted a
 // second time. Warnings: parts whose footprint is their pads alone, parts in a connector's mating space, outlines and
 // designators written as board drawings. On sbb-dl-principale 26 pairs had pads under 0.30 mm with every check green.
+// And the distance from a segment to a rectangle is taken side against side (it was taken from the corners only, and a
+// short segment running along a pad, its ends in front of the side, came out as far as the corners): trace against pad,
+// silkscreen against pad, a pill pad against a rect pad and the board edge measure true.
 // Copper and pours do not change: a board of engine 10 comes to 11 with a recheck ("Ricontrolla"), no compile
 export const CHECKS_ENGINE_VERSION = 11;
 

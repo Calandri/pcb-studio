@@ -1838,19 +1838,21 @@ function segToBoxDistance(
     return dentro;
   };
   if (inside(seg.ax, seg.ay) || inside(seg.bx, seg.by)) return 0;
-  const corners = punti.map((p) => [p.x, p.y] as const);
+  /*
+   * Side by side: the segment against every side of the rectangle, both ways
+   * (its ends against the side, the side's corners against it). It used to
+   * measure from the corners only, and a short segment running along a side,
+   * its two ends in front of it, came out as far as the corners: on tm-4l-q1 a
+   * stroke 0,053 mm from the pad C15.2 was "clear" (2026-11-12), and a short
+   * trace along a pad of another net could pass the DRC the same way.
+   */
   let best = Infinity;
   for (let i = 0; i < 4; i++) {
-    const [cx1, cy1] = corners[i];
-    const [cx2, cy2] = corners[(i + 1) % 4];
-    if (segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, cx1, cy1, cx2, cy2) === 0) {
-      return 0;
-    }
-    best = Math.min(
-      best,
-      pointSegDistance(cx1, cy1, seg.ax, seg.ay, seg.bx, seg.by),
-      pointSegDistance(cx2, cy2, seg.ax, seg.ay, seg.bx, seg.by),
-    );
+    const p = punti[i];
+    const q = punti[(i + 1) % 4];
+    const d = segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, p.x, p.y, q.x, q.y);
+    if (d === 0) return 0;
+    best = Math.min(best, d);
   }
   return best;
 }
