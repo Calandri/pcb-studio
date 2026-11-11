@@ -129,6 +129,28 @@ export interface DesignRules {
    * SERIGRAFIA_DISTANZA_MM, the 0.15 mm the fabs quote for silkscreen.
    */
   minSilkscreenClearanceMm?: number;
+  /**
+   * THE EXCESS AROUND A PART: how much a footprint computed by PCB Studio (a
+   * part whose footprint declares no courtyard) stands out of the exact
+   * envelope of its body and pads, on every side (see ingombro.ts). Two parts
+   * whose footprints overlap hit each other in assembly. Missing:
+   * INGOMBRO_ECCEDENZA_MM. A declared courtyard is taken as it is.
+   */
+  componentCourtyardExcessMm?: number;
+}
+
+/**
+ * The excess of a project that writes none, per side: two parts keep twice it.
+ * Niccolo', 2026-11-11: "come da datasheet ESATTO + 0,15", then "facciamo anche
+ * 0,2" (IPC-7351 gives 0,5 / 0,25 / 0,10 per side; assemblers ask 0,25-0,3 mm
+ * between two 0402). The only place it is written.
+ */
+export const INGOMBRO_ECCEDENZA_MM = 0.2;
+
+/** the excess around a part the project asks, or the default */
+export function eccedenzaDellIngombro(rules: DesignRules): number {
+  const v = rules.componentCourtyardExcessMm;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : INGOMBRO_ECCEDENZA_MM;
 }
 
 /** the silkscreen clearance of a project that writes none (Niccolo', 2026-11-11) */
@@ -278,11 +300,19 @@ export const MAX_POUR_CLEARANCE_MM = 5;
 const LIMITS: Record<
   | Exclude<
       keyof DesignRules,
-      "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "minSilkscreenClearanceMm" | "autoPlaneVias" | "pasteOnPlatedHoles" | "autoroute"
+      | "clearanceByPairMm"
+      | "pourClearanceMm"
+      | "pasteExpansionMm"
+      | "minSilkscreenClearanceMm"
+      | "componentCourtyardExcessMm"
+      | "autoPlaneVias"
+      | "pasteOnPlatedHoles"
+      | "autoroute"
     >
   | "pourClearanceMm"
   | "pasteExpansionMm"
-  | "minSilkscreenClearanceMm",
+  | "minSilkscreenClearanceMm"
+  | "componentCourtyardExcessMm",
   { min: number; max: number }
 > = {
   minTraceWidthMm: { min: 0.05, max: 2 },
@@ -302,6 +332,8 @@ const LIMITS: Record<
   pasteExpansionMm: { min: -0.1, max: 0.1 },
   // zero: only silkscreen that touches counts; beyond a millimetre it is a typo
   minSilkscreenClearanceMm: { min: 0, max: 1 },
+  // zero: the exact envelopes, touching allowed; beyond a millimetre a side it is a typo
+  componentCourtyardExcessMm: { min: 0, max: 1 },
 };
 
 /**

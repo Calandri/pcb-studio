@@ -28,6 +28,7 @@ import {
   DEFAULT_DESIGN_RULES,
   DESIGN_RULES_PATH,
   distanzaDellaSerigrafia,
+  eccedenzaDellIngombro,
   FAB_RULESETS,
   resolveDesignRules,
   type DesignRules,
@@ -73,6 +74,7 @@ import {
 import { descriviDistanze, distanzeDelleColate, type DistanzaInUso } from "./pours";
 import { colateCheSiToccano, colateTroppoVicine, type ColateCheSiToccano } from "./pour-pour";
 import { serigrafiaInConflitto, testoSerigrafia, type SerigrafiaInConflitto } from "./silkscreen-clearance";
+import { giaContato, ingombriDeiPezzi, testoIngombri, type IngombriDeiPezzi } from "./component-clearance";
 import { Profiler, routerPhases, type Profile } from "./profile";
 import { patchedLibraries } from "./engine-patches.mjs";
 
@@ -264,8 +266,9 @@ export interface CompileSummary {
   /**
    * convergence checklist (Fase 3.h): every loop target with its count, and
    * allGreen when everything passes (errors 0, unrouted 0, DRC 0, PRC 0,
-   * schematic overlaps 0, at least one fab ruleset satisfied). The agent
-   * iterates until allGreen or explains the trade-off it accepted.
+   * schematic overlaps 0, no two parts hitting each other, at least one fab
+   * ruleset satisfied). The agent iterates until allGreen or explains the
+   * trade-off it accepted.
    */
   targets: {
     errors: number;
@@ -273,6 +276,8 @@ export interface CompileSummary {
     drcViolations: number;
     prcViolations: number;
     schematicOverlaps: number;
+    /** pairs of parts whose footprints overlap (CompileSummary.courtyards) */
+    courtyardCollisions: number;
     fabClass: string | null;
     allGreen: boolean;
   };
@@ -358,6 +363,15 @@ export interface CompileSummary {
    * the silkscreen is clear.
    */
   silkscreen?: SerigrafiaInConflitto;
+  /**
+   * THE FOOTPRINTS OF THE PARTS (see component-clearance.ts): pairs of parts
+   * whose footprints overlap on one face, so that they hit each other in
+   * assembly (an error: in targets and allGreen, the board is not ready, the
+   * export goes on), parts whose footprint is their pads alone, and outlines
+   * or designators written as drawings of the board. Absent when there is
+   * nothing to say.
+   */
+  courtyards?: IngombriDeiPezzi;
   /**
    * The board was saved without its schematic, which was still being drawn:
    * the schematic checks below say nothing yet. Absent on a complete compile.
@@ -1563,6 +1577,7 @@ function emptySummary(
       drcViolations: 0,
       prcViolations: 0,
       schematicOverlaps: 0,
+      courtyardCollisions: 0,
       fabClass: null,
       allGreen: false,
     },
@@ -2705,6 +2720,9 @@ interface ControlliDellaScheda {
   poursTooClose: ReturnType<typeof colateCheSiToccano>;
   /** the silkscreen clashes (see silkscreen-clearance.ts): a check of the board, it reads no schematic */
   silkscreen: SerigrafiaInConflitto | undefined;
+  /** the footprints of the parts (see component-clearance.ts), and tscircuit's courtyard errors they already report */
+  courtyards: IngombriDeiPezzi | undefined;
+  cortiliGiaContati: string[];
   prcViolations: PrcViolation[];
   fabClasses: CompileSummary["fabClasses"];
   fabClass: string | null;
@@ -2879,6 +2897,8 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
   }
   // the silkscreen, which nothing measured: a warning kept apart from the DRC (see silkscreen-clearance.ts)
   const silkscreen = serigrafiaInConflitto(circuitJson, distanzaDellaSerigrafia(projectRules.rules));
+  // the parts that hit each other in assembly, and the footprints that are not real (see component-clearance.ts)
+  const ingombri = ingombriDeiPezzi(circuitJson, eccedenzaDellIngombro(projectRules.rules));
   const prcViolations = runPrcChecks(circuitJson);
   /*
    * LE LUNGHEZZE APPAIATE, quando il progetto ne porta i gruppi: un bus arriva
@@ -2998,6 +3018,8 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
     drcViolations,
     poursTooClose,
     silkscreen,
+    courtyards: ingombri.riepilogo,
+    cortiliGiaContati: ingombri.cortiliGiaContati,
     prcViolations,
     fabClasses,
     fabClass,
@@ -3025,7 +3047,8 @@ function summarize(
   scheda: ControlliDellaScheda = controlliDellaScheda(circuitJson, sources),
 ): CompileSummary {
   const allErrors = circuitJson
-    .filter((el) => el.type.endsWith("_error"))
+    // a courtyard overlap of tscircuit's that the footprints check reports already: one report per pair
+    .filter((el) => el.type.endsWith("_error") && !giaContato(el, scheda.cortiliGiaContati))
     .map((el) => ({
       type: el.type,
       message: String(el.message ?? el.error_type ?? JSON.stringify(el)).slice(0, 500),
@@ -3092,6 +3115,7 @@ function summarize(
     drcViolations,
     poursTooClose,
     silkscreen,
+    courtyards,
     prcViolations,
     fabClasses,
     fabClass,
@@ -3136,6 +3160,7 @@ function summarize(
     prcViolations: prcTotal(prcViolations),
     schematicOverlaps:
       schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount,
+    courtyardCollisions: courtyards?.count ?? 0,
     fabClass,
     allGreen:
       reportedErrors.length === 0 &&
@@ -3143,6 +3168,9 @@ function summarize(
       drcViolations.length === 0 &&
       prcTotal(prcViolations) === 0 &&
       schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount === 0 &&
+      // footprints not measured are not footprints that do not hit
+      (courtyards?.count ?? 0) === 0 &&
+      courtyards?.nonMisurati === undefined &&
       fabClass !== null,
   };
   const message = ok
@@ -3214,10 +3242,11 @@ function summarize(
     ...(planesOverVias ? { planesOverVias } : {}),
     ...(poursTooClose ? { poursTooClose } : {}),
     ...(silkscreen ? { silkscreen } : {}),
+    ...(courtyards ? { courtyards } : {}),
     ...(pourClearances ? { pourClearances } : {}),
     routingAttempts: 1,
     router: "default",
-    message: message + regoleCorrette + scheda.messaggioColate + testoSerigrafia(silkscreen),
+    message: message + regoleCorrette + scheda.messaggioColate + testoSerigrafia(silkscreen) + testoIngombri(courtyards),
   };
 }
 

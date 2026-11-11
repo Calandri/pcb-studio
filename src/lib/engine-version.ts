@@ -57,7 +57,16 @@
 // designators ran over other outlines and over vias with every check green. It is a warning (CompileSummary.silkscreen):
 // not in the DRC count nor in the fab class, it does not stop the export and does not keep a board under an older
 // engine. Copper and pours do not change: a board of engine 9 comes to 10 with a recheck ("Ricontrolla"), no compile
-export const CHECKS_ENGINE_VERSION = 10;
+// 11 (2026-11-12): the footprints of the parts in assembly are measured (ingombro.ts, component-clearance.ts): the
+// declared courtyard, or the rectangle around body and pads (the body of a 3D model's box too, a two-pad passive's
+// from its standard size) grown by the project's componentCourtyardExcessMm (0.2 mm a side unless design-rules.json
+// says otherwise). Two parts on one face whose footprints overlap hit each other in assembly: an error
+// (CompileSummary.courtyards, targets.courtyardCollisions, allGreen false, the board is not ready), not in the DRC nor
+// in the fab class, and the export goes on; tscircuit's pcb_courtyard_overlap_error of such a pair is not counted a
+// second time. Warnings: parts whose footprint is their pads alone, parts in a connector's mating space, outlines and
+// designators written as board drawings. On sbb-dl-principale 26 pairs had pads under 0.30 mm with every check green.
+// Copper and pours do not change: a board of engine 10 comes to 11 with a recheck ("Ricontrolla"), no compile
+export const CHECKS_ENGINE_VERSION = 11;
 
 /**
  * The first engine whose pours start again from the outlines the files

@@ -286,8 +286,7 @@ describe("la regola del progetto e il riepilogo", () => {
   });
 
   it("a board with silkscreen clashes is filed under today's engine all the same", () => {
-    expect(CHECKS_ENGINE_VERSION).toBe(10);
-    expect(motoreDaSalvare({ silkscreen: { count: 40, detail: "40 conflitti di serigrafia" } }, 9)).toBe(10);
+    expect(motoreDaSalvare({ silkscreen: { count: 40, detail: "40 conflitti di serigrafia" } }, 9)).toBe(CHECKS_ENGINE_VERSION);
   });
 });
 

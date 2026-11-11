@@ -72,6 +72,15 @@ interface SummaryLike {
   components?: Array<{ name: string }>;
   /** silkscreen clashes, a warning apart from the DRC (see silkscreen-clearance.ts) */
   silkscreen?: { count?: number; detail?: string; nonMisurata?: string };
+  /** the footprints of the parts (see component-clearance.ts): pairs that hit are an error, the rest warnings */
+  courtyards?: {
+    count?: number;
+    detail?: string;
+    nonMisurati?: string;
+    senzaIngombroVero?: { count?: number; detail?: string };
+    disegniDiScheda?: { count?: number; detail?: string };
+    nelloSpazioDiInnesto?: { count?: number; detail?: string };
+  };
 }
 
 /**
@@ -161,6 +170,18 @@ export function buildBoardReport(
   const escapeRules = drc.filter((v) => /pin_escape/i.test(v.rule ?? v.message));
   const overlaps = errors.filter((e) => /overlap|outside/i.test(e.type ?? e.message));
   /*
+   * THE FOOTPRINTS OF THE PARTS, in the row of the overlaps: two parts that hit
+   * each other in assembly are an error (the board is not ready), a part whose
+   * footprint is its pads alone, a part in a connector's mating space and an
+   * outline drawn at board level are warnings (see component-clearance.ts).
+   */
+  const ingombri = summary?.courtyards;
+  const scontri = typeof ingombri?.count === "number" ? ingombri.count : 0;
+  const avvisiIngombri = [ingombri?.nelloSpazioDiInnesto, ingombri?.senzaIngombroVero, ingombri?.disegniDiScheda].filter(
+    (a): a is { count?: number; detail?: string } => typeof a?.count === "number" && a.count > 0,
+  );
+  const ingombriNonMisurati = typeof ingombri?.nonMisurati === "string";
+  /*
    * Everything else tscircuit flags as an error (a pin it could not connect,
    * a footprint it could not read) was counted nowhere: a board full of them
    * still scored 100.
@@ -206,7 +227,28 @@ export function buildBoardReport(
     row("clear", "Distanze minime", clearanceRules, "Nessun rame troppo ravvicinato.", "interference"),
     row("width", "Larghezza piste", widthRules, "Tutte le piste sopra la larghezza minima.", "copper"),
     row("edge", "Margine dal bordo", edgeRules, "Rame a distanza di sicurezza dal bordo.", "fabrication"),
-    row("place", "Ingombri dei componenti", overlaps, "Nessuna sovrapposizione.", "interference"),
+    {
+      id: "place",
+      name: "Ingombri dei pezzi",
+      count:
+        scontri + overlaps.length > 0
+          ? `${scontri + overlaps.length} ${scontri + overlaps.length === 1 ? "segnalazione" : "segnalazioni"}`
+          : ingombriNonMisurati
+            ? "non misurati"
+            : avvisiIngombri.length > 0
+              ? `${avvisiIngombri.reduce((n, a) => n + (a.count ?? 0), 0)} avvisi`
+              : "ok",
+      severity: scontri + overlaps.length > 0 ? "err" : ingombriNonMisurati || avvisiIngombri.length > 0 ? "warn" : "ok",
+      detail: (scontri > 0 || ingombriNonMisurati
+        ? String(ingombri?.detail ?? "")
+        : overlaps.length > 0
+          ? overlaps[0].message
+          : avvisiIngombri.length > 0
+            ? String(avvisiIngombri[0].detail ?? "")
+            : "Nessun pezzo si scontra con un altro in montaggio."
+      ).slice(0, 130),
+      preset: "interference",
+    },
     row("errori", "Errori della compilazione", otherErrors, "Nessun errore dal compilatore.", "interference"),
     row(
       "escape",

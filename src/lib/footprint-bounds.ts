@@ -19,7 +19,8 @@
  *     polygon), together with the pads, which on some parts stick out of it
  *     (crystals);
  *  2. otherwise the pads together with the body, when its size is known
- *     (cad_component.size);
+ *     (cad_component.size, or, when asked, the box of its 3D model: see
+ *     corpoDelPezzo);
  *  3. only as a last resort, the pads.
  * The coordinates in the Circuit JSON are already on the board (the face and
  * the rotation of the part applied by tscircuit); a rect or pill courtyard can
@@ -135,42 +136,134 @@ export function padBounds(el: El): Bounds | null {
   return { minX: g.x - hw, maxX: g.x + hw, minY: g.y - hh, maxY: g.y + hh };
 }
 
-/** the body of the part on the board, when its 3D size is known */
-function bodyBounds(cad: El): Bounds | null {
-  const size = cad.size as { x?: unknown; y?: unknown } | undefined;
-  const pos = cad.position as { x?: unknown; y?: unknown } | undefined;
-  const w = fin(size?.x), h = fin(size?.y), x = fin(pos?.x), y = fin(pos?.y);
-  if (w === null || h === null || x === null || y === null || w <= 0 || h <= 0) return null;
-  const rot = fin((cad.rotation as { z?: unknown } | undefined)?.z) ?? 0;
-  return turnedRect(x, y, w, h, rot);
+/** the body of a part on the board: a w x h rectangle centred at (x, y), turned by rot degrees */
+export interface Corpo {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rot: number;
 }
 
-/** the real footprint of every part, by pcb_component_id: see the top of this file */
-export function footprintBoxes(circuitJson: unknown[] | null | undefined): Map<string, FootprintBox> {
+/**
+ * THE BOX A 3D MODEL DRAWS, when the model is one: a cuboid (or a rounded one),
+ * alone or coloured. It is what the imports write over a footprint that comes
+ * with its height (circuit-json-to-project) and what the libraries of the SBB
+ * boards write for each part: on sbb-dl-principale 138 parts out of 156 carry
+ * one and none carries cad_component.size, so their body was never read (BZ1:
+ * a 9 x 9 mm buzzer on pads 10 x 3,4 mm). A model loaded from a file (obj,
+ * step) has no size the Circuit JSON tells.
+ */
+function scatolaDelModello(jscad: unknown): { w: number; h: number; dx: number; dy: number } | null {
+  let m = jscad as { type?: unknown; shape?: unknown; size?: unknown; center?: unknown } | null | undefined;
+  if (m?.type === "colorize") m = m.shape as typeof m;
+  if (m?.type !== "cuboid" && m?.type !== "roundedCuboid") return null;
+  const size = Array.isArray(m.size) ? m.size : null;
+  const w = fin(size?.[0]), h = fin(size?.[1]);
+  if (w === null || h === null || w <= 0 || h <= 0) return null;
+  const centro = Array.isArray(m.center) ? m.center : [];
+  return { w, h, dx: fin(centro[0]) ?? 0, dy: fin(centro[1]) ?? 0 };
+}
+
+/**
+ * The body of a part on the board, from its cad_component: the size tscircuit
+ * writes, else (`dalModello`) the box of its 3D model. null when neither says.
+ */
+export function corpoDelPezzo(cad: El, opts: { dalModello?: boolean } = {}): Corpo | null {
+  const pos = cad.position as { x?: unknown; y?: unknown } | undefined;
+  const x = fin(pos?.x), y = fin(pos?.y);
+  if (x === null || y === null) return null;
+  const rotazione = cad.rotation as { x?: unknown; y?: unknown; z?: unknown } | undefined;
+  const rot = fin(rotazione?.z) ?? 0;
+  const size = cad.size as { x?: unknown; y?: unknown } | undefined;
+  const w = fin(size?.x), h = fin(size?.y);
+  if (w !== null && h !== null && w > 0 && h > 0) return { x, y, w, h, rot };
+  if (!opts.dalModello) return null;
+  const s = scatolaDelModello(cad.model_jscad);
+  if (!s) return null;
+  /*
+   * A box off the model's origin travels with it: turned with the part and,
+   * on the bottom face (the model flipped about y), mirrored first.
+   */
+  const capovolto = Math.abs(Math.abs(fin(rotazione?.y) ?? 0) - 180) < 1e-6 || Math.abs(Math.abs(fin(rotazione?.x) ?? 0) - 180) < 1e-6;
+  const dx = capovolto ? -s.dx : s.dx;
+  const a = (rot * Math.PI) / 180;
+  return { x: x + dx * Math.cos(a) - s.dy * Math.sin(a), y: y + dx * Math.sin(a) + s.dy * Math.cos(a), w: s.w, h: s.h, rot };
+}
+
+/** the body of the part on the board, when its size is known */
+function bodyBounds(cad: El, dalModello: boolean): Bounds | null {
+  const c = corpoDelPezzo(cad, { dalModello });
+  return c ? turnedRect(c.x, c.y, c.w, c.h, c.rot) : null;
+}
+
+/** what a part's footprint is read from, element by element, and the box it comes to */
+export interface FootprintPart {
+  box: FootprintBox;
+  /** its courtyards, as shapes */
+  courtyards: CourtyardShape[];
+  /** its SMT pads and plated holes */
+  pads: El[];
+  /** its body, when known */
+  body: Corpo | null;
+}
+
+/**
+ * Options of the reading. `corpiDaiModelli`: the body of a part with no
+ * cad_component.size is the box of its 3D model, when the model is a box (see
+ * scatolaDelModello). Off unless asked: the viewer and the placement check read
+ * the size alone, as before.
+ */
+export interface FootprintOptions {
+  corpiDaiModelli?: boolean;
+}
+
+/** the real footprint of every part, by pcb_component_id, with what it is read from: see the top of this file */
+export function footprintParts(circuitJson: unknown[] | null | undefined, opts: FootprintOptions = {}): Map<string, FootprintPart> {
   const pads = new Map<string, Bounds | null>();
   const courts = new Map<string, Bounds | null>();
   const bodies = new Map<string, Bounds | null>();
+  const padEls = new Map<string, El[]>();
+  const courtShapes = new Map<string, CourtyardShape[]>();
+  const bodyOf = new Map<string, Corpo>();
+  const dalModello = opts.corpiDaiModelli === true;
   for (const raw of circuitJson ?? []) {
     const el = raw as El;
     const cid = typeof el?.pcb_component_id === "string" ? el.pcb_component_id : null;
     if (!cid) continue;
     if (el.type === "pcb_smtpad" || el.type === "pcb_plated_hole") {
       pads.set(cid, join(pads.get(cid) ?? null, padBounds(el)));
+      padEls.set(cid, [...(padEls.get(cid) ?? []), el]);
     } else if (COURTYARD_TYPES.has(String(el.type))) {
       const s = courtyardShape(el);
       courts.set(cid, join(courts.get(cid) ?? null, s ? shapeBounds(s) : null));
+      if (s) courtShapes.set(cid, [...(courtShapes.get(cid) ?? []), s]);
     } else if (el.type === "cad_component") {
-      bodies.set(cid, join(bodies.get(cid) ?? null, bodyBounds(el)));
+      bodies.set(cid, join(bodies.get(cid) ?? null, bodyBounds(el, dalModello)));
+      const c = corpoDelPezzo(el, { dalModello });
+      if (c && !bodyOf.has(cid)) bodyOf.set(cid, c);
     }
   }
-  const out = new Map<string, FootprintBox>();
+  const out = new Map<string, FootprintPart>();
   for (const cid of new Set([...pads.keys(), ...courts.keys(), ...bodies.keys()])) {
     const p = pads.get(cid) ?? null;
     const c = courts.get(cid) ?? null;
     const b = bodies.get(cid) ?? null;
-    if (c) out.set(cid, { ...join(c, p)!, source: "cortile" });
-    else if (b) out.set(cid, { ...join(b, p)!, source: "piazzole e corpo" });
-    else if (p) out.set(cid, { ...p, source: "piazzole" });
+    const box: FootprintBox | null = c
+      ? { ...join(c, p)!, source: "cortile" }
+      : b
+        ? { ...join(b, p)!, source: "piazzole e corpo" }
+        : p
+          ? { ...p, source: "piazzole" }
+          : null;
+    if (box) out.set(cid, { box, courtyards: courtShapes.get(cid) ?? [], pads: padEls.get(cid) ?? [], body: bodyOf.get(cid) ?? null });
   }
+  return out;
+}
+
+/** the real footprint of every part, by pcb_component_id: see the top of this file */
+export function footprintBoxes(circuitJson: unknown[] | null | undefined, opts: FootprintOptions = {}): Map<string, FootprintBox> {
+  const out = new Map<string, FootprintBox>();
+  for (const [cid, part] of footprintParts(circuitJson, opts)) out.set(cid, part.box);
   return out;
 }

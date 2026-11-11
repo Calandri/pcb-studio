@@ -276,10 +276,10 @@ describe("the routes that save a board from the cache leave only through vias", 
 
   /*
    * Engine 10 measures the silkscreen and changes no copper: a board of engine
-   * 9 comes to 10 with "Ricontrolla" alone, its copper and pours as they were,
-   * and goes to the export (a silkscreen clash is a warning).
+   * 9 comes to today's with "Ricontrolla" alone, its copper and pours as they
+   * were, and goes to the export (a silkscreen clash is a warning).
    */
-  it("recheck: a board of engine 9 comes to engine 10 with a recheck alone, copper and pours untouched, the silkscreen measured", async () => {
+  it("recheck: a board of engine 9 comes to today's engine with a recheck alone, copper and pours untouched, the silkscreen measured", async () => {
     db.row = riga(salvata, CHECKS_ENGINE_VERSION);
     await recheck(post({ projectId: "p" }));
     // poured as it should be, plus a board line of silkscreen across the via at (3.5; 0)
@@ -288,14 +288,13 @@ describe("the routes that save a board from the cache leave only through vias", 
     db.saves = [];
     db.row = riga(nove, ENGINE_COLATE_DAI_CONTORNI);
     expect(ENGINE_COLATE_DAI_CONTORNI).toBe(9);
-    expect(CHECKS_ENGINE_VERSION).toBe(10);
     const risposta = (await (await recheck(post({ projectId: "p" }))).json()) as Risposta & { summary: { silkscreen?: { count: number; conflitti: Array<{ tipo: string; a: string; b: string }> } } };
-    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 10, currentEngineVersion: 10, previousEngineVersion: 9 });
+    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: CHECKS_ENGINE_VERSION, currentEngineVersion: CHECKS_ENGINE_VERSION, previousEngineVersion: 9 });
     expect(risposta.colateDaRifare).toBeUndefined();
     expect(risposta.pianiRicolati).toBeUndefined();
     expect(risposta.nonCertificata).toBeUndefined();
     const [s] = db.saves;
-    expect(s.engine).toBe(10);
+    expect(s.engine).toBe(CHECKS_ENGINE_VERSION);
     // the copper and the pours as they were
     const rame = (cj: unknown[]) => (cj as El[]).filter((e) => ["pcb_copper_pour", "pcb_trace", "pcb_via", "pcb_smtpad"].includes(e.type));
     expect(rame(s.circuitJson)).toEqual(rame(nove));
@@ -304,6 +303,49 @@ describe("the routes that save a board from the cache leave only through vias", 
     expect(risposta.summary.silkscreen!.conflitti).toContainEqual(expect.objectContaining({ tipo: "serigrafia_foro", a: "disegno di scheda", b: expect.stringMatching(/^foro della via/) }));
     expect(risposta.summary.message).toMatch(/AVVISO serigrafia \(non ferma l'export\)/);
     // and the warning does not hold the export back
+    db.row = { ...riga(s.circuitJson, s.engine), summary: s.summary };
+    expect((await esporta(new Request("http://x/api/export?projectId=p&kind=gerber"))).status).toBe(200);
+  }, 120_000);
+
+  /*
+   * Engine 11 measures the footprints of the parts and changes no copper: a
+   * board of engine 10 comes to 11 with "Ricontrolla" alone, its copper and
+   * pours as they were; two parts that hit each other are an error of the
+   * summary, and the export goes on.
+   */
+  it("recheck: a board of engine 10 comes to engine 11 with a recheck alone, copper and pours untouched, the footprints measured", async () => {
+    db.row = riga(salvata, CHECKS_ENGINE_VERSION);
+    await recheck(post({ projectId: "p" }));
+    // poured as it should be, plus a part C5 placed by hand 0,1 mm from R1's pads (an 0402 at (-6; 0))
+    const r1 = (db.saves[0].circuitJson as El[]).filter((e) => e.type === "pcb_smtpad" && e.layer === "top" && (e.x as number) < -4);
+    const sopra = Math.max(...r1.map((e) => (e.y as number) + (e.height as number) / 2));
+    const c5 = [
+      { type: "source_component", source_component_id: "s_c5", name: "C5", ftype: "simple_capacitor" },
+      { type: "pcb_component", pcb_component_id: "pc_c5", source_component_id: "s_c5", center: { x: -6, y: sopra + 0.35 }, layer: "top", rotation: 0, width: 1.6, height: 0.5 },
+      { type: "pcb_smtpad", pcb_smtpad_id: "c5_1", pcb_component_id: "pc_c5", shape: "rect", x: -6.5, y: sopra + 0.35, width: 0.6, height: 0.5, layer: "top" },
+      { type: "pcb_smtpad", pcb_smtpad_id: "c5_2", pcb_component_id: "pc_c5", shape: "rect", x: -5.5, y: sopra + 0.35, width: 0.6, height: 0.5, layer: "top" },
+    ] as El[];
+    const dieci = [...(db.saves[0].circuitJson as El[]), ...c5];
+    db.saves = [];
+    db.row = riga(dieci, 10);
+    expect(CHECKS_ENGINE_VERSION).toBe(11);
+    const risposta = (await (await recheck(post({ projectId: "p" }))).json()) as Risposta & {
+      summary: { courtyards?: { count: number; scontri: Array<{ a: string; b: string; faccia: string }> }; targets: { courtyardCollisions: number; allGreen: boolean } };
+    };
+    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 11, currentEngineVersion: 11, previousEngineVersion: 10 });
+    expect(risposta.colateDaRifare).toBeUndefined();
+    expect(risposta.pianiRicolati).toBeUndefined();
+    expect(risposta.nonCertificata).toBeUndefined();
+    const [s] = db.saves;
+    expect(s.engine).toBe(11);
+    // the copper and the pours as they were
+    const rame = (cj: unknown[]) => (cj as El[]).filter((e) => ["pcb_copper_pour", "pcb_trace", "pcb_via", "pcb_smtpad"].includes(e.type));
+    expect(rame(s.circuitJson)).toEqual(rame(dieci));
+    // R1 and C5 hit each other: an error of the summary
+    expect(risposta.summary.courtyards?.scontri).toEqual([expect.objectContaining({ a: "R1", b: "C5", faccia: "top" })]);
+    expect(risposta.summary.targets).toMatchObject({ courtyardCollisions: 1, allGreen: false });
+    expect(risposta.summary.message).toMatch(/ERRORE ingombri dei pezzi/);
+    // and the export is not refused for it
     db.row = { ...riga(s.circuitJson, s.engine), summary: s.summary };
     expect((await esporta(new Request("http://x/api/export?projectId=p&kind=gerber"))).status).toBe(200);
   }, 120_000);

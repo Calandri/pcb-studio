@@ -75,7 +75,8 @@ export function dSS(a: Punto, b: Punto, c: Punto, d: Punto): { d: number; p: Pun
   ];
   return cands.reduce((m, x) => (x.d < m.d ? x : m));
 }
-function dentro(x: number, y: number, a: Punto[]): boolean {
+/** whether a point is inside a polygon (even-odd; the part footprints measure with it too) */
+export function dentro(x: number, y: number, a: Punto[]): boolean {
   let d = false;
   for (let i = 0, j = a.length - 1; i < a.length; j = i++) {
     if (a[i].y > y !== a[j].y > y && x < ((a[j].x - a[i].x) * (y - a[i].y)) / (a[j].y - a[i].y) + a[i].x) d = !d;

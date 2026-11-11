@@ -147,9 +147,10 @@ const larghezza = (u: { minX: number; minY: number; maxX: number; maxY: number }
  * face, read back from the commands: D02 moves, D01 draws from where the pen is,
  * G36/G37 close a region. Strokes drawn in clear polarity (the letters cut out
  * of a knockout) take ink away: they are left out, the box stays whole. Arcs are
- * read as their chords.
+ * read as their chords. The board drawings check of component-clearance.ts
+ * reads them too.
  */
-function dalGerber(el: El, faccia: Faccia): { segmenti: Array<[Punto, Punto]>; regioni: Punto[][] } {
+export function dalGerber(el: El, faccia: Faccia): { segmenti: Array<[Punto, Punto]>; regioni: Punto[][] } {
   const segmenti: Array<[Punto, Punto]> = [];
   const regioni: Punto[][] = [];
   let comandi: Array<Record<string, unknown>> = [];
