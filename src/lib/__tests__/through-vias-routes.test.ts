@@ -8,6 +8,13 @@ import { runTscircuitCode } from "@tscircuit/eval";
  * they take it from the cache, and no board leaves them with such a via. The
  * recheck is the one that files a board under today's engine, so it is also
  * the one that has to pour its planes again.
+ *
+ * And pouring again can leave a plane as it was (the solver of a pour fails or
+ * gives nothing back, the whole step fails in the compile): the review of that
+ * fix found such a board filed under today's engine all the same, exportable
+ * with the plane over the hole. A board with a via in the copper of another
+ * net's plane keeps an older engine, from the recheck and from the compile,
+ * and the answer says why.
  */
 type Punto = { x: number; y: number };
 type El = Record<string, unknown> & { type: string } & {
@@ -20,6 +27,26 @@ const db = vi.hoisted(() => ({
   files: {} as Record<string, string>,
   saves: [] as Array<{ hash: string; circuitJson: unknown[]; summary: unknown; engine: number }>,
 }));
+
+/** how the pour step is made to fail: the solver of a pour throws, or gives nothing back, or the whole step throws */
+const guasto = vi.hoisted(() => ({ come: null as null | "solver" | "vuoto" | "tutto" }));
+vi.mock("@tscircuit/copper-pour-solver", async (originale) => {
+  const vero = await originale<typeof import("@tscircuit/copper-pour-solver")>();
+  return {
+    ...vero,
+    CopperPourPipelineSolver: class extends vero.CopperPourPipelineSolver {
+      getOutput() {
+        if (guasto.come === "solver") throw new Error("solver in errore");
+        if (guasto.come === "vuoto") return { brep_shapes: [] } as unknown as ReturnType<InstanceType<typeof vero.CopperPourPipelineSolver>["getOutput"]>;
+        return super.getOutput();
+      }
+    },
+    convertCircuitJsonToInputProblem: ((...args: Parameters<typeof vero.convertCircuitJsonToInputProblem>) => {
+      if (guasto.come === "tutto") throw new Error("convertitore in errore");
+      return vero.convertCircuitJsonToInputProblem(...args);
+    }) as typeof vero.convertCircuitJsonToInputProblem,
+  };
+});
 
 vi.mock("@/lib/acl", () => ({ requireProjectAccess: vi.fn(async () => ({ viewer: null, ok: true })) }));
 vi.mock("@/lib/agent-tools", () => ({ withLibrary: vi.fn(async (f: Record<string, string>) => f) }));
@@ -37,11 +64,15 @@ vi.mock("@/lib/project-store", async (originale) => {
   };
 });
 
+import JSZip from "jszip";
 import { POST as acceptBoard } from "@/app/api/accept-board/route";
+import { GET as esporta } from "@/app/api/export/route";
 import { POST as recheck } from "@/app/api/recheck/route";
 import { POST as trace } from "@/app/api/trace/route";
+import { compileProject } from "@/lib/compile";
+import { saveFinishedCompile } from "@/lib/compile-save";
 import { DESIGN_RULES_PATH } from "@/lib/design-rules";
-import { CHECKS_ENGINE_VERSION, ENGINE_VIE_PASSANTI } from "@/lib/engine-version";
+import { CHECKS_ENGINE_VERSION, ENGINE_VIE_PASSANTI, motoreDaSalvare, nonCertificata } from "@/lib/engine-version";
 import { filesHash } from "@/lib/project-store";
 
 const MAIN = `export default () => (
@@ -86,6 +117,17 @@ const dalRame = (cj: El[], layer: string, via: El) => {
   const anelli = piani.flatMap((b) => [b.outer_ring.vertices, ...(b.inner_rings ?? []).map((r) => r.vertices)]);
   return Math.max(0, Math.min(...anelli.flatMap((a) => a.map((q, i) => distSeg({ x: via.x!, y: via.y! }, a[(i + a.length - 1) % a.length], q)))) - via.outer_diameter! / 2);
 };
+type Risposta = {
+  ok: boolean;
+  saved?: boolean;
+  pianiRicolati?: boolean;
+  vieParziali?: number;
+  engineVersion: number;
+  currentEngineVersion: number;
+  previousEngineVersion: number;
+  nonCertificata?: string;
+  summary: { message: string; drcViolations: Array<{ rule: string }>; planesOverVias?: { count: number; detail: string } };
+};
 const post = (body: unknown) => new Request("http://x/api", { method: "POST", body: JSON.stringify(body) });
 const vie = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_via");
 const giuDi = (cj: unknown[]) => vie(cj).find((v) => v.from_layer === "inner2" && v.to_layer === "bottom")!;
@@ -114,6 +156,7 @@ describe("the routes that save a board from the cache leave only through vias", 
     db.files = FILES;
     db.saves = [];
     db.row = riga(salvata, ENGINE_VIE_PASSANTI - 1);
+    guasto.come = null;
   }, 120_000);
 
   it("the board of the older engine is what the bug looked like", () => {
@@ -123,33 +166,165 @@ describe("the routes that save a board from the cache leave only through vias", 
 
   it("recheck: the vias are completed, the planes are poured again and only then the board is filed under today's engine", async () => {
     const r = await recheck(post({ projectId: "p" }));
-    const risposta = (await r.json()) as { ok: boolean; pianiRicolati?: boolean; vieParziali?: number; previousEngineVersion: number; summary: { drcViolations: Array<{ rule: string }> } };
+    const risposta = (await r.json()) as Risposta;
     expect(r.status).toBe(200);
-    expect(risposta).toMatchObject({ ok: true, pianiRicolati: true, vieParziali: 2, previousEngineVersion: ENGINE_VIE_PASSANTI - 1 });
+    expect(risposta).toMatchObject({ ok: true, pianiRicolati: true, vieParziali: 2, engineVersion: CHECKS_ENGINE_VERSION, previousEngineVersion: ENGINE_VIE_PASSANTI - 1 });
+    expect(risposta.nonCertificata).toBeUndefined();
     const [s] = db.saves;
     expect(s.engine).toBe(CHECKS_ENGINE_VERSION);
     for (const v of vie(s.circuitJson)) expect(v.layers).toEqual(QUATTRO);
     expect([giuDi(s.circuitJson).from_layer, giuDi(s.circuitJson).to_layer]).toEqual(["inner2", "bottom"]);
     expect(dalRame(s.circuitJson as El[], "inner1", giuDi(s.circuitJson))).toBeGreaterThanOrEqual(0.152 - 0.01);
     expect(risposta.summary.drcViolations.filter((v) => v.rule === "pour_clearance")).toEqual([]);
+    expect(risposta.summary.planesOverVias).toBeUndefined();
   }, 120_000);
 
   it("recheck: a board whose vias all listed the four layers keeps the planes it has", async () => {
-    // the same board with its vias on every layer, as tscircuit writes one that goes from top to bottom
+    // a board poured as it should be, with its vias written on every layer as tscircuit writes one from top to bottom
+    await recheck(post({ projectId: "p" }));
+    const buona = (db.saves[0].circuitJson as El[]).map((e) => {
+      if (e.type !== "pcb_via") return e;
+      const via: El = { ...e, from_layer: "top", to_layer: "bottom" };
+      delete via.declared_layers;
+      return via;
+    });
+    const aperture = (cj: unknown[]) =>
+      (cj as El[]).filter((e) => e.type === "pcb_copper_pour" && e.layer === "inner1").map((e) => (e.brep_shape!.inner_rings ?? []).length);
+    db.saves = [];
+    db.row = riga(buona, ENGINE_VIE_PASSANTI - 1);
+    const r = await recheck(post({ projectId: "p" }));
+    const risposta = (await r.json()) as Risposta;
+    expect(risposta).toMatchObject({ ok: true, engineVersion: CHECKS_ENGINE_VERSION });
+    expect(risposta.pianiRicolati).toBeUndefined();
+    expect(risposta.nonCertificata).toBeUndefined();
+    const [s] = db.saves;
+    expect(s.engine).toBe(CHECKS_ENGINE_VERSION);
+    expect(aperture(s.circuitJson)).toEqual(aperture(buona));
+    expect(vie(s.circuitJson).map((v) => v.declared_layers)).toEqual([undefined, undefined]);
+  }, 120_000);
+
+  it("recheck: a plane over a via is never filed under today's engine, poured again or not", async () => {
+    // vias on every layer, so nothing is poured again, and the plane still closed over both holes
     const intere = salvata.map((e) => (e.type === "pcb_via" ? { ...e, layers: QUATTRO, from_layer: "top", to_layer: "bottom" } : e));
     db.row = riga(intere, ENGINE_VIE_PASSANTI - 1);
     const r = await recheck(post({ projectId: "p" }));
-    const risposta = (await r.json()) as { ok: boolean; pianiRicolati?: boolean; summary: { drcViolations: Array<{ rule: string }> } };
-    expect(risposta.ok).toBe(true);
+    const risposta = (await r.json()) as Risposta;
+    expect(r.status).toBe(200);
     expect(risposta.pianiRicolati).toBeUndefined();
+    // it keeps the engine it had, and the answer says why
+    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: ENGINE_VIE_PASSANTI - 1, currentEngineVersion: CHECKS_ENGINE_VERSION });
+    expect(risposta.nonCertificata).toMatch(/2 vie hanno la piazzola nel rame di un piano di un'altra rete \(pcb_via_\d+ nel piano GND su inner1/);
+    expect(risposta.nonCertificata).toMatch(/NON e' certificata per l'export/);
+    expect(risposta.summary.message).toContain(risposta.nonCertificata!);
+    expect(risposta.summary.planesOverVias).toMatchObject({ count: 2 });
     const [s] = db.saves;
-    // nothing was poured: the plane is still the one piece without openings it went in with, and the new rule says so
+    expect(s.engine).toBe(ENGINE_VIE_PASSANTI - 1);
     const piani = (s.circuitJson as El[]).filter((e) => e.type === "pcb_copper_pour" && e.layer === "inner1");
     expect(piani).toHaveLength(1);
     expect(piani[0].brep_shape!.inner_rings ?? []).toHaveLength(0);
-    expect(vie(s.circuitJson).map((v) => v.declared_layers)).toEqual([undefined, undefined]);
-    expect(risposta.summary.drcViolations.some((v) => v.rule === "pour_clearance")).toBe(true);
+
+    // and a board that had today's engine loses it
+    db.saves = [];
+    db.row = riga(intere, CHECKS_ENGINE_VERSION);
+    await recheck(post({ projectId: "p" }));
+    expect(db.saves[0].engine).toBe(ENGINE_VIE_PASSANTI - 1);
   }, 120_000);
+
+  it.each(["solver", "vuoto"] as const)(
+    "recheck: when the solver of the plane fails (%s) the old plane stays, and the board stays out of the export",
+    async (come) => {
+      guasto.come = come;
+      // an engine older still: the board keeps the one it had
+      db.row = riga(salvata, ENGINE_VIE_PASSANTI - 2);
+      const r = await recheck(post({ projectId: "p" }));
+      const risposta = (await r.json()) as Risposta;
+      expect(r.status).toBe(200);
+      expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: ENGINE_VIE_PASSANTI - 2 });
+      // both vias of the trace are under the plane that was saved
+      expect(risposta.nonCertificata).toMatch(/2 vie hanno la piazzola nel rame di un piano di un'altra rete \(pcb_via_\d+ nel piano GND su inner1 e in un altro punto\)/);
+      const [s] = db.saves;
+      expect(s.engine).toBe(ENGINE_VIE_PASSANTI - 2);
+      // the vias were completed, the plane is the one that was there: still over the hole
+      expect(giuDi(s.circuitJson).layers).toEqual(QUATTRO);
+      expect(dalRame(s.circuitJson as El[], "inner1", giuDi(s.circuitJson))).toBe(0);
+      expect(risposta.summary.drcViolations.some((v) => v.rule === "pour_clearance")).toBe(true);
+    },
+    120_000,
+  );
+
+  it("recheck: when the whole pour step fails nothing is saved", async () => {
+    guasto.come = "tutto";
+    const r = await recheck(post({ projectId: "p" }));
+    expect(r.status).toBe(500);
+    expect(((await r.json()) as { error: string }).error).toMatch(/recheck failed/);
+    expect(db.saves).toHaveLength(0);
+  }, 120_000);
+
+  it.each([null, "solver", "vuoto", "tutto"] as const)(
+    "compile: with the pour step %s the board is filed under today's engine only if no plane is over a via",
+    async (come) => {
+      guasto.come = come;
+      const { circuitJson, summary } = await compileProject(FILES);
+      for (const v of vie(circuitJson)) expect(v.layers).toEqual(QUATTRO);
+      db.row = null;
+      const esito = await saveFinishedCompile("p", filesHash(FILES), circuitJson as unknown[], summary, { startedAt: Date.now(), filesNow: async () => FILES });
+      expect(esito.saved).toBe(true);
+      const [s] = db.saves;
+      if (come === null) {
+        expect(summary.planesOverVias).toBeUndefined();
+        expect(summary.message).not.toMatch(/NON e' certificata/);
+        expect(s.engine).toBe(CHECKS_ENGINE_VERSION);
+        return;
+      }
+      // tscircuit's own plane, poured on the two layers the via listed, is still on the board: over the hole
+      expect(dalRame(circuitJson as El[], "inner1", giuDi(circuitJson))).toBe(0);
+      expect(summary.planesOverVias).toMatchObject({ count: 1 });
+      expect(summary.message).toMatch(/ATTENZIONE: 1 via ha la piazzola nel rame di un piano di un'altra rete .* NON e' certificata per l'export/);
+      expect(s.engine).toBe(ENGINE_VIE_PASSANTI - 1);
+      expect(s.engine).toBeLessThan(CHECKS_ENGINE_VERSION);
+    },
+    120_000,
+  );
+
+  it("export: refused with the reason while a plane covers a via, and with every via in the drill file once it does not", async () => {
+    const gerber = () => esporta(new Request("http://x/api/export?projectId=p&kind=gerber"));
+    // the solver fails: the board is saved with the plane over the holes, under the engine it had
+    guasto.come = "solver";
+    await recheck(post({ projectId: "p" }));
+    db.row = { ...riga(db.saves[0].circuitJson, db.saves[0].engine), summary: db.saves[0].summary };
+    const rifiuto = await gerber();
+    expect(rifiuto.status).toBe(409);
+    expect(((await rifiuto.json()) as { error: string }).error).toMatch(/ricompila la scheda prima di esportare: 2 vie hanno la piazzola nel rame di un piano di un'altra rete .* NON e' certificata per l'export/);
+
+    // the solver works: poured again, filed under today's engine, exported
+    guasto.come = null;
+    db.saves = [];
+    db.row = riga(salvata, ENGINE_VIE_PASSANTI - 1);
+    await recheck(post({ projectId: "p" }));
+    db.row = { ...riga(db.saves[0].circuitJson, db.saves[0].engine), summary: db.saves[0].summary };
+    const ok = await gerber();
+    expect(ok.status).toBe(200);
+    const zip = await JSZip.loadAsync(await ok.arrayBuffer());
+    const fori = (await zip.file("drill_plated.drl")!.async("string")).split("\n").filter((l) => /^X-?[\d.]+Y-?[\d.]+$/.test(l));
+    // both vias of the trace, the one from inner2 to bottom included: it was in no drill file
+    expect(fori).toEqual(expect.arrayContaining(["X-4.5000Y0.0000", "X3.5000Y0.0000"]));
+    // and its pad on the faces and on inner2, where the trace reaches it, not on the plane it crosses
+    const colpo = /X0*3500000Y0*D03/;
+    for (const strato of ["F_Cu", "In2_Cu", "B_Cu"]) expect(await zip.file(`${strato}.gbr`)!.async("string")).toMatch(colpo);
+    expect(await zip.file("In1_Cu.gbr")!.async("string")).not.toMatch(colpo);
+  }, 120_000);
+
+  it("the engine a board is filed under: today's, or an older one while a plane covers a via", () => {
+    expect(motoreDaSalvare({})).toBe(CHECKS_ENGINE_VERSION);
+    expect(motoreDaSalvare(null)).toBe(CHECKS_ENGINE_VERSION);
+    expect(motoreDaSalvare({ planesOverVias: { count: 0, detail: "" } })).toBe(CHECKS_ENGINE_VERSION);
+    const coperta = { planesOverVias: { count: 3, detail: "3 vie hanno la piazzola nel rame di un piano di un'altra rete" } };
+    expect(motoreDaSalvare(coperta)).toBe(ENGINE_VIE_PASSANTI - 1);
+    expect(motoreDaSalvare(coperta, 4)).toBe(4);
+    expect(motoreDaSalvare(coperta, CHECKS_ENGINE_VERSION + 5)).toBe(ENGINE_VIE_PASSANTI - 1);
+    expect(nonCertificata({})).toBeNull();
+    expect(nonCertificata(coperta)).toMatch(/^3 vie hanno .*NON e' certificata per l'export/);
+  });
 
   it("accept-board: the board taken as it is goes back with its vias completed, under the engine it was made with", async () => {
     const r = await acceptBoard(post({ projectId: "p" }));

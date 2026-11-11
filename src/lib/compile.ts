@@ -1,9 +1,9 @@
-import { CHECKS_ENGINE_VERSION } from "./engine-version";
+import { CHECKS_ENGINE_VERSION, nonCertificata, type PianiSuVie } from "./engine-version";
 import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
-import { distanzaPuntoForma, ingombroForma, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame } from "./drc";
+import { distanzaPuntoForma, ingombroForma, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame, type MisureDrc } from "./drc";
 import {
   controllaLunghezze,
   leggiGruppi,
@@ -287,6 +287,16 @@ export interface CompileSummary {
     /** copper narrower than the minimum trace width cut out of the pours (pour-necks.ts) */
     colliTagliatiMm2?: number;
   };
+  /**
+   * VIAS WHOSE PAD IS IN THE COPPER OF ANOTHER NET'S PLANE: the plane did not
+   * open around the hole. It is what is left when a plane could not be poured
+   * again (the solver gave up on it and the old shape was kept, or the whole
+   * step failed and tscircuit's own pours stayed), and what copper laid on a
+   * board that is not poured again looks like. The compile and the recheck do
+   * not file such a board under today's engine, so its Gerber is not exported
+   * (see motoreDaSalvare). Absent when no via is in that state.
+   */
+  planesOverVias?: PianiSuVie;
   /**
    * The board was saved without its schematic, which was still being drawn:
    * the schematic checks below say nothing yet. Absent on a complete compile.
@@ -668,6 +678,7 @@ export async function compileProject(
     summary.message = orfane === 0
       ? `${summary.message} (geometria aggiornata, rame non toccato)`
       : `${summary.message} (geometria aggiornata, rame non toccato: ${orfane} piste non arrivano piu' su un pad, vanno ridisegnate a mano)`;
+    conIlPerche(summary);
     return { summary, circuitJson };
   };
 
@@ -1197,6 +1208,7 @@ export async function compileProject(
   summary.pours = rapportoColate;
   summary.manualEdits = manualEdits;
   summary.manualEditsOrphans = withOrphans(summary, circuitJson, parsedManualEdits);
+  conIlPerche(summary);
   /*
    * The router's internal phases are read from the solver at the end of the
    * run and end up in the same list as ours: the time accounting must be a
@@ -1251,6 +1263,18 @@ export async function compileProject(
     // so whoever asked for the placement can write it down: see CompileResult
     placements: placedNow ?? undefined,
   };
+}
+
+/**
+ * A compile or a recheck whose board still has a plane over a via of another
+ * net says so in its message, with what follows from it: the board is filed
+ * under an older engine and the export refuses it (see motoreDaSalvare). The
+ * planes are poured again at the end of every compile, but when that step
+ * fails the old ones stay on the board, and nothing else in the answer says it.
+ */
+export function conIlPerche(summary: CompileSummary): void {
+  const perche = nonCertificata(summary);
+  if (perche) summary.message = `${summary.message} ATTENZIONE: ${perche}.`;
 }
 
 /** re-summarize an already-assembled circuit (used by pick_variant) */
@@ -2226,7 +2250,9 @@ function summarize(
   // the project rules hold for the check too, not just for the router:
   // otherwise we would route with one minimum and measure with another
   const projectRules = resolveDesignRules(sources);
-  const drcViolations = runDrcChecks(circuitJson, projectRules.rules);
+  // what does not depend on the rules is measured in this run and read by the ones of the fab classes below
+  const misure: MisureDrc = {};
+  const drcViolations = runDrcChecks(circuitJson, projectRules.rules, misure);
   const prcViolations = runPrcChecks(circuitJson);
   /*
    * LE LUNGHEZZE APPAIATE, quando il progetto ne porta i gruppi: un bus arriva
@@ -2277,7 +2303,7 @@ function summarize(
     const violations =
       rs.key === projectRules.preset
         ? drcViolations.length
-        : runDrcChecks(circuitJson, rs.rules).length;
+        : runDrcChecks(circuitJson, rs.rules, misure).length;
     return {
       key: rs.key,
       label: rs.label,
@@ -2331,6 +2357,24 @@ function summarize(
         ]
       : [];
   const reportedErrors = [...schematicBlocker, ...errors];
+
+  /*
+   * The vias a plane of another net covers: pad and copper touch or overlap,
+   * on any layer. Not a distance to judge against a rule but a hole in a plane
+   * with no opening, so it is said apart from the DRC list (see planesOverVias).
+   */
+  const coperte = (misure.viaPiani?.righe ?? []).filter((r) => r.distanzaMm <= 0);
+  const vieCoperte = new Set(coperte.map((r) => r.via)).size;
+  const planesOverVias: PianiSuVie | undefined =
+    vieCoperte > 0
+      ? {
+          count: vieCoperte,
+          detail:
+            `${vieCoperte} ${vieCoperte === 1 ? "via ha" : "vie hanno"} la piazzola nel rame di un piano di un'altra rete ` +
+            `(${coperte[0].via} nel piano ${coperte[0].rete} su ${coperte[0].layer}${coperte.length === 2 ? " e in un altro punto" : coperte.length > 2 ? ` e in altri ${coperte.length - 1} punti` : ""}): ` +
+            `il piano non si e' aperto attorno al foro`,
+        }
+      : undefined;
 
   const ok = reportedErrors.length === 0;
   // convergence checklist: the agent's loop targets in one place (Fase 3.h)
@@ -2416,6 +2460,7 @@ function summarize(
     profile: { spans: [], totalMs: 0 },
     footprintProvenance,
     targets,
+    ...(planesOverVias ? { planesOverVias } : {}),
     routingAttempts: 1,
     router: "default",
     message: message + regoleCorrette,

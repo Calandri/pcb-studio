@@ -29,7 +29,7 @@ vi.mock("@/lib/project-store", async () => {
 import { boardBaseOf } from "@/lib/board-base";
 import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 import { schematicKeyOf, type CompileSummary } from "@/lib/compile";
-import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
+import { CHECKS_ENGINE_VERSION, ENGINE_VIE_PASSANTI } from "@/lib/engine-version";
 import { emptyManualEdits, MANUAL_EDITS_PATH, serializeManualEdits } from "@/lib/manual-edits";
 import { filesHash } from "@/lib/project-store";
 
@@ -118,6 +118,39 @@ describe("una compilazione si salva solo se e' ancora la scheda piu' nuova", () 
     db.row = { ...db.row, engineVersion: CHECKS_ENGINE_VERSION };
     await saveFinishedCompile("p", filesHash(A), ours, summary(), fresh(B));
     expect(db.saves[0].engine).toBe(CHECKS_ENGINE_VERSION);
+  });
+
+  it("a board with a plane over a via of another net is never filed under today's engine: early, final or grafted (2026-11-11)", async () => {
+    // what the summary carries when the planes could not be poured again (see CompileSummary.planesOverVias)
+    const coperta = summary({ planesOverVias: { count: 1, detail: "1 via ha la piazzola nel rame di un piano di un'altra rete" } });
+    await saveFinishedCompile("p", filesHash(A), ours, coperta, fresh(A));
+    await earlyBoardSaver("p", filesHash(A), null, fresh(A))({ circuitJson: ours, summary: coperta });
+    // and the same two saves of a board with nothing of the kind
+    await saveFinishedCompile("p", filesHash(A), ours, summary(), fresh(A));
+    await earlyBoardSaver("p", filesHash(A), null, fresh(A))({ circuitJson: ours, summary: summary() });
+    expect(db.saves.map((s) => s.engine)).toEqual([ENGINE_VIE_PASSANTI - 1, ENGINE_VIE_PASSANTI - 1, CHECKS_ENGINE_VERSION, CHECKS_ENGINE_VERSION]);
+
+    // grafted: the saved board is of today's engine, but a via of SIG stands in the ground plane of inner1
+    db.saves.length = 0;
+    const quadrato = { vertices: [{ x: -5, y: -5 }, { x: 5, y: -5 }, { x: 5, y: 5 }, { x: -5, y: 5 }] };
+    const reti = [
+      { type: "source_net", source_net_id: "n_gnd", name: "GND", subcircuit_connectivity_map_key: "k_gnd" },
+      { type: "source_net", source_net_id: "n_sig", name: "SIG", subcircuit_connectivity_map_key: "k_sig" },
+    ];
+    const theirs = [
+      { type: "source_component", source_component_id: "s1", name: "R1" },
+      { type: "pcb_board", num_layers: 4, center: { x: 0, y: 0 }, width: 20, height: 20 },
+      ...reti,
+      { type: "pcb_via", pcb_via_id: "v_sig", x: 1, y: 1, outer_diameter: 0.5, hole_diameter: 0.2, layers: ["top", "inner1", "inner2", "bottom"], subcircuit_connectivity_map_key: "k_sig" },
+      { type: "pcb_copper_pour", pcb_copper_pour_id: "p", layer: "inner1", source_net_id: "n_gnd", shape: "brep", brep_shape: { outer_ring: quadrato, inner_rings: [] } },
+    ];
+    db.meta = { filesHash: filesHash(B), createdAt: after, engineVersion: CHECKS_ENGINE_VERSION };
+    db.row = { filesHash: filesHash(B), circuitJson: theirs, summary: {}, createdAt: after, engineVersion: CHECKS_ENGINE_VERSION };
+    const r = await saveFinishedCompile("p", filesHash(A), [...ours, ...reti], summary(), fresh(B));
+    expect(r.grafted).toBe(true);
+    expect(db.saves[0].engine).toBe(ENGINE_VIE_PASSANTI - 1);
+    expect(db.saves[0].summary.planesOverVias).toMatchObject({ count: 1 });
+    expect(String(db.saves[0].summary.message)).toMatch(/v_sig nel piano GND su inner1.*NON e' certificata per l'export/);
   });
 
   it("se nel frattempo e' cambiato il codice, lo schematico vecchio non si mette sulla scheda nuova", async () => {

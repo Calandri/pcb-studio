@@ -1,11 +1,11 @@
 import { requireProjectAccess } from "@/lib/acl";
-import { summarizeCircuit } from "@/lib/compile";
+import { conIlPerche, summarizeCircuit } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { colateSenzaColli } from "@/lib/pour-necks";
 import { ricolaSeLeVieEranoParziali } from "@/lib/pours-recompute";
 import { vieSemprePassanti } from "@/lib/via-layers";
-import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
+import { CHECKS_ENGINE_VERSION, motoreDaSalvare, nonCertificata } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
 import { getCompileCache, getProject, hasBoard, saveCompileCache } from "@/lib/project-store";
 
@@ -102,6 +102,17 @@ export async function POST(req: Request): Promise<Response> {
     const pending = (cache.summary as { schematicPending?: unknown } | null)?.schematicPending;
     if (typeof pending === "string") summary.schematicPending = pending;
     /*
+     * Today's engine is what lets the board be exported, so it is not given to
+     * a board that still has a plane over a via of another net: the planes that
+     * were poured again above can come back as they were (a pour whose solver
+     * fails keeps its old shape), and a board that was not poured again can
+     * carry one all the same. That board keeps the engine it had, the export
+     * goes on refusing it, and the answer says why (see motoreDaSalvare).
+     */
+    const motore = motoreDaSalvare(summary, cache.engineVersion);
+    const perche = nonCertificata(summary);
+    conIlPerche(summary);
+    /*
      * Only over the row that was read: a compile that finished while this
      * recheck ran has saved a newer board, and the old one re-evaluated must
      * not take its place.
@@ -111,7 +122,7 @@ export async function POST(req: Request): Promise<Response> {
       cache.filesHash,
       circuitJson,
       summary,
-      CHECKS_ENGINE_VERSION,
+      motore,
       // the same board, re-evaluated: what it was made from does not change
       { ifUnchangedSince: { filesHash: cache.filesHash, createdAt: cache.createdAt }, base: cache.base ?? null },
     ).catch(() => ({ saved: false, reason: "salvataggio fallito" }));
@@ -119,8 +130,11 @@ export async function POST(req: Request): Promise<Response> {
       ok: true,
       saved: salvataggio.saved,
       ...(!salvataggio.saved && "reason" in salvataggio ? { reason: salvataggio.reason } : {}),
-      engineVersion: CHECKS_ENGINE_VERSION,
+      // the engine the board is filed under: older than today's when it is not certified
+      engineVersion: motore,
+      currentEngineVersion: CHECKS_ENGINE_VERSION,
       previousEngineVersion: cache.engineVersion,
+      ...(perche ? { nonCertificata: perche } : {}),
       ...(ricolata.ricolata ? { pianiRicolati: true, vieParziali: ricolata.vieParziali } : {}),
       summary,
     });

@@ -1,7 +1,7 @@
 import { boardBaseOf } from "./board-base";
 import { schematicMissing } from "./board-report";
-import { graftSchematic, schematicKeyOf, summarizeCircuit, type CompileSummary } from "./compile";
-import { CHECKS_ENGINE_VERSION } from "./engine-version";
+import { conIlPerche, graftSchematic, schematicKeyOf, summarizeCircuit, type CompileSummary } from "./compile";
+import { motoreDaSalvare } from "./engine-version";
 import {
   filesHash,
   getCompileCache,
@@ -92,7 +92,8 @@ export function earlyBoardSaver(
     try {
       const v = fresh ? await verdict(projectId, hash, fresh.startedAt, fresh.filesNow) : ({ kind: "save" } as Verdict);
       if (v.kind !== "save") return { saved: false, keptPrevious: true, reason: v.kind === "newer" ? NEWER : CURRENT };
-      return await saveCompileCache(projectId, hash, early.circuitJson, early.summary, CHECKS_ENGINE_VERSION, {
+      // today's engine, unless a plane is still over a via: see motoreDaSalvare
+      return await saveCompileCache(projectId, hash, early.circuitJson, early.summary, motoreDaSalvare(early.summary), {
         ...(v.ifUnchangedSince ? { ifUnchangedSince: v.ifUnchangedSince } : {}),
         ...(base ? { base } : {}),
       });
@@ -122,7 +123,7 @@ export async function saveFinishedCompile(
 ): Promise<SaveCompileResult & { grafted?: boolean; superseded?: boolean }> {
   const v = await verdict(projectId, hash, fresh.startedAt, fresh.filesNow);
   if (v.kind === "save") {
-    return saveCompileCache(projectId, hash, circuitJson, summary, CHECKS_ENGINE_VERSION, {
+    return saveCompileCache(projectId, hash, circuitJson, summary, motoreDaSalvare(summary), {
       ...(v.ifUnchangedSince ? { ifUnchangedSince: v.ifUnchangedSince } : {}),
       ...(base ? { base } : {}),
     });
@@ -142,13 +143,15 @@ export async function saveFinishedCompile(
   nuovo.schematicKey = ours;
   nuovo.profile = summary.profile;
   nuovo.message = `${nuovo.message} (schematico messo sulla scheda con gli spostamenti fatti nel frattempo)`;
+  conIlPerche(nuovo);
   /*
    * Under the engine the saved board was made with, not today's: its copper,
    * planes and paste are the ones of that row, and only its schematic is new.
    * Filed as today's, a board poured by an older engine reached the export
-   * without the recompile or the recheck that engine change asks for.
+   * without the recompile or the recheck that engine change asks for. And
+   * never today's while a plane is over a via (see motoreDaSalvare).
    */
-  const r = await saveCompileCache(projectId, v.currentHash, grafted, nuovo, Math.min(row.engineVersion, CHECKS_ENGINE_VERSION), {
+  const r = await saveCompileCache(projectId, v.currentHash, grafted, nuovo, Math.min(row.engineVersion, motoreDaSalvare(nuovo)), {
     ifUnchangedSince: { filesHash: row.filesHash, createdAt: row.createdAt },
     // the board under the schematic is the one of the files as they are now
     base: boardBaseOf(v.files),

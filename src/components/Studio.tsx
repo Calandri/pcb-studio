@@ -335,22 +335,31 @@ export function Studio({
       if (d.error) {
         setChat((c) => [...c, { kind: "error", text: String(d.error) }]);
       } else {
-        setChecksStale(false);
+        // a board the recheck could not certify (a plane still over a via) stays out of the export: the notice stays too
+        setChecksStale(Boolean(d.nonCertificata));
         setSummary(d.summary ?? null);
+        const detail = d.summary?.message ?? "scheda rivalutata coi controlli correnti";
         setChat((c) => [
           ...c,
           {
             kind: "tool",
             name: "ricontrollo",
-            detail: d.summary?.message ?? "scheda rivalutata coi controlli correnti",
-            ok: Boolean(d.summary?.ok ?? true),
+            detail: d.pianiRicolati ? `${detail} (colate rifatte attorno alle vie)` : detail,
+            ok: Boolean(d.summary?.ok ?? true) && !d.nonCertificata,
           },
         ]);
+        /*
+         * The recheck can pour the planes again (a board from before every via
+         * was a through hole): the board saved is then no longer the one on
+         * screen, and until a reload the page went on showing the old planes
+         * over the holes.
+         */
+        if (d.pianiRicolati) await loadCircuit();
       }
     } finally {
       setRechecking(false);
     }
-  }, [projectId]);
+  }, [projectId, loadCircuit]);
 
   /*
    * One job on the board at a time: a compile, a mass action, or the agent's

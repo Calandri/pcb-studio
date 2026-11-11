@@ -14,7 +14,7 @@ import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
-import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
+import { CHECKS_ENGINE_VERSION, nonCertificata } from "@/lib/engine-version";
 import { compileGeometryOnly } from "@/lib/compile";
 import { applyManualEditsToFsMap } from "@/lib/manual-edits";
 import {
@@ -91,7 +91,8 @@ export async function GET(req: Request): Promise<Response> {
         ? "l'ultima compilazione non ha prodotto una scheda"
         : cache.filesHash !== filesHash(fsMap)
           ? "i file sono cambiati dopo l'ultima compilazione"
-          : "la scheda e' stata verificata con controlli piu' vecchi";
+          : // a board kept under an older engine because a plane covers a via says that, not "older checks"
+            (nonCertificata(cache.summary) ?? "la scheda e' stata verificata con controlli piu' vecchi");
     return Response.json(
       {
         error: `ricompila la scheda prima di esportare: ${motivo}`,

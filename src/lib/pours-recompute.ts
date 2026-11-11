@@ -930,8 +930,16 @@ export async function ricolaPiani({
  * Only a board that has such a via AND was made by an older engine. Every
  * other board keeps its planes to the last vertex: pouring again is not free of
  * rounding, and a board checked and about to be ordered must come out of a
- * recheck with the copper it went in with. A solver that fails is an error for
- * the caller, never the old planes handed back as if they were good.
+ * recheck with the copper it went in with.
+ *
+ * `ricolata` says that the planes went through the solver, NOT that they came
+ * back opened. ricolaPiani keeps the shape a pour had whenever its solver
+ * throws or gives nothing back (see `tieni` there), and from here nobody can
+ * tell which. What keeps such a board out of the export is the measure made on
+ * the result: a via whose pad is still in the copper of another net's plane
+ * (CompileSummary.planesOverVias) and the engine the board is then filed under
+ * (motoreDaSalvare). Only a failure of the whole step reaches the caller as an
+ * error.
  */
 export async function ricolaSeLeVieEranoParziali({
   circuitJson,

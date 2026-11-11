@@ -9,7 +9,7 @@ import {
 } from "./altium-import";
 import { codiciLcsc, importDatasheetsForIdentities } from "./altium-datasheets";
 import { resolveDesignRules } from "./design-rules";
-import { CHECKS_ENGINE_VERSION } from "./engine-version";
+import { motoreDaSalvare, nonCertificata } from "./engine-version";
 import { saveLibraryComponent } from "./library-store";
 import { saveProjectModel } from "./model-store";
 import { emptyManualEdits, MANUAL_EDITS_PATH, serializeManualEdits } from "./manual-edits";
@@ -343,12 +343,16 @@ export async function importaAltium({
         errori: summary.errors.length,
         drc: summary.drcViolations.length,
       };
+      // a plane left over a via keeps the board out of the export: the import says it, not only the summary
+      const perche = nonCertificata(summary);
+      if (perche) report.warnings.push(perche);
       await saveCompileCache(
         id,
         filesHash(fsMap),
         circuitJson as unknown[],
         summary,
-        CHECKS_ENGINE_VERSION,
+        // today's engine, unless a plane is still over a via: see motoreDaSalvare
+        motoreDaSalvare(summary),
         { base: boardBaseOf(fsMap) },
       ).catch(() => {});
     } catch (err) {

@@ -25,7 +25,8 @@
 // and the SD lines) and the drill file did not have it. Now every via lists the whole stack, the planes open around it
 // on every layer, the drill file has it, and a plane too close to a via of another net is a "pour_clearance" violation.
 // Older boards must be recompiled or rechecked before their Gerber can be exported: a recheck pours again the planes
-// of a board that has such a via
+// of a board that has such a via. And a board that still has a plane over a via of another net, because the planes
+// could not be poured again, is not filed under this engine by the compile or by the recheck (see motoreDaSalvare)
 export const CHECKS_ENGINE_VERSION = 7;
 
 /**
@@ -35,3 +36,45 @@ export const CHECKS_ENGINE_VERSION = 7;
  * them again (see ricolaSeLeVieEranoParziali).
  */
 export const ENGINE_VIE_PASSANTI = 7;
+
+/** what the summary says when a plane was not opened around a via of another net (see CompileSummary.planesOverVias) */
+export interface PianiSuVie {
+  /** how many vias have their pad in the copper of another net's plane */
+  count: number;
+  /** the fact in words, with the first of them by name */
+  detail: string;
+}
+
+const pianiSuVieDi = (summary: unknown): PianiSuVie | null => {
+  const p = (summary as { planesOverVias?: Partial<PianiSuVie> } | null | undefined)?.planesOverVias;
+  return p && typeof p.count === "number" && p.count > 0 ? { count: p.count, detail: String(p.detail ?? "") } : null;
+};
+
+/**
+ * THE ENGINE A BOARD JUST COMPILED OR RECHECKED IS FILED UNDER.
+ *
+ * Today's, unless a plane still covers a via of another net. The planes are
+ * poured again at the end of every compile and, for a board that needs it, of
+ * a recheck, but that step can leave a plane as it was: the solver of one pour
+ * fails or gives nothing back and the old shape is kept (ricolaPiani), or the
+ * whole step fails and tscircuit's own pours stay on the board (compileProject).
+ * Filed under today's engine, such a board was exportable with a plane over a
+ * hole, and the only trace of it was a line of the DRC, which the export does
+ * not read (review of the through-via fix, 2026-11-11).
+ *
+ * So that board keeps an engine older than ENGINE_VIE_PASSANTI, the one it had
+ * when it had one: the export refuses it like any board checked by an older
+ * engine, and the answer of the compile or of the recheck says why (see
+ * nonCertificata).
+ */
+export function motoreDaSalvare(summary: unknown, precedente: number = CHECKS_ENGINE_VERSION): number {
+  if (!pianiSuVieDi(summary)) return CHECKS_ENGINE_VERSION;
+  return Math.min(precedente, ENGINE_VIE_PASSANTI - 1);
+}
+
+/** why such a board is not filed under today's engine, in the words the answer shows; null when it is */
+export function nonCertificata(summary: unknown): string | null {
+  const p = pianiSuVieDi(summary);
+  if (!p) return null;
+  return `${p.detail}. La scheda NON e' certificata per l'export finche' un piano copre una via: sposta la via o il piano e premi Aggiorna`;
+}

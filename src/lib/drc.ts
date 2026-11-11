@@ -377,51 +377,218 @@ const TOLLERANZA_MM = 0.001;
  */
 const TOLLERANZA_COLATA_MM = 0.01;
 
-/** a ring of a pour with the box that contains it, to discard it without walking it */
-interface AnelloDiColata {
-  punti: Array<{ x: number; y: number }>;
+/*
+ * HOW FAR FROM THE PAD THE PLANE IS MEASURED, when no rule asks for more. The
+ * distance is exact up to here and "far" beyond, so one measure serves every
+ * ruleset whose minimum is smaller (see MisureDrc).
+ */
+const PORTATA_PIANI_MM = 0.5;
+
+/** one via next to the plane of another net: what check 8 measures */
+export interface ViaVicinaAUnPiano {
+  via: string;
+  x: number;
+  y: number;
+  /** the net of the plane, by name */
+  rete: string;
+  layer: string;
+  /** from the via's pad to the copper of the plane: 0 when they touch or overlap */
+  distanzaMm: number;
+}
+
+/**
+ * WHAT A DRC RUN MEASURED THAT DOES NOT DEPEND ON THE RULES.
+ *
+ * The summary runs the DRC once for the project's rules and once more for each
+ * fab class, on the same board: three or four runs on every compile, fast
+ * update, trace edit and recheck. The distance from each via to each plane is
+ * the same in all of them, only the minimum it is compared with changes. Hand
+ * the same object to every run on one board and it is measured in the first
+ * and read in the others. Never keep it across two boards.
+ */
+export interface MisureDrc {
+  viaPiani?: { portataMm: number; righe: ViaVicinaAUnPiano[] };
+}
+
+/**
+ * A POUR READY TO BE ASKED HOW FAR ITS COPPER IS FROM A CIRCLE.
+ *
+ * The first version of the plane check walked every edge of the pour for every
+ * via near it, twice: once to know whether the via is in the copper, once for
+ * the distance. Measured by the reviewer of that change (2026-11-11) on a board
+ * of 700 vias, 16 pours and 20 000 vertices: a DRC run went from 47 to 700 ms.
+ *
+ * The edges go into a grid of cells about as wide as the edges are apart, each
+ * edge in the cells its box overlaps. The distance asks only the cells the
+ * circle and its reach touch; "in the copper" casts its ray along one row of
+ * cells and meets only the edges of that row. On each edge the predicate and
+ * the arithmetic are the ones of before (dentroPoligono, pointSegDistance), so
+ * the answer is the same number, not a close one.
+ */
+interface IndiceDiColata {
+  /** the box of the outer ring: outside it nothing is in the copper */
   minX: number;
   maxX: number;
   minY: number;
   maxY: number;
+  /** the grid, over the box of every ring */
+  x0: number;
+  y0: number;
+  passo: number;
+  colonne: number;
+  righe: number;
+  /** edge k goes from (px, py), the vertex before, to (qx, qy) */
+  px: Float64Array;
+  py: Float64Array;
+  qx: Float64Array;
+  qy: Float64Array;
+  /** the ring edge k belongs to: 0 the outer one, then the holes */
+  anello: Int32Array;
+  /** cell c holds the edges inCella[inizio[c]] .. inCella[inizio[c + 1] - 1] */
+  inizio: Int32Array;
+  inCella: Int32Array;
+  /** scratch of the ray: the last ray that met each edge, the parity of each ring */
+  visto: Int32Array;
+  giro: number;
+  dispari: Uint8Array;
 }
 
-function anelloDiColata(punti: Array<{ x: number; y: number }>): AnelloDiColata {
+function indiceDiColata(esterno: Array<{ x: number; y: number }>, buchi: Array<Array<{ x: number; y: number }>>): IndiceDiColata {
+  const anelli = [esterno, ...buchi];
+  let n = 0;
+  for (const a of anelli) n += a.length;
+  const px = new Float64Array(n);
+  const py = new Float64Array(n);
+  const qx = new Float64Array(n);
+  const qy = new Float64Array(n);
+  const anello = new Int32Array(n);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of punti) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
+  let k = 0;
+  anelli.forEach((punti, a) => {
+    for (let i = 0, j = punti.length - 1; i < punti.length; j = i++) {
+      const p = punti[j];
+      const q = punti[i];
+      px[k] = p.x;
+      py[k] = p.y;
+      qx[k] = q.x;
+      qy[k] = q.y;
+      anello[k] = a;
+      k++;
+      if (q.x < x0) x0 = q.x;
+      if (q.x > x1) x1 = q.x;
+      if (q.y < y0) y0 = q.y;
+      if (q.y > y1) y1 = q.y;
+      if (a === 0) {
+        if (q.x < minX) minX = q.x;
+        if (q.x > maxX) maxX = q.x;
+        if (q.y < minY) minY = q.y;
+        if (q.y > maxY) maxY = q.y;
+      }
+    }
+  });
+  /*
+   * As many cells as edges, more or less: never finer than a quarter of a
+   * millimetre, never coarser than five to start with. An edge is filed in every
+   * cell its box overlaps, so a long slanted one fills a square of them: when
+   * the edges end up filed more than a few times each the grid is made coarser,
+   * down to a single cell if it has to be. The grid only decides how many edges
+   * a question looks at, never the answer.
+   */
+  let passo = Math.min(5, Math.max(0.25, Math.sqrt(((x1 - x0) * (y1 - y0)) / Math.max(1, n))));
+  let colonne = 1;
+  let righe = 1;
+  const celle = new Int32Array(4 * n);
+  for (;;) {
+    colonne = Math.max(1, Math.ceil((x1 - x0) / passo));
+    righe = Math.max(1, Math.ceil((y1 - y0) / passo));
+    let posti = 0;
+    for (let e = 0; e < n; e++) {
+      const c0 = (celle[4 * e] = cellaDi(Math.min(px[e], qx[e]), x0, passo, colonne));
+      const c1 = (celle[4 * e + 1] = cellaDi(Math.max(px[e], qx[e]), x0, passo, colonne));
+      const r0 = (celle[4 * e + 2] = cellaDi(Math.min(py[e], qy[e]), y0, passo, righe));
+      const r1 = (celle[4 * e + 3] = cellaDi(Math.max(py[e], qy[e]), y0, passo, righe));
+      posti += (c1 - c0 + 1) * (r1 - r0 + 1);
+    }
+    if (posti <= 8 * n + 64 || colonne * righe === 1) break;
+    passo *= 2;
   }
-  return { punti, minX, maxX, minY, maxY };
+  // how many edges each cell holds, then the edges themselves
+  const inizio = new Int32Array(colonne * righe + 1);
+  for (let e = 0; e < n; e++) {
+    for (let r = celle[4 * e + 2]; r <= celle[4 * e + 3]; r++) {
+      for (let c = celle[4 * e]; c <= celle[4 * e + 1]; c++) inizio[r * colonne + c + 1]++;
+    }
+  }
+  for (let c = 0; c < colonne * righe; c++) inizio[c + 1] += inizio[c];
+  const inCella = new Int32Array(inizio[colonne * righe]);
+  const cursore = inizio.slice(0, colonne * righe);
+  for (let e = 0; e < n; e++) {
+    for (let r = celle[4 * e + 2]; r <= celle[4 * e + 3]; r++) {
+      for (let c = celle[4 * e]; c <= celle[4 * e + 1]; c++) inCella[cursore[r * colonne + c]++] = e;
+    }
+  }
+  return {
+    minX, maxX, minY, maxY, x0, y0, passo, colonne, righe, px, py, qx, qy, anello, inizio, inCella,
+    visto: new Int32Array(n),
+    giro: 0,
+    dispari: new Uint8Array(anelli.length),
+  };
+}
+
+/** the column (or the row) of the grid a coordinate falls in: the ones outside go to the first or the last */
+const cellaDi = (v: number, origine: number, passo: number, quante: number): number =>
+  Math.min(quante - 1, Math.max(0, Math.floor((v - origine) / passo)));
+const colonnaDi = (ix: IndiceDiColata, x: number): number => cellaDi(x, ix.x0, ix.passo, ix.colonne);
+const rigaDi = (ix: IndiceDiColata, y: number): number => cellaDi(y, ix.y0, ix.passo, ix.righe);
+
+/** inside the outer ring and inside no hole: the ray goes right, along the row of cells the point is in */
+function nelRameDellaColata(ix: IndiceDiColata, x: number, y: number): boolean {
+  if (x < ix.minX || x > ix.maxX || y < ix.minY || y > ix.maxY) return false;
+  const riga = rigaDi(ix, y) * ix.colonne;
+  const giro = ++ix.giro;
+  let esterno = false;
+  let buchiDispari = 0;
+  for (let c = colonnaDi(ix, x); c < ix.colonne; c++) {
+    for (let t = ix.inizio[riga + c]; t < ix.inizio[riga + c + 1]; t++) {
+      const k = ix.inCella[t];
+      // an edge lies in every cell it crosses: it counts once per ray
+      if (ix.visto[k] === giro) continue;
+      ix.visto[k] = giro;
+      // as dentroPoligono reads it: a is the vertex, b the one before it
+      const ay = ix.qy[k];
+      const by = ix.py[k];
+      if (ay > y === by > y) continue;
+      const ax = ix.qx[k];
+      if (!(x < ((ix.px[k] - ax) * (y - ay)) / (by - ay) + ax)) continue;
+      const a = ix.anello[k];
+      if (a === 0) esterno = !esterno;
+      else buchiDispari += (ix.dispari[a] ^= 1) ? 1 : -1;
+    }
+  }
+  if (buchiDispari !== 0) ix.dispari.fill(0);
+  return esterno && buchiDispari === 0;
 }
 
 /**
  * How far a circle is from the copper of a pour: 0 when its centre is in the
  * copper or the copper reaches into it, Infinity when the pour is farther than
- * `portata` (nobody asks how much farther).
+ * `portata` from the centre (nobody asks how much farther).
  */
-function distanzaCerchioColata(
-  x: number,
-  y: number,
-  raggio: number,
-  esterno: AnelloDiColata,
-  buchi: AnelloDiColata[],
-  portata: number,
-): number {
-  const vicino = (a: AnelloDiColata) =>
-    x >= a.minX - portata && x <= a.maxX + portata && y >= a.minY - portata && y <= a.maxY + portata;
-  if (!vicino(esterno)) return Infinity;
-  const nelBox = (a: AnelloDiColata) => x >= a.minX && x <= a.maxX && y >= a.minY && y <= a.maxY;
-  if (nelBox(esterno) && dentroPoligono(x, y, esterno.punti) && !buchi.some((b) => nelBox(b) && dentroPoligono(x, y, b.punti))) {
-    return 0;
-  }
+function distanzaCerchioColata(ix: IndiceDiColata, x: number, y: number, raggio: number, portata: number): number {
+  if (x < ix.minX - portata || x > ix.maxX + portata || y < ix.minY - portata || y > ix.maxY + portata) return Infinity;
+  if (nelRameDellaColata(ix, x, y)) return 0;
   let d = Infinity;
-  for (const a of [esterno, ...buchi]) {
-    if (!vicino(a)) continue;
-    for (let i = 0, j = a.punti.length - 1; i < a.punti.length; j = i++) {
-      d = Math.min(d, pointSegDistance(x, y, a.punti[j].x, a.punti[j].y, a.punti[i].x, a.punti[i].y));
+  const c0 = colonnaDi(ix, x - portata);
+  const c1 = colonnaDi(ix, x + portata);
+  const r1 = rigaDi(ix, y + portata);
+  for (let r = rigaDi(ix, y - portata); r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const cella = r * ix.colonne + c;
+      for (let t = ix.inizio[cella]; t < ix.inizio[cella + 1]; t++) {
+        const k = ix.inCella[t];
+        d = Math.min(d, pointSegDistance(x, y, ix.px[k], ix.py[k], ix.qx[k], ix.qy[k]));
+      }
     }
   }
   return Math.max(0, d - raggio);
@@ -590,6 +757,8 @@ function distanzaFraRettangoli(a: Box, b: Box): number {
 export function runDrcChecks(
   circuitJson: El[],
   rules: DesignRules = DEFAULT_DESIGN_RULES,
+  /** what an earlier run on this same board measured, and where this one leaves its own: see MisureDrc */
+  misure?: MisureDrc,
 ): DrcViolation[] {
   const raw: DrcViolation[] = [];
   /*
@@ -1263,6 +1432,8 @@ export function runDrcChecks(
    * invisible: the DRC finds it clean, the connections come out closed, and
    * the defect shows up in production with a ground that does not return.
    */
+  // read once for the checks on the planes that follow: every vertex of every pour is copied to be read
+  const colate = readPours(circuitJson);
   const planeNetIds = new Set<string>();
   for (const el of circuitJson) {
     if (el.type !== "pcb_copper_pour") continue;
@@ -1293,14 +1464,13 @@ export function runDrcChecks(
      * connecting copper to itself. The via is needed only when the plane of
      * that net is on ANOTHER face.
      */
-    const pours = readPours(circuitJson);
     /*
      * The same function the house rule uses to decide whether a pad needs a
      * via: if the two answered differently, one would add vias the other keeps
      * asking for. It measures from the pad's EDGE and only counts vias of the
      * pad's own net.
      */
-    for (const scoperto of padsOffPlane(circuitJson, pours)) {
+    for (const scoperto of padsOffPlane(circuitJson, colate)) {
       push(
         "plane_stitch_missing",
         `${scoperto.pad || "pad"} sta su una rete con il piano, non e' dentro il piano della sua faccia e non ha una via della sua rete accanto`,
@@ -1315,8 +1485,8 @@ export function runDrcChecks(
      * travel along the plane looking for the nearest signal via: it is the
      * classic loop that turns a ground plane into an antenna.
      */
-    const facceDiRete = pourLayersByNet(pours);
-    const viaDiRete = tutteLeVia(circuitJson, netOfViaKey(circuitJson, pours));
+    const facceDiRete = pourLayersByNet(colate);
+    const viaDiRete = tutteLeVia(circuitJson, netOfViaKey(circuitJson, colate));
     for (const [net, facce] of facceDiRete) {
       if (facce.size < 2) continue;
       const cuciture = viaDiRete.filter(
@@ -1352,51 +1522,70 @@ export function runDrcChecks(
    * lets nearer to a via than that (the pair rules). A via with no known net is
    * not an electrical node and is left out, as in the pair checks.
    */
-  const colate = readPours(circuitJson);
   if (colate.length > 0) {
     const minimoColata = Math.min(
       rules.pourClearanceMm ?? rules.minClearanceMm,
       distanzaMinimaFra(rules, "via", "via"),
       distanzaMinimaFra(rules, "pad", "via"),
     );
-    const reti = new Map<string, { nome: string; gruppi: Set<string> }>();
-    for (const el of circuitJson) {
-      if (el.type !== "source_net" || !el.source_net_id) continue;
-      const id = String(el.source_net_id);
-      const chiave = String(el.subcircuit_connectivity_map_key ?? "");
-      // every name the net goes by among the vias: its key, the group that key resolves to, `net:<id>`
-      const gruppi = new Set<string>([`net:${id}`]);
-      if (chiave) gruppi.add(chiave);
-      for (const g of [risolviChiave(chiave), gruppoDiRete.get(id)]) if (g) gruppi.add(g);
-      reti.set(id, { nome: String(el.name ?? id), gruppi });
-    }
-    const piani = colate.map((c) => ({
-      rete: c.net,
-      layer: c.layer,
-      esterno: anelloDiColata(c.outer),
-      buchi: c.holes.map(anelloDiColata),
-    }));
-    for (const el of circuitJson) {
-      if (el.type !== "pcb_via") continue;
-      const x = num(el.x);
-      const y = num(el.y);
-      const d = num(el.outer_diameter) ?? num(el.hole_diameter);
-      if (x === null || y === null || d === null) continue;
-      const gruppo = groupOfVia(el);
-      if (!gruppo) continue;
-      const chiave = String(el.subcircuit_connectivity_map_key ?? "");
-      for (const piano of piani) {
-        const rete = reti.get(piano.rete);
-        // the plane of the via's own net is where the via belongs
-        if (rete && (rete.gruppi.has(gruppo) || (chiave !== "" && rete.gruppi.has(chiave)))) continue;
-        const distanza = distanzaCerchioColata(x, y, d / 2, piano.esterno, piano.buchi, d / 2 + minimoColata);
-        if (distanza >= minimoColata - TOLLERANZA_COLATA_MM) continue;
-        push(
-          "pour_clearance",
-          `${String(el.pcb_via_id ?? "via")} <-> ${rete?.nome ?? (piano.rete || "?")} pour on ${piano.layer}: ${distanza.toFixed(3)}mm < min ${minimoColata}mm${distanza === 0 ? " (the plane does not open around the hole)" : ""}`,
-          { x, y },
-        );
+    /*
+     * Measured once per board and not once per ruleset (see MisureDrc): every
+     * via against every plane of another net, exact up to `portataMm` from the
+     * pad. The nets are told apart here, where the groups are known, and that
+     * does not depend on the rules either.
+     */
+    const misura = (portataMm: number): ViaVicinaAUnPiano[] => {
+      const reti = new Map<string, { nome: string; gruppi: Set<string> }>();
+      for (const el of circuitJson) {
+        if (el.type !== "source_net" || !el.source_net_id) continue;
+        const id = String(el.source_net_id);
+        const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+        // every name the net goes by among the vias: its key, the group that key resolves to, `net:<id>`
+        const gruppi = new Set<string>([`net:${id}`]);
+        if (chiave) gruppi.add(chiave);
+        for (const g of [risolviChiave(chiave), gruppoDiRete.get(id)]) if (g) gruppi.add(g);
+        reti.set(id, { nome: String(el.name ?? id), gruppi });
       }
+      // the index of a pour is built when the first via comes near it: most pours are islands no via goes by
+      const piani = colate.map((c) => ({ colata: c, indice: null as IndiceDiColata | null }));
+      const righe: ViaVicinaAUnPiano[] = [];
+      for (const el of circuitJson) {
+        if (el.type !== "pcb_via") continue;
+        const x = num(el.x);
+        const y = num(el.y);
+        const d = num(el.outer_diameter) ?? num(el.hole_diameter);
+        if (x === null || y === null || d === null) continue;
+        const gruppo = groupOfVia(el);
+        if (!gruppo) continue;
+        const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+        const portata = d / 2 + portataMm;
+        for (const piano of piani) {
+          const c = piano.colata;
+          if (x < c.minX - portata || x > c.maxX + portata || y < c.minY - portata || y > c.maxY + portata) continue;
+          const rete = reti.get(c.net);
+          // the plane of the via's own net is where the via belongs
+          if (rete && (rete.gruppi.has(gruppo) || (chiave !== "" && rete.gruppi.has(chiave)))) continue;
+          piano.indice ??= indiceDiColata(c.outer, c.holes);
+          const distanzaMm = distanzaCerchioColata(piano.indice, x, y, d / 2, portata);
+          if (distanzaMm >= portataMm) continue;
+          righe.push({ via: String(el.pcb_via_id ?? "via"), x, y, rete: rete?.nome ?? (c.net || "?"), layer: c.layer, distanzaMm });
+        }
+      }
+      return righe;
+    };
+    let viaPiani = misure?.viaPiani;
+    if (!viaPiani || viaPiani.portataMm < minimoColata) {
+      const portataMm = Math.max(minimoColata, PORTATA_PIANI_MM);
+      viaPiani = { portataMm, righe: misura(portataMm) };
+      if (misure) misure.viaPiani = viaPiani;
+    }
+    for (const r of viaPiani.righe) {
+      if (r.distanzaMm >= minimoColata - TOLLERANZA_COLATA_MM) continue;
+      push(
+        "pour_clearance",
+        `${r.via} <-> ${r.rete} pour on ${r.layer}: ${r.distanzaMm.toFixed(3)}mm < min ${minimoColata}mm${r.distanzaMm === 0 ? " (the plane does not open around the hole)" : ""}`,
+        { x: r.x, y: r.y },
+      );
     }
   }
 

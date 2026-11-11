@@ -15,6 +15,9 @@
     "src/app/api/reroute/route.ts": {
       "memory": 3009
     },
+    "src/app/api/recheck/route.ts": {
+      "memory": 3009
+    },
     "src/app/api/import/altium/route.ts": {
       "memory": 3009
     }
