@@ -162,6 +162,21 @@ describe("una compilazione si salva solo se e' ancora la scheda piu' nuova", () 
     expect(db.saves).toHaveLength(0);
   });
 
+  it("un componente dell'utente cambiato mentre si disegnava lo schematico: quello vecchio non va sulla scheda nuova (review 11/11/2026)", async () => {
+    // <Pull layer> chooses the net of the pull: the key used to leave `layer` out on any tag, and the old schematic went on
+    const pull = (layer: string) => ({
+      ...A,
+      "main.tsx": `const Pull = (p: { layer: string }) => <resistor name="R1" resistance="1k" footprint="0402" layer={p.layer} />\nexport default () => <board width="10mm" height="10mm"><Pull layer="${layer}" /></board>`,
+    });
+    const [sopra, sotto] = [pull("top"), pull("bottom")];
+    db.meta = { filesHash: filesHash(sotto), createdAt: after, engineVersion: 0 };
+    db.row = { filesHash: filesHash(sotto), circuitJson: [{ type: "source_component", source_component_id: "s1", name: "R1" }, { type: "pcb_board" }], summary: {}, createdAt: after, engineVersion: 0 };
+    const r = await saveFinishedCompile("p", filesHash(sopra), ours, summary({ schematicKey: schematicKeyOf(sopra) }), fresh(sotto));
+    expect(r.saved).toBe(false);
+    expect(r.grafted).toBeUndefined();
+    expect(db.saves).toHaveLength(0);
+  });
+
   it("una scheda chiusa senza schematico non copre quella completa degli stessi file, ma copre una senza", async () => {
     // the schematic did not fit in the time left (see stimaDelloSchematico): the board of these files with it stays
     const senza = summary({ schematicPending: "lo schematico non e' partito: restavano 120 s" });
