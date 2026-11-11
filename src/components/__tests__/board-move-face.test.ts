@@ -55,10 +55,21 @@ describe("Sposta mostra e fa prendere solo i pezzi della faccia scelta", () => {
     expect(maniglie(disegna({ ...giro, layer: "bottom" }))).toHaveLength(2);
   });
 
-  it("in Guarda non cambia niente: tutti e due hanno il riquadro del passaggio del mouse", () => {
-    const svg = renderToStaticMarkup(
-      createElement(BoardCanvas, { circuitJson: CIRCUIT, flags, layer: "top", mode: "view" } as never),
-    );
-    expect(svg.match(/<rect[^>]*style="cursor:pointer"[^>]*>/g) ?? []).toHaveLength(2);
+  /*
+   * Until 2026-11-11 this case said the opposite ("in Guarda non cambia
+   * niente", both boxes with Top chosen): it was the bug "seleziono il TOP ma
+   * vedo TUTTO". Guarda follows the chosen face like Sposta; both faces only
+   * with "Tutti" or with the x-ray (board-strati-visibili.test.ts).
+   */
+  it("anche in Guarda con Top resta solo il pezzo di sopra; con Tutti tutti e due", () => {
+    const guarda = (layer: string) =>
+      renderToStaticMarkup(
+        createElement(BoardCanvas, { circuitJson: CIRCUIT, flags, layer, mode: "view" } as never),
+      );
+    const riquadri = (svg: string) => svg.match(/<rect[^>]*style="cursor:pointer"[^>]*>/g) ?? [];
+    expect(riquadri(guarda("top"))).toHaveLength(1);
+    expect(guarda("top")).not.toMatch(/width="1.4"/);
+    expect(riquadri(guarda("all"))).toHaveLength(2);
+    expect(guarda("all")).toMatch(/width="1.4"/);
   });
 });

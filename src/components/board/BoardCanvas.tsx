@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExterna
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import { useVistaCondivisa } from "./vista-condivisa";
+import { opacitaStrato, stratoScelto } from "./strati-visibili";
 import { GRID_DEFAULT, GRID_OPTIONS, ascoltaGriglia, grigliaSalvata, salvaGriglia } from "./griglia";
 import {
   DESIGNATOR_FONT,
@@ -266,20 +267,34 @@ export function BoardCanvas({
     girati.has(componentId) ? altraFaccia(l) : l;
   const nascosti = useMemo(() => {
     const out = new Set<string>();
-    if (!scene || mode !== "move" || bothSides) return out;
-    for (const c of scene.components) if (latoDiPezzo(c) !== faccia) out.add(c.id);
+    if (!scene) return out;
+    if (mode === "move") {
+      if (bothSides) return out;
+      for (const c of scene.components) if (latoDiPezzo(c) !== faccia) out.add(c.id);
+      return out;
+    }
+    /*
+     * Guarda used to be left alone ("Guarda is untouched", 2026-11-09), and with
+     * Top chosen the parts of the bottom kept their hover box, their courtyard
+     * and their solder paste over the top face: "seleziono il TOP ma vedo TUTTO"
+     * (Niccolo', 2026-11-11). A part whose face is not drawn is not there. With
+     * the x-ray up its face comes back dimmed, and so does the part.
+     */
+    const scelto = stratoScelto(layer);
+    for (const c of scene.components) if (opacitaStrato(latoDiPezzo(c), scelto, xray) === 0) out.add(c.id);
     return out;
-  }, [scene, mode, bothSides, faccia, latoDiPezzo]);
+  }, [scene, mode, bothSides, faccia, latoDiPezzo, layer, xray]);
 
   // what is no longer visible leaves the selection, the hover and the pick
   useEffect(() => {
-    if (nascosti.size === 0) return;
+    // in Guarda nothing can be dragged: the part picked on the schematic stays picked, it is only not drawn
+    if (mode !== "move" || nascosti.size === 0) return;
     if (pickedId && nascosti.has(pickedId)) onPickComponent?.(null);
     if (hoveredComponentId && nascosti.has(hoveredComponentId)) onHoverComponent?.(null);
     if (selectedIds?.some((id) => nascosti.has(id))) {
       onSelectionChange?.(selectedIds.filter((id) => !nascosti.has(id)));
     }
-  }, [nascosti, pickedId, hoveredComponentId, selectedIds, onPickComponent, onHoverComponent, onSelectionChange]);
+  }, [mode, nascosti, pickedId, hoveredComponentId, selectedIds, onPickComponent, onHoverComponent, onSelectionChange]);
 
 
   // --- container measurement: the scale is computed in real pixels
@@ -900,10 +915,9 @@ export function BoardCanvas({
   }
 
   /** "all" (key 0, "Tutti"): every copper layer at full strength, top above */
-  const tutti = layer === "all";
-  const active = (layer === "top" || layer === "bottom" || layer === "inner1" || layer === "inner2"
-    ? layer
-    : "top") as LayerId;
+  const scelto = stratoScelto(layer);
+  const tutti = scelto === "all";
+  const active: LayerId = scelto === "all" ? "top" : scelto;
   const usedLayers = LAYER_ORDER.filter(
     (l) => scene.board.layers >= 4 || l === "top" || l === "bottom",
   );
@@ -922,7 +936,20 @@ export function BoardCanvas({
    * no way to look at one face only and the command does not do what it says.
    * Raising the x-ray brings the other layers back, which is where they belong.
    */
-  const layerOpacity = (l: LayerId) => (tutti || l === active ? 1 : (xray / 100) * 0.75);
+  /*
+   * The rule is in strati-visibili.ts, shared with the routing view. One case
+   * of its own here: in Sposta with "Top + Bottom" the parts of both faces are
+   * being moved, so both faces are at full strength whatever layer is chosen
+   * (their pads were at zero with the x-ray off: parts to grab with no pads).
+   */
+  const dueFacce = mode === "move" && bothSides;
+  const layerOpacity = (l: LayerId) =>
+    dueFacce && (l === "top" || l === "bottom") ? 1 : opacitaStrato(l, scelto, xray);
+  /** the face of a part, to give its courtyard the strength of its face */
+  const facciaDiPezzo = new Map(scene.components.map((c) => [c.id, latoDiPezzo(c)] as const));
+  /** the silkscreen follows the face being looked at; on an inner plane it comes back with the x-ray */
+  const facciaSerigrafia: LayerId = active === "bottom" ? "bottom" : "top";
+  const forzaSerigrafia = layerOpacity(facciaSerigrafia);
 
   const mmPerPx = 1 / view.k;
   const showSilk = flags.is_showing_silkscreen;
@@ -1334,8 +1361,15 @@ export function BoardCanvas({
           })}
 
           {/* solder paste: the stencil opening, smaller than the pad */}
+          {/*
+            Per face, like the pads: the paste of the other face used to be drawn
+            in full over the face being looked at (the light blue rectangles
+            under J3 on sbb-dl-principale with Top chosen, 2026-11-11).
+          */}
           {showPaste &&
-            scene.paste.filter((p) => !nascosti.has(p.componentId)).map((p) =>
+            drawOrder.filter((l) => layerOpacity(l) > 0).map((l) => (
+            <g key={`paste-${l}`} opacity={layerOpacity(l)}>
+            {scene.paste.filter((p) => !nascosti.has(p.componentId) && latoDiParte(p.componentId, p.layer) === l).map((p) =>
               p.circle ? (
                 <circle
                   key={p.id}
@@ -1367,6 +1401,8 @@ export function BoardCanvas({
                 />
               ),
             )}
+            </g>
+            ))}
 
           {/*
             The parts you are holding still, in move mode: a small ring with a
@@ -1412,7 +1448,8 @@ export function BoardCanvas({
                 stroke: "#FF6B5A",
                 strokeWidth: mmPerPx,
                 strokeDasharray: `${mmPerPx * 4} ${mmPerPx * 3}`,
-                opacity: 0.7,
+                // a courtyard has no layer of its own: it is on the face of its part
+                opacity: 0.7 * layerOpacity(facciaDiPezzo.get(c.componentId) ?? active),
               };
               const s = c.shape;
               if (s.kind === "circle") {
@@ -1443,12 +1480,13 @@ export function BoardCanvas({
               );
             })}
 
-          {/* silkscreen: only the side being looked at, dimmed when
-              working on an inner plane (where it has nothing to do) */}
-          {showSilk && (
-            <g opacity={active === "top" || active === "bottom" ? 0.85 : 0.25}>
+          {/* silkscreen: only the side being looked at. On an inner plane it has
+              nothing to do: it is not drawn, and comes back with the x-ray like
+              the pads of that face (it stayed at a quarter, over the plane) */}
+          {showSilk && forzaSerigrafia > 0 && (
+            <g opacity={0.85 * forzaSerigrafia}>
               {scene.silkPaths
-                .filter((p) => latoDiParte(p.componentId, p.layer) === (active === "bottom" ? "bottom" : "top"))
+                .filter((p) => latoDiParte(p.componentId, p.layer) === facciaSerigrafia)
                 .map((s) => (
                 <polyline
                   key={s.id}
@@ -1614,8 +1652,9 @@ export function BoardCanvas({
         </g>
 
         {/* designators must not be mirrored: they are drawn outside the flipped group */}
-        {showSilk &&
-          scene.silkTexts
+        {showSilk && forzaSerigrafia > 0 && (
+          <g opacity={forzaSerigrafia}>
+          {scene.silkTexts
             /*
              * Only the side being looked at, like the silkscreen lines right
              * above. Without the filter you read the 91 references printed on
@@ -1623,7 +1662,7 @@ export function BoardCanvas({
              * the 116 that are really there: the traces of the wrong side
              * disappear correctly and their labels stay.
              */
-            .filter((t) => latoDiParte(t.componentId, t.layer) === (active === "bottom" ? "bottom" : "top"))
+            .filter((t) => latoDiParte(t.componentId, t.layer) === facciaSerigrafia)
             .map((t) => {
             const m = mmPointTx(t.componentId, t.x, t.y);
             const px = view.x + m.x * view.k;
@@ -1648,6 +1687,8 @@ export function BoardCanvas({
               </text>
             );
           })}
+          </g>
+        )}
         {/* the pins of the focused nets that are off screen: an arrow on the edge */}
         {frecce.length > 0 && (
           <g pointerEvents="none">
@@ -1980,7 +2021,8 @@ const RameFermo = memo(
     tutti: boolean;
     xray: number;
   }) {
-    const layerOpacity = (l: LayerId) => (tutti || l === active ? 1 : (xray / 100) * 0.75);
+    // the rule of strati-visibili.ts; the planes keep their own top strength (0.45, see below)
+    const layerOpacity = (l: LayerId) => opacitaStrato(l, tutti ? "all" : active, xray);
     return (
       <>
       {/* copper planes, from bottom to top */}

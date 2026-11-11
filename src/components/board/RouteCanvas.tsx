@@ -13,6 +13,7 @@ import {
 import type { ManualRoute } from "@/lib/manual-routes";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
 import { useVistaCondivisa } from "./vista-condivisa";
+import { opacitaStrato, stratoScelto } from "./strati-visibili";
 import { isTypingTarget } from "../keyboard";
 import {
   LAYER_COLOR,
@@ -54,6 +55,9 @@ export function RouteCanvas({
   projectId,
   onChanged,
   onDetached,
+  layer: layerScelto,
+  onLayer,
+  xray = 0,
 }: {
   circuitJson: unknown[] | null;
   /** trace width in mm */
@@ -67,6 +71,17 @@ export function RouteCanvas({
   onChanged?: () => void;
   /** what the server took away with the trace: it becomes a step Cmd+Z can undo */
   onDetached?: (traceId: string, removed: { routes: ManualRoute[]; elements: unknown[] }) => void;
+  /**
+   * The layer chosen in the left rail ("Sezione della scheda"): the copper
+   * being drawn on. This view kept a layer of its own and never heard the
+   * rail: with Top chosen there it could be drawing on Bottom, and the rail
+   * went on saying Top. "all" keeps the last layer drawn on and shows them all.
+   */
+  layer?: string;
+  /** a layer picked here (1-4, V): told to whoever owns the choice */
+  onLayer?: (layer: LayerId) => void;
+  /** how much the layers that are not the chosen one show through, 0-100 (0 = not drawn) */
+  xray?: number;
 }) {
   const scene = useMemo(() => buildScene(circuitJson), [circuitJson]);
   const boardPath = useMemo(() => (scene ? boardOutlinePath(scene.board) : null), [scene]);
@@ -74,7 +89,20 @@ export function RouteCanvas({
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [misurato, setMisurato] = useState(false);
-  const [layer, setLayer] = useState<LayerId>("top");
+  const scelto = stratoScelto(layerScelto);
+  /** the copper drawn on: the rail's layer, or the last one used while the rail says "Tutti" */
+  const [mio, setMio] = useState<LayerId>(scelto === "all" ? "top" : scelto);
+  if (scelto !== "all" && scelto !== mio) setMio(scelto);
+  const layer: LayerId = scelto === "all" ? mio : scelto;
+  const setLayer = useCallback(
+    (next: LayerId) => {
+      setMio(next);
+      // with "Tutti" the rail stays on "Tutti": a via or a redraw that moves to
+      // another layer must not take away the other layers that were asked for
+      if (scelto !== "all") onLayer?.(next);
+    },
+    [onLayer, scelto],
+  );
   /** the layer drawn on before this one: where V takes the trace back to, through a via */
   const lastLayerRef = useRef<LayerId | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -212,6 +240,9 @@ export function RouteCanvas({
       let bestD = Infinity;
       for (const t of scene.traces) {
         if (!t.traceId) continue;
+        // a trace that is not drawn cannot be grabbed: a click on the top face
+        // would pick a bottom trace nobody sees, and Canc would detach it
+        if (opacitaStrato(t.layer, scelto === "all" ? "all" : layer, xray) === 0) continue;
         for (let i = 0; i + 1 < t.points.length; i++) {
           const a = t.points[i];
           const b = t.points[i + 1];
@@ -229,7 +260,7 @@ export function RouteCanvas({
       }
       return best;
     },
-    [scene, view.k],
+    [scene, view.k, scelto, layer, xray],
   );
 
   /** detaches the selected trace: the connection is left open */
@@ -297,7 +328,7 @@ export function RouteCanvas({
         setDeleting(false);
       }
     },
-    [selectedTrace, projectId, deleting, model, layer, onChanged, onDetached],
+    [selectedTrace, projectId, deleting, model, layer, setLayer, onChanged, onDetached],
   );
 
   /** segment preview: two 0/45/90 segments that REACH the cursor */
@@ -399,7 +430,7 @@ export function RouteCanvas({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [draft, layer, selectedTrace, deleteSelected, armed, deleting, scene]);
+  }, [draft, layer, setLayer, selectedTrace, deleteSelected, armed, deleting, scene]);
 
   if (!scene) {
     return (
@@ -411,7 +442,12 @@ export function RouteCanvas({
 
   const mm = 1 / view.k;
   const usedLayers = LAYER_ORDER.filter((l) => scene.board.layers >= 4 || l === "top" || l === "bottom");
-  const dim = (l: LayerId) => (l === layer ? 1 : 0.16);
+  /*
+   * The rule of strati-visibili.ts, the same as the board view: the layer
+   * drawn on at full strength, the others as much as the x-ray asks and not
+   * at all at zero. They were always there at 16%, x-ray or not.
+   */
+  const dim = (l: LayerId) => opacitaStrato(l, scelto === "all" ? "all" : layer, xray);
 
   return (
     <div
@@ -514,15 +550,15 @@ export function RouteCanvas({
             * others.
             */}
           {/* one area per net and layer: the transparency on the group, see colatePerRete */}
-          {colatePerRete(scene.pours).map((g) => (
-            <g key={g.key} opacity={g.layer === layer ? 0.2 : 0.07}>
+          {colatePerRete(scene.pours).filter((g) => dim(g.layer) > 0).map((g) => (
+            <g key={g.key} opacity={0.2 * dim(g.layer)}>
               {g.pours.map((p) => (
                 <path key={p.id} d={p.path} fillRule="evenodd" fill={LAYER_COLOR[p.layer]} />
               ))}
             </g>
           ))}
 
-          {usedLayers.map((l) => (
+          {usedLayers.filter((l) => dim(l) > 0).map((l) => (
             <g key={l} opacity={dim(l)}>
               {scene.traces.filter((t) => t.layer === l && t.points.length > 1 && !(t.traceId && nascoste.has(t.traceId))).map((t, i) => (
                 <polyline
@@ -559,7 +595,7 @@ export function RouteCanvas({
             <circle key={i} cx={v.x} cy={v.y} r={v.outer / 2} fill="#9AA7A3" />
           ))}
 
-          {usedLayers.map((l) => (
+          {usedLayers.filter((l) => dim(l) > 0).map((l) => (
             <g key={`p-${l}`} opacity={dim(l)}>
               {scene.pads.filter((p) => !p.foro && p.layer === l).map((p) => (
                 p.circle

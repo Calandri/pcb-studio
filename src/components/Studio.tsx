@@ -1697,6 +1697,10 @@ export function Studio({
                       projectId={projectId}
                       onChanged={() => void loadCircuit()}
                       onDetached={editor.recordDetached}
+                      // the rail's layer and x-ray: one choice for the three modes
+                      layer={layer}
+                      onLayer={setLayer}
+                      xray={xray}
                     />
                   ) : (
                     // hand moving on our canvas: drag, arrows, rotation — with
