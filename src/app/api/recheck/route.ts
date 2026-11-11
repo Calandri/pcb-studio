@@ -3,12 +3,15 @@ import { summarizeCircuit } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { colateSenzaColli } from "@/lib/pour-necks";
+import { ricolaSeLeVieEranoParziali } from "@/lib/pours-recompute";
+import { vieSemprePassanti } from "@/lib/via-layers";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
 import { getCompileCache, getProject, hasBoard, saveCompileCache } from "@/lib/project-store";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+// it can pour the planes again (see ricolaSeLeVieEranoParziali): 15 s here on sbb-dl-principale, several times that deployed
+export const maxDuration = 300;
 
 /**
  * Recheck WITHOUT re-routing: re-evaluates the cached compiled circuit with
@@ -67,9 +70,24 @@ export async function POST(req: Request): Promise<Response> {
      * And a board poured before the neck rule carries slivers a fab cannot
      * etch: they are cut out here too (see pour-necks.ts).
      */
+    /*
+     * And a board from before every via was a through hole: its vias are
+     * completed (see vieSemprePassanti), and if one of them was written on part
+     * of the stack the planes are poured again, because the old engine poured
+     * them without seeing that hole (see ricolaSeLeVieEranoParziali). A board
+     * with no such via keeps its planes as they are.
+     */
+    const regole = resolveDesignRules(progetto).rules;
+    const ricolata = await ricolaSeLeVieEranoParziali({
+      circuitJson: vieSemprePassanti(cache.circuitJson as Array<Record<string, unknown> & { type: string }>),
+      engineVersion: cache.engineVersion,
+      clearanceMm: regole.pourClearanceMm ?? regole.minClearanceMm,
+      bordoMm: regole.minBoardEdgeClearanceMm,
+      larghezzaMinimaMm: regole.minTraceWidthMm,
+    });
     const senzaColli = await colateSenzaColli(
-      cache.circuitJson as Array<Record<string, unknown> & { type: string }>,
-      resolveDesignRules(progetto).rules.minTraceWidthMm,
+      ricolata.circuitJson as Array<Record<string, unknown> & { type: string }>,
+      regole.minTraceWidthMm,
     );
     const circuitJson = pastaDaiPad(
       senzaColli,
@@ -103,6 +121,7 @@ export async function POST(req: Request): Promise<Response> {
       ...(!salvataggio.saved && "reason" in salvataggio ? { reason: salvataggio.reason } : {}),
       engineVersion: CHECKS_ENGINE_VERSION,
       previousEngineVersion: cache.engineVersion,
+      ...(ricolata.ricolata ? { pianiRicolati: true, vieParziali: ricolata.vieParziali } : {}),
       summary,
     });
   } catch (err) {

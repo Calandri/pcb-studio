@@ -13,6 +13,7 @@ import {
   type SaveCompileResult,
   type SavedBoardBase,
 } from "./project-store";
+import { vieSemprePassanti } from "./via-layers";
 
 /**
  * Is this compile still the newest thing to save? It was started on files
@@ -133,13 +134,21 @@ export async function saveFinishedCompile(
   if (!ours || schematicKeyOf(v.files) !== ours) return { saved: false, keptPrevious: true, superseded: true, reason: CURRENT };
   const row = await getCompileCache(projectId).catch(() => null);
   if (!row || row.filesHash !== v.currentHash) return { saved: false, keptPrevious: true, superseded: true, reason: CURRENT };
-  const grafted = graftSchematic(row.circuitJson as Parameters<typeof graftSchematic>[0], circuitJson);
-  if (!grafted) return { saved: false, keptPrevious: true, superseded: true, reason: CURRENT };
+  const innestata = graftSchematic(row.circuitJson as Parameters<typeof graftSchematic>[0], circuitJson);
+  if (!innestata) return { saved: false, keptPrevious: true, superseded: true, reason: CURRENT };
+  // the saved board may come from an older engine: every via a through hole before it is checked and saved again
+  const grafted = vieSemprePassanti(innestata);
   const nuovo = summarizeCircuit(grafted, v.files);
   nuovo.schematicKey = ours;
   nuovo.profile = summary.profile;
   nuovo.message = `${nuovo.message} (schematico messo sulla scheda con gli spostamenti fatti nel frattempo)`;
-  const r = await saveCompileCache(projectId, v.currentHash, grafted, nuovo, CHECKS_ENGINE_VERSION, {
+  /*
+   * Under the engine the saved board was made with, not today's: its copper,
+   * planes and paste are the ones of that row, and only its schematic is new.
+   * Filed as today's, a board poured by an older engine reached the export
+   * without the recompile or the recheck that engine change asks for.
+   */
+  const r = await saveCompileCache(projectId, v.currentHash, grafted, nuovo, Math.min(row.engineVersion, CHECKS_ENGINE_VERSION), {
     ifUnchangedSince: { filesHash: row.filesHash, createdAt: row.createdAt },
     // the board under the schematic is the one of the files as they are now
     base: boardBaseOf(v.files),

@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const db = vi.hoisted(() => ({
   meta: null as null | { filesHash: string; createdAt: unknown; engineVersion: number },
   row: null as null | { filesHash: string; circuitJson: unknown[]; summary: unknown; createdAt: unknown; engineVersion: number },
-  saves: [] as Array<{ hash: string; circuitJson: unknown[]; summary: Record<string, unknown>; opts: unknown }>,
+  saves: [] as Array<{ hash: string; circuitJson: unknown[]; summary: Record<string, unknown>; opts: unknown; engine: number }>,
 }));
 
 vi.mock("@/lib/project-store", async () => {
@@ -19,8 +19,8 @@ vi.mock("@/lib/project-store", async () => {
     ...real,
     getCompileMeta: vi.fn(async () => db.meta),
     getCompileCache: vi.fn(async () => db.row),
-    saveCompileCache: vi.fn(async (_p: string, hash: string, circuitJson: unknown[], summary: Record<string, unknown>, _v: number, opts: unknown) => {
-      db.saves.push({ hash, circuitJson, summary, opts });
+    saveCompileCache: vi.fn(async (_p: string, hash: string, circuitJson: unknown[], summary: Record<string, unknown>, engine: number, opts: unknown) => {
+      db.saves.push({ hash, circuitJson, summary, opts, engine });
       return { saved: true };
     }),
   };
@@ -29,6 +29,7 @@ vi.mock("@/lib/project-store", async () => {
 import { boardBaseOf } from "@/lib/board-base";
 import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 import { schematicKeyOf, type CompileSummary } from "@/lib/compile";
+import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { emptyManualEdits, MANUAL_EDITS_PATH, serializeManualEdits } from "@/lib/manual-edits";
 import { filesHash } from "@/lib/project-store";
 
@@ -94,6 +95,29 @@ describe("una compilazione si salva solo se e' ancora la scheda piu' nuova", () 
     expect(s.summary.schematicKey).toBe(schematicKeyOf(A));
     // filed with the base of the files as they are now: the next hand move finds this board (board-base.ts)
     expect(s.opts).toEqual({ ifUnchangedSince: { filesHash: filesHash(B), createdAt: after }, base: boardBaseOf(B) });
+  });
+
+  it("the board the schematic goes onto keeps the engine it was made with, and its vias go through (2026-11-11)", async () => {
+    // saved by the fast update from a board of an older engine, with a via written on two layers of four
+    const via = { type: "pcb_via", pcb_via_id: "pcb_via_3", x: 1, y: 1, outer_diameter: 0.5, hole_diameter: 0.2, layers: ["inner2", "bottom"], from_layer: "inner2", to_layer: "bottom" };
+    const theirs = [{ type: "source_component", source_component_id: "s1", name: "R1" }, { type: "pcb_board", num_layers: 4 }, via];
+    const vecchio = CHECKS_ENGINE_VERSION - 1;
+    db.meta = { filesHash: filesHash(B), createdAt: after, engineVersion: vecchio };
+    db.row = { filesHash: filesHash(B), circuitJson: theirs, summary: {}, createdAt: after, engineVersion: vecchio };
+    const r = await saveFinishedCompile("p", filesHash(A), ours, summary(), fresh(B));
+    expect(r.grafted).toBe(true);
+    const [s] = db.saves;
+    // not filed as today's: its planes are the ones of the older engine, and the export asks for a recheck
+    expect(s.engine).toBe(vecchio);
+    const salvata = s.circuitJson.find((e) => (e as { type: string }).type === "pcb_via") as typeof via;
+    expect(salvata.layers).toEqual(["top", "inner1", "inner2", "bottom"]);
+    expect([salvata.from_layer, salvata.to_layer]).toEqual(["inner2", "bottom"]);
+
+    // a row of today's engine is filed as today's, as before
+    db.saves.length = 0;
+    db.row = { ...db.row, engineVersion: CHECKS_ENGINE_VERSION };
+    await saveFinishedCompile("p", filesHash(A), ours, summary(), fresh(B));
+    expect(db.saves[0].engine).toBe(CHECKS_ENGINE_VERSION);
   });
 
   it("se nel frattempo e' cambiato il codice, lo schematico vecchio non si mette sulla scheda nuova", async () => {

@@ -3,6 +3,7 @@ import { withLibrary } from "@/lib/agent-tools";
 import { boardBaseOf } from "@/lib/board-base";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { filesHash, getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
+import { vieSemprePassanti } from "@/lib/via-layers";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -56,7 +57,8 @@ export async function POST(req: Request): Promise<Response> {
   await saveCompileCache(
     projectId,
     filesHash(fsMap),
-    cached.circuitJson,
+    // taken as it is, but no board is saved with a via written on part of the stack: see vieSemprePassanti
+    vieSemprePassanti(cached.circuitJson as Array<Record<string, unknown>>),
     cached.summary,
     // the board is taken as it is, checks included: it keeps the engine it was made with
     Math.min(cached.engineVersion, CHECKS_ENGINE_VERSION),

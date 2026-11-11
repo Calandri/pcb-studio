@@ -3,6 +3,7 @@ import { boardFreshness, MANUAL_EDITS_PATH, parseManualEdits, withoutManualEdits
 import { filesHash, type FsMap, type SavedBoardBase } from "./project-store";
 import { rerouteLocal, type RerouteLocalResult } from "./reroute-local";
 import type { CircuitElement } from "./route-score";
+import { vieSemprePassanti } from "./via-layers";
 
 /**
  * What the fast update does with the saved board, decided without touching the
@@ -93,7 +94,8 @@ export function planFastUpdate(
     // filed under an older hash: it goes under this one as it is, or the page calls it "older than the files"
     return {
       kind: "save",
-      board: cached.circuitJson as CircuitElement[],
+      // as it is, but no board is saved with a via written on part of the stack (see vieSemprePassanti)
+      board: vieSemprePassanti(cached.circuitJson as CircuitElement[]),
       hash: hashNow,
       base: baseNow,
       unchanged: true,

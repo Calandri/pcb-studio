@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_DESIGN_RULES } from "@/lib/design-rules";
 import { foroDi, rameDelForo, runDrcChecks } from "@/lib/drc";
 
 type El = { type: string; [key: string]: unknown };
@@ -230,5 +231,96 @@ describe("pin_escape on a rotated pad", () => {
 
   it("leaving horizontally from that pad is the crooked one", () => {
     expect(escapes([board(), pad, trace(1.5, 0)])).toHaveLength(1);
+  });
+});
+
+/*
+ * sbb-dl-principale, 2026-11-11: the inner1 ground plane closed over 20 vias of
+ * other nets that listed only the two layers their trace joins, and the DRC
+ * answered 0 errors. Nothing measured a poured plane against a via.
+ */
+describe("a plane keeps its distance from the vias of the other nets, on every layer", () => {
+  const quadrato = (x0: number, y0: number, x1: number, y1: number) => ({
+    vertices: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }],
+  });
+  const reti: El[] = [
+    { type: "source_net", source_net_id: "n_gnd", name: "GND", subcircuit_connectivity_map_key: "k_gnd" },
+    { type: "source_net", source_net_id: "n_sig", name: "VBUS", subcircuit_connectivity_map_key: "k_sig" },
+  ];
+  const piano = (layer: string, buchi: Array<ReturnType<typeof quadrato>> = []): El => ({
+    type: "pcb_copper_pour",
+    pcb_copper_pour_id: `p_${layer}`,
+    layer,
+    source_net_id: "n_gnd",
+    shape: "brep",
+    brep_shape: { outer_ring: quadrato(-8, -8, 8, 8), inner_rings: buchi },
+  });
+  const via = (id: string, chiave: string, x: number, y: number, layers: string[]): El => ({
+    type: "pcb_via",
+    pcb_via_id: id,
+    x,
+    y,
+    outer_diameter: 0.5,
+    hole_diameter: 0.2,
+    layers,
+    subcircuit_connectivity_map_key: chiave,
+  });
+  const regole = { minClearanceMm: 0.152, pourClearanceMm: 0.152, minViaHoleMm: 0.2, minViaDiameterMm: 0.5 };
+  const drc = (els: El[], extra: Record<string, unknown> = {}) =>
+    runDrcChecks([board({ num_layers: 4 }), ...reti, ...els], { ...DEFAULT_DESIGN_RULES, ...regole, ...extra }).filter(
+      (v) => v.rule === "pour_clearance",
+    );
+
+  it("reports the plane that closes over a via, on a layer the via does not even list", () => {
+    // from inner2 to bottom, as its trace goes: the hole still crosses the inner1 plane
+    const found = drc([piano("inner1"), via("v_vbus", "k_sig", 2, 2, ["inner2", "bottom"])]);
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain("v_vbus <-> GND pour on inner1: 0.000mm < min 0.152mm");
+    expect(found[0].points).toEqual([{ x: 2, y: 2 }]);
+    // the same with the list completed: what the via lists does not decide what the hole crosses
+    expect(drc([piano("inner1"), via("v_vbus", "k_sig", 2, 2, ["top", "inner1", "inner2", "bottom"])])).toHaveLength(1);
+  });
+
+  it("is quiet when the plane opens around the pad by the pour clearance, and speaks when the opening is short", () => {
+    // pad radius 0.25 + 0.152 of clearance: the opening has to reach 0.402 from the centre
+    const aperto = quadrato(2 - 0.402, 2 - 0.402, 2 + 0.402, 2 + 0.402);
+    expect(drc([piano("inner1", [aperto]), via("v", "k_sig", 2, 2, ["inner2", "bottom"])])).toEqual([]);
+    const corto = quadrato(2 - 0.3, 2 - 0.3, 2 + 0.3, 2 + 0.3);
+    const found = drc([piano("inner1", [corto]), via("v", "k_sig", 2, 2, ["inner2", "bottom"])]);
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain("0.050mm < min 0.152mm");
+    // the hundredth of slack a poured circle needs (0.1476 measured on a real plane poured at 0.152)
+    const quasi = quadrato(2 - 0.397, 2 - 0.397, 2 + 0.397, 2 + 0.397);
+    expect(drc([piano("inner1", [quasi]), via("v", "k_sig", 2, 2, ["inner2", "bottom"])])).toEqual([]);
+  });
+
+  it("leaves alone the vias of the plane's own net, and the ones with no net", () => {
+    expect(
+      drc([
+        piano("inner1"),
+        via("v_gnd", "k_gnd", 1, 1, ["top", "bottom"]),
+        // a stitching via says its net this way
+        via("v_cucitura", "net:n_gnd", -1, 1, ["inner1", "bottom"]),
+        { type: "pcb_via", pcb_via_id: "v_nessuna", x: 3, y: -3, outer_diameter: 0.5, hole_diameter: 0.2, layers: ["top", "bottom"] },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("counts every plane and every via: two planes over one via, and a via outside the plane", () => {
+    const found = drc([
+      piano("inner1"),
+      piano("top"),
+      via("dentro", "k_sig", 2, 2, ["inner2", "bottom"]),
+      via("fuori", "k_sig", 12, 0, ["inner2", "bottom"]),
+    ]);
+    expect(found.map((v) => v.message.split(":")[0])).toEqual(["dentro <-> GND pour on inner1", "dentro <-> GND pour on top"]);
+  });
+
+  it("uses the pour's own clearance when it is tighter than the general one, and the pair rule of the project", () => {
+    const largo = quadrato(2 - 0.36, 2 - 0.36, 2 + 0.36, 2 + 0.36); // 0.11 from the pad
+    const els = [piano("inner1", [largo]), via("v", "k_sig", 2, 2, ["inner2", "bottom"])];
+    expect(drc(els)).toHaveLength(1);
+    expect(drc(els, { pourClearanceMm: 0.1 })).toEqual([]);
+    expect(drc(els, { clearanceByPairMm: { "via-via": 0.1 } })).toEqual([]);
   });
 });

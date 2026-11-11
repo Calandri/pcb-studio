@@ -10,6 +10,7 @@
 
 import { eMassa } from "./net-roles";
 import { padGeometry, padHalfExtents } from "./pcb-route-model";
+import { stratiDiRame } from "./via-layers";
 
 export interface PourShape {
   /** the net the plane belongs to */
@@ -268,14 +269,16 @@ export function tutteLeVia(
    * the route point said — and reading it literally made the check declare that
    * two pours of one net, one on top and one on inner2, had no via joining
    * them, with six of them standing in both.
+   *
+   * And every via is a through via (see vieSemprePassanti): one written from
+   * inner2 to bottom crosses top and inner1 just the same. It used to be
+   * expanded only when it named both top and bottom, and only up to four
+   * layers. Whatever it names is kept next to the stack, so a face is never
+   * lost.
    */
-  const facceDelloStack = ["top", "inner1", "inner2", "bottom"];
   const board = els.find((e) => e.type === "pcb_board");
-  const strati = num(board?.num_layers) ?? 4;
-  const attraversate = (facce: string[]): string[] => {
-    if (strati < 3 || !facce.includes("top") || !facce.includes("bottom")) return facce;
-    return facceDelloStack.slice(0, Math.min(strati, facceDelloStack.length));
-  };
+  const stack = stratiDiRame(num(board?.num_layers) ?? 4);
+  const attraversate = (facce: string[]): string[] => [...stack, ...facce.filter((f) => !stack.includes(f))];
 
   const out: Array<{ x: number; y: number; net: string; facce: string[] }> = [];
   for (const el of els) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { padsOffPlane, readPours } from "@/lib/pours";
+import { padsOffPlane, readPours, tutteLeVia } from "@/lib/pours";
 import { bandaDelBordo, eScheggia, padRuotati, ricolaPiani } from "@/lib/pours-recompute";
 
 type El = { type: string; [key: string]: unknown };
@@ -72,6 +72,32 @@ describe("padsOffPlane", () => {
     ];
     const off = padsOffPlane(cj, readPours(cj));
     expect(off.map((o) => o.pad)).toEqual(["gnd"]);
+  });
+});
+
+describe("tutteLeVia", () => {
+  const facce = (cj: El[]) => tutteLeVia(cj, new Map()).map((v) => v.facce);
+
+  it("a via crosses every layer of the board, whatever two layers it is written with", () => {
+    const quattro = ["top", "inner1", "inner2", "bottom"];
+    const cj: El[] = [
+      { type: "pcb_board", num_layers: 4 },
+      // as tscircuit writes the via of a hand trace that goes from inner2 to bottom (sbb-dl-principale, 2026-11-11)
+      { type: "pcb_via", pcb_via_id: "giu", x: 0, y: 0, layers: ["inner2", "bottom"] },
+      { type: "pcb_via", pcb_via_id: "intera", x: 1, y: 0, layers: ["top", "bottom"] },
+      { type: "pcb_via", pcb_via_id: "muta", x: 2, y: 0 },
+      { type: "pcb_trace", pcb_trace_id: "t", route: [{ route_type: "via", x: 3, y: 0, from_layer: "top", to_layer: "inner1" }] },
+    ];
+    expect(facce(cj)).toEqual([quattro, quattro, quattro, quattro]);
+  });
+
+  it("the stack is the board's own, six layers included, and a face it names is never lost", () => {
+    expect(facce([{ type: "pcb_board", num_layers: 6 }, { type: "pcb_via", x: 0, y: 0, layers: ["top", "bottom"] }])).toEqual([
+      ["top", "inner1", "inner2", "inner3", "inner4", "bottom"],
+    ]);
+    expect(facce([{ type: "pcb_board", num_layers: 2 }, { type: "pcb_via", x: 0, y: 0, layers: ["top", "inner1"] }])).toEqual([
+      ["top", "bottom", "inner1"],
+    ]);
   });
 });
 

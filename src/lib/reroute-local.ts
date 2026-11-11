@@ -2,6 +2,7 @@ import { resolveDesignRules } from "./design-rules";
 import { findOrphanEdits, normalizeRotation, parseManualEdits, type OrphanEdits } from "./manual-edits";
 import { parentFrameOffset, parseLength } from "./pcb-route-model";
 import { applyManualRoutes } from "./manual-routes";
+import { vieSemprePassanti } from "./via-layers";
 import { summarizeCircuit } from "./compile";
 import type { CircuitElement } from "./route-score";
 
@@ -395,8 +396,16 @@ export function rerouteLocal(
      * "nothing to apply" left the deleted trace on screen and in the exports,
      * on a board called current.
      */
-    const cleaned = applyManualRoutes({ circuitJson, routes: [], ...vias });
-    if (cleaned.circuitJson !== circuitJson) {
+    /*
+     * Measured on the board with its vias already completed, which is how
+     * applyManualRoutes gives it back (see vieSemprePassanti): a via written on
+     * part of the stack by an older engine is not hand copper taken off, and
+     * calling it a change saved a board the guards below would have sent to
+     * the compile.
+     */
+    const passante = vieSemprePassanti(circuitJson as El[]);
+    const cleaned = applyManualRoutes({ circuitJson: passante, routes: [], ...vias });
+    if (cleaned.circuitJson !== passante) {
       return {
         circuitJson: cleaned.circuitJson as CircuitElement[],
         result: { ok: true, moved: 0, rerouted: false, manualRoutes: 0, manualBranches: 0, drc: null, orphans },

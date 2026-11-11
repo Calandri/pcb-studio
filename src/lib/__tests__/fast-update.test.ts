@@ -215,3 +215,61 @@ describe("aggiornamento veloce della scheda dopo uno spostamento", () => {
     expect(planFastUpdate({ filesHash: h0, base: null, circuitJson: board() }, f2, f2).kind).toBe("compile");
   });
 });
+
+/*
+ * sbb-dl-principale, 2026-11-11: the saved board had 32 vias written on the two
+ * layers their trace joins. The fast update saves a board too, and no board is
+ * saved with such a via.
+ */
+describe("the fast update leaves only through vias on the board it saves", () => {
+  const quattro = ["top", "inner1", "inner2", "bottom"];
+  const board4 = (): El[] => [
+    { type: "pcb_board", pcb_board_id: "b", center: { x: 0, y: 0 }, width: 40, height: 30, num_layers: 4 },
+    ...part(1, "R1", 0),
+    ...part(2, "C1", 5),
+    { type: "pcb_via", pcb_via_id: "pcb_via_7", pcb_trace_id: "t", x: 3, y: 3, outer_diameter: 0.5, hole_diameter: 0.2, layers: ["inner2", "bottom"], from_layer: "inner2", to_layer: "bottom" },
+    { type: "pcb_via", pcb_via_id: "pcb_via_8", pcb_trace_id: "t", x: 4, y: 3, outer_diameter: 0.5, hole_diameter: 0.2, layers: quattro, from_layer: "top", to_layer: "bottom" },
+  ];
+  const viaOf = (cj: unknown[], id: string) => (cj as El[]).find((e) => e.pcb_via_id === id)!;
+
+  it("a part moved: the board that is saved has the via on every layer, and still says which two its trace joins", () => {
+    const f0 = files(editsFile([]));
+    const saved = { filesHash: filesHash(f0), base: boardBaseOf(f0), circuitJson: board4() };
+    const f1 = files(editsFile([{ selector: "R1", center: { x: 1, y: 0 } }]));
+    const plan = planFastUpdate(saved, f1, f1);
+    expect(plan.kind).toBe("save");
+    if (plan.kind !== "save") return;
+    expect(centerOf(plan.board, "pc1").x).toBeCloseTo(1, 9);
+    expect(viaOf(plan.board, "pcb_via_7")).toMatchObject({ layers: quattro, from_layer: "inner2", to_layer: "bottom", declared_layers: ["inner2", "bottom"] });
+    expect(viaOf(plan.board, "pcb_via_8").layers).toEqual(quattro);
+  });
+
+  it("nothing to move: a via to complete is not a change by itself, but the board filed again goes with it completed", () => {
+    // the board is exactly the one of these files: nothing is written, as before
+    const f = files(editsFile([{ selector: "R1", center: { x: 0, y: 0 } }]));
+    const b = board4();
+    expect(planFastUpdate({ filesHash: filesHash(f), base: boardBaseOf(f), circuitJson: b }, f, f).kind).toBe("unchanged");
+
+    // filed under an older hash: it is saved under the new one, and what is saved has only through vias
+    const f0 = files(editsFile([]));
+    const plan = planFastUpdate({ filesHash: filesHash(f0), base: boardBaseOf(f0), circuitJson: b }, f, f);
+    expect(plan).toMatchObject({ kind: "save", unchanged: true, hash: filesHash(f) });
+    if (plan.kind !== "save") return;
+    expect(viaOf(plan.board, "pcb_via_7")).toMatchObject({ layers: quattro, from_layer: "inner2", to_layer: "bottom" });
+    expect(centerOf(plan.board, "pc1").x).toBe(0);
+    // the saved board is not touched, and one with nothing to complete goes through as the same array
+    expect(viaOf(b, "pcb_via_7").layers).toEqual(["inner2", "bottom"]);
+    const again = planFastUpdate({ filesHash: filesHash(f0), base: boardBaseOf(f0), circuitJson: plan.board }, f, f);
+    if (again.kind === "save") expect(again.board).toBe(plan.board);
+    expect(again.kind).toBe("save");
+  });
+
+  it("a board from before the base existed, with a part let go, still asks for the compile: a via to complete does not make it a change", () => {
+    // no base on the row: the chain in the file vouches for it, and cannot see a part let go
+    const f0 = files(editsFile([]));
+    const chain = nextBoardBase({ cacheFilesHash: filesHash(f0), filesHashBefore: filesHash(f0), sourcesHash: filesHash(withoutManualEdits(f0)), previous: undefined });
+    const f1 = files(editsFile([], { board_base: chain }));
+    const plan = planFastUpdate({ filesHash: filesHash(f0), base: null, circuitJson: board4() }, f1, f1);
+    expect(plan).toMatchObject({ kind: "compile", reason: "niente da applicare in locale" });
+  });
+});

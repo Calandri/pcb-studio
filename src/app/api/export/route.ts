@@ -11,7 +11,7 @@ import { avvisoDelProgetto } from "@/lib/progetti-con-difetti";
 import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
-import { viePassantiSuOgniStrato } from "@/lib/via-layers";
+import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
@@ -156,9 +156,11 @@ export async function GET(req: Request): Promise<Response> {
         for (const [layerName, content] of Object.entries(gerberLayers)) {
           zip.file(`${layerName}.gbr`, content as string);
         }
+        // every via in the plated file, whatever span it is written with (see viePerLaForatura)
+        const daForare = viePerLaForatura(circuitJson as never) as unknown as DrillCircuitJson;
         for (const isPlated of [true, false]) {
           const drill = convertSoupToExcellonDrillCommands({
-            circuitJson: circuitJson as unknown as DrillCircuitJson,
+            circuitJson: daForare,
             is_plated: isPlated,
           });
           zip.file(

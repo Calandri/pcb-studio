@@ -4,8 +4,10 @@ import {
   initializeManifoldGeometry,
 } from "@tscircuit/copper-pour-solver";
 
+import { ENGINE_VIE_PASSANTI } from "./engine-version";
 import { planeServedPorts, readPours } from "./pours";
 import { abbracciaRamePropio, senzaColliStretti, type RamePropio } from "./pour-necks";
+import { vieDichiarateParziali, vieSemprePassanti } from "./via-layers";
 
 /**
  * THE PLANES, POURED AGAIN ONCE ALL THE COPPER IS ON THE BOARD.
@@ -122,9 +124,18 @@ function suFaccia(el: El, faccia: string): boolean {
  * (2.654, 21) inside the inner1 ground plane, a short from the microphone
  * supply to ground.
  *
- * A via that spans top to bottom crosses every inner layer, so it is handed
- * over on that layer too: as an obstacle when it belongs to another net, with
- * the pour's own key when it is the plane's net, so it stays connected.
+ * A via crosses every layer, so it is handed over on that layer too: as an
+ * obstacle when it belongs to another net, with the pour's own key when it is
+ * the plane's net, so it stays connected.
+ *
+ * EVERY via, and on the two faces as well. This used to skip a via that did
+ * not list both top and bottom, as blind or buried, and to answer nothing for
+ * the outer faces. There are no blind vias here (see vieSemprePassanti): the
+ * hole is drilled through the board whatever the element lists. On
+ * sbb-dl-principale (2026-11-11) the via of a hand-drawn trace from inner2 to
+ * bottom listed those two layers only, and the inner1 ground plane closed over
+ * 20 such holes of VBUS, VSYS, NRST and the SD lines. The board is normalised
+ * before it gets here; this is for the one that was not.
  */
 export function viePassanti(
   circuitJson: El[],
@@ -133,13 +144,11 @@ export function viePassanti(
   netDiVia: Map<string, string>,
   chiaveColata: string | undefined,
 ): Array<Record<string, unknown>> {
-  if (faccia === "top" || faccia === "bottom") return [];
   const fuori: Array<Record<string, unknown>> = [];
   for (const el of circuitJson) {
     if (el.type !== "pcb_via") continue;
-    const strati = (el.layers as string[] | undefined) ?? [];
+    const strati = Array.isArray(el.layers) ? (el.layers as unknown[]).map(String) : [];
     if (strati.includes(faccia)) continue; // the converter already has it
-    if (!(strati.includes("top") && strati.includes("bottom"))) continue; // blind or buried: not through here
     const x = num(el.x);
     const y = num(el.y);
     const d = num(el.outer_diameter);
@@ -904,6 +913,44 @@ export async function ricolaPiani({
     colateSparite: sparite,
     colliTagliatiMm2: Number(colli.toFixed(3)),
   };
+}
+
+/**
+ * A BOARD POURED WHEN ITS PLANES COULD NOT SEE EVERY HOLE, POURED AGAIN.
+ *
+ * For a board that is RE-EVALUATED instead of compiled (POST /api/recheck).
+ * Before ENGINE_VIE_PASSANTI a via written on part of the stack was invisible
+ * to the planes of the layers it left out (see viePassanti), so the saved board
+ * of such an engine can carry a plane with no opening around a hole of another
+ * net. A recheck files the board under today's engine, which is what lets it be
+ * exported: it must not certify those planes. They are poured again here, by
+ * the same solver and with the project's distances, each from the piece the
+ * board already has.
+ *
+ * Only a board that has such a via AND was made by an older engine. Every
+ * other board keeps its planes to the last vertex: pouring again is not free of
+ * rounding, and a board checked and about to be ordered must come out of a
+ * recheck with the copper it went in with. A solver that fails is an error for
+ * the caller, never the old planes handed back as if they were good.
+ */
+export async function ricolaSeLeVieEranoParziali({
+  circuitJson,
+  engineVersion,
+  clearanceMm,
+  bordoMm,
+  larghezzaMinimaMm,
+}: {
+  circuitJson: El[];
+  /** the engine the saved board was made with */
+  engineVersion: number;
+  clearanceMm: number;
+  bordoMm: number;
+  larghezzaMinimaMm?: number;
+}): Promise<{ circuitJson: El[]; ricolata: boolean; vieParziali: number }> {
+  const vieParziali = vieDichiarateParziali(circuitJson);
+  if (vieParziali === 0 || engineVersion >= ENGINE_VIE_PASSANTI) return { circuitJson, ricolata: false, vieParziali };
+  const esito = await ricolaPiani({ circuitJson: vieSemprePassanti(circuitJson), clearanceMm, bordoMm, larghezzaMinimaMm });
+  return { circuitJson: esito.circuitJson, ricolata: esito.ricolate > 0, vieParziali };
 }
 
 export { num };

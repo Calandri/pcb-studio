@@ -21,6 +21,7 @@
  * hand-drawn trace like any other, which is the point where the check becomes
  * useful instead of decorative.
  */
+import { stratiDiRame, viaPassante, vieSemprePassanti } from "./via-layers";
 
 export type Layer = "top" | "bottom" | "inner1" | "inner2";
 
@@ -391,8 +392,28 @@ const markers = (route: ManualRoute): El => ({
  * goes through it again on every local reroute — so what an earlier pass
  * created (pcb_trace_manual_*, the manual vias) is removed first and rebuilt:
  * running it twice gives the same board, not a doubled branch.
+ *
+ * AND EVERY VIA OF THE BOARD IT GIVES BACK IS A THROUGH HOLE (see
+ * vieSemprePassanti). It is done here because this is the last hand on the
+ * copper in every path that lays any: the compile calls it after tscircuit,
+ * the carried copper and the house rules, on the board saved early and on the
+ * final one, and the fast update calls it on the saved board. What comes next
+ * (the planes, the paste, the checks, the save) finds no via written on part
+ * of the stack, whoever wrote it: tscircuit for a `<trace pcbPath>`, an older
+ * engine on a saved board, the variant engine. A board with nothing to
+ * complete comes back as the same array, as before.
  */
-export function applyManualRoutes({
+export function applyManualRoutes(args: {
+  circuitJson: unknown[];
+  routes: ManualRoute[];
+  viaDiameter?: number;
+  viaHoleDiameter?: number;
+}): ApplyResult {
+  const esito = conLePisteAMano(args);
+  return { ...esito, circuitJson: vieSemprePassanti(esito.circuitJson as El[]) };
+}
+
+function conLePisteAMano({
   circuitJson,
   routes,
   viaDiameter = 0.6,
@@ -630,6 +651,12 @@ export function applyManualRoutes({
     const k = e.subcircuit_connectivity_map_key;
     if (typeof k === "string" && k) chiaveDiSorgente.set(e.source_trace_id, k);
   }
+  /*
+   * The hole goes through the board whatever two layers the trace joins there,
+   * so the via lists the whole stack: `[from, to]`, as it used to, read as a
+   * blind via to the planes and to the drill file (see vieSemprePassanti).
+   */
+  const strati = stratiDiRame(Number(els.find((e) => e.type === "pcb_board")?.num_layers ?? 2));
   let nVia = 0;
   for (const e of [...out]) {
     if (e.type !== "pcb_trace" || !e.manual) continue;
@@ -647,7 +674,7 @@ export function applyManualRoutes({
         y: round3(num(p.y)),
         outer_diameter: dia,
         hole_diameter: num(p.via_hole_diameter) || viaHoleDiameter,
-        layers: [String(p.from_layer ?? "top"), String(p.to_layer ?? "bottom")],
+        ...viaPassante(strati, [String(p.from_layer ?? "top"), String(p.to_layer ?? "bottom")]),
         subcircuit_connectivity_map_key:
           e.subcircuit_connectivity_map_key ??
           chiaveDiSorgente.get(String(e.source_trace_id ?? "")),

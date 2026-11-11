@@ -4,6 +4,7 @@ import {
   AutoroutingPipelineSolver3_HgPortPointPathing,
 } from "@tscircuit/capacity-autorouter";
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
+import { stratiDiRame, viaPassante } from "./via-layers";
 
 /**
  * Section-based variant routing engine ("Fase 3.d").
@@ -354,6 +355,8 @@ export function spliceTraces(
    * because rip-up touches the copper, not the design.
    */
   const resolveSource = sourceTraceIdResolver(base);
+  // a via is a through hole: it lists the whole stack, not the two layers the route point names (see vieSemprePassanti)
+  const strati = stratiDiRame(Number(base.find((el) => el.type === "pcb_board")?.num_layers ?? 2));
   const viaSeen = new Set<string>();
   let n = 0;
   for (const t of traces) {
@@ -397,7 +400,7 @@ export function spliceTraces(
         outer_diameter: rules.minViaDiameterMm,
         from_layer: p.from_layer,
         to_layer: p.to_layer,
-        layers: [p.from_layer, p.to_layer],
+        ...viaPassante(strati, [p.from_layer, p.to_layer].filter((l) => l != null).map(String)),
       });
     }
   }

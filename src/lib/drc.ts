@@ -368,6 +368,65 @@ function raggioEsterno(b: Box): number {
  */
 const TOLLERANZA_MM = 0.001;
 
+/*
+ * AND A HUNDREDTH for a poured plane. The solver cuts the circle around a via
+ * as a polygon, and the plane's own vias and pads are united to it a hair
+ * larger than they are (see abbracciaRamePropio): measured on sbb-dl-principale,
+ * the openings of a plane poured at 0.152 mm come out between 0.1476 and 0.1501
+ * from the via. A plane that closes over a hole is not a matter of hundredths.
+ */
+const TOLLERANZA_COLATA_MM = 0.01;
+
+/** a ring of a pour with the box that contains it, to discard it without walking it */
+interface AnelloDiColata {
+  punti: Array<{ x: number; y: number }>;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+function anelloDiColata(punti: Array<{ x: number; y: number }>): AnelloDiColata {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of punti) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { punti, minX, maxX, minY, maxY };
+}
+
+/**
+ * How far a circle is from the copper of a pour: 0 when its centre is in the
+ * copper or the copper reaches into it, Infinity when the pour is farther than
+ * `portata` (nobody asks how much farther).
+ */
+function distanzaCerchioColata(
+  x: number,
+  y: number,
+  raggio: number,
+  esterno: AnelloDiColata,
+  buchi: AnelloDiColata[],
+  portata: number,
+): number {
+  const vicino = (a: AnelloDiColata) =>
+    x >= a.minX - portata && x <= a.maxX + portata && y >= a.minY - portata && y <= a.maxY + portata;
+  if (!vicino(esterno)) return Infinity;
+  const nelBox = (a: AnelloDiColata) => x >= a.minX && x <= a.maxX && y >= a.minY && y <= a.maxY;
+  if (nelBox(esterno) && dentroPoligono(x, y, esterno.punti) && !buchi.some((b) => nelBox(b) && dentroPoligono(x, y, b.punti))) {
+    return 0;
+  }
+  let d = Infinity;
+  for (const a of [esterno, ...buchi]) {
+    if (!vicino(a)) continue;
+    for (let i = 0, j = a.punti.length - 1; i < a.punti.length; j = i++) {
+      d = Math.min(d, pointSegDistance(x, y, a.punti[j].x, a.punti[j].y, a.punti[i].x, a.punti[i].y));
+    }
+  }
+  return Math.max(0, d - raggio);
+}
+
 /** the centre of a box, without needing the whole helper */
 const centroDi = (r: Box) => ({ x: (r.minX + r.maxX) / 2, y: (r.minY + r.maxY) / 2 });
 
@@ -1267,6 +1326,75 @@ export function runDrcChecks(
         push(
           "plane_stitch_missing",
           `i piani della rete ${net} stanno su ${facce.size} facce (${[...facce].join(", ")}) e nessuna via li collega`,
+        );
+      }
+    }
+  }
+
+  /*
+   * --- 8. THE PLANES AGAINST THE VIAS OF THE OTHER NETS, ON EVERY LAYER.
+   *
+   * A via is a hole through the whole board (see vieSemprePassanti), so the
+   * plane of another net has to open around it on every layer, the ones the via
+   * does not use included. Nothing measured it: the pours were trusted to carve
+   * themselves, and the pair checks above know pads, traces and vias but not
+   * poured copper. On sbb-dl-principale (2026-11-11) the inner1 ground plane
+   * closed over 20 vias of VBUS, VSYS, NRST and the SD lines, which listed only
+   * the two layers their trace joins, and this function answered 0 errors. A
+   * plane that is not poured again after copper is added (the fast update never
+   * pours) is caught here as well.
+   *
+   * Measured from the via's PAD on every layer, whatever the element lists: it
+   * is the circle the pour engine keeps away from, so a board it poured passes
+   * whichever layers get a pad in the Gerber. The minimum is the smallest
+   * distance that engine leaves by construction: the pour's own clearance, or
+   * less where the plane holds a via or a pad of its own net that the project
+   * lets nearer to a via than that (the pair rules). A via with no known net is
+   * not an electrical node and is left out, as in the pair checks.
+   */
+  const colate = readPours(circuitJson);
+  if (colate.length > 0) {
+    const minimoColata = Math.min(
+      rules.pourClearanceMm ?? rules.minClearanceMm,
+      distanzaMinimaFra(rules, "via", "via"),
+      distanzaMinimaFra(rules, "pad", "via"),
+    );
+    const reti = new Map<string, { nome: string; gruppi: Set<string> }>();
+    for (const el of circuitJson) {
+      if (el.type !== "source_net" || !el.source_net_id) continue;
+      const id = String(el.source_net_id);
+      const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+      // every name the net goes by among the vias: its key, the group that key resolves to, `net:<id>`
+      const gruppi = new Set<string>([`net:${id}`]);
+      if (chiave) gruppi.add(chiave);
+      for (const g of [risolviChiave(chiave), gruppoDiRete.get(id)]) if (g) gruppi.add(g);
+      reti.set(id, { nome: String(el.name ?? id), gruppi });
+    }
+    const piani = colate.map((c) => ({
+      rete: c.net,
+      layer: c.layer,
+      esterno: anelloDiColata(c.outer),
+      buchi: c.holes.map(anelloDiColata),
+    }));
+    for (const el of circuitJson) {
+      if (el.type !== "pcb_via") continue;
+      const x = num(el.x);
+      const y = num(el.y);
+      const d = num(el.outer_diameter) ?? num(el.hole_diameter);
+      if (x === null || y === null || d === null) continue;
+      const gruppo = groupOfVia(el);
+      if (!gruppo) continue;
+      const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+      for (const piano of piani) {
+        const rete = reti.get(piano.rete);
+        // the plane of the via's own net is where the via belongs
+        if (rete && (rete.gruppi.has(gruppo) || (chiave !== "" && rete.gruppi.has(chiave)))) continue;
+        const distanza = distanzaCerchioColata(x, y, d / 2, piano.esterno, piano.buchi, d / 2 + minimoColata);
+        if (distanza >= minimoColata - TOLLERANZA_COLATA_MM) continue;
+        push(
+          "pour_clearance",
+          `${String(el.pcb_via_id ?? "via")} <-> ${rete?.nome ?? (piano.rete || "?")} pour on ${piano.layer}: ${distanza.toFixed(3)}mm < min ${minimoColata}mm${distanza === 0 ? " (the plane does not open around the hole)" : ""}`,
+          { x, y },
         );
       }
     }

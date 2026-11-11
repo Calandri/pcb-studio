@@ -236,3 +236,58 @@ describe("applyManualRoutes", () => {
     expect(r.unknown).toHaveLength(1);
   });
 });
+
+/*
+ * sbb-dl-principale, 2026-11-11: a via written on the two layers its trace
+ * joins was taken for blind by the planes and by the drill file. A via is a
+ * hole through the board.
+ */
+describe("applyManualRoutes leaves only through vias", () => {
+  const quattro = ["top", "inner1", "inner2", "bottom"];
+  const scheda: El = { type: "pcb_board", pcb_board_id: "b", center: { x: 0, y: 0 }, width: 40, height: 30, num_layers: 4 };
+  const interna = route({
+    connection: ".R1 > .pin2 to .U1 > .IN",
+    from: ".R1 > .pin2",
+    to: ".U1 > .IN",
+    points: [
+      { x: 1, y: 0, layer: "top" },
+      { x: 1, y: 4, layer: "top" },
+      { x: 1, y: 4, layer: "inner2" },
+      { x: 5, y: 4, layer: "inner2" },
+      { x: 5, y: 4, layer: "bottom" },
+      { x: 5, y: 0, layer: "bottom" },
+    ],
+  });
+  const vias = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_via");
+
+  it("the via of a hand route lists the whole stack of the board, whatever two layers the route joins there", () => {
+    const r = applyManualRoutes({ circuitJson: [scheda, ...board()], routes: [interna] });
+    const sue = vias(r.circuitJson).filter((v) => v.manual === true);
+    expect(sue.map((v) => [v.x, v.y])).toEqual([[1, 4], [5, 4]]);
+    for (const v of sue) expect(v.layers).toEqual(quattro);
+    // what the route said stays readable, and the copper of the trace still says where it changes layer
+    expect(sue.map((v) => v.declared_layers)).toEqual([["top", "inner2"], ["inner2", "bottom"]]);
+    const punti = (traces(r.circuitJson).find((e) => e.manual === true)!.route as El[]).filter((q) => q.route_type === "via");
+    expect(punti.map((q) => [q.from_layer, q.to_layer])).toEqual([["top", "inner2"], ["inner2", "bottom"]]);
+  });
+
+  it("and so does every other via of the board: tscircuit's, an older engine's, with or without routes to lay", () => {
+    const diTscircuit: El = { type: "pcb_via", pcb_via_id: "pcb_via_9", pcb_trace_id: "t", x: -7, y: -7, outer_diameter: 0.5, hole_diameter: 0.2, layers: ["inner2", "bottom"], from_layer: "inner2", to_layer: "bottom" };
+    const intera: El = { type: "pcb_via", pcb_via_id: "pcb_via_10", x: -8, y: -7, outer_diameter: 0.5, hole_diameter: 0.2, layers: [...quattro].reverse(), from_layer: "bottom", to_layer: "top" };
+    const cj = [scheda, ...board(), diTscircuit, intera];
+    for (const routes of [[], [interna]]) {
+      const out = vias(applyManualRoutes({ circuitJson: cj, routes }).circuitJson);
+      const completata = out.find((v) => v.pcb_via_id === "pcb_via_9")!;
+      expect(completata.layers).toEqual(quattro);
+      expect([completata.from_layer, completata.to_layer]).toEqual(["inner2", "bottom"]);
+      // already on every layer: the very same element
+      expect(out.find((v) => v.pcb_via_id === "pcb_via_10")).toBe(intera);
+      for (const v of out) expect(quattro.every((s) => (v.layers as string[]).includes(s))).toBe(true);
+    }
+  });
+
+  it("a board with nothing to lay and nothing to complete comes back as the same array", () => {
+    const cj = [scheda, { type: "pcb_via", pcb_via_id: "v", x: 0, y: 0, outer_diameter: 0.5, hole_diameter: 0.2, layers: quattro }];
+    expect(applyManualRoutes({ circuitJson: cj, routes: [] }).circuitJson).toBe(cj);
+  });
+});

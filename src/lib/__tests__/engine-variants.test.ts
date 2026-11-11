@@ -57,6 +57,18 @@ describe("spliced vias take the net of their own trace", () => {
     const pairs = runDrcChecks(close).filter((v) => v.rule === "pad_clearance");
     expect(pairs.length).toBeGreaterThan(0);
   });
+
+  it("and are through holes: the whole stack of the board, not the two layers the route point names", () => {
+    const quattro = base.map((el) => (el.type === "pcb_board" ? { ...el, num_layers: 4 } : el));
+    const interna = traces.map((t) => ({
+      ...t,
+      route: (t.route as El[]).map((p) => (p.route_type === "via" ? { ...p, to_layer: "inner1" } : p.layer === "bottom" ? { ...p, layer: "inner1" } : p)),
+    }));
+    const via = spliceTraces(quattro, "sub", interna, "t").find((el) => el.type === "pcb_via")!;
+    expect(via.layers).toEqual(["top", "inner1", "inner2", "bottom"]);
+    expect([via.from_layer, via.to_layer]).toEqual(["top", "inner1"]);
+    expect(via.declared_layers).toEqual(["top", "inner1"]);
+  });
 });
 
 describe("runSolver has a wall-clock deadline", () => {

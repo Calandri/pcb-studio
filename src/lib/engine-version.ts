@@ -19,4 +19,19 @@
 // 6 (2026-11-11): pill and turned-pill pads get their stencil opening (tscircuit writes none: the flash and a
 // six-pad part of sbb-dl-principale had no paste at all), and a part whose pads still have no opening is a
 // "paste_missing" failure. Older boards must be recompiled or rechecked before their Gerber can be exported
-export const CHECKS_ENGINE_VERSION = 6;
+// 7 (2026-11-11): every via is a through hole. A via written on part of the stack (tscircuit does it for the via of a
+// hand-drawn trace that joins an outer layer and an inner one: 32 of the 253 of sbb-dl-principale) was taken for blind
+// or buried: the planes of the layers it left out closed over the hole (inner1 ground on 20 holes of VBUS, VSYS, NRST
+// and the SD lines) and the drill file did not have it. Now every via lists the whole stack, the planes open around it
+// on every layer, the drill file has it, and a plane too close to a via of another net is a "pour_clearance" violation.
+// Older boards must be recompiled or rechecked before their Gerber can be exported: a recheck pours again the planes
+// of a board that has such a via
+export const CHECKS_ENGINE_VERSION = 7;
+
+/**
+ * The first engine whose planes open around EVERY via, whatever layers it
+ * lists. A board saved by an older one, with a via written on part of the
+ * stack, has planes that were poured without seeing that hole: a recheck pours
+ * them again (see ricolaSeLeVieEranoParziali).
+ */
+export const ENGINE_VIE_PASSANTI = 7;

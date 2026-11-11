@@ -22,6 +22,7 @@ import {
   updateProjectFile,
 } from "@/lib/project-store";
 import { deleteTrace } from "@/lib/trace-edit";
+import { vieSemprePassanti } from "@/lib/via-layers";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -185,7 +186,13 @@ export async function POST(req: Request): Promise<Response> {
     }
   }
 
-  const summary = summarizeCircuit(result.circuitJson as unknown[], fsMap);
+  /*
+   * Every via a through hole before the board is checked and saved (see
+   * vieSemprePassanti): the saved board may come from an older engine, and
+   * what a restore puts back comes from the page.
+   */
+  const board = vieSemprePassanti(result.circuitJson as Array<Record<string, unknown>>);
+  const summary = summarizeCircuit(board, fsMap);
   // which board is saved now: the metadata is enough, the board is megabytes
   const latest = await getCompileMeta(projectId);
   if (
@@ -204,7 +211,7 @@ export async function POST(req: Request): Promise<Response> {
    * of these files when the board was exactly theirs.
    */
   // under the engine the board was made with: a detached trace does not re-evaluate it (see reroute-local)
-  await saveCompileCache(projectId, hash, result.circuitJson, summary, Math.min(cached.engineVersion, CHECKS_ENGINE_VERSION), {
+  await saveCompileCache(projectId, hash, board, summary, Math.min(cached.engineVersion, CHECKS_ENGINE_VERSION), {
     base: cached.base ?? (fresh === "exact" ? baseNow : null),
   });
 
