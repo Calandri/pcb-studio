@@ -315,24 +315,76 @@ const EXPRESSION_KEYWORDS = new Set([
  * The tags of a source file, in order. Tags that sit inside another tag's
  * attribute value (the <footprint> and <smtpad> of an inline footprint) are
  * part of that value, not elements of the board: they are left out unless
- * `includeNested` asks for them, flagged `inAttribute`.
+ * `includeNested` asks for them, flagged `inAttribute`. A file the scanner
+ * cannot read within its limits gives no tags (see scanJsxTagsOrNull).
  */
 export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {}): JsxTag[] {
+  return scanJsxTagsOrNull(src, opts) ?? [];
+}
+
+/**
+ * THE SCANNER'S LIMITS. A `<` that looks like a tag and never closes is rolled
+ * back and read again as an operator, and before 11/11/2026 the same `<` was
+ * tried again by every attempt around it: N lines `xN = (<a {` took 2^N
+ * attempts (334 ms with 20 lines, 16 s with 25, minutes with 30), and the
+ * scanner runs on every code file of a project at every compile (the key of
+ * the schematic, the footprints) and on save. Anyone who can edit a project
+ * could hold a compile for good with a few lines.
+ *  - A `<` that failed once fails again from anywhere (what it reads does not
+ *    depend on who asked), so it is tried once: the scan is linear in practice.
+ *  - Elements and expressions more than PROFONDITA_MASSIMA deep, or more than
+ *    PASSI_PER_CARATTERE steps per character of the file: the file is not
+ *    readable and the caller is told so (null), instead of a guess.
+ */
+const PROFONDITA_MASSIMA = 200;
+/** a file a person or a generator writes takes 1-2 steps per character (measured on the SBB boards, 11/11/2026) */
+const PASSI_PER_CARATTERE = 50;
+const PASSI_MINIMI = 100_000;
+const NON_LEGGIBILE = new Error("jsx non leggibile entro i limiti dello scanner");
+
+/**
+ * The tags of a source file (see scanJsxTags), or null when the file cannot
+ * be read within the scanner's limits (see PROFONDITA_MASSIMA): whoever uses
+ * the tags to decide something treats the file as unknown.
+ */
+export function scanJsxTagsOrNull(src: string, opts: { includeNested?: boolean } = {}): JsxTag[] | null {
+  try {
+    return leggiTag(src, opts);
+  } catch (err) {
+    if (err === NON_LEGGIBILE) return null;
+    throw err;
+  }
+}
+
+function leggiTag(src: string, opts: { includeNested?: boolean }): JsxTag[] {
   const tags: JsxTag[] = [];
   const n = src.length;
+  /** the `<` already tried that are not a tag: see the limits above */
+  const nonTag = new Uint8Array(n + 1);
+  const tetto = PASSI_MINIMI + PASSI_PER_CARATTERE * n;
+  let passi = 0;
+  const spendi = (q: number) => {
+    passi += q;
+    if (passi > tetto) throw NON_LEGGIBILE;
+  };
 
   const skipLineComment = (i: number): number => {
     const nl = src.indexOf("\n", i);
-    return nl === -1 ? n : nl;
+    const end = nl === -1 ? n : nl;
+    spendi(end - i);
+    return end;
   };
   const skipBlockComment = (i: number): number => {
-    const end = src.indexOf("*/", i + 2);
-    return end === -1 ? n : end + 2;
+    const e = src.indexOf("*/", i + 2);
+    const end = e === -1 ? n : e + 2;
+    spendi(end - i);
+    return end;
   };
   /** a JS string: escapes count, a newline ends an unterminated one */
   const skipJsString = (i: number): number => {
     const q = src[i];
     for (let k = i + 1; k < n; k++) {
+      spendi(1);
       const c = src[k];
       if (c === "\\") {
         k++;
@@ -345,6 +397,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
   };
   const skipTemplate = (i: number, depth: number, inAttr: boolean): number => {
     for (let k = i + 1; k < n; k++) {
+      spendi(1);
       const c = src[k];
       if (c === "\\") {
         k++;
@@ -360,6 +413,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
   const skipRegex = (i: number): number => {
     let inClass = false;
     for (let k = i + 1; k < n; k++) {
+      spendi(1);
       const c = src[k];
       if (c === "\\") {
         k++;
@@ -385,12 +439,14 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
    * expression it was called for and returns the index past it.
    */
   function scanJs(i: number, untilBrace: boolean, depth: number, inAttr: boolean): number {
+    if (depth > PROFONDITA_MASSIMA) throw NON_LEGGIBILE;
     let braces = 0;
     // true when what follows is an expression: start, after an operator or
     // an opening bracket or a keyword
     let exprPos = true;
     let k = i;
     while (k < n) {
+      spendi(1);
       const c = src[k];
       if (c === " " || c === "\t" || c === "\n" || c === "\r") {
         k++;
@@ -433,6 +489,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
       if (isIdStart(c)) {
         let e = k + 1;
         while (e < n && isIdChar(src[e])) e++;
+        spendi(e - k);
         const word = src.slice(k, e);
         // `a.return` is a property, not the keyword
         const prev = src[k - 1];
@@ -443,6 +500,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
       if (/[0-9]/.test(c)) {
         let e = k + 1;
         while (e < n && /[0-9A-Za-z_.]/.test(src[e])) e++;
+        spendi(e - k);
         k = e;
         exprPos = false;
         continue;
@@ -477,6 +535,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
   function scanTagAttrs(k: number, depth: number): { end: number; attrsEnd: number; selfClosing: boolean } | null {
     let last = "";
     while (k < n) {
+      spendi(1);
       const c = src[k];
       if (!/\s/.test(c)) last = c === "=" ? "=" : last === "=" && c === "<" ? "=" : "";
       if (c === "/" && src[k + 1] === "/") {
@@ -491,6 +550,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
         // JSX attribute strings have no escapes
         const close = src.indexOf(c, k + 1);
         if (close === -1) return null;
+        spendi(close - k);
         k = close + 1;
         continue;
       }
@@ -521,6 +581,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
   /** children of an element up to its closing tag; index past it, or -1 */
   function scanChildren(k: number, depth: number, inAttr: boolean): { closeStart: number; closeEnd: number } | null {
     while (k < n) {
+      spendi(1);
       const c = src[k];
       if (c === "{") {
         k = scanJs(k + 1, true, depth + 1, inAttr);
@@ -530,6 +591,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
         if (src[k + 1] === "/") {
           const close = src.indexOf(">", k + 2);
           if (close === -1) return null;
+          spendi(close - k);
           return { closeStart: k, closeEnd: close + 1 };
         }
         if (isIdStart(src[k + 1]) || src[k + 1] === ">") {
@@ -547,9 +609,18 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
   /**
    * A whole element from the `<` at i: the tag, its children, its closing
    * tag. Returns the index past it, or -1 rolling back what it recorded.
+   * What it finds depends only on i: a `<` that is not a tag is tried once
+   * (see the scanner's limits).
    */
   function tryElement(i: number, depth: number, inAttr: boolean): number {
-    if (depth > 200) return -1;
+    if (depth > PROFONDITA_MASSIMA) throw NON_LEGGIBILE;
+    if (nonTag[i]) return -1;
+    const r = provaElemento(i, depth, inAttr);
+    if (r === -1) nonTag[i] = 1;
+    return r;
+  }
+  function provaElemento(i: number, depth: number, inAttr: boolean): number {
+    spendi(1);
     const mark = tags.length;
     let j = i + 1;
     // fragment `<>...</>`
@@ -562,6 +633,7 @@ export function scanJsxTags(src: string, opts: { includeNested?: boolean } = {})
       return kids.closeEnd;
     }
     while (j < n && isTagNameChar(src[j])) j++;
+    spendi(j - i);
     const name = src.slice(i + 1, j);
     // `<T,>` and `<T extends X>` are generics, not tags
     const after = /^\s*(,|extends\b)/.exec(src.slice(j, j + 12));
