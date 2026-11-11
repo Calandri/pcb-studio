@@ -7,6 +7,8 @@
  * Circuit JSON. The canvas handles the axis flip for the screen.
  */
 
+import { courtyardShape, footprintBoxes, type CourtyardShape } from "@/lib/footprint-bounds";
+
 export interface El {
   type: string;
   [key: string]: unknown;
@@ -233,14 +235,15 @@ export interface SilkText {
   componentId: string;
 }
 
+/**
+ * A courtyard of any kind (rect, circle, pill, outline, polygon), as
+ * footprint-bounds.ts reads it: only rects used to be drawn, and the boards
+ * imported from KiCad/EasyEDA carry outlines (222 on fototrappola-frontale,
+ * none on screen).
+ */
 export interface Courtyard {
   id: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  /** turned like the part it belongs to, when the part is turned */
-  rot: number;
+  shape: CourtyardShape;
   componentId: string;
 }
 
@@ -266,8 +269,17 @@ export interface ComponentBox {
    */
   ox: number;
   oy: number;
+  /**
+   * The REAL footprint (footprint-bounds.ts): courtyard, else pads and body,
+   * else pads. It used to be pcb_component width/height, which tscircuit
+   * computes from pads and holes only: on st-camera 98 parts out of 243 looked
+   * smaller than their body, and were placed on top of each other.
+   */
   w: number;
   h: number;
+  /** where the centre of that footprint is, relative to (x, y): it is off-centre on connectors */
+  dx: number;
+  dy: number;
   rotation: number;
   layer: LayerId;
 }
@@ -363,6 +375,8 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
     const rb = radice(b);
     if (ra !== rb) padre.set(ra, rb);
   };
+  /** the real footprint of every part: see footprint-bounds.ts */
+  const ingombri = footprintBoxes(elements);
   const nomeComponente = new Map<string, string>();
   for (const el of elements) {
     if (el.type === "source_component" && el.source_component_id) {
@@ -631,18 +645,16 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
         break;
       }
 
-      case "pcb_courtyard_rect": {
-        const c = (el.center as { x?: number; y?: number } | undefined) ?? {};
-        const x = num(c.x) ?? num(el.x);
-        const y = num(c.y) ?? num(el.y);
-        if (x === null || y === null) break;
+      case "pcb_courtyard_rect":
+      case "pcb_courtyard_circle":
+      case "pcb_courtyard_pill":
+      case "pcb_courtyard_outline":
+      case "pcb_courtyard_polygon": {
+        const shape = courtyardShape(el);
+        if (!shape) break;
         scene.courtyards.push({
-          id: String(el.pcb_courtyard_rect_id ?? `cy${scene.courtyards.length}`),
-          x,
-          y,
-          w: num(el.width) ?? 0,
-          h: num(el.height) ?? 0,
-          rot: num(el.ccw_rotation) ?? 0,
+          id: String(el[`${String(el.type)}_id`] ?? `cy${scene.courtyards.length}`),
+          shape,
           componentId: String(el.pcb_component_id ?? ""),
         });
         break;
@@ -655,16 +667,20 @@ export function buildScene(circuitJson: unknown[] | null): BoardScene | null {
         const x = num(c.x);
         const y = num(c.y);
         if (x === null || y === null) break;
+        const id = String(el.pcb_component_id ?? `comp${scene.components.length}`);
+        const ingombro = ingombri.get(id);
         scene.components.push({
-          id: String(el.pcb_component_id ?? `comp${scene.components.length}`),
+          id,
           sourceId: String(el.source_component_id ?? ""),
           name: nomeComponente.get(String(el.source_component_id ?? "")) ?? "",
           x,
           y,
           ox: num(el.display_offset_x) ?? x,
           oy: num(el.display_offset_y) ?? y,
-          w: num(el.width) ?? 1,
-          h: num(el.height) ?? 1,
+          w: ingombro ? ingombro.maxX - ingombro.minX : (num(el.width) ?? 1),
+          h: ingombro ? ingombro.maxY - ingombro.minY : (num(el.height) ?? 1),
+          dx: ingombro ? (ingombro.minX + ingombro.maxX) / 2 - x : 0,
+          dy: ingombro ? (ingombro.minY + ingombro.maxY) / 2 - y : 0,
           rotation: num(el.rotation) ?? 0,
           layer: asLayer(el.layer),
         });

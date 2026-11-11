@@ -742,8 +742,13 @@ export function BoardCanvas({
       .filter((c) => !nascosti.has(c.id) && c.name)
       .map((c) => {
         const e = effOf(c);
-        const quarto = Math.round((((e.rotation - c.rotation) % 180) + 180) % 180) === 90;
-        return { key: c.id, name: c.name, cx: e.x, cy: e.y, w: quarto ? c.h : c.w, h: quarto ? c.w : c.h };
+        const giro = (((e.rotation - c.rotation) % 360) + 360) % 360;
+        const quarto = Math.round(giro % 180) === 90;
+        // the footprint's centre turns with the part around its centre
+        const a = (giro * Math.PI) / 180;
+        const ox = c.dx * Math.cos(a) - c.dy * Math.sin(a);
+        const oy = c.dx * Math.sin(a) + c.dy * Math.cos(a);
+        return { key: c.id, name: c.name, cx: e.x + ox, cy: e.y + oy, w: quarto ? c.h : c.w, h: quarto ? c.w : c.h };
       });
     const spostamento = new Map(
       scene.components.map((c) => {
@@ -968,7 +973,7 @@ export function BoardCanvas({
             const sotto = scene?.components.find((c) => {
               if (nascosti.has(c.id)) return false;
               const p = effOf(c);
-              return Math.abs(q.x - p.x) <= c.w / 2 && Math.abs(q.y - p.y) <= c.h / 2;
+              return Math.abs(q.x - (p.x + c.dx)) <= c.w / 2 && Math.abs(q.y - (p.y + c.dy)) <= c.h / 2;
             });
             marqueeSu.current = sotto?.id ?? null;
           }
@@ -1399,24 +1404,43 @@ export function BoardCanvas({
 
           {/* courtyards */}
           {showCourtyards &&
-            scene.courtyards.filter((c) => !nascosti.has(c.componentId)).map((c) => (
-              <rect
-                key={c.id}
-                transform={componi(
-                  compTx(c.componentId),
-                  c.rot ? `rotate(${c.rot} ${c.x} ${c.y})` : null,
-                )}
-                x={c.x - c.w / 2}
-                y={c.y - c.h / 2}
-                width={c.w}
-                height={c.h}
-                fill="none"
-                stroke="#FF6B5A"
-                strokeWidth={mmPerPx}
-                strokeDasharray={`${mmPerPx * 4} ${mmPerPx * 3}`}
-                opacity={0.7}
-              />
-            ))}
+            scene.courtyards.filter((c) => !nascosti.has(c.componentId)).map((c) => {
+              // every kind of courtyard, not only rects: see footprint-bounds.ts
+              const tratto = {
+                fill: "none",
+                stroke: "#FF6B5A",
+                strokeWidth: mmPerPx,
+                strokeDasharray: `${mmPerPx * 4} ${mmPerPx * 3}`,
+                opacity: 0.7,
+              };
+              const s = c.shape;
+              if (s.kind === "circle") {
+                return <circle key={c.id} transform={compTx(c.componentId)} cx={s.x} cy={s.y} r={s.r} {...tratto} />;
+              }
+              if (s.kind === "poly") {
+                return (
+                  <polygon
+                    key={c.id}
+                    transform={compTx(c.componentId)}
+                    points={s.points.map((q) => `${q.x},${q.y}`).join(" ")}
+                    {...tratto}
+                  />
+                );
+              }
+              return (
+                <rect
+                  key={c.id}
+                  transform={componi(compTx(c.componentId), s.rot ? `rotate(${s.rot} ${s.x} ${s.y})` : null)}
+                  x={s.x - s.w / 2}
+                  y={s.y - s.h / 2}
+                  width={s.w}
+                  height={s.h}
+                  rx={s.r}
+                  ry={s.r}
+                  {...tratto}
+                />
+              );
+            })}
 
           {/* silkscreen: only the side being looked at, dimmed when
               working on an inner plane (where it has nothing to do) */}
@@ -1464,8 +1488,9 @@ export function BoardCanvas({
             return (
               <rect
                 key={c.id}
-                x={p.x - c.w / 2}
-                y={p.y - c.h / 2}
+                // the REAL footprint (courtyard, else pads and body), off-centre where it is
+                x={p.x + c.dx - c.w / 2}
+                y={p.y + c.dy - c.h / 2}
                 width={c.w}
                 height={c.h}
                 /*

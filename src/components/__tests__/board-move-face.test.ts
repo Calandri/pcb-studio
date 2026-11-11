@@ -39,7 +39,8 @@ describe("Sposta mostra e fa prendere solo i pezzi della faccia scelta", () => {
   it("con Bottom solo quello di sotto", () => {
     const svg = disegna({ layer: "bottom" });
     expect(maniglie(svg)).toHaveLength(1);
-    expect(maniglie(svg)[0]).toMatch(/x="-0.3"/);
+    // the handle is R36's real footprint, its courtyard (footprint-bounds.ts), not the 1 x 0,5 of pcb_component
+    expect(maniglie(svg)[0]).toMatch(/x="-0.5"[^>]*width="1.4"[^>]*height="0.9"/);
   });
 
   it("Top + Bottom, se richiesto, li fa prendere tutti e due", () => {

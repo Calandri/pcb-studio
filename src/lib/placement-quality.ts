@@ -1,5 +1,6 @@
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
-import { padGeometry, padHalfExtents, pointsBounds } from "./pcb-route-model";
+import { footprintBoxes } from "./footprint-bounds";
+import { padGeometry, padHalfExtents } from "./pcb-route-model";
 
 /**
  * Quality of the PLACEMENT, i.e. of where the parts sit.
@@ -53,7 +54,6 @@ export function emptyPlacementQuality(): PlacementQuality {
 
 type El = Record<string, unknown>;
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-const fin = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 const round2 = (v: number): number => Math.round(v * 100) / 100;
 
@@ -85,10 +85,10 @@ interface Box {
 }
 
 /**
- * Real footprint of a component: the LARGER of courtyard and pad bounding
- * box. They are two different things and tscircuit checks them separately;
- * looking at only one lets placements through that later fail (on crystals
- * the pads extend beyond the declared courtyard).
+ * Real footprint of a component (footprint-bounds.ts): the courtyard together
+ * with the pads, which on crystals extend beyond the declared courtyard; else
+ * pads and body; else the pads. Looking at only one of them lets placements
+ * through that later fail.
  */
 function boxesOf(circuitJson: unknown[]): Box[] {
   const els = circuitJson as El[];
@@ -133,6 +133,7 @@ function boxesOf(circuitJson: unknown[]): Box[] {
     return axis === "x" ? [g.x - hw, g.x + hw] : [g.y - hh, g.y + hh];
   };
 
+  const footprints = footprintBoxes(circuitJson);
   const out: Box[] = [];
   for (const comp of by("pcb_component")) {
     const cid = str(comp.pcb_component_id);
@@ -143,33 +144,13 @@ function boxesOf(circuitJson: unknown[]): Box[] {
         (p.type === "pcb_smtpad" || p.type === "pcb_plated_hole") &&
         p.pcb_component_id === cid,
     );
-    const xs = pads.flatMap((p) => span(p, "x"));
-    const ys = pads.flatMap((p) => span(p, "y"));
-
     /*
-     * Every courtyard of the part, and only with real coordinates: a rect
-     * with no centre used to count as one at (0,0), and stretched the part's
-     * box to the board origin.
+     * The real footprint: courtyard (with the pads that stick out of it), else
+     * pads and body, else pads. The same reading the viewer draws and Sposta
+     * grabs, from footprint-bounds.ts: two readings had drifted apart.
      */
-    for (const court of els) {
-      if (court.pcb_component_id !== cid) continue;
-      if (court.type === "pcb_courtyard_rect" || court.type === "pcb_courtyard_circle" || court.type === "pcb_courtyard_pill") {
-        const c = court.center as { x?: unknown; y?: unknown } | undefined;
-        const cx = fin(c?.x), cy = fin(c?.y);
-        const r = fin(court.radius);
-        const w = fin(court.width) ?? (r !== null ? 2 * r : null);
-        const h = fin(court.height) ?? (r !== null ? 2 * r : null);
-        if (cx === null || cy === null || w === null || h === null) continue;
-        xs.push(cx - w / 2, cx + w / 2);
-        ys.push(cy - h / 2, cy + h / 2);
-      } else if (court.type === "pcb_courtyard_outline" || court.type === "pcb_courtyard_polygon") {
-        const b = pointsBounds(court.type === "pcb_courtyard_outline" ? court.outline : court.points);
-        if (!b) continue;
-        xs.push(b.minX, b.maxX);
-        ys.push(b.minY, b.maxY);
-      }
-    }
-    if (xs.length === 0 || ys.length === 0) continue;
+    const box = footprints.get(cid);
+    if (!box) continue;
     /*
      * The face: the one declared by the component, otherwise the prevailing one
      * among its pads (a through-hole part has copper on both, and then it
@@ -178,15 +159,7 @@ function boxesOf(circuitJson: unknown[]): Box[] {
     const facce = new Set(pads.map((p) => str(p.layer) ?? "").filter(Boolean));
     const layer =
       str(comp.layer) ?? (facce.size === 1 ? [...facce][0] : "both");
-    let l = Infinity, r = -Infinity, b = Infinity, t = -Infinity;
-    for (const v of xs) {
-      if (v < l) l = v;
-      if (v > r) r = v;
-    }
-    for (const v of ys) {
-      if (v < b) b = v;
-      if (v > t) t = v;
-    }
+    const l = box.minX, r = box.maxX, b = box.minY, t = box.maxY;
     out.push({
       name: src?.name ?? cid,
       ftype: src?.ftype ?? null,
