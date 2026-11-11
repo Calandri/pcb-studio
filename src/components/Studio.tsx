@@ -7,7 +7,7 @@ import { descriviPezzo } from "@/lib/part-description";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildBoardReport, schematicMissing, type BoardReport } from "@/lib/board-report";
-import { SCHEMATICO_NON_PARTITO, type CompileRun } from "@/lib/compile-run";
+import { motivoSenzaSchematico, type CompileRun } from "@/lib/compile-run";
 import type { ConflittoSerigrafia } from "@/lib/silkscreen-clearance";
 import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
@@ -1506,10 +1506,8 @@ export function Studio({
     () => Boolean((summary as { schematicPending?: string } | null)?.schematicPending) || schematicMissing(circuitJson),
     [summary, circuitJson],
   );
-  /** the compile did not start the schematic, it would not have ended in time: its reason (see stimaDelloSchematico) */
-  const pendingDelRiepilogo = (summary as { schematicPending?: unknown } | null)?.schematicPending;
-  const schematicoNonPartito =
-    typeof pendingDelRiepilogo === "string" && pendingDelRiepilogo.startsWith(SCHEMATICO_NON_PARTITO) ? pendingDelRiepilogo : null;
+  /** the compile closed without the schematic, it would not have ended in time: its reason (see stimaDelloSchematico) */
+  const schematicoNonPartito = motivoSenzaSchematico((summary as { schematicPending?: unknown } | null)?.schematicPending);
 
   return (
     <div className="grid h-dvh grid-rows-[64px_minmax(0,1fr)_60px] overflow-hidden bg-canvas text-text">

@@ -13,6 +13,23 @@ export const COMPILE_MAX_MS = 15 * 60 * 1000;
  * the page says that reason, not "the compile stopped".
  */
 export const SCHEMATICO_NON_PARTITO = "lo schematico non e' partito";
+/**
+ * How it begins when the schematic was drawn but the board could not take it
+ * in the time left (the two readings of the board differed, and computing the
+ * board again would not have ended: see compileProject).
+ */
+export const SCHEMATICO_NON_INNESTATO = "lo schematico non e' stato messo sulla scheda";
+
+/**
+ * Why a saved board has no schematic, when its compile chose to close without
+ * it and said so (SCHEMATICO_NON_PARTITO, SCHEMATICO_NON_INNESTATO): pressing
+ * Ricompila does not change that by itself. Null for a board whose schematic
+ * is on its way or whose compile was cut off.
+ */
+export function motivoSenzaSchematico(schematicPending: unknown): string | null {
+  if (typeof schematicPending !== "string") return null;
+  return schematicPending.startsWith(SCHEMATICO_NON_PARTITO) || schematicPending.startsWith(SCHEMATICO_NON_INNESTATO) ? schematicPending : null;
+}
 
 /** the maxDuration of the routes that compile (/api/compile, the MCP compile) */
 export const FUNCTION_MAX_MS = 800_000;

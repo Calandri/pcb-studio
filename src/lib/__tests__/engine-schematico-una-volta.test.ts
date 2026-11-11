@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
  * sbb-dl-principale (156 parts, 168 hand traces, ~410 pieces of pour), 11/11/2026:
@@ -9,13 +9,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * schematic is put on the board already computed, and when it cannot end in the
  * time left it does not start.
  */
-const conta = vi.hoisted(() => ({ ricolate: 0 }));
+/** `salto`: how far the clock of the compile jumps while the planes are poured the first time (see "il ripiego") */
+const conta = vi.hoisted(() => ({ ricolate: 0, salto: 0, avanti: 0 }));
 vi.mock("@/lib/pours-recompute", async () => {
   const real = await vi.importActual<typeof import("@/lib/pours-recompute")>("@/lib/pours-recompute");
   return {
     ...real,
     ricolaPiani: vi.fn(async (...args: Parameters<typeof real.ricolaPiani>) => {
       conta.ricolate++;
+      if (conta.ricolate === 1) conta.avanti += conta.salto;
       return real.ricolaPiani(...args);
     }),
   };
@@ -37,7 +39,7 @@ import {
   stimaDelloSchematico,
   type CompileSummary,
 } from "@/lib/compile";
-import { COMPILE_BUDGET_PIENO_MS } from "@/lib/compile-run";
+import { COMPILE_BUDGET_PIENO_MS, SCHEMATICO_NON_INNESTATO } from "@/lib/compile-run";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -137,6 +139,63 @@ describe("colate e controlli una volta sola per compilazione", () => {
     const lettura = [src[0], sch, { ...due[2], message: "<chip#40(.U1)> no ground" }, pcb[1]];
     expect(innestaSchematico(due, due, lettura)).not.toBeNull();
   });
+});
+
+describe("il ripiego quando l'innesto rinuncia", () => {
+  /*
+   * A board whose two readings differ: the file counts its readings in the
+   * process and the board is one millimetre wider every other time. The
+   * schematic cannot go on the board computed first, and computing the board
+   * again costs what its first pass cost: the review of 11/11/2026 found that
+   * the estimate counted 30 s for it, and the function died at 800 s again.
+   */
+  const DIVERSE = SCHEDA.replace(
+    "export default () => (\n  <board width=\"24mm\"",
+    "const g = globalThis as { __lettureDiverse?: number }\ng.__lettureDiverse = (g.__lettureDiverse ?? 0) + 1\nconst largo = 24 + (g.__lettureDiverse % 2)\nexport default () => (\n  <board width={`${largo}mm`}",
+  );
+  const vero = Date.now.bind(Date);
+  let orologio: { mockRestore: () => void } | null = null;
+  beforeEach(() => {
+    conta.ricolate = 0;
+    conta.avanti = 0;
+    orologio = vi.spyOn(Date, "now").mockImplementation(() => vero() + conta.avanti);
+  });
+  afterEach(() => {
+    conta.salto = 0;
+    orologio?.mockRestore();
+  });
+
+  it("con il tempo per rifarla la scheda si ricalcola, con lo schematico", async () => {
+    expect(DIVERSE).not.toBe(SCHEDA);
+    // the first pass "costs" 5 s: 7.5 s to compute it again, and there are minutes
+    conta.salto = 5_000;
+    const r = await compileProject({ "main.tsx": DIVERSE }, { budgetMs: 600_000, onBoard: async () => {} });
+    expect(conta.ricolate).toBe(2);
+    expect(spans(r.summary)).toContain("rame, colate e controlli");
+    expect(diTipo(r.circuitJson, "schematic_component")).toHaveLength(2);
+    expect(r.summary.schematicPending).toBeUndefined();
+  }, 180_000);
+
+  it("senza il tempo per rifarla chiude con la scheda salvata prima e dice perche', invece di morire a fine funzione", async () => {
+    // the first pass "costs" 120 s: 180 s to compute it again, and 80 s are left after it
+    conta.salto = 120_000;
+    let salvate = 0;
+    const r = await compileProject({ "main.tsx": DIVERSE }, { budgetMs: 200_000, onBoard: async () => void salvate++ });
+    // the schematic started (the estimate let it) and was drawn, then the board was not computed again
+    expect(spans(r.summary)).toContain("scheda con schematico (tscircuit)");
+    expect(spans(r.summary)).not.toContain("rame, colate e controlli");
+    expect(conta.ricolate).toBe(1);
+    expect(salvate).toBe(1);
+    expect(schematico(r.circuitJson)).toHaveLength(0);
+    expect(diTipo(r.circuitJson, "pcb_copper_pour").length).toBeGreaterThan(0);
+    expect(r.summary.schematicPending).toMatch(new RegExp(`^${SCHEMATICO_NON_INNESTATO}: le due letture della scheda non coincidono e rifarla chiede circa 180 s, ne restavano \\d+$`));
+    expect(r.summary.message).toMatch(/SCHEMATICO NON CALCOLATO/);
+    expect(r.summary.message).not.toMatch(/schematico in calcolo/);
+    expect(r.summary.schematicKey).toBeUndefined();
+    // what drawing it cost is measured all the same, for the next compile
+    expect(r.summary.schematicCostParts).toBe(2);
+    expect(r.summary.schematicCostMs).toBeLessThan(60_000);
+  }, 180_000);
 });
 
 describe("lo schematico parte solo se fa in tempo", () => {

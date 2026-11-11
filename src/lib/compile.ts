@@ -1,6 +1,6 @@
 import { CHECKS_ENGINE_VERSION, nonCertificata, type ColateDiPrima, type PianiSuVie } from "./engine-version";
 import { EARLY_REPLY_MIN_COMPONENTS } from "./compile-early-reply";
-import { COMPILE_BUDGET_PIENO_MS, SCHEMATICO_NON_PARTITO } from "./compile-run";
+import { COMPILE_BUDGET_PIENO_MS, SCHEMATICO_NON_INNESTATO, SCHEMATICO_NON_PARTITO } from "./compile-run";
 import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
@@ -816,7 +816,16 @@ export async function compileProject(
    * paste, checks): the final board is this one with the schematic put on it,
    * see innestaSchematico.
    */
-  let primaPassata: { pcbOnly: CircuitElement[]; scheda: SchedaCalcolata } | null = null;
+  let primaPassata: {
+    pcbOnly: CircuitElement[];
+    scheda: SchedaCalcolata;
+    /** the board saved early, and the message of its summary before "(schematico in calcolo)" */
+    early: { summary: CompileSummary; circuitJson: CircuitElement[] };
+    messaggio: string;
+    pezzi: number;
+    /** what its copper, pours and checks cost: what computing the board again would cost */
+    rameMs: number;
+  } | null = null;
   /** what drawing the schematic cost the last time it was measured, and on how many parts: carried to the next compile */
   const costoDiPrima = costoDelloSchematico(opts.schematicFrom?.summary);
   const pezziDi = (cj: CircuitElement[]) => cj.filter((e) => e.type === "source_component").length;
@@ -864,9 +873,11 @@ export async function compileProject(
     const pcbMs = Date.now() - inizioPcb;
     if (pcbOnly && schemaDiPrima) innestata = graftSchematic(pcbOnly, schemaDiPrima);
     if (pcbOnly && !innestata && opts.onBoard && pcbOnly.some((el) => el.type === "pcb_board")) {
+      const inizioRame = Date.now();
       const early = await profiler.run("rame, colate e controlli della scheda senza schematico", () =>
         boardWithoutRouting(pcbOnly as CircuitElement[]),
       );
+      const rameMs = Date.now() - inizioRame;
       portaLaMisura(early.summary, costoDiPrima);
       const pezzi = pezziDi(pcbOnly);
       /*
@@ -893,7 +904,7 @@ export async function compileProject(
         if (!opts.forceSchematic) return chiudiSenzaSchematico(early, pezzi, motivo);
         console.log(`[compile] schematico chiesto comunque da chi compila: ${motivo}`);
       }
-      primaPassata = { pcbOnly, scheda: early.scheda };
+      primaPassata = { pcbOnly, scheda: early.scheda, early, messaggio: early.summary.message, pezzi, rameMs };
       early.summary.schematicPending =
         "scheda salvata prima dello schematico: lo schematico e i suoi controlli arrivano a fine compilazione";
       // the board saved early carries its timings too: the final save may never come
@@ -1056,7 +1067,29 @@ export async function compileProject(
           return { summary: riepilogoDellaScheda(prima.scheda, conSchematico, structuredClone(prima.scheda.controlli)), circuitJson: conSchematico };
         })
       : null;
-    if (prima && !innestato) console.log("[compile] le due letture della scheda non coincidono: rame, colate e controlli rifatti");
+    if (prima && !innestato) {
+      /*
+       * Computing the board again costs what its first pass cost (pours and
+       * checks of the same files), and the time left may no longer hold it:
+       * the estimate that let the schematic start counted 30 s after it, not a
+       * second board. Without the time the compile closes with the board saved
+       * early and says why, as when the schematic does not start, instead of
+       * being cut off at the end of the function with no outcome. The same
+       * margin as on the measure of the schematic: on Vercel one board took 82
+       * and 146 s on the same day.
+       */
+      const serve = Math.round(prima.rameMs * MARGINE_SULLA_MISURA);
+      const restano = timeLeft();
+      if (restano < serve) {
+        prima.early.summary.message = prima.messaggio;
+        return chiudiSenzaSchematico(
+          prima.early,
+          prima.pezzi,
+          `${SCHEMATICO_NON_INNESTATO}: le due letture della scheda non coincidono e rifarla chiede circa ${secondi(serve)} s, ne restavano ${secondi(restano)}`,
+        );
+      }
+      console.log("[compile] le due letture della scheda non coincidono: rame, colate e controlli rifatti");
+    }
     const { summary, circuitJson } = innestato ?? (await profiler.run("rame, colate e controlli", () => boardWithoutRouting(g, true)));
     /*
      * Where the time went, in the summary and in the function log: on Vercel
