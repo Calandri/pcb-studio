@@ -2,7 +2,7 @@ import { boardBaseOf } from "@/lib/board-base";
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 import { COMPILE_START, logActivity, recordTool } from "@/lib/activity-store";
-import { executeTool, withLibrary } from "@/lib/agent-tools";
+import { executeTool, LibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
 import { compileBudgetMs, rigaDiFine } from "@/lib/compile-run";
@@ -340,7 +340,14 @@ function buildHandler(viewer: Viewer) {
         const requestStartedAt = Date.now();
         // the files are read now: a board saved after this moment may be of newer ones (see compile-save)
         const fresh = { startedAt: Date.now(), filesNow: async () => withLibrary(await getProject(projectId)) };
-        const fsMap = await withLibrary(await getProject(projectId));
+        let fsMap: Record<string, string>;
+        try {
+          fsMap = await withLibrary(await getProject(projectId));
+        } catch (err) {
+          // the reason, not a compile that says every lib/ import is missing
+          if (err instanceof LibreriaNonLetta) return fail(err.message);
+          throw err;
+        }
         const hash = filesHash(fsMap);
         const inCache = await getCompileCache(projectId).catch(() => null);
         // what this board is made from, apart from the hand positions: saved with it (see board-base.ts)

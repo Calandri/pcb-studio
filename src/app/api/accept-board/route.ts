@@ -1,5 +1,5 @@
 import { requireProjectAccess } from "@/lib/acl";
-import { withLibrary } from "@/lib/agent-tools";
+import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { boardBaseOf } from "@/lib/board-base";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { filesHash, getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
@@ -40,7 +40,12 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ error: "non c'e' una scheda da prendere: compila prima" }, { status: 404 });
   }
 
-  const fsMap = await withLibrary(await getProject(projectId));
+  let fsMap: Record<string, string>;
+  try {
+    fsMap = await withLibrary(await getProject(projectId));
+  } catch (err) {
+    return rispostaLibreriaNonLetta(err);
+  }
   /*
    * "This board" is the one that was on screen: if a compile replaced it in
    * the meantime, re-hashing the OLD circuit over the new one would throw

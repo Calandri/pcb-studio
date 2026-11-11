@@ -32,6 +32,7 @@ import { SCHEMATIC_NOTES_PATH, validateSchematicNotesFile } from "./schematic-no
 import { renderPcbPng, reviewLayout } from "./vision-review";
 import type { ToolDefinition } from "./llm";
 import type { AgentKeyMap } from "./llm-keys";
+import { motivoErrore } from "./error-cause";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
 const MAX_FILE_CHARS = 200_000;
@@ -577,7 +578,14 @@ async function runTool(
       }
       // the files are read now: a board saved after this moment may be of newer ones (see compile-save)
       const fresh = { startedAt: Date.now(), filesNow: async () => withLibrary(await getProject(projectId)) };
-      const compileFsMap = await withLibrary(fsMap);
+      let compileFsMap: FsMap;
+      try {
+        compileFsMap = await withLibrary(fsMap);
+      } catch (err) {
+        // the reason, as a tool error: without the library every lib/ import would read "not found"
+        if (err instanceof LibreriaNonLetta) return { result: { error: err.message } };
+        throw err;
+      }
       // read the previous summary BEFORE overwriting the cache: the delta is
       // what tells the model whether the loop is converging or oscillating
       const previous = await getCompileCache(projectId).catch(() => null);
@@ -719,13 +727,46 @@ async function runTool(
 }
 
 /**
+ * THE LIBRARY COULD NOT BE READ. It used to be swallowed: the read of the
+ * library from the database failed, the project went on without it, and the
+ * compile said "File lib/X.tsx not found", sending whoever read it to look for
+ * a file that was never missing. Now the reason is said, the database's own
+ * words without what must not travel: addresses, hosts, credentials.
+ */
+export class LibreriaNonLetta extends Error {
+  constructor(err: unknown) {
+    super(`libreria dei componenti non letta: ${motivoSenzaSegreti(err)}`);
+    this.name = "LibreriaNonLetta";
+  }
+}
+
+/** an error's reason (with its causes), with no address, host or credential in it */
+export function motivoSenzaSegreti(err: unknown): string {
+  return motivoErrore(err, 300)
+    .replace(/\b[a-z][\w+.-]*:\/\/\S+/gi, "<indirizzo>")
+    .replace(/\b(password|passwd|pwd|user|token|secret|key)\s*[=:]\s*\S+/gi, "$1=<nascosto>")
+    .replace(/\b(?:[a-z0-9-]+\.)+(?:neon\.tech|amazonaws\.com|vercel\.app|neon\.build)\b/gi, "<host>");
+}
+
+/**
  * Library components are mounted under `lib/<Name>.tsx` at compile time: they
  * stay shared (one copy in the DB) but the project imports them as local
- * files.
+ * files. Throws LibreriaNonLetta when the library cannot be read.
  */
 export async function withLibrary(fsMap: FsMap): Promise<FsMap> {
-  const library = await getLibraryFsMap().catch(() => ({}));
+  let library: Record<string, string>;
+  try {
+    library = await getLibraryFsMap();
+  } catch (err) {
+    throw new LibreriaNonLetta(err);
+  }
   return { ...library, ...fsMap };
+}
+
+/** what a route answers when the library could not be read: the reason, not a bare 500 */
+export function rispostaLibreriaNonLetta(err: unknown): Response {
+  if (err instanceof LibreriaNonLetta) return Response.json({ error: err.message }, { status: 503 });
+  throw err;
 }
 
 /** text portions around the matches, so a whole datasheet is not poured into the context */

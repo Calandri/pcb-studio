@@ -1,5 +1,5 @@
 import { requireProjectAccess } from "@/lib/acl";
-import { withLibrary } from "@/lib/agent-tools";
+import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { planFastUpdate } from "@/lib/fast-update";
@@ -49,7 +49,12 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const fsMap = await getProject(projectId);
-  const full = await withLibrary(fsMap);
+  let full: Record<string, string>;
+  try {
+    full = await withLibrary(fsMap);
+  } catch (err) {
+    return rispostaLibreriaNonLetta(err);
+  }
   const t0 = Date.now();
   try {
     const plan = planFastUpdate(cached, fsMap, full);

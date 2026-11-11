@@ -1,5 +1,5 @@
 import { requireProjectAccess } from "@/lib/acl";
-import { withLibrary } from "@/lib/agent-tools";
+import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { controlliDelProgetto, salvaControllo, togliControllo } from "@/lib/component-checks";
 import { quadroDeiComponenti, VOCI, type Voce } from "@/lib/component-status";
 import { listDescriptions } from "@/lib/component-descriptions";
@@ -34,6 +34,15 @@ async function quadro(projectId: string) {
   });
 }
 
+/** the board of the parts, or why the library could not be read (the parts from lib/ would all read missing) */
+async function rispostaQuadro(projectId: string): Promise<Response> {
+  try {
+    return Response.json(await quadro(projectId));
+  } catch (err) {
+    return rispostaLibreriaNonLetta(err);
+  }
+}
+
 export async function GET(req: Request): Promise<Response> {
   const projectId = new URL(req.url).searchParams.get("projectId") ?? "default";
   const { ok } = await requireProjectAccess(projectId, "view");
@@ -48,7 +57,7 @@ export async function GET(req: Request): Promise<Response> {
       nota: "nessuna compilazione in cache: compila il progetto per vedere lo stato dei componenti",
     });
   }
-  return Response.json(await quadro(projectId));
+  return rispostaQuadro(projectId);
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -65,7 +74,7 @@ export async function POST(req: Request): Promise<Response> {
 
   if (body.stato === "da-fare") {
     await togliControllo(projectId, componente, voce);
-    return Response.json(await quadro(projectId));
+    return rispostaQuadro(projectId);
   }
 
   await salvaControllo({
@@ -82,5 +91,5 @@ export async function POST(req: Request): Promise<Response> {
      */
     chi: String(body.chi ?? viewer?.email ?? "").slice(0, 120) || "sconosciuto",
   });
-  return Response.json(await quadro(projectId));
+  return rispostaQuadro(projectId);
 }

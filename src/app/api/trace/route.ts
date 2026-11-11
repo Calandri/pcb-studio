@@ -1,6 +1,6 @@
 import { baseHolds, boardBaseOf } from "@/lib/board-base";
 import { requireProjectAccess } from "@/lib/acl";
-import { withLibrary } from "@/lib/agent-tools";
+import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
@@ -93,7 +93,12 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const fsMap = await getProject(projectId);
-  const full = await withLibrary(fsMap);
+  let full: Record<string, string>;
+  try {
+    full = await withLibrary(fsMap);
+  } catch (err) {
+    return rispostaLibreriaNonLetta(err);
+  }
   const sources = withoutManualEdits(full);
   const sourcesHash = filesHash(sources);
   // the board itself says what it was made from (board-base.ts); the chain in the file vouches for the older ones

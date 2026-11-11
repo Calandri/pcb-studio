@@ -15,7 +15,7 @@ import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
 import { pianiSopraLeVie } from "@/lib/drc";
 import { colateCheSiToccano } from "@/lib/pour-pour";
 import { colateInOrdinePerIlGerber } from "@/lib/pours-recompute";
-import { withLibrary } from "@/lib/agent-tools";
+import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION, colateDiUnMotoreDiPrima, nonCertificata } from "@/lib/engine-version";
 import { compileGeometryOnly } from "@/lib/compile";
@@ -65,7 +65,13 @@ export async function GET(req: Request): Promise<Response> {
   const { ok } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
-  const fsMap = await withLibrary(await getProject(projectId));
+  let fsMap: Record<string, string>;
+  try {
+    fsMap = await withLibrary(await getProject(projectId));
+  } catch (err) {
+    // without the library the files never match the compile: say why instead of "files changed"
+    return rispostaLibreriaNonLetta(err);
+  }
 
   // Gerber/BOM/PnP must come from the SAME routed circuit the agent validated:
   // the compile cache, produced by the full compile (manual edits, our router,

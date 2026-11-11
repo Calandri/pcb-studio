@@ -1,6 +1,6 @@
 import { compileGeometryOnly } from "@/lib/compile";
 import { convertCircuitJsonToGltf } from "circuit-json-to-gltf";
-import { withLibrary } from "@/lib/agent-tools";
+import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { getProjectModel } from "@/lib/model-store";
 import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
@@ -117,7 +117,12 @@ export async function GET(req: Request): Promise<Response> {
   const { ok } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
-  const fsMap = await withLibrary(await getProject(projectId));
+  let fsMap: Record<string, string>;
+  try {
+    fsMap = await withLibrary(await getProject(projectId));
+  } catch (err) {
+    return rispostaLibreriaNonLetta(err);
+  }
   const hash = filesHash(fsMap);
   const compile = await getCompileCache(projectId).catch(() => null);
   /*
