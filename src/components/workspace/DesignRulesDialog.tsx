@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ClassiRame } from "@/lib/classi-rame";
-import { COPPIE, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
+import { COPPIE, SERIGRAFIA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
 
 /**
  * Board fabrication rules.
@@ -40,6 +40,8 @@ const FIELDS: Array<{
   hint: string;
   /** vuoto = vale la distanza minima generale */
   puoEsserVuoto?: boolean;
+  /** vuoto = vale questo valore, non la distanza minima generale */
+  diSerie?: number;
 }> = [
   { key: "minTraceWidthMm", label: "Pista minima", hint: "la pista piu' sottile che il fornitore incide" },
   { key: "minClearanceMm", label: "Distanza minima", hint: "rame-rame fra net diverse" },
@@ -52,6 +54,13 @@ const FIELDS: Array<{
     label: "Distanza della colata",
     hint: "quanto il piano sta lontano dalle altre net: si tiene piu' largo di una pista",
     puoEsserVuoto: true,
+  },
+  {
+    key: "minSilkscreenClearanceMm",
+    label: "Distanza della serigrafia",
+    hint: "fra due disegni di serigrafia e dalle piazzole scoperte: un avviso, non ferma l'export",
+    puoEsserVuoto: true,
+    diSerie: SERIGRAFIA_DISTANZA_MM,
   },
 ];
 
@@ -324,7 +333,7 @@ export function DesignRulesDialog({
                   step={unita === "mm" ? "0.001" : "0.1"}
                   min={unita === "mm" ? "0.05" : "2"}
                   /* la distanza della colata puo' restare vuota: vale la generale */
-                  placeholder={f.puoEsserVuoto ? inUnita(custom.minClearanceMm, unita) : undefined}
+                  placeholder={f.puoEsserVuoto ? inUnita(f.diSerie ?? custom.minClearanceMm, unita) : undefined}
                   value={inUnita(custom[f.key], unita)}
                   onChange={(e) => {
                     const v = e.target.value.trim();

@@ -80,6 +80,30 @@ describe("inspect_board legge la scheda salvata", () => {
     expect(r.result.components.map((c) => c.name)).toEqual(["R1"]);
   });
 
+  it("elenca i conflitti di serigrafia della compilazione salvata, i piu' vicini, senza rimisurarli", async () => {
+    const conflitti = Array.from({ length: 80 }, (_, i) => ({
+      tipo: "serigrafia_foro",
+      faccia: "top",
+      a: "sigla di R1",
+      b: "foro della via (GND)",
+      x: i,
+      y: 0,
+      distanzaMm: 0,
+      minimoMm: 0,
+    }));
+    const silkscreen = { count: 95, perTipo: { serigrafia_serigrafia: 0, serigrafia_rame: 15, serigrafia_foro: 80 }, toleranceMm: 0.15, severity: "warn", detail: "95 conflitti di serigrafia", conflitti };
+    store.cache = { filesHash: filesHash(store.files), circuitJson: circuit, summary: { silkscreen }, createdAt: "2026-11-11T20:00:00Z", engineVersion: 10 };
+    const r = await inspectSavedBoard("p");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.result.silkscreen).toMatchObject({ count: 95, toleranceMm: 0.15, detail: "95 conflitti di serigrafia" });
+    expect(r.result.silkscreen!.conflitti).toEqual(conflitti.slice(0, 60));
+    // a board whose compile found none, or of an older engine, has no entry
+    store.cache = { ...store.cache, summary: {} };
+    const pulita = await inspectSavedBoard("p");
+    expect(pulita.ok && pulita.result.silkscreen).toBeUndefined();
+  });
+
   it("dice quando la scheda salvata e' piu' vecchia dei sorgenti", async () => {
     store.cache = {
       filesHash: "hash-di-prima",

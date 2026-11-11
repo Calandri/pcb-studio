@@ -101,6 +101,7 @@ ${LIBRARY_RULES}
 ${SCHEMATIC_METRICS}
 - unroutedDetail gives the exact pad coordinates still to connect; congestion gives the most copper-covered board cells; ratsnest gives estimatedCrossings and the longest nets. Use them to move parts instead of guessing.
 - drcViolations (fabrication) and prcViolations (whether the board actually works: decoupling distance, dead pour islands, return vias, power trace width) are defects too: fix them before declaring the work done.
+- silkscreen lists silkscreen clashes, a warning that does not stop the export: two drawings (parts, texts, board drawings) closer than minSilkscreenClearanceMm (0.15mm by default), silkscreen on bare copper, silkscreen touching a hole, each with face, the two things by name, the point and the distance. propria marks a part's own outline on its own pads.
 - fabClasses / fabClass say which manufacturer class the design satisfies, cheapest first; a project with custom rules is listed first and satisfies its own class when the DRC is clean.
 - footprintProvenance says where each component's pad geometry comes from. A part with an LCSC code that still uses a generic footprint is a defect: import the real one.
 - A schematic_layout_disabled error means schX/schY disabled the schematic auto layout: remove them and use schSectionName.
@@ -406,8 +407,8 @@ function buildHandler(viewer: Viewer) {
 
     server.tool(
       "inspect_board",
-      "Fotografia dell'ULTIMA scheda compilata e salvata: problemi con posizione e " +
-        "componenti con coordinate e reti collegate. Non ricompila: dopo un write_file " +
+      "Fotografia dell'ULTIMA scheda compilata e salvata: problemi con posizione, " +
+        "conflitti di serigrafia (silkscreen) e componenti con coordinate e reti collegate. Non ricompila: dopo un write_file " +
         "chiama prima compile. Utile per decidere dove spostare i pezzi.",
       { projectId: z.string() },
       async ({ projectId }) => {

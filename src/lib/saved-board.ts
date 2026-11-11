@@ -6,6 +6,7 @@ import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { extractComponents, extractIssues, type InspectComponent, type InspectIssue } from "./inspect";
 import { descriviDistanze, distanzeDelleColate } from "./pours";
 import type { Profile } from "./profile";
+import type { SerigrafiaInConflitto } from "./silkscreen-clearance";
 import { filesHash, getCompileCache, getProject, hasBoard } from "./project-store";
 
 const profileOf = (summary: unknown): Profile | undefined => {
@@ -41,6 +42,13 @@ export interface SavedBoardInspection {
    * found wrong in the declarations. Absent on a board with no pour.
    */
   pourClearances?: { testo: string; avvisi?: string[] };
+  /**
+   * The silkscreen clashes the saved compile found (summary.silkscreen, see
+   * silkscreen-clearance.ts), the nearest first like the issues. A warning: the
+   * export goes on. Absent when the silkscreen is clear, and on a board checked
+   * by an engine before 10 (checksStale: Ricontrolla measures it).
+   */
+  silkscreen?: SerigrafiaInConflitto;
   issues: InspectIssue[];
   components: InspectComponent[];
 }
@@ -80,6 +88,7 @@ export async function inspectSavedBoard(
   const regole = resolveDesignRules(files).rules;
   const distanze = distanzeDelleColate(cache.circuitJson as unknown[], regole.pourClearanceMm ?? regole.minClearanceMm);
   const avvisi = (cache.summary as { pourClearances?: { avvisi?: unknown } } | null)?.pourClearances?.avvisi;
+  const serigrafia = (cache.summary as { silkscreen?: SerigrafiaInConflitto } | null)?.silkscreen;
   return {
     ok: true,
     result: {
@@ -99,6 +108,9 @@ export async function inspectSavedBoard(
               ...(Array.isArray(avvisi) && avvisi.length ? { avvisi: avvisi.map(String) } : {}),
             },
           }
+        : {}),
+      ...(serigrafia && typeof serigrafia.count === "number"
+        ? { silkscreen: { ...serigrafia, conflitti: (serigrafia.conflitti ?? []).slice(0, 60) } }
         : {}),
       issues: extractIssues(cache.circuitJson).slice(0, 60),
       components: extractComponents(cache.circuitJson, files),

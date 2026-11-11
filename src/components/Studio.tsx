@@ -8,6 +8,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildBoardReport, schematicMissing, type BoardReport } from "@/lib/board-report";
 import type { CompileRun } from "@/lib/compile-run";
+import type { ConflittoSerigrafia } from "@/lib/silkscreen-clearance";
 import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
@@ -1092,6 +1093,20 @@ export function Studio({
           severity: /via|escape/.test(v.rule) ? "warn" : "err",
         });
       }
+    }
+    // the silkscreen clashes, kept apart from the DRC: a warning, in amber (see silkscreen-clearance.ts)
+    const serigrafia =
+      (summary as { silkscreen?: { conflitti?: ConflittoSerigrafia[] } } | null)?.silkscreen?.conflitti ?? [];
+    for (const c of serigrafia) {
+      out.push({
+        id: `${c.tipo}-${out.length}`,
+        x: c.x,
+        y: c.y,
+        message:
+          `serigrafia (${c.faccia}): ${c.a} <-> ${c.b}, ${c.distanzaMm.toFixed(3)}mm` +
+          (c.minimoMm > 0 ? ` < ${c.minimoMm}mm` : ", tocca il foro"),
+        severity: "warn",
+      });
     }
     return out;
   }, [summary]);
