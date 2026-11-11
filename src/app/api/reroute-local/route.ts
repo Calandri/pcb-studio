@@ -1,6 +1,6 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
-import { summarizeCircuit } from "@/lib/compile";
+import { riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { planFastUpdate } from "@/lib/fast-update";
 import { getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
@@ -65,16 +65,13 @@ export async function POST(req: Request): Promise<Response> {
     if (plan.kind === "unchanged") {
       return Response.json({ ...plan.result, unchanged: true, ms: Date.now() - t0 });
     }
-    const summary = summarizeCircuit(plan.board as unknown[], fsMap);
     /*
      * The schematic on this board is the one of the board it was moved from:
      * moving parts does not touch it. Its key travels with it, so that the next
      * "Aggiorna" reuses it instead of drawing it again (see schematicKeyOf),
-     * and so does the note that it is still being drawn.
+     * and so do its measure and the note that it is still being drawn.
      */
-    const prima = (cached.summary ?? {}) as { schematicKey?: unknown; schematicPending?: unknown };
-    if (typeof prima.schematicKey === "string") summary.schematicKey = prima.schematicKey;
-    if (typeof prima.schematicPending === "string") summary.schematicPending = prima.schematicPending;
+    const summary = riportaLoSchematico(summarizeCircuit(plan.board as unknown[], fsMap), cached.summary);
     /*
      * Saved only over the row that was read: a compile that finished in the
      * meantime is newer and is not overwritten. The check and the write are one

@@ -1,7 +1,7 @@
 import { baseHolds, boardBaseOf } from "@/lib/board-base";
 import { requireProjectAccess } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
-import { summarizeCircuit } from "@/lib/compile";
+import { riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
   boardFreshness,
@@ -192,7 +192,8 @@ export async function POST(req: Request): Promise<Response> {
    * what a restore puts back comes from the page.
    */
   const board = vieSemprePassanti(result.circuitJson as Array<Record<string, unknown>>);
-  const summary = summarizeCircuit(board, fsMap);
+  // a trace taken off does not touch the schematic: its key, its measure and its note stay
+  const summary = riportaLoSchematico(summarizeCircuit(board, fsMap), cached.summary);
   // which board is saved now: the metadata is enough, the board is megabytes
   const latest = await getCompileMeta(projectId);
   if (

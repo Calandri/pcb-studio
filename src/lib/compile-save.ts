@@ -1,6 +1,6 @@
 import { boardBaseOf } from "./board-base";
 import { schematicMissing } from "./board-report";
-import { conIlPerche, graftSchematic, schematicKeyOf, summarizeCircuit, type CompileSummary } from "./compile";
+import { conIlPerche, graftSchematic, riportaLoSchematico, schematicKeyOf, summarizeCircuit, type CompileSummary } from "./compile";
 import { motoreDaSalvare } from "./engine-version";
 import {
   filesHash,
@@ -157,8 +157,8 @@ export async function saveFinishedCompile(
   if (!innestata) return { saved: false, keptPrevious: true, superseded: true, reason: CURRENT };
   // the saved board may come from an older engine: every via a through hole before it is checked and saved again
   const grafted = vieSemprePassanti(innestata);
-  const nuovo = summarizeCircuit(grafted, v.files);
-  nuovo.schematicKey = ours;
+  // this compile's schematic, with its key and its measure
+  const nuovo = riportaLoSchematico(summarizeCircuit(grafted, v.files), summary);
   nuovo.profile = summary.profile;
   nuovo.message = `${nuovo.message} (schematico messo sulla scheda con gli spostamenti fatti nel frattempo)`;
   conIlPerche(nuovo);

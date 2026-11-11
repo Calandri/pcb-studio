@@ -1,5 +1,5 @@
 import { requireProjectAccess } from "@/lib/acl";
-import { conIlPerche, summarizeCircuit } from "@/lib/compile";
+import { conIlPerche, riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { colateSenzaColli } from "@/lib/pour-necks";
@@ -110,10 +110,8 @@ export async function POST(req: Request): Promise<Response> {
         pasteOnPlatedHoles: resolveDesignRules(progetto).rules.pasteOnPlatedHoles,
       },
     );
-    const summary = summarizeCircuit(circuitJson as typeof cache.circuitJson, progetto);
-    // a board saved before its schematic stays one: re-evaluating it draws no schematic
-    const pending = (cache.summary as { schematicPending?: unknown } | null)?.schematicPending;
-    if (typeof pending === "string") summary.schematicPending = pending;
+    // the same schematic, re-evaluated: its key and its measure stay, and a board saved before its schematic stays one
+    const summary = riportaLoSchematico(summarizeCircuit(circuitJson as typeof cache.circuitJson, progetto), cache.summary);
     /*
      * A board whose pours an older engine made does not get today's engine
      * either: what was done to them above (necks, rings, the planes around the

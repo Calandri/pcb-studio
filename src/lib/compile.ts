@@ -2032,6 +2032,28 @@ export function costoDelloSchematico(summary: unknown): MisuraDelloSchematico | 
 }
 
 /**
+ * What a board saved again without a compile (Sposta, a trace taken off,
+ * Ricontrolla, the schematic put on a board moved meanwhile) keeps from the
+ * summary it had: its schematic is the same one, and so are the files it was
+ * drawn from (schematicKey), the measure of what drawing it cost with its
+ * parts (schematicCostMs, schematicCostParts: without it the next compile
+ * estimated as if nothing had ever been measured) and the note that it is
+ * still missing, or why (schematicPending). One place for every route that
+ * rewrites a summary: what is added here travels on all of them.
+ */
+export function riportaLoSchematico(summary: CompileSummary, prima: unknown): CompileSummary {
+  const p = (prima ?? {}) as { schematicKey?: unknown; schematicPending?: unknown };
+  if (typeof p.schematicKey === "string") summary.schematicKey = p.schematicKey;
+  if (typeof p.schematicPending === "string") summary.schematicPending = p.schematicPending;
+  const misura = costoDelloSchematico(prima);
+  if (misura) {
+    summary.schematicCostMs = misura.ms;
+    if (misura.pezzi !== null) summary.schematicCostParts = misura.pezzi;
+  }
+  return summary;
+}
+
+/**
  * What drawing the schematic is assumed to cost on a big board where nothing
  * has measured it: more than the 75-146 s it took on Vercel on
  * sbb-dl-principale (156 parts, 682 connections, 09-11/11/2026).
