@@ -4,10 +4,12 @@ import {
   initializeManifoldGeometry,
 } from "@tscircuit/copper-pour-solver";
 
+import { MAX_POUR_CLEARANCE_MM } from "./design-rules";
 import { pianiSopraLeVie } from "./drc";
 import { ENGINE_VIE_PASSANTI } from "./engine-version";
-import { planeServedPorts, readPours } from "./pours";
-import { abbracciaRamePropio, senzaColliStretti, type RamePropio } from "./pour-necks";
+import { parseLength } from "./pcb-route-model";
+import { DISTANZA_PROPRIA, distanzaPropria, planeServedPorts, readPours } from "./pours";
+import { abbracciaRamePropio, allargaAnello, senzaColliStretti, type RamePropio } from "./pour-necks";
 import { vieDichiarateParziali, vieSemprePassanti } from "./via-layers";
 
 /**
@@ -191,7 +193,7 @@ export function viePassanti(
  *
  * One catch, read in its source: a polygon obstacle is subtracted with margin
  * ZERO unless its key says hole or cutout (dist/index.js:440). Rectangles are
- * therefore handed over already grown by the project's clearance; a polygon
+ * therefore handed over already grown by the pour's clearance; a polygon
  * pad, whose outline cannot be grown by hand without getting concave corners
  * wrong, goes with a `cutout:` key, so the solver offsets it itself; a pill
  * goes as a pill, which the solver grows by the pad margin.
@@ -458,6 +460,36 @@ function dalBordo(x: number, y: number, anello: Array<{ x: number; y: number }>)
 
 const PUNTO = /\{\s*x\s*:\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)\s*,\s*y\s*:\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)\s*\}/g;
 
+/** a `<copperpour>` as the file writes it: what can be read without running the file */
+interface CopperpourScritta {
+  layer?: string;
+  net?: string;
+  /** the outline when it is a literal list of points; null when it is missing or built in code */
+  outline: Array<{ x: number; y: number }> | null;
+  /** the `clearance` exactly as written, when it is written */
+  clearance?: string;
+}
+
+function copperpourScritte(testo: string): CopperpourScritta[] {
+  const out: CopperpourScritta[] = [];
+  for (const m of testo.matchAll(/<copperpour\b([^>]*?)\/>/g)) {
+    const attr = m[1];
+    const layer = /\blayer\s*=\s*["']([\w-]+)["']/.exec(attr)?.[1];
+    const net = /\bconnectsTo\s*=\s*["']net\.([\w-]+)["']/.exec(attr)?.[1];
+    const lista = /\boutline\s*=\s*\{\s*\[([^\]]*)\]\s*\}/.exec(attr)?.[1];
+    let outline: Array<{ x: number; y: number }> | null = null;
+    if (lista !== undefined && lista.replace(PUNTO, "").replace(/[\s,]/g, "") === "") {
+      const punti = [...lista.matchAll(PUNTO)].map((q) => ({ x: Number(q[1]), y: Number(q[2]) }));
+      if (punti.length >= 3) outline = punti;
+    }
+    // clearance="0.25mm", clearance='0.25', clearance={0.25}, clearance={"10mil"}
+    const c = /\bclearance\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*([^}]*?)\s*\})/.exec(attr);
+    const clearance = c ? (c[1] ?? c[2] ?? c[3]) : undefined;
+    out.push({ layer, net, outline, ...(clearance !== undefined ? { clearance } : {}) });
+  }
+  return out;
+}
+
 /**
  * The `<copperpour>` of the file whose outline is written as a literal list of
  * points, with face and net. An outline built from variables or expressions is
@@ -468,17 +500,179 @@ export function contorniDichiarati(
   main: string,
 ): Array<{ layer: string; net: string; outline: Array<{ x: number; y: number }> }> {
   const out: Array<{ layer: string; net: string; outline: Array<{ x: number; y: number }> }> = [];
-  for (const m of main.matchAll(/<copperpour\b([^>]*?)\/>/g)) {
-    const attr = m[1];
-    const layer = /\blayer\s*=\s*["']([\w-]+)["']/.exec(attr)?.[1];
-    const net = /\bconnectsTo\s*=\s*["']net\.([\w-]+)["']/.exec(attr)?.[1];
-    const lista = /\boutline\s*=\s*\{\s*\[([^\]]*)\]\s*\}/.exec(attr)?.[1];
-    if (!layer || !net || lista === undefined) continue;
-    if (lista.replace(PUNTO, "").replace(/[\s,]/g, "") !== "") continue;
-    const outline = [...lista.matchAll(PUNTO)].map((q) => ({ x: Number(q[1]), y: Number(q[2]) }));
-    if (outline.length >= 3) out.push({ layer, net, outline });
+  for (const { layer, net, outline } of copperpourScritte(main)) {
+    if (layer && net && outline) out.push({ layer, net, outline });
   }
   return out;
+}
+
+/** a `<copperpour>` of the project with what it says about its distance */
+export interface DistanzaDichiarata {
+  /** the file it is written in */
+  file: string;
+  layer: string;
+  /** the net by name, as `connectsTo` writes it */
+  net: string;
+  /** the literal outline; null when the pour has none or builds it in code */
+  outline: Array<{ x: number; y: number }> | null;
+  /** the clearance it keeps from the other nets, within the limits; null when it declares none */
+  mm: number | null;
+}
+
+/**
+ * WHAT EVERY `<copperpour>` OF THE PROJECT DECLARES ABOUT ITS DISTANCE.
+ *
+ * Read in every .tsx of the project, not in main.tsx only: a board drawn by a
+ * script keeps its pours wherever the script writes them (sbb-dl-principale has
+ * its 229 in righe_2.tsx and righe_3.tsx). The value is tscircuit's own
+ * `clearance`, in any unit tscircuit takes (a number is millimetres). The
+ * project's minimum clearance stays the minimum: a value under it is raised to
+ * it and said in `avvisi`, as design-rules.ts does for pourClearanceMm; so is
+ * a value that is not a length, which is ignored, and one above the widest a
+ * pour may ask (MAX_POUR_CLEARANCE_MM).
+ *
+ * A pour is matched to its elements by its outline (see conDistanzeDichiarate),
+ * so two pours with no literal outline on the same face and net are the same
+ * pour as far as this can tell: when they ask for different distances, neither
+ * is applied and that is said too.
+ */
+export function distanzeDichiarate(
+  files: unknown,
+  minimoMm: number,
+): { dichiarate: DistanzaDichiarata[]; avvisi: string[] } {
+  const dichiarate: DistanzaDichiarata[] = [];
+  const avvisi: string[] = [];
+  if (!files || typeof files !== "object") return { dichiarate, avvisi };
+  const mappa = files as Record<string, unknown>;
+  for (const file of Object.keys(mappa).filter((f) => f.endsWith(".tsx")).sort()) {
+    const testo = mappa[file];
+    if (typeof testo !== "string" || !testo.includes("copperpour")) continue;
+    for (const c of copperpourScritte(testo)) {
+      if (!c.layer || !c.net) continue;
+      let mm: number | null = null;
+      if (c.clearance !== undefined) {
+        const letta = parseLength(c.clearance.replace(/^["'`]|["'`]$/g, ""));
+        const dove = `${file}: clearance ${c.clearance} della <copperpour> ${c.net} su ${c.layer}`;
+        if (letta === null || !(letta > 0)) {
+          avvisi.push(`${dove} non e' una distanza scritta nel file: ignorata, vale la regola del progetto`);
+        } else if (letta < minimoMm) {
+          avvisi.push(`${dove} e' sotto la distanza minima ${minimoMm}: portata al minimo`);
+          mm = minimoMm;
+        } else if (letta > MAX_POUR_CLEARANCE_MM) {
+          avvisi.push(`${dove} e' oltre ${MAX_POUR_CLEARANCE_MM}mm: portata a ${MAX_POUR_CLEARANCE_MM}`);
+          mm = MAX_POUR_CLEARANCE_MM;
+        } else {
+          mm = letta;
+        }
+      }
+      dichiarate.push({ file, layer: c.layer, net: c.net, outline: c.outline, mm });
+    }
+  }
+  const senzaContorno = new Map<string, Set<number | null>>();
+  for (const d of dichiarate) {
+    if (d.outline) continue;
+    const k = `${d.layer}|${d.net}`;
+    senzaContorno.set(k, (senzaContorno.get(k) ?? new Set()).add(d.mm));
+  }
+  for (const [k, valori] of senzaContorno) {
+    if (valori.size < 2) continue;
+    const [layer, net] = k.split("|");
+    avvisi.push(
+      `le <copperpour> ${net} su ${layer} senza un contorno scritto come lista di punti chiedono distanze diverse ` +
+        `(${[...valori].map((v) => v ?? "regola").join(", ")}): non si distinguono, vale la regola del progetto. ` +
+        `Scrivi il contorno di ognuna come lista di punti`,
+    );
+  }
+  return { dichiarate, avvisi };
+}
+
+/**
+ * THE DECLARED CLEARANCE, WRITTEN ON THE POURS IT BELONGS TO (see
+ * DISTANZA_PROPRIA in pours.ts, and distanzeDichiarate for what is declared).
+ *
+ * tscircuit gives back no trace of which `<copperpour>` an element came from,
+ * so it is told by geometry, as conContorniDichiarati does: a piece of face and
+ * net that lies inside a declared literal outline belongs to it, the smallest
+ * one when outlines nest. A pour with no literal outline (a whole plane, or an
+ * outline built in code) gets the pieces of its face and net that no outline
+ * claimed. A pour that declares nothing claims its pieces all the same, so a
+ * hand strip inside the board keeps the project's rule even when the plane of
+ * its net on that face asks for more.
+ *
+ * Nothing declared and nothing already written: the same array back, element
+ * for element, so a board that never declared a distance pours as it always
+ * did. On a saved board (recheck) the values are written again from today's
+ * files, and one no longer declared is taken away.
+ */
+export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoMm: number): El[] {
+  const { dichiarate } = distanzeDichiarate(files, minimoMm);
+  const giaScritte = circuitJson.some((el) => el.type === "pcb_copper_pour" && DISTANZA_PROPRIA in el);
+  if (!giaScritte && !dichiarate.some((d) => d.mm !== null)) return circuitJson;
+
+  const reteDi = new Map<string, string>();
+  for (const el of circuitJson) {
+    if (el.type === "source_net") reteDi.set(String(el.name ?? ""), String(el.source_net_id ?? ""));
+  }
+  const scatola = (v: Array<{ x: number; y: number }>) => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of v) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, maxX, minY, maxY };
+  };
+  /* the outlines, smallest first: a piece inside two of them is the tighter one's */
+  const conContorno = dichiarate
+    .filter((d): d is DistanzaDichiarata & { outline: Array<{ x: number; y: number }> } => d.outline !== null)
+    .map((d) => ({ d, netId: reteDi.get(d.net), area: area(d.outline), box: scatola(d.outline) }))
+    .filter((c) => c.netId !== undefined)
+    .sort((a, b) => a.area - b.area);
+  /* face and net -> the distance of the pours with no literal outline there, if they agree on one */
+  const senzaContorno = new Map<string, number | null | "ambigua">();
+  for (const d of dichiarate) {
+    if (d.outline) continue;
+    const netId = reteDi.get(d.net);
+    if (netId === undefined) continue;
+    const k = `${d.layer}|${netId}`;
+    const prima = senzaContorno.get(k);
+    senzaContorno.set(k, prima === undefined || prima === d.mm ? d.mm : "ambigua");
+  }
+
+  return circuitJson.map((el) => {
+    if (el.type !== "pcb_copper_pour") return el;
+    const layer = String(el.layer ?? "");
+    const net = String(el.source_net_id ?? "");
+    const anello = (el.brep_shape as { outer_ring?: Anello } | undefined)?.outer_ring?.vertices ??
+      (el.points as Array<{ x: number; y: number }> | undefined) ?? [];
+    let mm: number | null = null;
+    const b = anello.length >= 3 ? scatola(anello) : null;
+    const suo = b
+      ? conContorno.find(
+          (c) =>
+            c.netId === net &&
+            c.d.layer === layer &&
+            b.minX >= c.box.minX - 0.01 &&
+            b.maxX <= c.box.maxX + 0.01 &&
+            b.minY >= c.box.minY - 0.01 &&
+            b.maxY <= c.box.maxY + 0.01 &&
+            anello.every((v) => dentro(v.x, v.y, c.d.outline) || dalBordo(v.x, v.y, c.d.outline) < 0.01),
+        )
+      : undefined;
+    if (suo) mm = suo.d.mm;
+    else {
+      const s = senzaContorno.get(`${layer}|${net}`);
+      mm = typeof s === "number" ? s : null;
+    }
+    if (mm === null) {
+      if (!(DISTANZA_PROPRIA in el)) return el;
+      const senza = { ...el };
+      delete senza[DISTANZA_PROPRIA];
+      return senza;
+    }
+    return el[DISTANZA_PROPRIA] === mm ? el : { ...el, [DISTANZA_PROPRIA]: mm };
+  });
 }
 
 /**
@@ -643,11 +837,20 @@ export function bandaDelBordo(
  * two, and the island keeps the shape the file drew. Handing them over with a
  * `cutout:` key is what makes the solver apply a margin at all — it offsets a
  * polygon obstacle only when the key says hole or cutout.
+ *
+ * The gap between two pours is the wider of their two clearances. The solver
+ * cuts every cutout by this pour's own (`suaDistanza`); an island that asks
+ * for more than that is handed over already grown by the difference, so the
+ * plane stands back as far as the island asked.
  */
 function altreColate(
   colate: El[],
   questa: El,
   areaDiQuesta: number,
+  /** the clearance this pour is poured with */
+  suaDistanza: number,
+  /** the project's, for a pour that declares none */
+  regolaMm: number,
 ): Array<Record<string, unknown>> {
   const fuori: Array<Record<string, unknown>> = [];
   for (const altra of colate) {
@@ -664,12 +867,16 @@ function altreColate(
       (sua === areaDiQuesta &&
         String(altra.pcb_copper_pour_id ?? "") < String(questa.pcb_copper_pour_id ?? ""));
     if (!cede) continue;
-    fuori.push({
-      shape: "polygon",
-      padId: String(altra.pcb_copper_pour_id ?? ""),
-      layer: String(questa.layer ?? ""),
-      connectivityKey: `cutout:${String(altra.pcb_copper_pour_id ?? "")}`,
-      points: punti.map((p) => ({ x: p.x, y: p.y })),
+    const lontana = distanzaPropria(altra) ?? regolaMm;
+    const anelli = lontana > suaDistanza ? allargaAnello(punti, lontana - suaDistanza) : [punti];
+    anelli.forEach((anello, k) => {
+      fuori.push({
+        shape: "polygon",
+        padId: `${String(altra.pcb_copper_pour_id ?? "")}${k > 0 ? `_${k}` : ""}`,
+        layer: String(questa.layer ?? ""),
+        connectivityKey: `cutout:${String(altra.pcb_copper_pour_id ?? "")}`,
+        points: anello.map((p) => ({ x: p.x, y: p.y })),
+      });
     });
   }
   return fuori;
@@ -700,7 +907,11 @@ export async function ricolaPiani({
    * pours are kept as the solver draws them.
    */
   larghezzaMinimaMm?: number;
-  /** the project's minimum spacing: what the pour keeps from everything else */
+  /**
+   * The project's pour clearance: what a pour keeps from everything else,
+   * unless its element carries its own (DISTANZA_PROPRIA, written by
+   * conDistanzeDichiarate), which then holds for that pour alone.
+   */
   clearanceMm: number;
   /**
    * And from the edge of the board, which is a different number and a stricter
@@ -756,6 +967,8 @@ export async function ricolaPiani({
       continue;
     }
     areaPrima += areaNetta(brep ?? {});
+    /* the distance this pour keeps: its own when its <copperpour> declares one */
+    const suaDistanza = distanzaPropria(pour) ?? clearanceMm;
 
     /*
      * The outline is the one this pour already has: the shape the file drew,
@@ -767,11 +980,11 @@ export async function ricolaPiani({
       {
         layer: String(pour.layer) as never,
         source_net_id: String(pour.source_net_id ?? ""),
-        pad_margin: clearanceMm,
-        trace_margin: clearanceMm,
+        pad_margin: suaDistanza,
+        trace_margin: suaDistanza,
         /* zero on purpose: the edge is kept by the band, see bandaDelBordo */
         board_edge_margin: 0,
-        cutout_margin: clearanceMm,
+        cutout_margin: suaDistanza,
         outline: contorno,
       } as never,
     );
@@ -782,7 +995,7 @@ export async function ricolaPiani({
       circuitJson,
       String(pour.layer),
       String(pour.source_net_id ?? ""),
-      clearanceMm,
+      suaDistanza,
       serviti,
     );
     riconosciute += riconosciLeVia(
@@ -790,7 +1003,7 @@ export async function ricolaPiani({
       netDiVia,
       String(pour.source_net_id ?? ""),
     );
-    const vicine = altreColate(pours, pour, areaNetta(brep ?? {}));
+    const vicine = altreColate(pours, pour, areaNetta(brep ?? {}), suaDistanza, clearanceMm);
     const bordo = bandaDelBordo(circuitJson, String(pour.layer), bordoMm);
     const passanti = viePassanti(
       circuitJson,
@@ -817,7 +1030,7 @@ export async function ricolaPiani({
      * from a trace. A kept shape passes the same splinter test as a new one.
      */
     const tieni = (): void => {
-      if (eScheggia(brep ?? {}, clearanceMm)) {
+      if (eScheggia(brep ?? {}, suaDistanza)) {
         briciole++;
         sparite.push(String(pour.pcb_copper_pour_id ?? "").replace(/(_r\d+)+$/, ""));
         return;
@@ -868,7 +1081,7 @@ export async function ricolaPiani({
        * room for anything at all.
        */
       const suaArea = areaNetta(forma);
-      if (eScheggia(forma, clearanceMm)) {
+      if (eScheggia(forma, suaDistanza)) {
         briciole++;
         return;
       }
@@ -926,7 +1139,8 @@ export async function ricolaPiani({
  * net. A recheck files the board under today's engine, which is what lets it be
  * exported: it must not certify those planes. They are poured again here, by
  * the same solver and with the project's distances, each from the piece the
- * board already has.
+ * board already has, and a pour whose element carries its own clearance with
+ * that one (the caller writes it from today's files: conDistanzeDichiarate).
  *
  * Only a board that has such a via AND was made by an older engine, or a
  * board on which a plane covers a via of another net today, whatever made it:

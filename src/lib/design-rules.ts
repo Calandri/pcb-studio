@@ -256,6 +256,9 @@ export interface ProjectRules {
   warnings?: string[];
 }
 
+/** the widest clearance a pour may ask, for the whole project or for itself (see DISTANZA_PROPRIA) */
+export const MAX_POUR_CLEARANCE_MM = 5;
+
 const LIMITS: Record<
   | Exclude<keyof DesignRules, "clearanceByPairMm" | "pourClearanceMm" | "pasteExpansionMm" | "autoPlaneVias" | "pasteOnPlatedHoles" | "autoroute">
   | "pourClearanceMm"
@@ -273,7 +276,7 @@ const LIMITS: Record<
   // would rather cross the whole board than change layer
   viaCostMm: { min: 0, max: 50 },
   minHoleToHoleMm: { min: 0.05, max: 3 },
-  pourClearanceMm: { min: 0.05, max: 5 },
+  pourClearanceMm: { min: 0.05, max: MAX_POUR_CLEARANCE_MM },
   // a tenth of a millimetre either way is already a lot of paste: beyond
   // that it is a typo, not a stencil
   pasteExpansionMm: { min: -0.1, max: 0.1 },

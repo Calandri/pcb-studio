@@ -3,7 +3,7 @@ import { conIlPerche, summarizeCircuit } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { colateSenzaColli } from "@/lib/pour-necks";
-import { ricolaSeLeVieEranoParziali } from "@/lib/pours-recompute";
+import { conDistanzeDichiarate, ricolaSeLeVieEranoParziali } from "@/lib/pours-recompute";
 import { vieSemprePassanti } from "@/lib/via-layers";
 import { CHECKS_ENGINE_VERSION, motoreDaSalvare, nonCertificata } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
@@ -81,8 +81,18 @@ export async function POST(req: Request): Promise<Response> {
      * they are.
      */
     const regole = resolveDesignRules(progetto).rules;
+    /*
+     * The clearance each <copperpour> declares, written on its pours from
+     * today's files (see conDistanzeDichiarate): a board saved before it was
+     * declared is poured again with it when it has to be, and judged by it
+     * when it is not. A project that declares none keeps its board as it is.
+     */
     const ricolata = await ricolaSeLeVieEranoParziali({
-      circuitJson: vieSemprePassanti(cache.circuitJson as Array<Record<string, unknown> & { type: string }>),
+      circuitJson: conDistanzeDichiarate(
+        vieSemprePassanti(cache.circuitJson as Array<Record<string, unknown> & { type: string }>),
+        progetto,
+        regole.minClearanceMm,
+      ),
       engineVersion: cache.engineVersion,
       clearanceMm: regole.pourClearanceMm ?? regole.minClearanceMm,
       bordoMm: regole.minBoardEdgeClearanceMm,

@@ -57,7 +57,14 @@ import {
   type OrphanEdits,
 } from "./manual-edits";
 import { applyManualRoutes } from "./manual-routes";
-import { conContorniDichiarati, ricolaPiani, type EsitoRicolata } from "./pours-recompute";
+import {
+  conContorniDichiarati,
+  conDistanzeDichiarate,
+  distanzeDichiarate,
+  ricolaPiani,
+  type EsitoRicolata,
+} from "./pours-recompute";
+import { descriviDistanze, distanzeDelleColate, type DistanzaInUso } from "./pours";
 import { Profiler, routerPhases, type Profile } from "./profile";
 import { patchedLibraries } from "./engine-patches.mjs";
 
@@ -287,6 +294,21 @@ export interface CompileSummary {
     colateSparite?: string[];
     /** copper narrower than the minimum trace width cut out of the pours (pour-necks.ts) */
     colliTagliatiMm2?: number;
+  };
+  /**
+   * THE CLEARANCES THE POURS KEEP: the project's (pourClearanceMm, else
+   * minClearanceMm) and the ones a `<copperpour clearance=...>` asks for itself,
+   * each with how many pours hold it (see DISTANZA_PROPRIA in pours.ts). With
+   * what was wrong in the declarations: a value under the minimum raised to it,
+   * one that is not a length, two pours that cannot be told apart. Absent on a
+   * board with no pour and nothing declared.
+   */
+  pourClearances?: {
+    regolaMm: number;
+    distanze: DistanzaInUso[];
+    /** the same in words: "0.152mm (regola, 210 colate), 0.25mm (15 colate)" */
+    testo: string;
+    avvisi?: string[];
   };
   /**
    * VIAS WHOSE PAD IS IN THE COPPER OF ANOTHER NET'S PLANE: the plane did not
@@ -521,6 +543,15 @@ export async function compileProject(
    */
   const projectRules = resolveDesignRules(projectFsMap);
   /*
+   * The clearance each <copperpour> declares for itself, written on its pours
+   * before they are poured again (see conDistanzeDichiarate). Also on the
+   * fallback, the board as tscircuit poured it when the re-pour fails: tscircuit
+   * already honoured the declared value there, and the checks must judge it by
+   * the same one. A board that declares none gets back the array it gave.
+   */
+  const conDistanzeProprie = (circuitJson: CircuitElement[]): CircuitElement[] =>
+    conDistanzeDichiarate(circuitJson as never, projectFsMap, projectRules.rules.minClearanceMm) as never;
+  /*
    * A compile never routes and never places, whoever calls it (Niccolo',
    * 2026-11-09: "il routing lo farai sempre tu, togli ogni AUTO"). Copper is
    * drawn by hand (<trace pcbPath>, manual-edits pcb_routes) and parts are put
@@ -654,8 +685,11 @@ export async function compileProject(
     });
     // the planes, poured again with the copper in place: see pours-recompute.ts
     const ricolate = await ricolaPiani({
-      // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati
-      circuitJson: conContorniDichiarati(conMano.circuitJson as never, projectFsMap["main.tsx"]) as never,
+      // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati;
+      // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
+      circuitJson: conDistanzeProprie(
+        conContorniDichiarati(conMano.circuitJson as never, projectFsMap["main.tsx"]) as never,
+      ) as never,
       // a pour holds its own distance, wider than a trace's when the board says so
       clearanceMm:
         projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
@@ -664,7 +698,7 @@ export async function compileProject(
     }).catch(() => null);
     // the stencil of each pad is the pad: see solder-paste.ts
     const circuitJson = pastaDaiPad(
-      (ricolate?.circuitJson ?? conMano.circuitJson) as CircuitElement[],
+      (ricolate?.circuitJson ?? conDistanzeProprie(conMano.circuitJson as never)) as CircuitElement[],
       projectRules.rules.pasteExpansionMm ?? 0,
       { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
     );
@@ -1185,8 +1219,11 @@ export async function compileProject(
    * over them. See pours-recompute.ts.
    */
   const ricolate = await ricolaPiani({
-    // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati
-    circuitJson: conContorniDichiarati(manual.circuitJson as never, projectFsMap["main.tsx"]) as never,
+    // from the outlines the file declares, not the shrunken ones: see conContorniDichiarati;
+    // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
+    circuitJson: conDistanzeProprie(
+      conContorniDichiarati(manual.circuitJson as never, projectFsMap["main.tsx"]) as never,
+    ) as never,
     clearanceMm:
       projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
@@ -1194,7 +1231,7 @@ export async function compileProject(
   }).catch(() => null);
   // the stencil of each pad is the pad: see solder-paste.ts
   const circuitJson = pastaDaiPad(
-    (ricolate?.circuitJson ?? manual.circuitJson) as CircuitElement[],
+    (ricolate?.circuitJson ?? conDistanzeProprie(manual.circuitJson as never)) as CircuitElement[],
     projectRules.rules.pasteExpansionMm ?? 0,
     { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
   );
@@ -2310,7 +2347,8 @@ function summarize(
     const violations =
       rs.key === projectRules.preset
         ? drcViolations.length
-        : runDrcChecks(circuitJson, rs.rules, misure).length;
+        : // what a fab can make: the distance a pour declares for itself is the designer's, not the fab's
+          runDrcChecks(circuitJson, rs.rules, misure, { distanzeProprieDelleColate: false }).length;
     return {
       key: rs.key,
       label: rs.label,
@@ -2415,6 +2453,25 @@ function summarize(
   const regoleCorrette = projectRules.warnings?.length
     ? ` ATTENZIONE ${DESIGN_RULES_PATH}: ${projectRules.warnings.join("; ")}.`
     : "";
+  /*
+   * The clearances the pours keep, and what was wrong in the ones declared:
+   * in the message only when a pour keeps one of its own or a declaration had
+   * to be corrected, so a board that declares nothing reads as it always did.
+   */
+  const regolaColate = projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm;
+  const distanzeColate = distanzeDelleColate(circuitJson, regolaColate);
+  const avvisiColate = distanzeDichiarate(sources, projectRules.rules.minClearanceMm).avvisi;
+  const pourClearances: CompileSummary["pourClearances"] =
+    distanzeColate.length || avvisiColate.length
+      ? {
+          regolaMm: regolaColate,
+          distanze: distanzeColate,
+          testo: descriviDistanze(distanzeColate),
+          ...(avvisiColate.length ? { avvisi: avvisiColate } : {}),
+        }
+      : undefined;
+  const colateProprie = distanzeColate.some((d) => !d.regola) ? ` Colate: ${descriviDistanze(distanzeColate)}.` : "";
+  const colateCorrette = avvisiColate.length ? ` ATTENZIONE <copperpour>: ${avvisiColate.join("; ")}.` : "";
 
   return {
     ok,
@@ -2453,9 +2510,10 @@ function summarize(
     footprintProvenance,
     targets,
     ...(planesOverVias ? { planesOverVias } : {}),
+    ...(pourClearances ? { pourClearances } : {}),
     routingAttempts: 1,
     router: "default",
-    message: message + regoleCorrette,
+    message: message + regoleCorrette + colateProprie + colateCorrette,
   };
 }
 

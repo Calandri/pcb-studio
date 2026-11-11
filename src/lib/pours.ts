@@ -25,11 +25,75 @@ export interface PourShape {
   maxX: number;
   minY: number;
   maxY: number;
+  /**
+   * The distance this pour keeps from the other nets when its `<copperpour>`
+   * declares one (see DISTANZA_PROPRIA). Absent: the project's pour clearance.
+   */
+  clearanceMm?: number;
 }
 
 type El = Record<string, unknown>;
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
+
+/**
+ * THE CLEARANCE A POUR DECLARES FOR ITSELF, written on its element.
+ *
+ * The project has one pour clearance (pourClearanceMm, else minClearanceMm)
+ * and it fits no board drawn by hand: on sbb-dl-principale about 225 small
+ * pours, strips and pads of copper of one net, need the minimum, 0.152 mm, and
+ * the big ground pours should keep 0.25 from the other nets. Raised for the
+ * whole project, 74 strips changed shape, 2 split and 1 disappeared.
+ *
+ * So a `<copperpour>` can write tscircuit's own `clearance`. tscircuit honours
+ * it for the pour it computes while building the board, but it writes nothing
+ * of it on `pcb_copper_pour`, and that pour is thrown away and poured again at
+ * the end (pours-recompute.ts). The value is read from the source
+ * (conDistanzeDichiarate) and written here, on every element of that pour: it
+ * then travels with the board, to the re-pour, the DRC, the recheck of a saved
+ * board and the summary, none of which has the source in hand. Already raised
+ * to the project's minimum when it is written.
+ */
+export const DISTANZA_PROPRIA = "pcb_studio_clearance_mm";
+
+/** the clearance a pour element carries, when it carries a usable one */
+export function distanzaPropria(el: unknown): number | undefined {
+  const v = num((el as El | null | undefined)?.[DISTANZA_PROPRIA]);
+  return v !== null && v > 0 ? v : undefined;
+}
+
+/** one clearance the pours of a board are poured with, and how many pours hold it */
+export interface DistanzaInUso {
+  mm: number;
+  colate: number;
+  /** the project's own pour clearance */
+  regola: boolean;
+}
+
+/**
+ * The distinct clearances the pours of a board keep, smallest first, with the
+ * project's marked: what the summary and inspect_board show, so a board whose
+ * pours ask for their own can be read at a glance ("0.152mm (regola, 210
+ * colate), 0.25mm (15 colate)"). Empty for a board with no pour.
+ */
+export function distanzeDelleColate(circuitJson: unknown[], regolaMm: number): DistanzaInUso[] {
+  const conta = new Map<number, number>();
+  for (const el of circuitJson as El[]) {
+    if (el?.type !== "pcb_copper_pour") continue;
+    const mm = distanzaPropria(el) ?? regolaMm;
+    conta.set(mm, (conta.get(mm) ?? 0) + 1);
+  }
+  return [...conta]
+    .sort((a, b) => a[0] - b[0])
+    .map(([mm, colate]) => ({ mm, colate, regola: mm === regolaMm }));
+}
+
+/** the same, in words */
+export function descriviDistanze(distanze: DistanzaInUso[]): string {
+  return distanze
+    .map((d) => `${Number(d.mm.toFixed(4))}mm (${d.regola ? "regola, " : ""}${d.colate} ${d.colate === 1 ? "colata" : "colate"})`)
+    .join(", ");
+}
 
 const asPoints = (v: unknown): Array<{ x: number; y: number }> => {
   if (!Array.isArray(v)) return [];
@@ -73,12 +137,14 @@ export function readPours(circuitJson: unknown[]): PourShape[] {
     // a loop, not Math.min(...xs): an imported plane can have more vertices
     // than the engine accepts as arguments, and the spread throws
     const b = bounds(outer);
+    const propria = distanzaPropria(raw);
     out.push({
       net: String(raw.source_net_id ?? ""),
       layer: String(raw.layer ?? "inner1"),
       outer,
       holes,
       ...b,
+      ...(propria !== undefined ? { clearanceMm: propria } : {}),
     });
   }
   return out;

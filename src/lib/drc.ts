@@ -396,6 +396,15 @@ export interface ViaVicinaAUnPiano {
   layer: string;
   /** from the via's pad to the copper of the plane: 0 when they touch or overlap */
   distanzaMm: number;
+  /** the clearance the plane declares for itself, when it does (PourShape.clearanceMm) */
+  propriaMm?: number;
+  /**
+   * For such a plane only: from the via's pad to the nearest via or pad of the
+   * plane's own net on that layer, the copper the plane holds whole (see
+   * abbracciaRamePropio). When that is as near as the plane, the plane's edge
+   * there is a via or a pad, which the pair rules judge, not the pour.
+   */
+  rameProprioMm?: number;
 }
 
 /**
@@ -761,6 +770,15 @@ export function runDrcChecks(
   rules: DesignRules = DEFAULT_DESIGN_RULES,
   /** what an earlier run on this same board measured, and where this one leaves its own: see MisureDrc */
   misure?: MisureDrc,
+  opzioni: {
+    /**
+     * Whether a pour that declares its own clearance is judged against it
+     * (check 8). It is the designer's intent for that pour, like the project's
+     * pourClearanceMm, and like it not a fab's: the runs that ask whether a fab
+     * class can make the board pass false.
+     */
+    distanzeProprieDelleColate?: boolean;
+  } = {},
 ): DrcViolation[] {
   const raw: DrcViolation[] = [];
   /*
@@ -1536,13 +1554,33 @@ export function runDrcChecks(
    * less where the plane holds a via or a pad of its own net that the project
    * lets nearer to a via than that (the pair rules). A via with no known net is
    * not an electrical node and is left out, as in the pair checks.
+   *
+   * A plane that declares its own clearance (PourShape.clearanceMm) is held to
+   * it, and not to the smaller pair rules, wherever the copper nearest to the
+   * via is the poured copper: a ground plane declared at 0.25 that ends 0.2 from
+   * a signal via is reported. Where its own via or pad is as near as the plane,
+   * that via or pad is the edge, and the minimum is the one above with the
+   * plane's value in place of the project's. Not in the runs of the fab
+   * classes (see `opzioni`).
    */
   if (colate.length > 0) {
-    const minimoColata = Math.min(
-      rules.pourClearanceMm ?? rules.minClearanceMm,
-      distanzaMinimaFra(rules, "via", "via"),
-      distanzaMinimaFra(rules, "pad", "via"),
-    );
+    const coppie = Math.min(distanzaMinimaFra(rules, "via", "via"), distanzaMinimaFra(rules, "pad", "via"));
+    const minimoColata = Math.min(rules.pourClearanceMm ?? rules.minClearanceMm, coppie);
+    const proprie = opzioni.distanzeProprieDelleColate !== false;
+    /* as far out as the widest clearance a plane asks for, so every row it judges is measured */
+    let portataServe = minimoColata;
+    if (proprie) for (const c of colate) if (c.clearanceMm !== undefined && c.clearanceMm > portataServe) portataServe = c.clearanceMm;
+    /* the copper of one net on one layer that a plane of that net holds whole: its vias, and its pads there */
+    const rameDi = new Map<string, Box[]>();
+    const rameDellaRete = (net: string, gruppi: Set<string>, layer: string): Box[] => {
+      const k = `${net}|${layer}`;
+      let suo = rameDi.get(k);
+      if (!suo) {
+        suo = boxes.filter((b) => b.group !== null && gruppi.has(b.group) && (b.layer === null || b.layer === layer));
+        rameDi.set(k, suo);
+      }
+      return suo;
+    };
     /*
      * Measured once per board and not once per ruleset (see MisureDrc): every
      * via against every plane of another net, exact up to `portataMm` from the
@@ -1583,22 +1621,37 @@ export function runDrcChecks(
           piano.indice ??= indiceDiColata(c.outer, c.holes);
           const distanzaMm = distanzaCerchioColata(piano.indice, x, y, d / 2, portata);
           if (distanzaMm >= portataMm) continue;
-          righe.push({ via: String(el.pcb_via_id ?? "via"), x, y, rete: rete?.nome ?? (c.net || "?"), layer: c.layer, distanzaMm });
+          const riga: ViaVicinaAUnPiano = { via: String(el.pcb_via_id ?? "via"), x, y, rete: rete?.nome ?? (c.net || "?"), layer: c.layer, distanzaMm };
+          if (c.clearanceMm !== undefined) {
+            riga.propriaMm = c.clearanceMm;
+            const questa: Box = { minX: x - d / 2, maxX: x + d / 2, minY: y - d / 2, maxY: y + d / 2, layer: null, label: riga.via, group: gruppo, kind: "via", raggio: d / 2 };
+            let vicino = Infinity;
+            if (rete) for (const b of rameDellaRete(c.net, rete.gruppi, c.layer)) vicino = Math.min(vicino, boxDistance(questa, b));
+            if (Number.isFinite(vicino)) riga.rameProprioMm = vicino;
+          }
+          righe.push(riga);
         }
       }
       return righe;
     };
     let viaPiani = misure?.viaPiani;
-    if (!viaPiani || viaPiani.portataMm < minimoColata) {
-      const portataMm = Math.max(minimoColata, PORTATA_PIANI_MM);
+    if (!viaPiani || viaPiani.portataMm < portataServe) {
+      const portataMm = Math.max(portataServe, PORTATA_PIANI_MM);
       viaPiani = { portataMm, righe: misura(portataMm) };
       if (misure) misure.viaPiani = viaPiani;
     }
     for (const r of viaPiani.righe) {
-      if (r.distanzaMm >= minimoColata - TOLLERANZA_COLATA_MM) continue;
+      const propria = proprie ? r.propriaMm : undefined;
+      const minimo =
+        propria === undefined
+          ? minimoColata
+          : (r.rameProprioMm ?? Infinity) > r.distanzaMm + TOLLERANZA_COLATA_MM
+            ? propria
+            : Math.min(propria, coppie);
+      if (r.distanzaMm >= minimo - TOLLERANZA_COLATA_MM) continue;
       push(
         "pour_clearance",
-        `${r.via} <-> ${r.rete} pour on ${r.layer}: ${r.distanzaMm.toFixed(3)}mm < min ${minimoColata}mm${r.distanzaMm === 0 ? " (the plane does not open around the hole)" : ""}`,
+        `${r.via} <-> ${r.rete} pour on ${r.layer}: ${r.distanzaMm.toFixed(3)}mm < min ${minimo}mm${propria !== undefined && minimo === propria ? " (the pour's own clearance)" : ""}${r.distanzaMm === 0 ? " (the plane does not open around the hole)" : ""}`,
         { x: r.x, y: r.y },
       );
     }

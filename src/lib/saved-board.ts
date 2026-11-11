@@ -1,8 +1,10 @@
 import { readCompileRun } from "./activity-store";
 import { withLibrary } from "./agent-tools";
 import type { CompileRun } from "./compile-run";
+import { resolveDesignRules } from "./design-rules";
 import { CHECKS_ENGINE_VERSION } from "./engine-version";
 import { extractComponents, extractIssues, type InspectComponent, type InspectIssue } from "./inspect";
+import { descriviDistanze, distanzeDelleColate } from "./pours";
 import type { Profile } from "./profile";
 import { filesHash, getCompileCache, getProject, hasBoard } from "./project-store";
 
@@ -32,6 +34,13 @@ export interface SavedBoardInspection {
   schematicPending?: string;
   /** a compile of this project still running, or cut off, from the project's log */
   compileRun: CompileRun | null;
+  /**
+   * The clearances the pours of the saved board keep, the project's and the
+   * ones a `<copperpour clearance=...>` asks for itself, in words ("0.152mm
+   * (regola, 210 colate), 0.25mm (15 colate)"), with what the saved compile
+   * found wrong in the declarations. Absent on a board with no pour.
+   */
+  pourClearances?: { testo: string; avvisi?: string[] };
   issues: InspectIssue[];
   components: InspectComponent[];
 }
@@ -68,6 +77,9 @@ export async function inspectSavedBoard(
   const pending = (cache.summary as { schematicPending?: unknown } | null)?.schematicPending;
   const compileRun = await readCompileRun(projectId).catch(() => null);
   const createdAt = cache.createdAt as unknown;
+  const regole = resolveDesignRules(files).rules;
+  const distanze = distanzeDelleColate(cache.circuitJson as unknown[], regole.pourClearanceMm ?? regole.minClearanceMm);
+  const avvisi = (cache.summary as { pourClearances?: { avvisi?: unknown } } | null)?.pourClearances?.avvisi;
   return {
     ok: true,
     result: {
@@ -80,6 +92,14 @@ export async function inspectSavedBoard(
       ...(profileOf(cache.summary) ? { profile: profileOf(cache.summary) } : {}),
       ...(typeof pending === "string" ? { schematicPending: pending } : {}),
       compileRun,
+      ...(distanze.length
+        ? {
+            pourClearances: {
+              testo: descriviDistanze(distanze),
+              ...(Array.isArray(avvisi) && avvisi.length ? { avvisi: avvisi.map(String) } : {}),
+            },
+          }
+        : {}),
       issues: extractIssues(cache.circuitJson).slice(0, 60),
       components: extractComponents(cache.circuitJson, files),
     },

@@ -91,6 +91,43 @@ export function senzaColliStretti(forma: FormaColata, larghezzaMinimaMm: number)
 }
 
 /**
+ * A ring grown outwards by `deltaMm`, round at the corners, as the outlines of
+ * what comes out (one, unless the growth closes a notch into a hole, which is
+ * left out: only the outside of a pour keeps the others away). Used to widen
+ * the opening a plane leaves around a smaller pour that asks for more distance
+ * than the plane does (see altreColate). Without the geometry runtime, or on
+ * any failure, the ring comes back as it was: the opening is then the plane's
+ * own clearance, as it was before pours could declare one.
+ */
+export function allargaAnello(punti: Punto[], deltaMm: number): Punto[][] {
+  if (!(deltaMm > 0) || !Number.isFinite(deltaMm) || punti.length < 3) return [punti];
+  const m = getManifoldModuleSync();
+  if (!m) return [punti];
+  const daLiberare: Array<{ delete(): void }> = [];
+  try {
+    // even-odd, so a ring turning either way is the same shape
+    const base = m.CrossSection.ofPolygons([punti.map((p) => [p.x, p.y] as [number, number])], "EvenOdd");
+    daLiberare.push(base);
+    const largo = base.offset(deltaMm, "Round", 2, 64);
+    daLiberare.push(largo);
+    const fuori = (largo.toPolygons() as Array<Array<[number, number]>>)
+      .filter((c) => c.length >= 3 && areaConSegno(c) > 0)
+      .map((c) => c.map(([x, y]) => ({ x, y })));
+    return fuori.length > 0 ? fuori : [punti];
+  } catch {
+    return [punti];
+  } finally {
+    for (const o of daLiberare) {
+      try {
+        o.delete();
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}
+
+/**
  * The same cleaning for a board that is RE-EVALUATED instead of compiled
  * (POST /api/recheck): its pours were drawn by an older engine, and certifying
  * them for export with the new checks would certify their slivers too. Every
