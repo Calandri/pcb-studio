@@ -290,3 +290,23 @@ describe("la regola del progetto e il riepilogo", () => {
     expect(motoreDaSalvare({ silkscreen: { count: 40, detail: "40 conflitti di serigrafia" } }, 9)).toBe(10);
   });
 });
+
+describe("the check that stops", () => {
+  it("is said in the summary and does not throw: the compile goes on", () => {
+    const rotto = [
+      {
+        type: "pcb_silkscreen_path",
+        layer: "top",
+        stroke_width: 0.15,
+        get route(): never {
+          throw new Error("boom");
+        },
+      },
+    ];
+    expect(() => conflittiDiSerigrafia(rotto as never, 0.15)).toThrow("boom");
+    const esito = serigrafiaInConflitto(rotto as never, 0.15);
+    expect(esito?.nonMisurata).toBe("boom");
+    expect(esito?.count).toBe(0);
+    expect(esito?.detail).toContain("NON e' stata misurata");
+  });
+});

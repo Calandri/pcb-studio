@@ -95,6 +95,8 @@ export interface SerigrafiaInConflitto {
   detail: string;
   /** the nearest ELENCATI_PER_TIPO of each family, nearest first */
   conflitti: ConflittoSerigrafia[];
+  /** the check itself stopped: the silkscreen was NOT measured, and why. Absent when it was */
+  nonMisurata?: string;
 }
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -666,10 +668,31 @@ const NOMI_DEI_TIPI: Record<TipoConflittoSerigrafia, string> = {
 
 /** the same for the summary, or undefined when the silkscreen is clear */
 export function serigrafiaInConflitto(circuitJson: unknown[], toleranceMm: number): SerigrafiaInConflitto | undefined {
-  const tutti = conflittiDiSerigrafia(circuitJson, toleranceMm);
-  if (tutti.length === 0) return undefined;
   const tipi = Object.keys(NOMI_DEI_TIPI) as TipoConflittoSerigrafia[];
   const perTipo = Object.fromEntries(tipi.map((t) => [t, 0])) as Record<TipoConflittoSerigrafia, number>;
+  let tutti: ConflittoSerigrafia[];
+  try {
+    tutti = conflittiDiSerigrafia(circuitJson, toleranceMm);
+  } catch (err) {
+    /*
+     * A warning never takes the compile down with it: a silkscreen element
+     * this file cannot read would otherwise leave the board without its
+     * summary. And it is said, not hidden: a board whose silkscreen was not
+     * measured does not read as a clear one.
+     */
+    const perche = (err instanceof Error ? err.message : String(err)).slice(0, 160);
+    console.error(`[serigrafia] controllo non riuscito: ${perche}`);
+    return {
+      count: 0,
+      perTipo,
+      toleranceMm,
+      severity: "warn",
+      detail: `la serigrafia NON e' stata misurata: il controllo si e' fermato (${perche})`,
+      conflitti: [],
+      nonMisurata: perche,
+    };
+  }
+  if (tutti.length === 0) return undefined;
   for (const c of tutti) perTipo[c.tipo]++;
   const proprie = tutti.filter((c) => c.propria).length;
   const parti = tipi

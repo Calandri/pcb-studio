@@ -71,7 +71,7 @@ interface SummaryLike {
   schematicPending?: string;
   components?: Array<{ name: string }>;
   /** silkscreen clashes, a warning apart from the DRC (see silkscreen-clearance.ts) */
-  silkscreen?: { count?: number; detail?: string };
+  silkscreen?: { count?: number; detail?: string; nonMisurata?: string };
 }
 
 /**
@@ -182,6 +182,8 @@ export function buildBoardReport(
   const elettrici = prc.filter((v) => !/matched_length/i.test(v.rule ?? ""));
   // the silkscreen: a warning, the export goes on; the list stops at the nearest, the count does not
   const serigrafia = typeof summary?.silkscreen?.count === "number" ? summary.silkscreen.count : 0;
+  // the check stopped: said as a warning, never shown as a clear silkscreen
+  const serigrafiaNonMisurata = typeof summary?.silkscreen?.nonMisurata === "string";
 
   const row = (
     id: string,
@@ -233,10 +235,14 @@ export function buildBoardReport(
     {
       id: "serigrafia",
       name: "Serigrafia",
-      count: serigrafia === 0 ? "ok" : `${serigrafia} ${serigrafia === 1 ? "segnalazione" : "segnalazioni"}`,
-      severity: serigrafia === 0 ? "ok" : "warn",
+      count: serigrafiaNonMisurata
+        ? "non misurata"
+        : serigrafia === 0
+          ? "ok"
+          : `${serigrafia} ${serigrafia === 1 ? "segnalazione" : "segnalazioni"}`,
+      severity: serigrafia === 0 && !serigrafiaNonMisurata ? "ok" : "warn",
       detail:
-        serigrafia === 0
+        serigrafia === 0 && !serigrafiaNonMisurata
           ? "Nessun disegno sopra un altro, sulle piazzole o sui fori."
           : String(summary?.silkscreen?.detail ?? "").slice(0, 130),
       preset: "everything",
