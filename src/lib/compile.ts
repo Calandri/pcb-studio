@@ -55,7 +55,9 @@ import {
   parseManualEdits,
   readAttr,
   scanJsxTags,
+  scanJsxTagsOrNull,
   MANUAL_EDITS_PATH,
+  type JsxAttr,
   type ManualEdits,
   type OrphanEdits,
 } from "./manual-edits";
@@ -1712,25 +1714,59 @@ const SOLO_RAME_ELEMENTI = new Set([
   "fiducial",
 ]);
 /**
- * Attributes only the copper reads, on any element: where a part or a pad is
- * and on which side (pcbX, pcbY, pcbRotation, layer), the path and the width
- * of a hand-drawn trace (pcbPath, pcbPathRelativeTo, thickness). The trace
- * itself stays, with its from and to: it is a wire of the schematic.
+ * Attributes only the copper reads on an element of tscircuit: where a part or
+ * a pad is and on which side (pcbX, pcbY, pcbRotation, layer), the path and
+ * the width of a hand-drawn trace (pcbPath, pcbPathRelativeTo, thickness). The
+ * trace itself stays, with its from and to: it is a wire of the schematic.
  */
 const SOLO_RAME_ATTRIBUTI = new Set(["pcbX", "pcbY", "pcbRotation", "layer", "pcbPath", "pcbPathRelativeTo", "thickness"]);
 
 /**
+ * An element of tscircuit itself: a lowercase name, as JSX reads it (`<chip>`,
+ * `<smtpad>`). `<Pull>` or `<lib.Part>` is a component of the user, whose
+ * props mean what its code makes of them: a `layer` there can choose the net a
+ * pull goes to, a `pcbRotation` can become the schRotation of what it draws
+ * (both seen in review, 11/11/2026). The schematic primitives keep every
+ * attribute, whatever its name.
+ */
+const elementoDiTscircuit = (nome: string): boolean => /^[a-z][a-z0-9]*$/.test(nome) && !nome.startsWith("sch");
+
+/**
+ * Whether a value is written out where it stands: a string, or numbers,
+ * strings, lists and objects of them (`{-6}`, `{[{ x: 1, y: 2 }]}`). A value
+ * that reads anything else (`{props.layer}`, `{giro}`, a call) may carry what
+ * the code does elsewhere, and stays in the key.
+ */
+function valoreScritto(a: JsxAttr): boolean {
+  if (a.kind === "string") return true;
+  if (a.kind !== "expr") return false;
+  const resto = a.raw
+    .replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`[^`$\\]*`/g, "0")
+    // the keys of an object written out
+    .replace(/[A-Za-z_$][\w$]*\s*:/g, ":")
+    .replace(/\b(?:true|false|null|undefined)\b/g, "0")
+    .replace(/(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g, "0");
+  return /^[\s0.,:[\]{}()+\-*/]*$/.test(resto);
+}
+
+/**
  * A code file without what only the copper reads, when it is written as a
  * JSX literal: the elements and attributes above go, with the blank before
- * them, so a file with one via more or one pcbX less reads the same. Anything
- * else stays as it is: what starts with sch, the symbols, pinLabels, names,
- * values, connections, footprints and their pads, expressions, comments. In
- * doubt an element or an attribute stays: a schematic drawn again costs
- * minutes, an old one reused is wrong. graftSchematic then checks the
- * components, ports, nets and connections before reusing anything.
+ * them, so a file with one via more or one pcbX less reads the same. Only on
+ * the elements of tscircuit (elementoDiTscircuit), and an attribute only when
+ * its value is written out (valoreScritto): on a component of the user, or
+ * with a value read from a prop or a variable, it stays. Anything else stays
+ * as it is: what starts with sch, the symbols, pinLabels, names, values,
+ * connections, footprints and their pads, expressions, comments. In doubt an
+ * element or an attribute stays: a schematic drawn again costs minutes, an old
+ * one reused is wrong. graftSchematic then checks the components, ports, nets
+ * and connections before reusing anything. A file the scanner cannot read
+ * within its limits (see scanJsxTagsOrNull) enters the key as it is.
  */
 export function soloCioCheLeggeLoSchematico(src: string): string {
   if (!src.includes("<")) return src;
+  const tags = scanJsxTagsOrNull(src, { includeNested: true });
+  if (!tags) return src;
   const tagli: Array<[number, number]> = [];
   /** the blank before a cut: spaces and tabs, and one line break (with what indents it) */
   const conIlBianco = (inizio: number): number => {
@@ -1740,13 +1776,14 @@ export function soloCioCheLeggeLoSchematico(src: string): string {
     if (i > 0 && src[i - 1] === "\r") i--;
     return i;
   };
-  for (const tag of scanJsxTags(src, { includeNested: true })) {
+  for (const tag of tags) {
+    if (!elementoDiTscircuit(tag.name)) continue;
     if (SOLO_RAME_ELEMENTI.has(tag.name)) {
       tagli.push([conIlBianco(tag.start), tag.closeEnd ?? tag.end]);
       continue;
     }
     for (const a of parseJsxAttrs(src.slice(tag.attrsStart, tag.attrsEnd))) {
-      if (!SOLO_RAME_ATTRIBUTI.has(a.name) || a.valueStart === -1) continue;
+      if (!SOLO_RAME_ATTRIBUTI.has(a.name) || a.valueStart === -1 || !valoreScritto(a)) continue;
       // attributes may sit one per line: any blank before them goes
       let i = tag.attrsStart + a.nameStart;
       while (i > tag.attrsStart && /\s/.test(src[i - 1])) i--;
@@ -1780,32 +1817,40 @@ export function graftSchematic(pcbOnly: CircuitElement[], previous: unknown[]): 
 }
 
 /**
- * Whether two circuits have the same source elements the schematic points at:
- * every component, port, net and connection with the same id and the same
- * name. The ports of a <via> do not count: a via has ports (top, bottom, pin1)
- * and no symbol, and no schematic element points at them, so adding vias on
- * the board leaves the schematic as it is. They are numbered after the parts'
- * ports only when the vias come after the parts in the files: when they do
- * not, the parts' ports move and the comparison says no.
+ * Whether two circuits have the same source elements the schematic points at
+ * and the same things it shows: every component with its kind and values (all
+ * it carries but the supplier codes, which tscircuit fetches from the network
+ * and which no symbol shows), every port with its name and number, every net,
+ * and every connection with the ports and the nets it joins. A trace keeps its
+ * id when it is moved to another pin or net, so the id alone said yes to a
+ * schematic with the wire somewhere else (review of 11/11/2026). The ports of a
+ * <via> do not count: a via has ports (top, bottom, pin1) and no symbol, and no
+ * schematic element points at them, so adding vias on the board leaves the
+ * schematic as it is. They are numbered after the parts' ports only when the
+ * vias come after the parts in the files: when they do not, the parts' ports
+ * move and the comparison says no.
  */
 function stessiSorgenti(a: CircuitElement[], b: CircuitElement[]): boolean {
   const dellaVia = (els: CircuitElement[]) =>
     new Set(els.filter((e) => e.type === "source_manually_placed_via").map((e) => String(e.source_manually_placed_via_id ?? "")));
-  const firma = (els: CircuitElement[], vie: Set<string>, tipo: string, id: string) =>
+  const elenco = (v: unknown) => (Array.isArray(v) ? v.map(String).sort().join(",") : "");
+  const firme: Record<string, (e: CircuitElement) => string> = {
+    source_component: (e) => JSON.stringify({ ...e, supplier_part_numbers: undefined }),
+    source_port: (e) => `${String(e.source_port_id)}|${String(e.name ?? "")}|${String(e.source_component_id ?? "")}|${String(e.pin_number ?? "")}`,
+    source_net: (e) => `${String(e.source_net_id)}|${String(e.name ?? "")}`,
+    source_trace: (e) =>
+      `${String(e.source_trace_id)}|${elenco(e.connected_source_port_ids)}|${elenco(e.connected_source_net_ids)}`,
+  };
+  const firma = (els: CircuitElement[], vie: Set<string>, tipo: string) =>
     els
       .filter((e) => e.type === tipo && !(tipo === "source_port" && vie.has(String(e.source_component_id ?? ""))))
-      .map((e) => `${String(e[id])}|${String(e.name ?? "")}|${String(e.source_component_id ?? "")}`)
+      .map(firme[tipo])
       .sort()
       .join("\n");
   const vieA = dellaVia(a);
   const vieB = dellaVia(b);
-  for (const [tipo, id] of [
-    ["source_component", "source_component_id"],
-    ["source_port", "source_port_id"],
-    ["source_net", "source_net_id"],
-    ["source_trace", "source_trace_id"],
-  ] as const) {
-    if (firma(a, vieA, tipo, id) !== firma(b, vieB, tipo, id)) return false;
+  for (const tipo of Object.keys(firme)) {
+    if (firma(a, vieA, tipo) !== firma(b, vieB, tipo)) return false;
   }
   return true;
 }

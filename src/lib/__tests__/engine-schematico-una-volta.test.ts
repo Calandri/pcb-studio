@@ -249,7 +249,7 @@ describe("la chiave dello schematico non cambia quando cambia solo il rame", () 
   }, 180_000);
 
   it("toglie solo quello che e' scritto come JSX: una via dentro un commento o una stringa resta", () => {
-    expect(soloCioCheLeggeLoSchematico('<board>\n  <via pcbX={1} />\n  <R a="1" pcbX={2} />\n</board>')).toBe('<board>\n  <R a="1" />\n</board>');
+    expect(soloCioCheLeggeLoSchematico('<board>\n  <via pcbX={1} />\n  <resistor a="1" pcbX={2} />\n</board>')).toBe('<board>\n  <resistor a="1" />\n</board>');
     const commento = "// <via pcbX={1} />\nconst s = \"<via pcbX={1} />\"\n";
     expect(soloCioCheLeggeLoSchematico(commento)).toBe(commento);
   });
