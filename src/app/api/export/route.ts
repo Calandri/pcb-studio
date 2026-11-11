@@ -14,9 +14,10 @@ import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
 import { pianiSopraLeVie } from "@/lib/drc";
 import { colateCheSiToccano } from "@/lib/pour-pour";
+import { colateInOrdinePerIlGerber } from "@/lib/pours-recompute";
 import { withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
-import { CHECKS_ENGINE_VERSION, nonCertificata } from "@/lib/engine-version";
+import { CHECKS_ENGINE_VERSION, colateDiUnMotoreDiPrima, nonCertificata } from "@/lib/engine-version";
 import { compileGeometryOnly } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { applyManualEditsToFsMap } from "@/lib/manual-edits";
@@ -100,11 +101,18 @@ export async function GET(req: Request): Promise<Response> {
    * a strip of the USB shield went to the export with zero errors (see
    * pour-pour.ts). Measured here too, on the board about to go.
    */
+  /*
+   * And a board whose pours were made by an engine before the one that pours
+   * from the declared outlines is refused saying so, with what to do: a recheck
+   * keeps such a board under its engine (see colateDiUnMotoreDiPrima), and
+   * "older checks" told nobody that only a compile makes the pours again.
+   */
   const coperta =
     fabrication && cache && hasBoard(cache.circuitJson)
       ? nonCertificata({
           planesOverVias: pianiSopraLeVie(cache.circuitJson as never),
           poursTooClose: colateCheSiToccano(cache.circuitJson as never, regolaDelleColate(fsMap)),
+          poursFromOlderEngine: colateDiUnMotoreDiPrima(cache.circuitJson, cache.engineVersion),
         })
       : null;
   if (fabrication && (!cacheFresh || coperta)) {
@@ -177,9 +185,11 @@ export async function GET(req: Request): Promise<Response> {
         const zip = new JSZip();
         // a silkscreen pen thinner than a fab can print is widened (see silk-stroke)
         // a pad at an angle is written as a region, not as a rotated aperture (see gerber-rotation)
+        // the pours in an order where no hole erases copper written before it, whatever saved the board
+        const inOrdine = await colateInOrdinePerIlGerber(circuitJson as unknown as Array<Record<string, unknown>>);
         const ruotate = senzaRotazioneDiCarico(
           // through vias get their pad on the inner layers too (see via-layers)
-          stringifyGerberCommandLayers(convertSoupToGerberCommands(viePassantiSuOgniStrato(circuitJson as never) as AnyCircuitJson)),
+          stringifyGerberCommandLayers(convertSoupToGerberCommands(viePassantiSuOgniStrato(inOrdine as never) as AnyCircuitJson)),
         );
         if (ruotate.nonConvertiti.length > 0) {
           console.warn(`[export] ${projectId}: rotated apertures left as %LR on ${ruotate.nonConvertiti.join(", ")}`);

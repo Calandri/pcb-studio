@@ -11,7 +11,7 @@ import { parseLength } from "./pcb-route-model";
 import { DISTANZA_PROPRIA, distanzaPropria, planeServedPorts, readPours } from "./pours";
 import { getManifoldModuleSync } from "@tscircuit/manifold-2d";
 import { capsula, cerchio, poligonoCresciuto, rettangoloArrotondato, type Punto } from "./pour-geometry";
-import { abbracciaRamePropio, allargaAnello, formaPulita, senzaColliStretti, type RamePropio } from "./pour-necks";
+import { abbracciaRamePropio, allargaAnello, formaPulita, ritagliaAlContorno, senzaColliStretti, type RamePropio } from "./pour-necks";
 import { vieDichiarateParziali, vieSemprePassanti } from "./via-layers";
 
 /**
@@ -673,9 +673,79 @@ interface CopperpourScritta {
   clearance?: string;
 }
 
+/**
+ * THE TEXT OF A FILE WITHOUT ITS COMMENTS, for reading what it declares.
+ *
+ * A `<copperpour>` in a comment is not on the board. The declarations used to
+ * be read off the text as it stands, comments included, and poured: an
+ * imported file holding nothing but `{/* <copperpour layer="bottom" ... /> *\/}`
+ * and `{/* <copperpour layer="top" connectsTo="net.GND" /> *\/}` gave 100 mm2 of
+ * ground on the bottom and a ground pour over the whole top face, in the very
+ * places a designer frees on purpose (under an antenna). Review of the CAD-like
+ * pours, 2026-11-11.
+ *
+ * Line comments and block comments go, and so the JSX ones, which leave an
+ * empty `{ }` behind. Nothing inside a string or a template literal is touched:
+ * the `//` of "http://..." is text. A quote opened on a line and not closed
+ * there ends with the line, as it would in JavaScript, so a stray apostrophe in
+ * JSX text costs one line and not the rest of the file. Every newline stays
+ * where it was.
+ */
+export function senzaCommenti(testo: string): string {
+  const parti: string[] = [];
+  const n = testo.length;
+  /** where the text not yet copied starts */
+  let tenuto = 0;
+  /** for every `${` of a template literal still open, the brace depth it opened at */
+  const modelli: number[] = [];
+  let graffe = 0;
+  let i = 0;
+  /* from just after the opening quote or brace: the end of a template literal's text, or of its next `${` */
+  const testoDelModello = (j: number): number => {
+    while (j < n && testo[j] !== "`" && !(testo[j] === "$" && testo[j + 1] === "{")) j += testo[j] === "\\" ? 2 : 1;
+    if (j < n && testo[j] === "$") {
+      modelli.push(graffe);
+      return j + 2;
+    }
+    return j + 1;
+  };
+  while (i < n) {
+    const c = testo[i];
+    if (c === "/" && testo[i + 1] === "/") {
+      parti.push(testo.slice(tenuto, i));
+      while (i < n && testo[i] !== "\n") i++;
+      tenuto = i;
+    } else if (c === "/" && testo[i + 1] === "*") {
+      parti.push(testo.slice(tenuto, i));
+      const fine = testo.indexOf("*/", i + 2);
+      const dopo = fine < 0 ? n : fine + 2;
+      // a space, so what stood on either side does not join, and the comment's newlines
+      parti.push(" ", testo.slice(i, dopo).replace(/[^\n]+/g, ""));
+      i = dopo;
+      tenuto = i;
+    } else if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n && testo[j] !== c && testo[j] !== "\n") j += testo[j] === "\\" ? 2 : 1;
+      i = j < n && testo[j] === c ? j + 1 : j;
+    } else if (c === "`") {
+      i = testoDelModello(i + 1);
+    } else if (c === "}" && modelli.length > 0 && graffe === modelli[modelli.length - 1]) {
+      // the end of a `${ }`: the template literal's text goes on
+      modelli.pop();
+      i = testoDelModello(i + 1);
+    } else {
+      if (c === "{") graffe++;
+      else if (c === "}") graffe--;
+      i++;
+    }
+  }
+  parti.push(testo.slice(tenuto));
+  return parti.join("");
+}
+
 function copperpourScritte(testo: string): CopperpourScritta[] {
   const out: CopperpourScritta[] = [];
-  for (const m of testo.matchAll(/<copperpour\b([^>]*?)\/>/g)) {
+  for (const m of senzaCommenti(testo).matchAll(/<copperpour\b([^>]*?)\/>/g)) {
     const attr = m[1];
     const layer = /\blayer\s*=\s*["']([\w-]+)["']/.exec(attr)?.[1];
     const net = /\bconnectsTo\s*=\s*["']net\.([\w-]+)["']/.exec(attr)?.[1];
@@ -726,9 +796,12 @@ export interface DistanzaDichiarata {
 /**
  * WHAT EVERY `<copperpour>` OF THE PROJECT DECLARES ABOUT ITS DISTANCE.
  *
- * Read in every .tsx of the project, not in main.tsx only: a board drawn by a
- * script keeps its pours wherever the script writes them (sbb-dl-principale has
- * its 229 in righe_2.tsx and righe_3.tsx). The value is tscircuit's own
+ * Read in every .tsx the board imports, not in main.tsx only: a board drawn by
+ * a script keeps its pours wherever the script writes them (sbb-dl-principale
+ * has its 229 in righe_2.tsx and righe_3.tsx). Only in those, and not in their
+ * comments, as the outlines are read (see fileDellaScheda and senzaCommenti):
+ * a copy kept aside or a pour commented out has no distance to declare, and
+ * its warnings were reported against a board it is not on. The value is tscircuit's own
  * `clearance`, in any unit tscircuit takes (a number is millimetres). The
  * project's minimum clearance stays the minimum: a value under it is raised to
  * it and said in `avvisi`, as design-rules.ts does for pourClearanceMm; so is
@@ -748,7 +821,7 @@ export function distanzeDichiarate(
   const avvisi: string[] = [];
   if (!files || typeof files !== "object") return { dichiarate, avvisi };
   const mappa = files as Record<string, unknown>;
-  for (const file of Object.keys(mappa).filter((f) => f.endsWith(".tsx")).sort()) {
+  for (const file of fileDellaScheda(mappa)) {
     const testo = mappa[file];
     if (typeof testo !== "string" || !testo.includes("copperpour")) continue;
     for (const c of copperpourScritte(testo)) {
@@ -883,7 +956,8 @@ export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoM
  * The .tsx files main.tsx reaches through its relative imports, main.tsx
  * first and the rest in name order: the files whose `<copperpour>` are on the
  * board. A file the board does not import (a copy kept aside, an old version)
- * draws nothing, and its pours must not be poured.
+ * draws nothing, and its pours must not be poured; nor does one whose import is
+ * commented out.
  */
 export function fileDellaScheda(files: Record<string, unknown>): string[] {
   const esiste = (f: string) => typeof files[f] === "string";
@@ -903,7 +977,7 @@ export function fileDellaScheda(files: Record<string, unknown>): string[] {
     if (visti.has(f) || !esiste(f)) continue;
     visti.add(f);
     const cartella = f.includes("/") ? f.slice(0, f.lastIndexOf("/") + 1) : "";
-    for (const m of (files[f] as string).matchAll(/\bfrom\s+["'](\.{1,2}\/[^"']+)["']/g)) {
+    for (const m of senzaCommenti(files[f] as string).matchAll(/\bfrom\s+["'](\.{1,2}\/[^"']+)["']/g)) {
       const base = normalizza(cartella + m[1]);
       const trovato = [base, `${base}.tsx`, `${base}.ts`, `${base}/index.tsx`, `${base}/index.ts`].find(esiste);
       if (trovato) coda.push(trovato);
@@ -988,15 +1062,77 @@ const PEZZI_DI_TSCIRCUIT: unique symbol = Symbol("pezzi di tscircuit");
  * none: an outline built in code cannot be read without running the file, and
  * then the shape tscircuit gave back stays the best guess for those pieces.
  *
- * Every declared outline is poured whether or not tscircuit gave a piece for
- * it (a strip narrower than tscircuit's two margins comes back from tscircuit
- * as nothing), unless it lies entirely off the board: that is not a shape of
- * this board (a group moved somewhere else) and is left out. Which pours there
- * are depends on the files alone, never on what tscircuit made of them.
+ * A DECLARATION IS POURED ONLY WHEN TSCIRCUIT POURED IT: at least one piece of
+ * its face and net inside its outline or overlapping it, and for one with no
+ * outline at least one piece of its face and net that no outline took. The text
+ * cannot tell a `<copperpour>` that is on the board from one in a component
+ * exported and never used, or behind a condition that is false; tscircuit,
+ * which runs the files, can. Every declared outline used to be poured from the
+ * text alone, and such a declaration filled with copper the board does not
+ * have (review of the CAD-like pours, 2026-11-11). What it costs: a strip
+ * narrower than tscircuit's two margins comes back from tscircuit as nothing
+ * and is not poured either. Every declaration left out is said, under the id it
+ * would have had, with the pours that lost every piece (colateSparite in the
+ * summary). On sbb-dl-principale it leaves none out: 292 of its 293 outlines
+ * have pieces of tscircuit inside them, and the last (245, a ground strip of
+ * righe_3.tsx) overlaps the piece of the ground tile next to it; the two that
+ * lose every piece in the re-pour (227 and 245) are poured and said as before.
+ * An outline that lies entirely off the board gets no piece and is left out
+ * too (a group moved somewhere else).
  *
  * `files`: the project's files, or the text of main.tsx alone.
  */
 export function conContorniDichiarati(circuitJson: El[], files: unknown): El[] {
+  return colateDichiarate(circuitJson, files).circuitJson;
+}
+
+/** what conContorniDichiarati does, with the declarations it left out because tscircuit poured nothing for them */
+export interface ColateDichiarate {
+  circuitJson: El[];
+  /** the ids those pours would have had, `pcb_copper_pour_dichiarata_<n>` */
+  senzaPezzi: string[];
+}
+
+/** whether two rings share some area: a vertex of one inside the other, or two sides that cross */
+function siToccano(a: Punto[], b: Punto[]): boolean {
+  if (a.length < 3 || b.length < 3) return false;
+  const scatola = (v: Punto[]) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of v) {
+      x0 = Math.min(x0, p.x);
+      y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x);
+      y1 = Math.max(y1, p.y);
+    }
+    return { x0, y0, x1, y1 };
+  };
+  const sa = scatola(a);
+  const sb = scatola(b);
+  if (sa.x1 < sb.x0 || sa.x0 > sb.x1 || sa.y1 < sb.y0 || sa.y0 > sb.y1) return false;
+  return a.some((v) => dentro(v.x, v.y, b)) || b.some((v) => dentro(v.x, v.y, a)) || latiCheSiIncrociano(a, b);
+}
+
+/** whether a side of one ring crosses a side of the other, strictly: sides that only touch or overlap do not */
+function latiCheSiIncrociano(a: Punto[], b: Punto[]): boolean {
+  const giro = (p: Punto, q: Punto, r: Punto) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+  for (let i = 0, k = a.length - 1; i < a.length; k = i++) {
+    for (let j = 0, l = b.length - 1; j < b.length; l = j++) {
+      if (giro(a[k], a[i], b[l]) * giro(a[k], a[i], b[j]) < 0 && giro(b[l], b[j], a[k]) * giro(b[l], b[j], a[i]) < 0) return true;
+    }
+  }
+  return false;
+}
+
+/** whether a ring runs outside an outline: a vertex out of it (by more than a micrometre), or a side across one of its sides */
+function esceDa(anello: Punto[], contorno: Punto[]): boolean {
+  return (
+    anello.some((v) => !dentro(v.x, v.y, contorno) && dalBordo(v.x, v.y, contorno) > 1e-6) ||
+    latiCheSiIncrociano(anello, contorno)
+  );
+}
+
+/** conContorniDichiarati, saying which declarations it left out (see there) */
+export function colateDichiarate(circuitJson: El[], files: unknown): ColateDichiarate {
   const testi: string[] =
     typeof files === "string"
       ? [files]
@@ -1005,9 +1141,9 @@ export function conContorniDichiarati(circuitJson: El[], files: unknown): El[] {
             .map((f) => (files as Record<string, unknown>)[f])
             .filter((t): t is string => typeof t === "string")
         : [];
-  if (!testi.some((t) => t.includes("copperpour"))) return circuitJson;
+  if (!testi.some((t) => t.includes("copperpour"))) return { circuitJson, senzaPezzi: [] };
   const scritte = testi.flatMap((t) => copperpourScritte(t)).filter((c) => c.layer && c.net);
-  if (!scritte.length) return circuitJson;
+  if (!scritte.length) return { circuitJson, senzaPezzi: [] };
   const reteDi = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type === "source_net") reteDi.set(String(el.name ?? ""), String(el.source_net_id ?? ""));
@@ -1037,16 +1173,20 @@ export function conContorniDichiarati(circuitJson: El[], files: unknown): El[] {
   const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
   const sostituite = new Set<El>();
   const nuove: El[] = [];
+  const senzaPezzi: string[] = [];
+  const idDi = (i: number) => `pcb_copper_pour_dichiarata_${i}`;
   const anelloDi = (p: El) =>
     (p.brep_shape as { outer_ring?: Anello } | undefined)?.outer_ring?.vertices ??
     (p.points as Array<{ x: number; y: number }> | undefined) ?? [];
+  const suoi = (p: El, layer: string, netId: string) =>
+    String(p.layer ?? "") === layer && String(p.source_net_id ?? "") === netId;
   const metti = (i: number, layer: string, netId: string, outline: Punto[], pezzi: El[]) => {
     const modello = pezzi[0] ?? pours.find((p) => String(p.layer ?? "") === layer) ?? pours[0];
     if (!modello) return;
     pezzi.forEach((p) => sostituite.add(p));
     const nuova: El = {
       ...modello,
-      pcb_copper_pour_id: `pcb_copper_pour_dichiarata_${i}`,
+      pcb_copper_pour_id: idDi(i),
       layer,
       source_net_id: netId,
       shape: "brep",
@@ -1060,14 +1200,26 @@ export function conContorniDichiarati(circuitJson: El[], files: unknown): El[] {
   scritte.forEach((d, i) => {
     if (!d.outline) return;
     const netId = reteDi.get(d.net!);
-    if (!netId) return;
+    if (!netId) {
+      senzaPezzi.push(idDi(i));
+      return;
+    }
     const outline = d.outline;
     const pezzi = pours.filter((p) => {
-      if (sostituite.has(p) || String(p.layer ?? "") !== d.layer || String(p.source_net_id ?? "") !== netId) return false;
+      if (sostituite.has(p) || !suoi(p, d.layer!, netId)) return false;
       const anello = anelloDi(p);
       return anello.length >= 3 && anello.every((v) => dentro(v.x, v.y, outline) || dalBordo(v.x, v.y, outline) < 0.01);
     });
-    if (!sullaScheda(outline)) return;
+    /*
+     * A piece another outline already took counts too: two outlines of one net
+     * that overlap (sbb-dl-principale tiles its ground) can see the piece of
+     * the second lie inside the first, which takes it.
+     */
+    const colataDaTscircuit = pezzi.length > 0 || pours.some((p) => suoi(p, d.layer!, netId) && siToccano(anelloDi(p), outline));
+    if (!colataDaTscircuit || !sullaScheda(outline)) {
+      senzaPezzi.push(idDi(i));
+      return;
+    }
     metti(i, d.layer!, netId, outline, pezzi);
   });
   /* then the whole-board ones: one per face and net, with what is left of its pieces */
@@ -1078,14 +1230,15 @@ export function conContorniDichiarati(circuitJson: El[], files: unknown): El[] {
     if (intere.has(k) || inCodice.has(k)) return;
     intere.add(k);
     const netId = reteDi.get(d.net!);
-    if (!netId) return;
-    const pezzi = pours.filter(
-      (p) => !sostituite.has(p) && String(p.layer ?? "") === d.layer && String(p.source_net_id ?? "") === netId,
-    );
+    const pezzi = netId ? pours.filter((p) => !sostituite.has(p) && suoi(p, d.layer!, netId)) : [];
+    if (!netId || pezzi.length === 0) {
+      senzaPezzi.push(idDi(i));
+      return;
+    }
     metti(i, d.layer!, netId, scheda, pezzi);
   });
-  if (!nuove.length) return circuitJson;
-  return [...circuitJson.filter((el) => !sostituite.has(el)), ...nuove];
+  if (!nuove.length) return { circuitJson, senzaPezzi };
+  return { circuitJson: [...circuitJson.filter((el) => !sostituite.has(el)), ...nuove], senzaPezzi };
 }
 
 /**
@@ -1224,15 +1377,24 @@ export const eScheggia = (forma: { outer_ring?: Anello; inner_rings?: Anello[] }
  * The biggest first, then every pour after the pours whose holes cover it. If
  * two pours each cover the other with a hole, no order is right, and they keep
  * the biggest-first one.
+ *
+ * `seGiaGiusto`: the very array back when its order is already one in which no
+ * hole erases a pour written before it (the export, see
+ * colateInOrdinePerIlGerber: a board poured by this engine keeps the order it
+ * was saved in).
  */
-export function ordinePerIlGerber<T extends Record<string, unknown>>(pours: T[]): T[] {
+export function ordinePerIlGerber<T extends Record<string, unknown>>(
+  pours: T[],
+  { seGiaGiusto = false }: { seGiaGiusto?: boolean } = {},
+): T[] {
   type Forma = { outer_ring?: Anello; inner_rings?: Anello[] };
   const base = pours
     .map((el, i) => ({ el, i, a: areaNetta((el.brep_shape ?? {}) as Forma) }))
     .sort((x, y) => y.a - x.a || x.i - y.i)
     .map((x) => x.el);
   const m = getManifoldModuleSync();
-  if (!m || !base.some((el) => ((el.brep_shape as Forma | undefined)?.inner_rings ?? []).length > 0)) return base;
+  if (!base.some((el) => ((el.brep_shape as Forma | undefined)?.inner_rings ?? []).length > 0)) return seGiaGiusto ? pours : base;
+  if (!m) return seGiaGiusto ? pours : base;
   const daLiberare: Array<{ delete(): void }> = [];
   const cs = <O extends { delete(): void }>(o: O): O => {
     daLiberare.push(o);
@@ -1281,6 +1443,10 @@ export function ordinePerIlGerber<T extends Record<string, unknown>>(pours: T[])
         });
       }
     });
+    if (seGiaGiusto) {
+      const posto = new Map(pours.map((el, i) => [el, i] as const));
+      if (dopo.every((prima, k) => [...prima].every((j) => posto.get(base[j])! < posto.get(base[k])!))) return pours;
+    }
     const scritto = new Array<boolean>(base.length).fill(false);
     const out: T[] = [];
     while (out.length < base.length) {
@@ -1292,7 +1458,7 @@ export function ordinePerIlGerber<T extends Record<string, unknown>>(pours: T[])
     }
     return out;
   } catch {
-    return base;
+    return seGiaGiusto ? pours : base;
   } finally {
     for (const o of daLiberare) {
       try {
@@ -1302,6 +1468,28 @@ export function ordinePerIlGerber<T extends Record<string, unknown>>(pours: T[])
       }
     }
   }
+}
+
+/**
+ * THE BOARD WITH ITS POURS IN THE ORDER THE GERBER NEEDS, right before the
+ * converter (the export).
+ *
+ * ordinePerIlGerber runs at the end of a re-pour and nowhere else. A board
+ * saved by any other path (a recheck, the fast update, a trace edit, an Altium
+ * import, a board of an older engine) went to the Gerber in the order it was
+ * saved in, and a hole of a pour written after a piece of another erased it
+ * (review of the CAD-like pours, 2026-11-11). Every element keeps its place:
+ * the pours only swap among the places pours had, and a board whose order is
+ * already right comes back as it is.
+ */
+export async function colateInOrdinePerIlGerber<T extends Record<string, unknown>>(circuitJson: T[]): Promise<T[]> {
+  const pours = circuitJson.filter((el) => el.type === "pcb_copper_pour");
+  if (pours.length < 2) return circuitJson;
+  await initializeManifoldGeometry();
+  const ordinate = ordinePerIlGerber(pours, { seGiaGiusto: true });
+  if (ordinate === pours) return circuitJson;
+  let k = 0;
+  return circuitJson.map((el) => (el.type === "pcb_copper_pour" ? ordinate[k++] : el));
 }
 
 export async function ricolaPiani({
@@ -1337,6 +1525,7 @@ export async function ricolaPiani({
   }
 
   await initializeManifoldGeometry();
+  const scheda = contornoScheda(circuitJson);
   const serviti = planeServedPorts(circuitJson, readPours(circuitJson));
   const punti = ancore(circuitJson, serviti);
   /** which net every via is on, read from the key the element carries */
@@ -1495,6 +1684,13 @@ export async function ricolaPiani({
       tieni();
       continue;
     }
+
+    /*
+     * An outline that runs past the edge of the board is cut to the board: the
+     * band along the edge takes the clearance off the inside of the edge only,
+     * and the copper beyond it stayed in the Gerber. See ritagliaAlContorno.
+     */
+    if (scheda.length >= 3 && esceDa(contorno, scheda)) forme = ritagliaAlContorno(forme, scheda);
 
     // the pour's own vias and pads, whole inside it: see abbracciaRamePropio
     const propri = ramePropio(circuitJson, String(pour.layer), String(pour.source_net_id ?? ""), netDiVia, serviti);

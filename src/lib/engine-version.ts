@@ -44,10 +44,22 @@
 // cleaned of what it does not need, only ever taking copper away; the pours are written so that no hole of one, drawn
 // clear in the Gerber, erases copper of another written before it. Every board's
 // pours change shape: compile it again ("Aggiorna"). A recheck of an older board takes out necks and cleans the rings,
-// it does not pour again from the declared outlines. And two pours of different nets on one layer that touch or stand
-// closer than the larger of their two clearances are a "pour_pour_clearance" violation, and the export refuses the
-// board (nothing measured pour against pour: the server's board of 17:06 had the ground pour over the USB shield)
+// it does not pour again from the declared outlines, so a board of an older engine with pours on it keeps its engine
+// through a recheck and the export refuses it until a compile (see colateDiUnMotoreDiPrima); the export writes the
+// pours in that order whatever saved the board. A declaration is poured only when tscircuit poured it (a pour in a
+// comment, in a component never used or behind a false condition was poured from the text). And two pours of
+// different nets on one layer that touch or stand closer than the larger of their two clearances are a
+// "pour_pour_clearance" violation, and the export refuses the board (nothing measured pour against pour: the
+// server's board of 17:06 had the ground pour over the USB shield)
 export const CHECKS_ENGINE_VERSION = 9;
+
+/**
+ * The first engine whose pours start again from the outlines the files
+ * declare and are written in an order where no hole erases another pour (see
+ * conContorniDichiarati and ordinePerIlGerber in pours-recompute.ts). Only a
+ * compile pours that way: see colateDiUnMotoreDiPrima.
+ */
+export const ENGINE_COLATE_DAI_CONTORNI = 9;
 
 /**
  * The first engine whose planes open around EVERY via, whatever layers it
@@ -86,10 +98,63 @@ const pianiSuVieDi = (summary: unknown): PianiSuVie | null => {
  * when it had one: the export refuses it like any board checked by an older
  * engine, and the answer of the compile or of the recheck says why (see
  * nonCertificata).
+ *
+ * Nor to a board a recheck found with the pours of an engine before
+ * ENGINE_COLATE_DAI_CONTORNI (CompileSummary.poursFromOlderEngine, see
+ * colateDiUnMotoreDiPrima): it keeps the engine it had, below that one.
  */
 export function motoreDaSalvare(summary: unknown, precedente: number = CHECKS_ENGINE_VERSION): number {
-  if (!pianiSuVieDi(summary)) return CHECKS_ENGINE_VERSION;
-  return Math.min(precedente, ENGINE_VIE_PASSANTI - 1);
+  let motore = CHECKS_ENGINE_VERSION;
+  if (pianiSuVieDi(summary)) motore = Math.min(precedente, ENGINE_VIE_PASSANTI - 1);
+  if (colateDiPrimaDi(summary)) motore = Math.min(motore, precedente, ENGINE_COLATE_DAI_CONTORNI - 1);
+  return motore;
+}
+
+/** what the summary says when the pours on a board were made by an older engine (see CompileSummary.poursFromOlderEngine) */
+export interface ColateDiPrima {
+  /** the engine that made them */
+  engine: number;
+  /** how many pours the board has */
+  count: number;
+  /** the fact in words */
+  detail: string;
+}
+
+const colateDiPrimaDi = (summary: unknown): ColateDiPrima | null => {
+  const c = (summary as { poursFromOlderEngine?: Partial<ColateDiPrima> } | null | undefined)?.poursFromOlderEngine;
+  return c && typeof c.count === "number" && c.count > 0
+    ? { engine: Number(c.engine ?? 0), count: c.count, detail: String(c.detail ?? "") }
+    : null;
+};
+
+/**
+ * POURS THAT ONLY A COMPILE MAKES AGAIN.
+ *
+ * A recheck re-evaluates the board it is given: it takes out necks, cleans the
+ * rings and, for a board that needs it, pours the planes again around the vias,
+ * each from the shape it already has. It does not start again from the outlines
+ * the files declare, and those shapes are an older engine's: pill pads held as
+ * their bounding box, the staircases and lobes of tscircuit's own pour, pours
+ * declared in comments or in components never used. Filed under today's
+ * engine, such a board was exportable with those pours (review of the CAD-like
+ * pours, 2026-11-11: an engine 6 board came out of a recheck under today's).
+ *
+ * So a board saved by an engine before ENGINE_COLATE_DAI_CONTORNI that has
+ * pours keeps its engine through a recheck, and the export refuses it, both
+ * saying that a compile ("Aggiorna") makes the pours again. A board with no
+ * pours has nothing to make again: null, and it is lifted as before.
+ */
+export function colateDiUnMotoreDiPrima(circuitJson: unknown, engineVersion: number): ColateDiPrima | null {
+  if (engineVersion >= ENGINE_COLATE_DAI_CONTORNI || !Array.isArray(circuitJson)) return null;
+  const count = circuitJson.filter((el) => (el as { type?: unknown } | null)?.type === "pcb_copper_pour").length;
+  if (count === 0) return null;
+  return {
+    engine: engineVersion,
+    count,
+    detail:
+      `${count === 1 ? "la colata della scheda e' stata fatta" : `le ${count} colate della scheda sono state fatte`} ` +
+      `dal motore ${engineVersion}, che non ripartiva dai contorni dichiarati nei file`,
+  };
 }
 
 /**
@@ -113,6 +178,13 @@ export function nonCertificata(summary: unknown): string | null {
     perche.push(
       `${c.detail}. La scheda NON e' certificata per l'export finche' due colate di reti diverse si toccano ` +
         `o stanno piu' vicine della loro distanza: correggi il contorno di una delle due (o la sua distanza) e premi Aggiorna`,
+    );
+  }
+  const v = colateDiPrimaDi(summary);
+  if (v) {
+    perche.push(
+      `${v.detail}. La scheda NON e' certificata per l'export finche' le colate non sono rifatte: ` +
+        `premi Aggiorna per rifarle (Ricontrolla non le rifa')`,
     );
   }
   return perche.length > 0 ? perche.join(". ") : null;

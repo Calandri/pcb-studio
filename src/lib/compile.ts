@@ -1,4 +1,4 @@
-import { CHECKS_ENGINE_VERSION, nonCertificata, type PianiSuVie } from "./engine-version";
+import { CHECKS_ENGINE_VERSION, nonCertificata, type ColateDiPrima, type PianiSuVie } from "./engine-version";
 import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
@@ -58,7 +58,7 @@ import {
 } from "./manual-edits";
 import { applyManualRoutes } from "./manual-routes";
 import {
-  conContorniDichiarati,
+  colateDichiarate,
   conDistanzeDichiarate,
   distanzeDichiarate,
   ricolaPiani,
@@ -82,8 +82,13 @@ function enginePatches(): Profile["patches"] {
   return patchesSeen;
 }
 
-/** the pour numbers, in the shape the summary declares them */
-const esitoColate = (e: EsitoRicolata): NonNullable<CompileSummary["pours"]> => ({
+/**
+ * The pour numbers, in the shape the summary declares them. `senzaPezzi`: the
+ * declarations left out because tscircuit poured nothing for them (see
+ * colateDichiarate), said with the pours that lost every piece: both are in
+ * the code and not on the copper.
+ */
+const esitoColate = (e: EsitoRicolata, senzaPezzi: string[] = []): NonNullable<CompileSummary["pours"]> => ({
   ricalcolate: e.ricolate,
   areaPrimaMm2: e.areaPrimaMm2,
   areaDopoMm2: e.areaDopoMm2,
@@ -92,7 +97,7 @@ const esitoColate = (e: EsitoRicolata): NonNullable<CompileSummary["pours"]> => 
   bricioleTolte: e.bricioleTolte,
   orfaneTolte: e.orfaneTolte,
   viaRiconosciute: e.viaRiconosciute,
-  colateSparite: e.colateSparite,
+  colateSparite: [...new Set([...e.colateSparite, ...senzaPezzi])],
   colliTagliatiMm2: e.colliTagliatiMm2,
 });
 
@@ -291,7 +296,10 @@ export interface CompileSummary {
     bricioleTolte: number;
     orfaneTolte: number;
     viaRiconosciute: number;
-    /** pours that lost every piece: they existed in the code and are not on the copper */
+    /**
+     * pours that lost every piece, and declarations tscircuit poured nothing for
+     * (see colateDichiarate): they exist in the code and are not on the copper
+     */
     colateSparite?: string[];
     /** copper narrower than the minimum trace width cut out of the pours (pour-necks.ts) */
     colliTagliatiMm2?: number;
@@ -321,6 +329,14 @@ export interface CompileSummary {
    * (see motoreDaSalvare). Absent when no via is in that state.
    */
   planesOverVias?: PianiSuVie;
+  /**
+   * The pours on the board were made by an engine before the one that pours
+   * from the declared outlines, and a recheck does not make them again: only a
+   * compile does. Written by the recheck alone; the board keeps its older
+   * engine and the export refuses it (see colateDiUnMotoreDiPrima). Absent on
+   * a compile.
+   */
+  poursFromOlderEngine?: ColateDiPrima;
   /**
    * Two pours of different nets on one layer that touch, overlap or stand
    * closer than the larger of their two clearances (see pour-pour.ts): a
@@ -692,12 +708,11 @@ export async function compileProject(
       viaHoleDiameter: projectRules.rules.minViaHoleMm,
     });
     // the planes, poured again with the copper in place: see pours-recompute.ts
+    // from the outlines the files declare, not the shrunken ones, when tscircuit poured them: see colateDichiarate
+    const dichiarate = colateDichiarate(conMano.circuitJson as never, projectFsMap);
     const ricolate = await ricolaPiani({
-      // from the outlines the files declare, not the shrunken ones: see conContorniDichiarati;
       // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
-      circuitJson: conDistanzeProprie(
-        conContorniDichiarati(conMano.circuitJson as never, projectFsMap) as never,
-      ) as never,
+      circuitJson: conDistanzeProprie(dichiarate.circuitJson as never) as never,
       // a pour holds its own distance, wider than a trace's when the board says so
       clearanceMm:
         projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
@@ -710,7 +725,7 @@ export async function compileProject(
       projectRules.rules.pasteExpansionMm ?? 0,
       { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
     );
-    const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
+    const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
     if (announce) say({ step: "Controllo le regole", progress: 0.95, circuitJson });
     const summary = await summarize(circuitJson, projectFsMap);
     summary.pours = rapportoColate;
@@ -1226,12 +1241,11 @@ export async function compileProject(
    * plane was carved around a board with no traces on it and poured straight
    * over them. See pours-recompute.ts.
    */
+  // from the outlines the files declare, not the shrunken ones, when tscircuit poured them: see colateDichiarate
+  const dichiarate = colateDichiarate(manual.circuitJson as never, projectFsMap);
   const ricolate = await ricolaPiani({
-    // from the outlines the files declare, not the shrunken ones: see conContorniDichiarati;
     // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
-    circuitJson: conDistanzeProprie(
-      conContorniDichiarati(manual.circuitJson as never, projectFsMap) as never,
-    ) as never,
+    circuitJson: conDistanzeProprie(dichiarate.circuitJson as never) as never,
     clearanceMm:
       projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
@@ -1243,7 +1257,7 @@ export async function compileProject(
     projectRules.rules.pasteExpansionMm ?? 0,
     { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
   );
-  const rapportoColate = ricolate ? esitoColate(ricolate) : undefined;
+  const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise
   // every hand-pinned component would be flagged as a spurious schX/schY
   // and the agent would chase a defect that does not exist

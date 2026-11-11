@@ -79,10 +79,14 @@ const DUE_COLATE = `export default () => (
 `;
 
 describe("what a <copperpour> declares about its distance", () => {
-  it("is read in every .tsx, in tscircuit's units, raised to the minimum and said when it is wrong", () => {
+  it("is read in every .tsx the board imports and not in comments, in tscircuit's units, raised to the minimum and said when it is wrong", () => {
     const file = {
-      "main.tsx": `<copperpour layer="inner1" connectsTo="net.GND" clearance="0.25mm" />`,
+      "main.tsx": `import { Righe } from "./righe_2"\n<copperpour layer="inner1" connectsTo="net.GND" clearance="0.25mm" />`,
+      // a copy kept aside, which the board does not import
+      "righe_vecchie.tsx": `<copperpour layer="top" connectsTo="net.GND" clearance="0.05mm" outline={[{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}]} />`,
       "righe_2.tsx": [
+        `{/* <copperpour layer="top" connectsTo="net.VBAT" clearance="0.01mm" outline={[{x: 2, y: 0}, {x: 3, y: 0}, {x: 3, y: 1}]} /> */}`,
+        `// <copperpour layer="bottom" connectsTo="net.GND" clearance="9mm" />`,
         `<copperpour layer="top" connectsTo="net.GND" clearance={0.3} outline={[{x: 0, y: 0}, {x: 1, y: 0}, {x: 1, y: 1}]} />`,
         `<copperpour layer="top" connectsTo="net.VBAT" clearance="10mil" outline={[{x: 2, y: 0}, {x: 3, y: 0}, {x: 3, y: 1}]} />`,
         `<copperpour layer="bottom" connectsTo="net.GND" clearance="0.1mm" outline={[{x: 4, y: 0}, {x: 5, y: 0}, {x: 5, y: 1}]} />`,

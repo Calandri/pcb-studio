@@ -5,7 +5,7 @@ import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { colateSenzaColli } from "@/lib/pour-necks";
 import { conDistanzeDichiarate, ricolaSeLeVieEranoParziali } from "@/lib/pours-recompute";
 import { vieSemprePassanti } from "@/lib/via-layers";
-import { CHECKS_ENGINE_VERSION, motoreDaSalvare, nonCertificata } from "@/lib/engine-version";
+import { CHECKS_ENGINE_VERSION, colateDiUnMotoreDiPrima, motoreDaSalvare, nonCertificata } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
 import { getCompileCache, getProject, hasBoard, saveCompileCache } from "@/lib/project-store";
 
@@ -115,6 +115,16 @@ export async function POST(req: Request): Promise<Response> {
     const pending = (cache.summary as { schematicPending?: unknown } | null)?.schematicPending;
     if (typeof pending === "string") summary.schematicPending = pending;
     /*
+     * A board whose pours an older engine made does not get today's engine
+     * either: what was done to them above (necks, rings, the planes around the
+     * vias) starts from the shapes they have, never from the outlines the files
+     * declare, which only a compile does. It keeps its engine and the answer
+     * says to press Aggiorna (see colateDiUnMotoreDiPrima); a board with no
+     * pours is lifted.
+     */
+    const colateDiPrima = colateDiUnMotoreDiPrima(circuitJson, cache.engineVersion);
+    if (colateDiPrima) summary.poursFromOlderEngine = colateDiPrima;
+    /*
      * Today's engine is what lets the board be exported, so it is not given to
      * a board that still has a plane over a via of another net: the planes that
      * were poured again above can come back as they were (a pour whose solver
@@ -148,6 +158,8 @@ export async function POST(req: Request): Promise<Response> {
       currentEngineVersion: CHECKS_ENGINE_VERSION,
       previousEngineVersion: cache.engineVersion,
       ...(perche ? { nonCertificata: perche } : {}),
+      // only a compile pours them again from the declared outlines: see colateDiUnMotoreDiPrima
+      ...(colateDiPrima ? { colateDaRifare: true } : {}),
       ...(ricolata.ricolata ? { pianiRicolati: true, vieParziali: ricolata.vieParziali } : {}),
       summary,
     });

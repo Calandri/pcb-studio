@@ -4,7 +4,7 @@ import { compileProject } from "@/lib/compile";
 import { DESIGN_RULES_PATH } from "@/lib/design-rules";
 import { anelloPulito, capsula, cerchio, ERRORE_CORDA_MM, rettangoloArrotondato } from "@/lib/pour-geometry";
 import { abbracciaRamePropio, colateSenzaColli } from "@/lib/pour-necks";
-import { bandaDelBordo, conContorniDichiarati, fileDellaScheda, ordinePerIlGerber, ricolaPiani } from "@/lib/pours-recompute";
+import { bandaDelBordo, conContorniDichiarati, contorniDichiarati, fileDellaScheda, ordinePerIlGerber, ricolaPiani, senzaCommenti } from "@/lib/pours-recompute";
 
 /*
  * The pours of sbb-dl-principale looked rough in the viewer (2026-11-11):
@@ -185,6 +185,15 @@ describe("the re-pour keeps the clearance as a CAD does: exactly, on every side 
     }
   });
 
+  it("a declared outline that runs past the edge of the board leaves no copper outside the board", async () => {
+    // a ground pour from x 3 to x 13 on a board whose edge is at x 10
+    const esito = await ricolaPiani({ circuitJson: [SCHEDA, GND, pianoGnd(rett(8, 0, 10, 6))], clearanceMm: 0.2, bordoMm: 0.3, larghezzaMinimaMm: 0.127 });
+    const pezzi = colate(esito.circuitJson);
+    expect(pezzi).toHaveLength(1);
+    for (const p of pezzi) for (const r of anelli(p.brep_shape)) for (const q of r) expect(q.x).toBeLessThanOrEqual(10 - 0.3 + 1e-6);
+    expect(Math.abs(area(pezzi[0].brep_shape.outer_ring.vertices) - (10 - 0.3 - 3) * 6)).toBeLessThan(0.01);
+  }, 60_000);
+
   it("own copper is held by its real shape: a pill is not its bounding box", () => {
     // a strip that reaches the end of a pill pad of its net
     const striscia: Forma = { outer_ring: { vertices: rett(0, -1, 2, 1) }, inner_rings: [] };
@@ -262,6 +271,108 @@ export default () => (
         for (const q of r) expect(Math.min(...a[k].map((z) => Math.hypot(z.x - q.x, z.y - q.y)))).toBeLessThan(1e-6);
       });
     });
+  }, 120_000);
+});
+
+/*
+ * Review of the CAD-like pours, 2026-11-11: the declarations were read off the
+ * text as it stands. An imported righe.tsx holding only two pours in JSX
+ * comments gave 100 mm2 of ground on the bottom and a ground pour over the
+ * whole top face, and a `<copperpour>` in a component never used, or behind a
+ * condition that is false, was poured all the same.
+ */
+describe("a <copperpour> in a comment, in a component never used or behind a false condition is not poured", () => {
+  const REGOLE = JSON.stringify({ preset: "custom", rules: { minTraceWidthMm: 0.127, minClearanceMm: 0.152, pourClearanceMm: 0.152, autoPlaneVias: false, autoroute: false } });
+  const scheda = (righe: string, altro = "") => ({
+    "main.tsx": `import { Righe } from "./righe"
+export default () => (
+  <board width="24mm" height="16mm">
+    <net name="GND" />
+    <resistor name="R1" resistance="1k" footprint="0402" pcbX={8} pcbY={-6} />
+    <trace from=".R1 > .pin1" to="net.GND" />
+    ${altro}
+    <Righe />
+  </board>
+)
+`,
+    "righe.tsx": righe,
+    [DESIGN_RULES_PATH]: REGOLE,
+  });
+  // a board with a pour of its own, as any board that has pours: the reviewer's file only adds the two in comments
+  const PICCOLA = `<copperpour layer="top" connectsTo="net.GND" outline={[{x: 6, y: 2}, {x: 10, y: 2}, {x: 10, y: 6}, {x: 6, y: 6}]} />`;
+  const COMMENTATE = `export const Righe = () => (
+  <>
+    {/* <copperpour layer="bottom" connectsTo="net.GND" outline={[{x: -5, y: -5}, {x: 5, y: -5}, {x: 5, y: 5}, {x: -5, y: 5}]} /> */}
+    {/* <copperpour layer="top" connectsTo="net.GND" /> */}
+  </>
+)
+`;
+
+  it("comments go before anything is read, strings and template literals stay as they are", () => {
+    const testo = [
+      `const url = "http://x/*y*/" // the rest of the line`,
+      "const t = `a // b ${ {k: 1}.k /* in code */ } /* text */ c`",
+      `/* a block`,
+      String.raw`   over two lines */ const z = 'don\'t // keep'`,
+      `<copperpour layer="top" /> {/* <copperpour layer="bottom" /> */}`,
+    ].join("\n");
+    expect(senzaCommenti(testo)).toBe(
+      [
+        `const url = "http://x/*y*/" `,
+        "const t = `a // b ${ {k: 1}.k   } /* text */ c`",
+        ` `,
+        String.raw` const z = 'don\'t // keep'`,
+        `<copperpour layer="top" /> { }`,
+      ].join("\n"),
+    );
+    expect(contorniDichiarati(COMMENTATE)).toEqual([]);
+  });
+
+  it("the reviewer's two pours in comments give no copper", async () => {
+    const { circuitJson, summary } = await compileProject(scheda(COMMENTATE, PICCOLA));
+    const pezzi = colate(circuitJson);
+    expect(pezzi.filter((p) => p.layer === "bottom")).toHaveLength(0);
+    // on top only the board's own pour, inside its outline: no ground over the whole face
+    expect(pezzi.length).toBeGreaterThan(0);
+    for (const p of pezzi) {
+      for (const q of p.brep_shape.outer_ring.vertices) {
+        expect(q.x).toBeGreaterThanOrEqual(6 - 1e-6);
+        expect(q.y).toBeGreaterThanOrEqual(2 - 1e-6);
+        expect(q.x).toBeLessThanOrEqual(10 + 1e-6);
+        expect(q.y).toBeLessThanOrEqual(6 + 1e-6);
+      }
+    }
+    // a pour in a comment is not a declaration: nothing to say about it
+    expect(summary.pours?.colateSparite).toEqual([]);
+  }, 120_000);
+
+  it("a component never used and a false condition give no copper and are said; a pour declared in an imported file is poured from its outline", async () => {
+    const righe = `// <copperpour layer="bottom" connectsTo="net.GND" outline={[{x: -10, y: -6}, {x: 10, y: -6}, {x: 10, y: 6}]} />
+/* <copperpour layer="top" connectsTo="net.GND" /> */
+const SOTTO_L_ANTENNA_C_E_RAME = false
+export const Righe = () => (
+  <>
+    {/* <copperpour layer="bottom" connectsTo="net.GND" /> */}
+    <copperpour layer="top" connectsTo="net.GND" outline={[{x: -10, y: 2}, {x: -4, y: 2}, {x: -4, y: 6}, {x: -10, y: 6}]} />
+    {SOTTO_L_ANTENNA_C_E_RAME && <copperpour layer="bottom" connectsTo="net.GND" outline={[{x: -10, y: -6}, {x: -4, y: -6}, {x: -4, y: -2}, {x: -10, y: -2}]} />}
+  </>
+)
+export const MaiUsata = () => (
+  <copperpour layer="bottom" connectsTo="net.GND" outline={[{x: 2, y: -6}, {x: 6, y: -6}, {x: 6, y: -2}, {x: 2, y: -2}]} />
+)
+`;
+    const { circuitJson, summary } = await compileProject(scheda(righe));
+    const pezzi = colate(circuitJson);
+    expect(pezzi.filter((p) => p.layer === "bottom")).toHaveLength(0);
+    const sopra = pezzi.filter((p) => p.layer === "top");
+    expect(sopra).toHaveLength(1);
+    const v = sopra[0].brep_shape.outer_ring.vertices;
+    for (const q of [{ x: -10, y: 2 }, { x: -4, y: 2 }, { x: -4, y: 6 }, { x: -10, y: 6 }]) {
+      expect(Math.min(...v.map((p) => Math.hypot(p.x - q.x, p.y - q.y)))).toBeLessThan(0.002);
+    }
+    expect(Math.abs(area(v) - 24)).toBeLessThan(0.002);
+    // the two that are in the code and not on the board, by the ids they would have had; the comments are not there
+    expect(summary.pours?.colateSparite).toEqual(["pcb_copper_pour_dichiarata_1", "pcb_copper_pour_dichiarata_2"]);
   }, 120_000);
 });
 

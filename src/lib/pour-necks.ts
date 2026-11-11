@@ -463,8 +463,10 @@ export function abbracciaRamePropio(forme: FormaColata[], propri: RamePropio[], 
     }
     if (aggiunti === 0) return forme;
     const out: FormaColata[] = [];
-    for (const pezzo of tutto.decompose()) {
-      cs(pezzo);
+    // all of them freed, the ones after a shape we do not understand included
+    const uniti = tutto.decompose();
+    daLiberare.push(...uniti);
+    for (const pezzo of uniti) {
       const contorni = pezzo.toPolygons() as Array<Array<[number, number]>>;
       const esterni = contorni.filter((c) => c.length >= 3 && areaConSegno(c) > 0);
       if (esterni.length !== 1) {
@@ -488,3 +490,55 @@ export function abbracciaRamePropio(forme: FormaColata[], propri: RamePropio[], 
   }
 }
 
+/**
+ * The shapes cut to an outline (the board's): what lies outside it goes, the
+ * rest comes back as it was, in as many shapes as the cut leaves. A declared
+ * outline may run past the edge of the board, and the band along the edge
+ * (bandaDelBordo) only takes the edge clearance off the inside of it: the
+ * copper beyond stayed on the board's Gerber, outside the rout. Without the
+ * geometry runtime, or on any failure, the shapes come back untouched.
+ */
+export function ritagliaAlContorno(forme: FormaColata[], contorno: Punto[]): FormaColata[] {
+  if (forme.length === 0 || contorno.length < 3) return forme;
+  const m = getManifoldModuleSync();
+  if (!m) return forme;
+  const daLiberare: Array<{ delete(): void }> = [];
+  const cs = <T extends { delete(): void }>(o: T): T => {
+    daLiberare.push(o);
+    return o;
+  };
+  try {
+    const dentro = cs(m.CrossSection.ofPolygons([contorno.map((q) => [q.x, q.y] as [number, number])], "EvenOdd"));
+    const out: FormaColata[] = [];
+    for (const f of forme) {
+      const anelli = [f.outer_ring, ...(f.inner_rings ?? [])]
+        .filter((a): a is Anello => !!a && Array.isArray(a.vertices) && a.vertices.length >= 3)
+        .map((a) => a.vertices.map((v) => [v.x, v.y] as [number, number]));
+      if (anelli.length === 0) continue;
+      const tagliata = cs(cs(m.CrossSection.ofPolygons(anelli, "EvenOdd")).intersect(dentro));
+      const pezzi = tagliata.decompose();
+      daLiberare.push(...pezzi);
+      for (const pezzo of pezzi) {
+        const contorni = pezzo.toPolygons() as Array<Array<[number, number]>>;
+        const esterni = contorni.filter((c) => c.length >= 3 && areaConSegno(c) > 0);
+        if (esterni.length !== 1) {
+          if (esterni.length === 0) continue;
+          return forme;
+        }
+        const buchi = contorni.filter((c) => c.length >= 3 && areaConSegno(c) < 0);
+        out.push({ outer_ring: anello(esterni[0]), inner_rings: buchi.map(anello) });
+      }
+    }
+    return out;
+  } catch {
+    return forme;
+  } finally {
+    for (const o of daLiberare) {
+      try {
+        o.delete();
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}
