@@ -50,7 +50,7 @@ import { partenzaRicordata, percorsoDellaPista, ROUTE_LIMITS, round4, type Manua
 import { nomiDeiPiedini } from "../open-connections";
 import { eStratoDiRame, stratiDiRame } from "../strati-rame";
 import { sagomaDiZona, type Sagoma } from "../zona";
-import { direzioneFra, inUnita, scatolaDellaZona, type Direzione, type Punto } from "./geometria";
+import { direzioneVicina, inUnita, scatolaDellaZona, type Direzione, type Punto } from "./geometria";
 import { connessioneScritta, larghezza as larghezzaScrivibile, misureDellaVia } from "./verifica";
 
 type El = { type: string; [key: string]: unknown };
@@ -87,12 +87,14 @@ export type Tenuta =
   /** it runs over a pad of its net its trace has no end in */
   | { tipo: "pad"; ostacolo: number };
 
-/** copper joined to a via by touching its ring alone */
+/** copper that holds a via where it is: joined to it by its ring alone, or through the end of a trace that stands in it */
 export type TenutaDellaVia =
   /** a trace that runs through the ring with no corner at the centre */
   | { tipo: "pista"; pista: number; tratto: number }
   /** a pad of its net it stands on, which none of its traces reaches */
-  | { tipo: "pad"; ostacolo: number };
+  | { tipo: "pad"; ostacolo: number }
+  /** a trace ends at its centre INSIDE a pad: the via in the pad is what joins that pad, and the end would leave the pad with it */
+  | { tipo: "capo"; ostacolo: number; pista: number };
 
 /** one stretch of a trace: the copper between two points of its path, on one layer */
 export interface TrattoDelModello {
@@ -103,7 +105,12 @@ export interface TrattoDelModello {
   /** the index, in the `route` of its pcb_trace, of the point it starts from (it ends at the next): how the viewer names a stretch */
   indiceDiRoute: number;
   strato: ManualRoutePoint["layer"];
-  /** from `punti[da]` to `punti[da + 1]`; null when the stretch is not at 0, 45 or 90 degrees on the grid */
+  /**
+   * From `punti[da]` to `punti[da + 1]`: the direction it has, exactly or within
+   * a micron (see direzioneVicina). Null when it is at none: such a stretch is
+   * a given where it is, and blocks only a move that would have to read its
+   * direction.
+   */
   direzione: Direzione | null;
   /** what stands at `punti[da]` and at `punti[da + 1]` */
   capi: [Capo, Capo];
@@ -128,7 +135,7 @@ export interface PistaDelModello {
   tratti: TrattoDelModello[];
   /** a curve drawn as chords: none of its stretches has a direction to keep */
   arco: boolean;
-  /** its first stretch that is not at 0, 45 or 90 degrees; -1 when all are */
+  /** its first stretch that is at none of 0, 45 or 90 degrees, not even by a hair; -1 when all are */
   storto: number;
   /** the size of the vias it changes layer in; null when it has none */
   via: { diametro: number; foro: number } | null;
@@ -494,7 +501,7 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
         }
         continue;
       }
-      const direzione = direzioneFra({ x: inUnita(a.x), y: inUnita(a.y) }, { x: inUnita(b.x), y: inUnita(b.y) });
+      const direzione = direzioneVicina({ x: inUnita(a.x), y: inUnita(a.y) }, { x: inUnita(b.x), y: inUnita(b.y) });
       if (!direzione && pista.storto < 0) pista.storto = pista.tratti.length;
       const tratto: TrattoDelModello = {
         indice: pista.tratti.length,
@@ -568,13 +575,24 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
   for (const pista of piste) {
     const sulleVie = suVia.get(pista)!;
     const ultimo = pista.punti.length - 1;
+    // the pads its two ends stand in; a trace with no stretch (the route of a via) has ends all the same
+    const padDelCapo = new Map<number, number | null>();
+    for (const k of new Set([0, ultimo])) {
+      const pad = padSotto(pista.punti[k], pista.rete);
+      padDelCapo.set(k, pad);
+      if (pad === null) continue;
+      if (!pista.padDeiCapi.includes(pad)) pista.padDeiCapi.push(pad);
+      const via = sulleVie[k];
+      if (via !== undefined && !vie[via].tiene.some((t) => t.tipo === "capo" && t.ostacolo === pad)) {
+        vie[via].tiene.push({ tipo: "capo", ostacolo: pad, pista: pista.indice });
+      }
+    }
     for (const tratto of pista.tratti) {
       for (const lato of [0, 1] as const) {
         const k = tratto.da + lato;
         const via = sulleVie[k];
         if (k === 0 || k === ultimo) {
-          const pad = padSotto(pista.punti[k], pista.rete);
-          if (pad !== null && !pista.padDeiCapi.includes(pad)) pista.padDeiCapi.push(pad);
+          const pad = padDelCapo.get(k) ?? null;
           tratto.capi[lato] = via !== undefined ? { tipo: "via", via } : pad !== null ? { tipo: "pad", ostacolo: pad } : { tipo: "libero" };
         } else if (via !== undefined) {
           tratto.capi[lato] = { tipo: "via", via };

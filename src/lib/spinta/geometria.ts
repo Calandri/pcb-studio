@@ -61,6 +61,35 @@ export function direzioneFra(a: Punto, b: Punto): Direzione | null {
   return direzioneEsatta(dx, dy) ? { dx: Math.sign(dx), dy: Math.sign(dy) } : null;
 }
 
+/** how far a stretch may be from one of the eight directions and still HAVE it, in units: a micron */
+export const TOLLERANZA_DI_DIREZIONE = 10;
+
+/**
+ * THE DIRECTION A STRETCH HAS, EXACT OR BY A HAIR. The sources of a board
+ * write stretches at 45 degrees with their ends rounded: off the exact
+ * direction by a few tenths of a micron (measured on a real board: 104 of 994
+ * stretches, 101 of them by 0.2 micron at most). Such a stretch has the
+ * direction it was drawn at. A move READS that direction and WRITES exact
+ * copper: the line it works on goes through the end of the stretch that does
+ * not move, at the exact direction.
+ *
+ * Null when the stretch is further than the tolerance from every direction;
+ * a stretch shorter than the tolerance both ways has a direction only if it
+ * is exactly at one.
+ */
+export function direzioneVicina(a: Punto, b: Punto): Direzione | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lungoX = Math.abs(dx);
+  const lungoY = Math.abs(dy);
+  if (lungoX <= TOLLERANZA_DI_DIREZIONE && lungoY <= TOLLERANZA_DI_DIREZIONE) return direzioneFra(a, b);
+  const scarto = Math.min(lungoX, lungoY, Math.abs(lungoX - lungoY));
+  if (scarto > TOLLERANZA_DI_DIREZIONE) return null;
+  if (scarto === lungoX) return { dx: 0, dy: Math.sign(dy) };
+  if (scarto === lungoY) return { dx: Math.sign(dx), dy: 0 };
+  return { dx: Math.sign(dx), dy: Math.sign(dy) };
+}
+
 export const eDiagonale = (d: Direzione): boolean => d.dx !== 0 && d.dy !== 0;
 
 /** how long one step along a direction is, in mm: a unit, or its diagonal */

@@ -25,9 +25,19 @@ export type PresaDelRame =
       indice: number;
     };
 
-/** a thing that can be grabbed, with where it is: the viewer puts a hit target on it */
+/**
+ * A thing that can be grabbed, with where it is: the viewer puts a hit target
+ * on it.
+ *
+ * `fermo` is on a target that can never start a gesture, for a reason known
+ * before anyone touches it (a stretch that leaves a pad, one that ends on a
+ * via, a T junction): the sentence iniziaGesto would refuse it with. The
+ * viewer draws such a target UNDER the handles of the parts, so that a press
+ * on a part is never taken by copper that could not move anyway; copper that
+ * can move is over them.
+ */
 export type BersaglioDelRame =
-  | { tipo: "via"; pcbViaId: string; x: number; y: number; outerDiameter: number }
+  | { tipo: "via"; pcbViaId: string; x: number; y: number; outerDiameter: number; fermo?: string }
   | {
       tipo: "tratto";
       pcbTraceId: string;
@@ -38,6 +48,7 @@ export type BersaglioDelRame =
       y2: number;
       layer: string;
       width: number;
+      fermo?: string;
     };
 
 /** one straight stretch of moved copper, as it is drawn while the gesture lasts */

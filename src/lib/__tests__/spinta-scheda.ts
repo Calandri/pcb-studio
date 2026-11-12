@@ -32,6 +32,8 @@
  * rule of the default set (JLCPCB standard, drawn at 0.2 mm).
  */
 import { resolveDesignRules } from "@/lib/design-rules";
+import { emptyManualEdits, type ManualEdits } from "@/lib/manual-edits";
+import { applyManualRoutes, parseManualRoutes, type ManualRoutePoint } from "@/lib/manual-routes";
 import { pezzo, piedinoPassante, rete, scheda, trace, wire, type El } from "./scheda-di-prova";
 
 export const REGOLE = resolveDesignRules({}).rules;
@@ -107,10 +109,75 @@ export const rameDiSerie = (): Record<string, El> => ({
   foro: { type: "pcb_hole", pcb_hole_id: "foro_1", hole_shape: "circle", hole_diameter: 1, x: 10, y: 1 },
 });
 
+/**
+ * THREE TRACES WITH A STRETCH OFF ITS DIRECTION BY A HAIR, as the sources of a
+ * real board write them (a stretch at 45 degrees with its ends rounded): by two
+ * tenths of a micron on SIG, by one on PWR, twice, and by a whole micron, the
+ * most that still has a direction, on AUX. To hand to schedaDiSpinta.
+ */
+export const rameQuasiEsatto = (): Record<string, El> => ({
+  t_sig: trace("t_sig", "st_SIG_0", [
+    wire(-14, 8), wire(-12, 8), wire(-10.0002, 6), wire(-4, 6),
+    cambio(-4, 6), wire(-4, 6, "bottom"), wire(4, 6, "bottom"), cambio(4, 6, "bottom", "top"),
+    wire(4, 6), wire(10, 6), wire(12, 8), wire(15, 8),
+  ]),
+  t_pwr: trace("t_pwr", "st_PWR_0", [wire(-14, -8), wire(-14, -6), wire(-12, -4.0001), wire(8, -4.0001), wire(12, -8), wire(15, -8)]),
+  t_aux: trace("t_aux", "st_AUX_0", [wire(16, 8), wire(18.001, 8), wire(18, -8), wire(16, -8)]),
+});
+
 /** the test board; `rame` replaces or adds pieces of copper by their name, `null` takes one out */
 export function schedaDiSpinta(rame: Record<string, El | null> = {}): El[] {
   const pezzi: Record<string, El | null> = { ...rameDiSerie(), ...rame };
   return [ilContorno(), ...pezziEReti(), ...Object.values(pezzi).filter((e): e is El => e !== null)];
+}
+
+const su = (x: number, y: number): ManualRoutePoint => ({ x, y, layer: "top" });
+const sotto = (x: number, y: number): ManualRoutePoint => ({ x, y, layer: "bottom" });
+
+/**
+ * THE SAME COPPER AS HAND ROUTES, written as another CAD writes the copper of
+ * a net: pieces of two, three or four points chained end to end, and every via
+ * a route of its own (two points in one place on two layers, with its size).
+ * SIG, GND and PWR are hand copper; AUX and the lone via of PWR stay copper of
+ * the files, so that one board has both.
+ */
+export const routeAMano = (quasi = false) => {
+  const pezzoDi = (net: string, points: ManualRoutePoint[], altro: Record<string, unknown> = {}) => ({ connection: `net.${net}`, net, width: 0.2, points, ...altro });
+  const viaDella = (net: string, x: number, y: number) => pezzoDi(net, [su(x, y), sotto(x, y)], { viaDiameter: 0.6, viaHoleDiameter: 0.3 });
+  return parseManualRoutes([
+    pezzoDi("SIG", [su(-14, 8), su(-12, 8)]),
+    pezzoDi("SIG", [su(-12, 8), su(-10, 6)]),
+    pezzoDi("SIG", [su(-10, 6), su(-4, 6)]),
+    viaDella("SIG", -4, 6),
+    pezzoDi("SIG", [sotto(-4, 6), sotto(4, 6)]),
+    viaDella("SIG", 4, 6),
+    pezzoDi("SIG", [su(4, 6), su(10, 6), su(12, 8), su(15, 8)]),
+    pezzoDi("GND", [su(-15, 8), su(-17, 8)]),
+    pezzoDi("GND", [su(-17, 8), su(-17, -8)]),
+    pezzoDi("GND", [su(-17, -8), su(-15, -8)]),
+    // the branch: it leaves the side at a T junction and ends on a via
+    pezzoDi("GND", [su(-17, -2), su(-8, -2)]),
+    viaDella("GND", -8, -2),
+    pezzoDi("GND", [su(-15, -8), su(-15, -11), su(0, -11)]),
+    pezzoDi("PWR", [su(-14, -8), su(-14, -6), su(-12, -4)]),
+    pezzoDi("PWR", [su(-12, -4), su(8, -4)]),
+    // `quasi`: its stretch at 45 degrees off by a micron, the most that still has a direction
+    pezzoDi("PWR", [su(8, -4), su(quasi ? 12.001 : 12, -8), su(15, -8)]),
+  ]);
+};
+
+/** the test board with its copper as hand routes: the saved board, and the file that lays it */
+export function schedaAMano(quasi = false): { scheda: El[]; edits: ManualEdits } {
+  const { t_aux, v_pwr, keepout, foro } = { ...rameDiSerie(), ...(quasi ? rameQuasiEsatto() : {}) };
+  const edits = { ...emptyManualEdits(), pcb_routes: routeAMano(quasi) };
+  const posata = applyManualRoutes({
+    circuitJson: [ilContorno(), ...pezziEReti(), t_aux, v_pwr, keepout, foro],
+    routes: edits.pcb_routes,
+    vias: [],
+    viaDiameter: REGOLE.minViaDiameterMm,
+    viaHoleDiameter: REGOLE.minViaHoleMm,
+  });
+  return { scheda: posata.circuitJson as El[], edits };
 }
 
 /** a generator of numbers in [0, 1) that gives the same run from the same seed (mulberry32) */

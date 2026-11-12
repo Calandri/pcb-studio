@@ -213,17 +213,22 @@ function pistaFerma(pista: PistaDelModello): Blocco | null {
   if (pista.ferma) {
     return { motivo: "non_salvabile", cosa: cosaPista(pista, 0), dove, messaggio: `bloccato: ${pista.ferma} (${nomeDellaPista(pista)})` };
   }
-  if (pista.storto >= 0) {
-    const storto = pista.tratti[pista.storto];
-    const [a, b] = capiDelTratto(pista, storto);
-    return {
-      motivo: "direzione",
-      cosa: cosaPista(pista, storto.indice),
-      dove: { ...mezzo(segmento(a, b)), layer: storto.strato },
-      messaggio: `bloccato: la pista ${nomeDellaPista(pista)} ha un tratto che non e' a 0, 45 o 90 gradi`,
-    };
-  }
   return null;
+}
+
+/**
+ * A stretch the move would have to read a direction from, and that has none.
+ * Only such a stretch blocks: one the move does not touch is a given, whatever
+ * its angle.
+ */
+function bloccoDelTrattoStorto(pista: PistaDelModello, tratto: TrattoDelModello): Blocco {
+  const [a, b] = capiDelTratto(pista, tratto);
+  return {
+    motivo: "direzione",
+    cosa: cosaPista(pista, tratto.indice),
+    dove: { ...mezzo(segmento(a, b)), layer: tratto.strato },
+    messaggio: `bloccato: la pista ${nomeDellaPista(pista)} ha un tratto che non e' a 0, 45 o 90 gradi`,
+  };
 }
 
 /** the block of something joined to a stretch along its run */
@@ -447,6 +452,31 @@ function giudica(modello: Modello, pezzi: Pezzo[], fuori: { piste: Set<number>; 
   return peggio.blocco;
 }
 
+/**
+ * AN END OF A TRACE CARRIED INTO A PAD OF ITS OWN NET (with the via it stands
+ * on, or with the corner it shares with the trace chained to it). The check of
+ * the exits looks at the two ENDS of every trace: an end in a pad is the exit
+ * of that pad, and the stretch that reaches it must leave it straight. A corner
+ * in the middle of a trace is not looked at, an end is: so an end does not go
+ * into a pad. The pad is taken for its box, as that check takes it. Null when
+ * the end stands in none.
+ */
+function capoInUnPad(modello: Modello, pista: PistaDelModello, capo: { x: number; y: number; layer: string }): Blocco | null {
+  for (const j of modello.vicino.ostacoli.vicini(capo.x, capo.y, capo.x, capo.y)) {
+    const o = modello.ostacoli[j];
+    if (o.tipo !== "pad" || !stessaRete(o.rete, pista.rete) || (o.strato !== null && o.strato !== capo.layer)) continue;
+    const box = ingombroForma(o.forma);
+    if (capo.x < box.minX - CONTATTO_MM || capo.x > box.maxX + CONTATTO_MM || capo.y < box.minY - CONTATTO_MM || capo.y > box.maxY + CONTATTO_MM) continue;
+    return {
+      motivo: "pad",
+      cosa: cosaPad(o),
+      dove: { x: o.forma.x, y: o.forma.y, ...(o.strato ? { layer: o.strato } : {}) },
+      messaggio: `bloccato dalla piazzola ${o.nome}: la pista ci entrerebbe di traverso`,
+    };
+  }
+  return null;
+}
+
 /** a stretch of a trace as a piece to judge: its new place, and the one it had */
 const pezzoDiPista = (pista: PistaDelModello, strato: string, nuovo: Segmento, prima: Segmento, aggiunto = false): Pezzo => ({
   ...nuovo,
@@ -521,9 +551,10 @@ function vicinoDi(modello: Modello, pista: PistaDelModello, tratto: TrattoDelMod
     suo = sua.tratti[capo.tratto];
     latoLontano = capo.lato === 0 ? 1 : 0;
   }
-  if (!suo?.direzione) {
+  if (!suo) {
     return { motivo: "gomito", cosa: questo, dove, messaggio: "bloccato: il tratto non ha due tratti vicini da allungare" };
   }
+  if (!suo.direzione) return bloccoDelTrattoStorto(sua, suo);
   const oltre = suo.capi[latoLontano].tipo === "vertice" ? sua.tratti[suo.indice + (latoLontano === 0 ? -1 : 1)]?.direzione : null;
   return {
     pista: sua,
@@ -563,7 +594,7 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
   if ("motivo" in vn) return bloccato(vn);
   if (tratto.tiene.length > 0) return bloccato(bloccoDellaTenuta(modello, tratto.tiene[0], tratto.strato));
   const ds = tratto.direzione;
-  if (!ds) return bloccato({ motivo: "direzione", cosa: questo, dove: alCentro, messaggio: "bloccato: il tratto non e' a 0, 45 o 90 gradi" });
+  if (!ds) return bloccato(bloccoDelTrattoStorto(pista, tratto));
 
   const A = unita(a);
   const B = unita(b);
@@ -591,11 +622,33 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
    * unit when the two are both at 45 degrees: so the line moves by two steps
    * at a time there, and by ten times as many when the corners must stay on
    * whole microns (hand copper).
+   *
+   * THE THREE LINES ARE EXACT, each through a point that is on the grid: the
+   * neighbours' through their far ends, which do not move, and the stretch's
+   * own through its first end. Where the copper was drawn exact they cross in
+   * the corners that are there, and the line can move by whole steps from
+   * where it is. Where a stretch was off its direction by a hair (see
+   * direzioneVicina) they need not cross on the grid as they stand: the places
+   * of the line that put BOTH corners on the grid come round every `passo`,
+   * and are looked for among the first `passo` of them.
    */
   const griglia = Math.max(pista.griglia, vp.pista.griglia, vn.pista.griglia);
   const passo = griglia * Math.max(passoDiTraslazione(rs, rp), passoDiTraslazione(rs, rn));
-  const quanto = passo * Math.round(((rs.a * spostamento.x + rs.b * spostamento.y) * UNITA_PER_MM) / passo);
-  if (quanto === 0) return fermo();
+  const suGriglia = (i: ReturnType<typeof incrocio>): boolean => i.tipo === "punto" && i.x % griglia === 0 && i.y % griglia === 0;
+  const chiesto = (rs.a * spostamento.x + rs.b * spostamento.y) * UNITA_PER_MM;
+  // less than half a step: the stretch stays as it is, and nothing of the trace is written again
+  if (Math.abs(chiesto) < passo / 2) return fermo();
+  let quanto: number | null = null;
+  for (let resto = 0; resto < passo; resto++) {
+    const prova = traslata(rs, resto);
+    if (!suGriglia(incrocio(rp, prova)) || !suGriglia(incrocio(prova, rn))) continue;
+    const vicino = resto + passo * Math.round((chiesto - resto) / passo);
+    if (quanto === null || Math.abs(vicino - chiesto) < Math.abs(quanto - chiesto)) quanto = vicino;
+  }
+  if (quanto === null) {
+    // two neighbours at 45 degrees whose lines never cross a line of the stretch both on the grid
+    return bloccato({ motivo: "direzione", cosa: questo, dove: alCentro, messaggio: "bloccato: un vertice cadrebbe fuori dalla griglia" });
+  }
   const nuova = traslata(rs, quanto);
   const ia = incrocio(rp, nuova);
   const ib = incrocio(nuova, rn);
@@ -641,6 +694,12 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
     const punti = percorsi.get(di.indice)!;
     return segmento(punti[t.da], punti[t.da + 1]);
   };
+  // a corner shared with a chained trace is an END of both: it does not go into a pad of their net
+  for (const [v, dove] of [[vp, ia], [vn, ib]] as const) {
+    if (v.pista === pista) continue;
+    const nelPad = capoInUnPad(modello, pista, { ...mm(dove), layer: tratto.strato });
+    if (nelPad) return bloccato(nelPad);
+  }
   // what the two neighbours held, they still hold
   for (const v of [vp, vn]) {
     for (const tenuta of v.tratto.tiene) {
@@ -663,6 +722,30 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
     vie: [],
     spostamento: { x: rs.a * traslazione, y: rs.b * traslazione },
   };
+}
+
+/**
+ * The corners of a path where the copper folds back by more than a right
+ * angle: two stretches of one layer that meet at 45 degrees, or turn back on
+ * themselves. Where the etching bites deeper.
+ */
+function angoliAcuti(punti: readonly ManualRoutePoint[]): ManualRoutePoint[] {
+  const out: ManualRoutePoint[] = [];
+  for (let k = 1; k + 1 < punti.length; k++) {
+    const [a, b, c] = [punti[k - 1], punti[k], punti[k + 1]];
+    if (a.layer !== b.layer || b.layer !== c.layer) continue;
+    const [A, B, C] = [unita(a), unita(b), unita(c)];
+    if ((B.x - A.x) * (C.x - B.x) + (B.y - A.y) * (C.y - B.y) < 0) out.push(b);
+  }
+  return out;
+}
+
+/** the first acute corner a path has that the path it comes from had not; null when it has no more of them than that one */
+function angoloAcutoNuovo(prima: readonly ManualRoutePoint[], dopo: readonly ManualRoutePoint[]): ManualRoutePoint | null {
+  const erano = angoliAcuti(prima);
+  const sono = angoliAcuti(dopo);
+  if (sono.length <= erano.length) return null;
+  return sono.find((q) => !erano.some((e) => e.x === q.x && e.y === q.y && e.layer === q.layer)) ?? sono[0];
 }
 
 /**
@@ -730,10 +813,11 @@ export function spostaVia(modello: Modello, quale: number, a: { x: number; y: nu
     /** the stretch between the point `k` of the path, at the via, and its neighbour `fisso`, drawn again; the corner it gains, if any */
     const rifai = (k: number, fisso: number): { blocco: Blocco } | { gomito: ManualRoutePoint | null } => {
       const tratto = pista.tratti.find((t) => t.da === Math.min(k, fisso))!;
+      if (!tratto.direzione) return { blocco: bloccoDelTrattoStorto(pista, tratto) };
       const lontano = pista.punti[fisso];
       const P = unita(lontano);
-      // from the fixed end toward the via: the direction of the stretch, or its opposite
-      const verso = fisso < k ? tratto.direzione! : { dx: -tratto.direzione!.dx, dy: -tratto.direzione!.dy };
+      // from the fixed end toward the via: the direction of the stretch, or its opposite. The first leg is exact, from that end
+      const verso = fisso < k ? tratto.direzione : opposta(tratto.direzione);
       const g = gambe(P, V, verso);
       const era = passiLungo(P, C, verso) * passoMm(verso);
       if (g.a * passoMm(verso) < lunghezzaMinima(pista, era) - EPS_MM) {
@@ -775,28 +859,20 @@ export function spostaVia(modello: Modello, quale: number, a: { x: number; y: nu
         if ("blocco" in esito) return bloccato(esito.blocco);
         if (esito.gomito) punti.push(esito.gomito);
       }
-      /*
-       * An END of the trace carried into a pad of its own net: the trace would
-       * enter that pad along its last leg, which need not be straight (the
-       * check of the exits looks at exactly this).
-       */
       if (k === 0 || k === ultimo) {
-        for (const j of modello.vicino.ostacoli.vicini(arrivo.x, arrivo.y, arrivo.x, arrivo.y)) {
-          const o = modello.ostacoli[j];
-          if (o.tipo !== "pad" || !stessaRete(o.rete, pista.rete) || (o.strato !== null && o.strato !== p.layer)) continue;
-          // the box of the pad, which is what the check of the exits takes a pad for
-          const box = ingombroForma(o.forma);
-          const dentro = (x: number, y: number) =>
-            x >= box.minX - CONTATTO_MM && x <= box.maxX + CONTATTO_MM && y >= box.minY - CONTATTO_MM && y <= box.maxY + CONTATTO_MM;
-          if (!dentro(arrivo.x, arrivo.y) || dentro(via.x, via.y)) continue;
-          return bloccato({
-            motivo: "pad",
-            cosa: cosaPad(o),
-            dove: { x: o.forma.x, y: o.forma.y, ...(o.strato ? { layer: o.strato } : {}) },
-            messaggio: `bloccato dalla piazzola ${o.nome}: la pista ci entrerebbe di traverso`,
-          });
-        }
+        const nelPad = capoInUnPad(modello, pista, { ...arrivo, layer: p.layer });
+        if (nelPad) return bloccato(nelPad);
       }
+    }
+    // where the trace goes through the via on one layer, its two stretches are both drawn again: the corner between them is new
+    const acuto = angoloAcutoNuovo(pista.punti, punti);
+    if (acuto) {
+      return bloccato({
+        motivo: "angolo_acuto",
+        cosa: cosaPista(pista, 0),
+        dove: { x: acuto.x, y: acuto.y, layer: acuto.layer },
+        messaggio: `bloccato: la pista ${nomeDellaPista(pista)} farebbe un angolo acuto`,
+      });
     }
     piste.push({ pista: i, punti });
   }
@@ -834,6 +910,9 @@ function bloccoDellaTenutaDiVia(modello: Modello, via: ViaDelModello, tenuta: Te
     motivo: "collegamento",
     cosa: cosaPad(pad),
     dove: { x: pad.forma.x, y: pad.forma.y, ...(pad.strato ? { layer: pad.strato } : {}) },
-    messaggio: `bloccato: la via e' collegata a ${pad.nome} solo perche' lo tocca`,
+    messaggio:
+      tenuta.tipo === "capo"
+        ? `bloccato: la via sta nella piazzola ${pad.nome}, dove finisce la sua pista: spostata, la staccherebbe`
+        : `bloccato: la via e' collegata a ${pad.nome} solo perche' lo tocca`,
   };
 }
