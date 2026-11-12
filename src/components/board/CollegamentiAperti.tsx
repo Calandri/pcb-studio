@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
-import { apertiDellaScheda, type CollegamentiAperti, type CollegamentoAperto } from "@/lib/open-connections";
+import { apertiDellaScheda, rameDellaScheda, type CollegamentiAperti, type CollegamentoAperto } from "@/lib/open-connections";
 
 /**
  * THE OPEN CONNECTIONS, ON THE BOARD.
@@ -11,7 +11,9 @@ import { apertiDellaScheda, type CollegamentiAperti, type CollegamentoAperto } f
  * nothing said where they were: "i collegamenti mancanti non c'e' modo di
  * vederli visivamente" (Niccolo', 2026-11-12). The view "Collegamenti
  * mancanti" promised straight lines and drew none (its flag,
- * is_showing_rats_nest, was read by nobody).
+ * is_showing_rats_nest, was read by nobody), and the dashed lines of a selected
+ * part ran between pads the copper already joined, so they were taken for
+ * open connections.
  *
  * Here they are drawn: one thin dashed line per missing segment
  * (open-connections.ts), in a colour no copper, selection or footprint has,
@@ -251,5 +253,78 @@ export function LegendaAperti({ circuitJson }: { circuitJson: unknown[] | null }
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * THE COPPER OF THE NETS OF THE PART BEING LOOKED AT, in the net's colour.
+ *
+ * The dashed lines of a selected part are drawn only between pads the copper
+ * does not join yet. What IS joined is said here, without a line that looks
+ * like a missing connection: the traces and the vias of the net take the
+ * colour of its lit pads. Each on its layer, as strongly as that layer is
+ * drawn; the pours stay as they are.
+ */
+export function RameDelleReti({
+  circuitJson,
+  reti,
+  mmPerPx,
+  forza,
+}: {
+  circuitJson: unknown[] | null;
+  /** the nets in focus: the net as the pads of the scene name it, and its colour */
+  reti: Array<{ net: string; colore: string }>;
+  mmPerPx: number;
+  forza: (strato: string) => number;
+}) {
+  const rame = circuitJson && reti.length > 0 ? rameDellaScheda(circuitJson) : null;
+  if (!rame) return null;
+  return (
+    <g pointerEvents="none">
+      {reti.map((r) => {
+        const isole = rame.perRete.get(r.net) ?? [];
+        if (isole.length === 0) return null;
+        return (
+          <g key={r.net} data-rame-rete={rame.reti.nome(r.net) || r.net}>
+            {isole.flatMap((i) =>
+              rame.gruppi[i].tratti
+                .filter((t) => t.rete === r.net && (t.ax !== t.bx || t.ay !== t.by))
+                .map((t, k) => {
+                  const f = t.strato === null ? 1 : forza(t.strato);
+                  return f > 0 ? (
+                    <line
+                      key={`${i}-${k}`}
+                      x1={t.ax}
+                      y1={t.ay}
+                      x2={t.bx}
+                      y2={t.by}
+                      stroke={r.colore}
+                      strokeWidth={Math.max(t.larghezza, mmPerPx * 1.5)}
+                      strokeLinecap="round"
+                      opacity={0.8 * f}
+                    />
+                  ) : null;
+                }),
+            )}
+            {isole.flatMap((i) =>
+              rame.gruppi[i].vie
+                .filter((v) => v.rete === r.net && v.id)
+                .map((v) => (
+                  <circle
+                    key={`via-${v.id}`}
+                    cx={v.x}
+                    cy={v.y}
+                    r={v.diametro / 2 + mmPerPx}
+                    fill="none"
+                    stroke={r.colore}
+                    strokeWidth={mmPerPx * 1.6}
+                    opacity={0.9}
+                  />
+                )),
+            )}
+          </g>
+        );
+      })}
+    </g>
   );
 }

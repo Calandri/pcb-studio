@@ -7,6 +7,7 @@ import { useVistaCondivisa } from "./vista-condivisa";
 import {
   CollegamentiApertiSulVisore,
   LegendaAperti,
+  RameDelleReti,
   apertiInVista,
   useInquadraAperto,
   type ApertoScelto,
@@ -26,6 +27,7 @@ import {
   type PlacedNetLabel,
 } from "./net-labels";
 
+import { rameDellaScheda } from "@/lib/open-connections";
 import { ETICHETTA_FONTE, type DescrizionePezzo } from "@/lib/part-description";
 import { forma, percorsoDellaForma, scontri, type Forma } from "@/lib/ingombro";
 import {
@@ -666,7 +668,20 @@ export function BoardCanvas({
      * the net's colour, and every other pin of the net lit. It used to draw a
      * line only for nets of two or three pins and to light the pads of the
      * bigger ones, which far away or off screen said nothing.
+     *
+     * A LINE ONLY WHERE THE COPPER IS MISSING. The tree used to run over the
+     * whole net, between pads a trace already joined too, and its dashed lines
+     * were taken for open connections (Niccolo', 2026-11-12). Pads on one
+     * island of copper (gruppi-di-rame.ts) cost nothing to join and get no
+     * line: what is joined is said by the lit pads and by the net's copper
+     * (RameDelleReti). A part moved and not applied yet has left its copper
+     * where it was: its pads are alone, and its lines are all there.
      */
+    const rame = circuitJson ? rameDellaScheda(circuitJson) : null;
+    const isolaDi = (p: { id: string; componentId: string }): string | number => {
+      const isola = compTx(p.componentId) ? -1 : (rame?.diPiazzola(p.id) ?? -1);
+      return isola < 0 ? p.id : isola;
+    };
     const reti: typeof vuoto.retiFocus = [];
     const fatte = new Set<string>();
     for (const pad of mine) {
@@ -680,6 +695,7 @@ export function BoardCanvas({
         fatte.add(pad.net);
         const tutti = [pad, ...altri];
         const pos = tutti.map(posOf);
+        const isola = tutti.map(isolaDi);
         // Prim: O(n^2), a few thousand steps even on ground
         const dentro = new Array<boolean>(pos.length).fill(false);
         const dist = new Array<number>(pos.length).fill(Infinity);
@@ -689,7 +705,7 @@ export function BoardCanvas({
           let u = -1;
           for (let i = 0; i < pos.length; i++) if (!dentro[i] && (u === -1 || dist[i] < dist[u])) u = i;
           dentro[u] = true;
-          if (da0[u] >= 0) {
+          if (da0[u] >= 0 && isola[da0[u]] !== isola[u]) {
             const v = da0[u];
             out.push({
               tipo: "linea" as const,
@@ -705,7 +721,7 @@ export function BoardCanvas({
           }
           for (let i = 0; i < pos.length; i++) {
             if (dentro[i]) continue;
-            const d = Math.hypot(pos[i].x - pos[u].x, pos[i].y - pos[u].y);
+            const d = isola[i] === isola[u] ? 0 : Math.hypot(pos[i].x - pos[u].x, pos[i].y - pos[u].y);
             if (d < dist[i]) {
               dist[i] = d;
               da0[i] = u;
@@ -735,7 +751,7 @@ export function BoardCanvas({
     }
 
     return { links: out, retiFocus: reti };
-  }, [scene, hoveredComponentId, selectedIds, effOf, nascosti, girati, padSotto]);
+  }, [scene, circuitJson, hoveredComponentId, selectedIds, effOf, compTx, nascosti, girati, padSotto]);
 
   /*
    * The net names, laid out in screen pixels so they never overlap and keep
@@ -1386,6 +1402,9 @@ export function BoardCanvas({
                 )}
             </g>
           ))}
+
+          {/* the copper of the focused nets, in their colour: what is already joined */}
+          <RameDelleReti circuitJson={circuitJson} reti={retiFocus} mmPerPx={mmPerPx} forza={(s) => layerOpacity(s as LayerId)} />
 
           {/* the connections of the focused component: one color per pin */}
           {links.length > 0 && (
