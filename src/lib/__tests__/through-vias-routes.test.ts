@@ -602,6 +602,42 @@ describe("the routes that save a board from the cache leave only through vias", 
     expect(await zip.file("drill_plated.drl")!.async("string")).toContain("X0.0000Y3.0000");
   }, 120_000);
 
+  it("export: a board with a doubled trace id is refused with the reason, and goes through without the double", async () => {
+    await recheck(post({ projectId: "p" }));
+    const buona = (db.saves[0].circuitJson as El[]).filter((e) => e.type !== "pcb_copper_pour");
+    const pista = buona.find((e) => e.type === "pcb_trace" && typeof e.pcb_trace_id === "string")!;
+    expect(pista).toBeDefined();
+    // the trace of the board before, one millimetre away, with the id of the one the files draw (sbb-dl-principale, 12/11/2026)
+    const vecchia = { ...pista, route: (pista.route as Array<Record<string, unknown>>).map((p) => ({ ...p, y: (p.y as number) + 1 })) };
+    db.row = { ...riga([...buona, vecchia], CHECKS_ENGINE_VERSION), summary: db.saves[0].summary };
+    for (const kind of ["gerber", "pnp"]) {
+      const rifiuto = await esporta(new Request(`http://x/api/export?projectId=p&kind=${kind}`));
+      expect(rifiuto.status).toBe(409);
+      const { error } = (await rifiuto.json()) as { error: string };
+      expect(error).toContain("ricompila la scheda prima di esportare: 1 elemento della scheda ha l'id di un altro dello stesso tipo: 1 pcb_trace");
+      expect(error).toContain(String(pista.pcb_trace_id));
+      // this board is drawn in its files (design rules autoroute: false): a compile starts from the files alone
+      expect(error).toContain("NON e' certificata per l'export finche' ha elementi in doppio: premi Aggiorna per ricompilarla dai file");
+    }
+    // a board that is NOT drawn in its files carries the saved copper into every compile: "Aggiorna" is not promised there
+    const sbrogliata = { ...FILES, [DESIGN_RULES_PATH]: JSON.stringify({ preset: "custom", rules: { ...JSON.parse(REGOLE).rules, autoroute: true } }) };
+    db.files = sbrogliata;
+    db.row = { ...riga([...buona, vecchia], CHECKS_ENGINE_VERSION), filesHash: filesHash(sbrogliata), summary: db.saves[0].summary };
+    const riportata = await esporta(new Request("http://x/api/export?projectId=p&kind=gerber"));
+    expect(riportata.status).toBe(409);
+    const testo = ((await riportata.json()) as { error: string }).error;
+    expect(testo).toContain("finche' ha elementi in doppio: questa scheda riporta il rame della scheda salvata, quindi Aggiorna puo' non toglierli");
+    expect(testo).toContain("va ripulito il rame salvato prima di esportare");
+    expect(testo).not.toContain("premi Aggiorna per ricompilarla dai file");
+    db.files = FILES;
+    db.row = { ...riga([...buona, vecchia], CHECKS_ENGINE_VERSION), summary: db.saves[0].summary };
+    // the parts list does not depend on the copper: it still goes
+    expect((await esporta(new Request("http://x/api/export?projectId=p&kind=bom"))).status).toBe(200);
+    // and the same board without the double is exported
+    db.row = { ...riga(buona, CHECKS_ENGINE_VERSION), summary: db.saves[0].summary };
+    expect((await esporta(new Request("http://x/api/export?projectId=p&kind=gerber"))).status).toBe(200);
+  }, 120_000);
+
   it("the engine a board is filed under: today's, or an older one while a plane covers a via", () => {
     expect(motoreDaSalvare({})).toBe(CHECKS_ENGINE_VERSION);
     expect(motoreDaSalvare(null)).toBe(CHECKS_ENGINE_VERSION);

@@ -9,6 +9,7 @@ import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
 import { avvisoDelProgetto } from "@/lib/progetti-con-difetti";
 import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
+import { idDoppi } from "@/lib/duplicate-ids";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
@@ -119,6 +120,10 @@ export async function GET(req: Request): Promise<Response> {
           planesOverVias: pianiSopraLeVie(cache.circuitJson as never),
           poursTooClose: colateCheSiToccano(cache.circuitJson as never, regolaDelleColate(fsMap)),
           poursFromOlderEngine: colateDiUnMotoreDiPrima(cache.circuitJson, cache.engineVersion),
+          // nor one with something on it twice: old copper next to the new one has the new one's id (duplicate-ids.ts)
+          duplicateIds: idDoppi(cache.circuitJson as unknown[]),
+          // a board drawn in its files is compiled from them alone: there "Aggiorna" is the way out (see nonCertificata)
+          copperFromFiles: resolveDesignRules(fsMap).rules.autoroute === false,
         })
       : null;
   if (fabrication && (!cacheFresh || coperta)) {

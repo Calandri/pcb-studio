@@ -80,6 +80,8 @@
 // tscircuit gives to every <via> written in a file as "pin non collegato" (erc.ts). sbb-dl-principale had 543 such
 // lines for its 181 vias and "Cuci la massa" adds three per via: the list, 200 lines at most, held nothing else. The
 // count of unconnected pins of a board with written vias goes down by three per via; a recheck is enough.
+// And the export refuses a board where two elements have the same id (nonCertificata, duplicate-ids.ts): it is
+// measured on the board about to go, like a plane over a via, so no saved answer changes.
 // Still in 12 (not published when this was added): boards of six and eight copper layers. The layers of a board come
 // from one place (strati-rame.ts: top, inner1..inner(n-2), bottom, from the number the board declares) and every list
 // written by hand uses it. On a board of two or four layers no check changes its answer and no count changes. On six
@@ -233,8 +235,40 @@ export function nonCertificata(summary: unknown): string | null {
         `premi Aggiorna per rifarle (Ricontrolla non le rifa')`,
     );
   }
+  /*
+   * And a board where two elements have the same id (duplicate-ids.ts): on
+   * sbb-dl-principale, 12/11/2026, seven traces and seven vias of the board
+   * before stayed next to the ones the files draw, one across a pad, and every
+   * check was green. Saving such a board says it; here it does not go to the
+   * factory. The export measures the board itself and passes what it finds.
+   */
+  const d = idDoppiDi(summary);
+  if (d) {
+    /*
+     * What to do depends on where the board's copper comes from. A board drawn
+     * in its files (design rules `autoroute: false`) is compiled from the files
+     * alone, so "Aggiorna" takes the doubles away. Any other board carries the
+     * copper of the saved board into the new one (carryCopper): a compile can
+     * bring the doubles back, and a recheck or a move never clean them. Saying
+     * "premi Aggiorna" there would promise what the compile does not do.
+     */
+    const daiFile = (summary as { copperFromFiles?: unknown } | null | undefined)?.copperFromFiles === true;
+    perche.push(
+      `${d.detail}. La scheda NON e' certificata per l'export finche' ha elementi in doppio: ` +
+        (daiFile
+          ? `premi Aggiorna per ricompilarla dai file`
+          : `questa scheda riporta il rame della scheda salvata, quindi Aggiorna puo' non toglierli, e Ricontrolla e Sposta non li tolgono mai: ` +
+            `va ripulito il rame salvato prima di esportare`),
+    );
+  }
   return perche.length > 0 ? perche.join(". ") : null;
 }
+
+/** what the summary says when two elements of the board have the same id (see idDoppi in duplicate-ids.ts) */
+const idDoppiDi = (summary: unknown): { count: number; detail: string } | null => {
+  const d = (summary as { duplicateIds?: { count?: unknown; detail?: unknown } | null } | null | undefined)?.duplicateIds;
+  return d && typeof d.count === "number" && d.count > 0 ? { count: d.count, detail: String(d.detail ?? "") } : null;
+};
 
 /**
  * Two pours of different nets too close on one layer (CompileSummary.poursTooClose,
