@@ -376,7 +376,13 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
       viaIn.set(dove, via.indice);
     }
     if (Math.abs(via.x) > ROUTE_LIMITS.maxCoordMm || Math.abs(via.y) > ROUTE_LIMITS.maxCoordMm) via.ferma ??= "la via sta oltre il metro";
-    const misure = misureDellaVia(corona, foro);
+    /*
+     * The size of the via as the board says it. One that does not say its hole
+     * is drawn with the smallest the rules allow, and is not moved: what a
+     * move saves is the via as it is, never a size guessed from the rules (and
+     * so no refusal known from the board depends on them: see preseDelRame).
+     */
+    const misure = num(el.hole_diameter) === null ? "la via non dice il diametro del suo foro" : misureDellaVia(corona, foro);
     if (typeof misure === "string") via.ferma ??= misure;
     if (!via.strati.every(eStratoDiRame) || via.strati.length > 8) via.ferma ??= "la via nomina uno strato che non e' di rame";
     vie.push(via);
@@ -430,7 +436,9 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
     if (aMano && punti.some((q) => inUnita(q.x) % 10 !== 0 || inUnita(q.y) % 10 !== 0)) perche("la pista a mano ha un punto fuori dalla griglia di 0,001 mm");
     if (!aMano && !connessioneScritta(connessione)) perche("la connessione della pista non ha un nome con pezzo e piedino");
     if (larghezze.some((w) => Math.abs(w - larga) > 1e-9)) perche("la pista cambia larghezza lungo il percorso");
-    if (typeof larghezzaScrivibile(larga) === "string") perche(String(larghezzaScrivibile(larga)));
+    // the same for a trace that does not say how wide it is: drawn at the minimum of the rules, not moved
+    if (larghezze.length === 0) perche("la pista non dice la sua larghezza");
+    else if (typeof larghezzaScrivibile(larga) === "string") perche(String(larghezzaScrivibile(larga)));
     if (punti.some((p) => Math.abs(p.x) > ROUTE_LIMITS.maxCoordMm || Math.abs(p.y) > ROUTE_LIMITS.maxCoordMm)) perche("la pista va oltre il metro");
     if (punti.some((p) => !eStratoDiRame(p.layer))) perche("la pista nomina uno strato che non e' di rame");
     // a via point the path does not go through (at an end, or with no change of layer): the path a correction saves would lose it

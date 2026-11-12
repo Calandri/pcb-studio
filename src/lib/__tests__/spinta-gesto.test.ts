@@ -28,6 +28,7 @@ import { chiudiGesto, iniziaGesto, muoviGesto, preseDelRame } from "@/lib/spinta
 import type { BersaglioDelRame, PresaDelRame, SalvataggioDelGesto, StatoDelGesto } from "@/lib/spinta/gesto-tipi";
 import { leggiRame, verificaRame } from "@/lib/spinta/verifica";
 import type { El } from "./scheda-di-prova";
+import { fermiComeIRifiuti } from "./spinta-scheda";
 
 const REGOLE_DEL_PROGETTO = JSON.stringify({
   preset: "custom",
@@ -187,6 +188,18 @@ describe("spinta, gesto: what can be grabbed", () => {
     expect(iniziaGesto({ circuitJson: scheda, regole: REGOLE, presa: tratto(ALLA_VIA, 3) })).toEqual({
       rifiuto: "bloccato: il tratto finisce sulla via di GND, servirebbe un gomito nuovo (si sposta la via)",
     });
+    // and the list says so beforehand, with the same sentences: the viewer keeps those targets under the parts
+    const prese = preseDelRame(scheda);
+    const allaVia = prese.filter((p) => p.tipo === "tratto" && p.pcbTraceId === pistaDi(scheda, ALLA_VIA).pcb_trace_id);
+    expect(allaVia.map((p) => p.fermo)).toEqual([
+      "bloccato: il tratto esce da R3.1 e scivolerebbe di lato",
+      undefined,
+      undefined,
+      "bloccato: il tratto finisce sulla via di GND, servirebbe un gomito nuovo (si sposta la via)",
+    ]);
+    // every via of this board moves; of its ten stretches, the two in the middle of the trace to the via
+    expect(prese.filter((p) => p.tipo === "via").map((p) => p.fermo)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(fermiComeIRifiuti(scheda, REGOLE)).toEqual({ fermi: 8, mobili: 6 });
     expect(iniziaGesto({ circuitJson: scheda, regole: REGOLE, presa: { tipo: "via", pcbViaId: "pcb_via_99" } })).toHaveProperty("rifiuto");
     expect(iniziaGesto({ circuitJson: scheda, regole: REGOLE, presa: tratto(ALLA_VIA, 17) })).toHaveProperty("rifiuto");
     expect(iniziaGesto({ circuitJson: scheda, regole: REGOLE, presa: { tipo: "tratto", pcbTraceId: "pcb_trace_99", indice: 0 } })).toHaveProperty("rifiuto");

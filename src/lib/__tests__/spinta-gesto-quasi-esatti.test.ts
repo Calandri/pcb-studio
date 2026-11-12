@@ -32,6 +32,7 @@ import { chiudiGesto, iniziaGesto, muoviGesto, preseDelRame } from "@/lib/spinta
 import type { PresaDelRame, SalvataggioDelGesto } from "@/lib/spinta/gesto-tipi";
 import { leggiRame, trattiStorti, verificaRame } from "@/lib/spinta/verifica";
 import type { El } from "./scheda-di-prova";
+import { fermiComeIRifiuti } from "./spinta-scheda";
 
 const MAIN = `export default () => (
   <board width="40mm" height="24mm">
@@ -125,6 +126,9 @@ describe("spinta, quasi esatti: a trace of the files with two stretches off 45 d
     expect(scarti(DEI_FILE)).toEqual([1, 1]);
     const suoi = preseDelRame(scheda).filter((p) => p.tipo === "tratto" && p.pcbTraceId === pisteDi(scheda, QUASI)[0].pcb_trace_id);
     expect(suoi).toHaveLength(5);
+    // the first leaves a pad and the last ends on the via: the three between them move, the two off by a hair among them
+    expect(suoi.map((p) => p.fermo === undefined)).toEqual([false, true, true, true, false]);
+    fermiComeIRifiuti(scheda, REGOLE);
     // the one off by a hair between two exact ones: taken, and with no movement nothing is written
     const { gesto, stato } = inizia(tratto(QUASI, 2));
     expect(stato.mosso).toBe(false);
@@ -178,6 +182,11 @@ describe("spinta, quasi esatti: a trace of the files with two stretches off 45 d
     expect(iniziaGesto({ circuitJson: storta, regole: REGOLE, presa: tratto(QUASI, 3, storta) })).toEqual({
       rifiuto: `bloccato: la pista ${QUASI} ha un tratto che non e' a 0, 45 o 90 gradi`,
     });
+    // and its target says so before anyone presses it
+    expect(preseDelRame(storta).find((p) => p.tipo === "tratto" && p.pcbTraceId === pisteDi(storta, QUASI)[0].pcb_trace_id && p.indice === 3)?.fermo).toBe(
+      `bloccato: la pista ${QUASI} ha un tratto che non e' a 0, 45 o 90 gradi`,
+    );
+    fermiComeIRifiuti(storta, REGOLE);
     // the via at the other end reads only the last stretch: it moves, and the crooked one stays a given
     const { gesto } = inizia({ tipo: "via", pcbViaId: String(vie(storta)[0].pcb_via_id) }, storta);
     const stato = muoviGesto(gesto, { x: 0.5, y: -5.5 });

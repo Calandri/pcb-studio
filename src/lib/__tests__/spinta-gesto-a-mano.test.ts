@@ -34,7 +34,7 @@ import { chiudiGesto, iniziaGesto, muoviGesto, preseDelRame } from "@/lib/spinta
 import type { PresaDelRame, SalvataggioDelGesto, StatoDelGesto } from "@/lib/spinta/gesto-tipi";
 import { leggiRame, verificaRame } from "@/lib/spinta/verifica";
 import { pezzo, rete, scheda as schedaVuota, type El } from "./scheda-di-prova";
-import { viaDi } from "./spinta-scheda";
+import { fermiComeIRifiuti, viaDi } from "./spinta-scheda";
 
 const MAIN = `export default () => (
   <board width="40mm" height="24mm">
@@ -189,6 +189,16 @@ describe("spinta, gesto a mano: the board of the test", () => {
     expect(prese.filter((p) => p.tipo === "via").map((p) => (p.tipo === "via" ? `${p.x};${p.y}` : "")).sort()).toEqual(["-2;2", "0;-8", "4;-10", "6;2"]);
     // 1 + 1 + 1 + 2 + 0 (the via) + 2 of GND, 6 of the drawn route
     expect(prese.filter((p) => p.tipo === "tratto")).toHaveLength(13);
+    // the ones that can never move say so, as a gesture would: the four vias move, and of the stretches the piece down the side and the first diagonal of the drawn route
+    expect(prese.filter((p) => p.fermo === undefined).map((p) => (p.tipo === "via" ? `via ${p.x};${p.y}` : `${p.x1};${p.y1} > ${p.x2};${p.y2}`)).sort()).toEqual([
+      "-12;0 > -12;-6",
+      "-8;0 > -6;2",
+      "via -2;2",
+      "via 0;-8",
+      "via 4;-10",
+      "via 6;2",
+    ]);
+    expect(fermiComeIRifiuti(salvata, REGOLE)).toEqual({ fermi: 11, mobili: 6 });
   });
 });
 

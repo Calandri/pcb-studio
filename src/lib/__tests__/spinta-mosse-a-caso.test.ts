@@ -19,6 +19,9 @@ import { describe, expect, it } from "vitest";
  *     the copper the move said, and no id is doubled;
  *   - runDrcChecks on that board has no violation of a distance, of an angle
  *     or of a pad exit more than the board had before the move.
+ * And on the boards the moves leave, the targets preseDelRame marks as never
+ * moving (`fermo`) are exactly the ones iniziaGesto refuses, sentence for
+ * sentence.
  *
  * The moves go in walks of eight on one board, each from the board the one
  * before left, so that copper already moved is moved again; half of the walks
@@ -41,7 +44,7 @@ import { spostaVia, traslaTratto, type MotivoDelBlocco } from "@/lib/spinta/moss
 import { correzioniDellaMossa, riscritteDellaMossa } from "@/lib/spinta/salvataggio";
 import { leggiRame, trattiStorti, verificaRame } from "@/lib/spinta/verifica";
 import type { El } from "./scheda-di-prova";
-import { casuale, rameQuasiEsatto, REGOLE, schedaAMano, schedaDiSpinta } from "./spinta-scheda";
+import { casuale, fermiComeIRifiuti, rameQuasiEsatto, REGOLE, schedaAMano, schedaDiSpinta } from "./spinta-scheda";
 
 const MOSSE = 1000;
 const PASSI_PER_GIRO = 8;
@@ -190,6 +193,7 @@ describe("spinta, mosse a caso", () => {
       }
       return false;
     };
+    const bersagli = { fermi: 0, mobili: 0 };
     const blocchi = new Map<MotivoDelBlocco, number>();
     const segna = (motivo: MotivoDelBlocco) => blocchi.set(motivo, (blocchi.get(motivo) ?? 0) + 1);
 
@@ -214,6 +218,12 @@ describe("spinta, mosse a caso", () => {
       tentativi++;
       if (passi++ >= PASSI_PER_GIRO) riparti();
       const dove = `mossa ${tentativi} (giro ${giro})`;
+      // on the four boards as they start, and on a board the moves have changed every so often: the targets marked as never moving are the ones a gesture refuses
+      if (giro <= 4 ? passi === 1 : tentativi % 20 === 0) {
+        const quanti = fermiComeIRifiuti(stato.scheda, REGOLE);
+        bersagli.fermi += quanti.fermi;
+        bersagli.mobili += quanti.mobili;
+      }
       const modello = leggiModello(stato.scheda, REGOLE);
 
       // --- what is grabbed, and where it is asked to go
@@ -322,6 +332,9 @@ describe("spinta, mosse a caso", () => {
     expect(conta.aMano).toBeGreaterThanOrEqual(200);
     expect(conta.gestiFermati).toBeGreaterThanOrEqual(80);
     expect(conta.raddrizzati).toBeGreaterThanOrEqual(30);
+    // the targets were asked on boards of every kind, and both answers were given many times
+    expect(bersagli.fermi).toBeGreaterThan(500);
+    expect(bersagli.mobili).toBeGreaterThan(500);
     // and the blocks the board can give were all met on the way
     for (const motivo of ["pad_di_lato", "gomito", "giunzione_a_t", "angolo_acuto", "tratto_sparirebbe", "pista", "bordo", "keepout"] as MotivoDelBlocco[]) {
       expect(blocchi.get(motivo) ?? 0, motivo).toBeGreaterThan(0);

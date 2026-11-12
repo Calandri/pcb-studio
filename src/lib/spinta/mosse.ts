@@ -572,8 +572,10 @@ function vicinoDi(modello: Modello, pista: PistaDelModello, tratto: TrattoDelMod
  * gesture began) has of it; the part along the stretch is not a movement.
  *
  * Asked with no movement at all, it says whether the stretch can be taken:
- * the blocks that do not depend on how far (a pad at its end, a T junction on
- * it, an arc) come before the distance.
+ * EVERY block that does not depend on how far (a pad at its end, a T junction
+ * on it, an arc, a neighbour with no direction) comes before the answer
+ * "nothing moved", and none of them reads the rules of the project. It is what
+ * marks the targets that can never move (preseDelRame).
  */
 export function traslaTratto(modello: Modello, presa: { pista: number; tratto: number }, spostamento: { x: number; y: number }): EsitoDellaMossa {
   const pista = modello.piste[presa.pista];
@@ -636,8 +638,6 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
   const passo = griglia * Math.max(passoDiTraslazione(rs, rp), passoDiTraslazione(rs, rn));
   const suGriglia = (i: ReturnType<typeof incrocio>): boolean => i.tipo === "punto" && i.x % griglia === 0 && i.y % griglia === 0;
   const chiesto = (rs.a * spostamento.x + rs.b * spostamento.y) * UNITA_PER_MM;
-  // less than half a step: the stretch stays as it is, and nothing of the trace is written again
-  if (Math.abs(chiesto) < passo / 2) return fermo();
   let quanto: number | null = null;
   for (let resto = 0; resto < passo; resto++) {
     const prova = traslata(rs, resto);
@@ -646,9 +646,11 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
     if (quanto === null || Math.abs(vicino - chiesto) < Math.abs(quanto - chiesto)) quanto = vicino;
   }
   if (quanto === null) {
-    // two neighbours at 45 degrees whose lines never cross a line of the stretch both on the grid
+    // two neighbours at 45 degrees whose lines never cross a line of the stretch both on the grid: wherever it is asked to go
     return bloccato({ motivo: "direzione", cosa: questo, dove: alCentro, messaggio: "bloccato: un vertice cadrebbe fuori dalla griglia" });
   }
+  // less than half a step: the stretch stays as it is, and nothing of the trace is written again
+  if (Math.abs(chiesto) < passo / 2) return fermo();
   const nuova = traslata(rs, quanto);
   const ia = incrocio(rp, nuova);
   const ib = incrocio(nuova, rn);
@@ -774,7 +776,9 @@ function gambe(P: Punto, V: Punto, d: Direzione): { a: number; b: number; e: Dir
  * MOVE 2. The via `quale` goes to `a` (mm, brought to the grid), with the
  * traces that stand in it on every layer.
  *
- * Asked for the place where the via is, it says whether the via can be taken.
+ * Asked for the place where the via is, it says whether the via can be taken:
+ * as for a stretch, every block that does not depend on where it goes comes
+ * first, and reads nothing of the rules.
  */
 export function spostaVia(modello: Modello, quale: number, a: { x: number; y: number }): EsitoDellaMossa {
   const via = modello.vie[quale];
@@ -790,6 +794,13 @@ export function spostaVia(modello: Modello, quale: number, a: { x: number; y: nu
     if (ferma) return bloccato(ferma);
   }
   if (via.tiene.length > 0) return bloccato(bloccoDellaTenutaDiVia(modello, via, via.tiene[0]));
+  // every stretch that reaches it on its layer is drawn again when it moves: one with no direction blocks it wherever it goes
+  for (const { pista: i, punto: k } of via.attacchi) {
+    const pista = modello.piste[i];
+    for (const tratto of pista.tratti) {
+      if ((tratto.da === k || tratto.da + 1 === k) && !tratto.direzione) return bloccato(bloccoDelTrattoStorto(pista, tratto));
+    }
+  }
 
   if (!finito(a?.x) || !finito(a?.y)) {
     return bloccato({ motivo: "fuori_limite", cosa: { tipo: "niente" }, dove: qui, messaggio: "il posto non e' un numero" });

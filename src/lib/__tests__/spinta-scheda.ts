@@ -31,9 +31,11 @@
  * Every trace is 0.2 mm wide and leaves its pads straight; the board breaks no
  * rule of the default set (JLCPCB standard, drawn at 0.2 mm).
  */
-import { resolveDesignRules } from "@/lib/design-rules";
+import { expect } from "vitest";
+import { resolveDesignRules, type DesignRules } from "@/lib/design-rules";
 import { emptyManualEdits, type ManualEdits } from "@/lib/manual-edits";
 import { applyManualRoutes, parseManualRoutes, type ManualRoutePoint } from "@/lib/manual-routes";
+import { iniziaGesto, preseDelRame } from "@/lib/spinta/gesto";
 import { pezzo, piedinoPassante, rete, scheda, trace, wire, type El } from "./scheda-di-prova";
 
 export const REGOLE = resolveDesignRules({}).rules;
@@ -178,6 +180,30 @@ export function schedaAMano(quasi = false): { scheda: El[]; edits: ManualEdits }
     viaHoleDiameter: REGOLE.minViaHoleMm,
   });
   return { scheda: posata.circuitJson as El[], edits };
+}
+
+/**
+ * THE TARGETS THAT CAN NEVER MOVE ARE EXACTLY THE ONES A GESTURE REFUSES, with
+ * the same sentence: for every target preseDelRame lists on a board, `fermo` is
+ * there when and only when iniziaGesto answers a refusal, and says the same.
+ * The viewer keeps the targets marked so under the handles of the parts: one
+ * marked and movable would be copper nobody can take, one refused and not
+ * marked would take a press away from a part for nothing. How many of each.
+ */
+export function fermiComeIRifiuti(circuitJson: unknown[], regole: DesignRules): { fermi: number; mobili: number } {
+  const conta = { fermi: 0, mobili: 0 };
+  for (const p of preseDelRame(circuitJson)) {
+    const esito = iniziaGesto({
+      circuitJson,
+      regole,
+      presa: p.tipo === "via" ? { tipo: "via", pcbViaId: p.pcbViaId } : { tipo: "tratto", pcbTraceId: p.pcbTraceId, indice: p.indice },
+    });
+    const dove = p.tipo === "via" ? `via ${p.pcbViaId}` : `tratto ${p.pcbTraceId}#${p.indice}`;
+    expect("rifiuto" in esito ? esito.rifiuto : undefined, dove).toBe(p.fermo);
+    if (p.fermo === undefined) conta.mobili++;
+    else conta.fermi++;
+  }
+  return conta;
 }
 
 /** a generator of numbers in [0, 1) that gives the same run from the same seed (mulberry32) */

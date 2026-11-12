@@ -79,16 +79,28 @@ const finito = (v: unknown): v is number => typeof v === "number" && Number.isFi
 
 /**
  * What can be grabbed on a board: every via, and every straight stretch of
- * trace. Arcs and stretches that are not at 0, 45 or 90 degrees are left out:
- * they can never move. A thing listed here may still refuse to be grabbed
- * (a stretch that leaves a pad, say): iniziaGesto says why.
+ * trace. Arcs and stretches at none of 0, 45 or 90 degrees are left out: they
+ * are no target at all.
+ *
+ * A target that can NEVER start a gesture, for a reason the board alone says
+ * (a stretch that leaves a pad, one that ends on a via, a T junction, a
+ * neighbour on the same line), carries `fermo`: the very sentence iniziaGesto
+ * refuses it with. The viewer keeps such targets under the handles of the
+ * parts, so that copper that could not move anyway never takes a press away
+ * from a part.
+ *
+ * One model for the whole list, and for each target the elementary move asked
+ * for no movement, which stops at the first block that does not depend on how
+ * far: no distance is measured. None of those blocks reads the rules of the
+ * project, so the list needs none.
  */
 export function preseDelRame(circuitJson: unknown[]): BersaglioDelRame[] {
-  // which stretch is which does not depend on the rules of the project
   const modello = leggiModello(circuitJson, DEFAULT_DESIGN_RULES);
   const out: BersaglioDelRame[] = [];
+  const fermo = (prova: EsitoDellaMossa): { fermo?: string } => (prova.ok ? {} : { fermo: prova.blocco.messaggio });
   for (const via of modello.vie) {
-    if (via.id) out.push({ tipo: "via", pcbViaId: via.id, x: via.x, y: via.y, outerDiameter: via.corona });
+    if (!via.id) continue;
+    out.push({ tipo: "via", pcbViaId: via.id, x: via.x, y: via.y, outerDiameter: via.corona, ...fermo(provaDellaVia(modello, via.indice)) });
   }
   for (const pista of modello.piste) {
     if (!pista.id || pista.arco) continue;
@@ -105,11 +117,17 @@ export function preseDelRame(circuitJson: unknown[]): BersaglioDelRame[] {
         y2: b.y,
         layer: tratto.strato,
         width: pista.larghezza,
+        ...fermo(provaDelTratto(modello, pista.indice, tratto.indice)),
       });
     }
   }
   return out;
 }
+
+/** whether a via can be taken at all: the move asked for the place where it is */
+const provaDellaVia = (modello: Modello, via: number): EsitoDellaMossa => spostaVia(modello, via, modello.vie[via]);
+/** whether a stretch can be taken at all: the move asked for no movement */
+const provaDelTratto = (modello: Modello, pista: number, tratto: number): EsitoDellaMossa => traslaTratto(modello, { pista, tratto }, { x: 0, y: 0 });
 
 /** the block of a move, as the viewer shows it: the sentence, and where to draw the halo */
 function bloccoDelGesto(modello: Modello, blocco: Blocco): BloccoDelGesto {
@@ -183,8 +201,7 @@ export function iniziaGesto(args: {
     const quale = modello.viaPerId.get(presa.pcbViaId);
     const via = quale === undefined ? undefined : modello.vie[quale];
     if (!via) return { rifiuto: "questa via non e' sulla scheda: ricarica la scheda" };
-    // asked for the place where it is: only what does not depend on how far it goes can refuse
-    prova = spostaVia(modello, via.indice, via);
+    prova = provaDellaVia(modello, via.indice);
     const piste = [...new Set(via.attacchi.map((a) => a.pista))];
     interno = {
       modello,
@@ -202,7 +219,7 @@ export function iniziaGesto(args: {
     const pista = quale === undefined ? undefined : modello.piste[quale];
     const tratto = pista?.tratti.find((t) => t.indiceDiRoute === presa.indice);
     if (!pista || !tratto) return { rifiuto: "questo tratto non e' sulla scheda: ricarica la scheda" };
-    prova = traslaTratto(modello, { pista: pista.indice, tratto: tratto.indice }, { x: 0, y: 0 });
+    prova = provaDelTratto(modello, pista.indice, tratto.indice);
     const [a, b] = capiDelTratto(pista, tratto);
     const lungo = Math.hypot(b.x - a.x, b.y - a.y);
     // its own trace, and the ones chained to it at its two ends: their end stretches follow
