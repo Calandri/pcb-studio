@@ -3,10 +3,14 @@ import { compileProject } from "@/lib/compile";
 import { DESIGN_RULES_PATH } from "@/lib/design-rules";
 
 /*
- * Una scheda col rame scritto nei file, come htl-401-scheda-unica: una pista
- * con pcbPath e due via nel percorso, una via a se' sulla massa, e un
- * collegamento senza rame. Autoroute spento: "Aggiorna" ricompila senza
+ * Una scheda con del rame scritto nei file (una pista con pcbPath e due via
+ * nel percorso, una via a se' sulla massa) e un collegamento senza rame, come
+ * quelle che l'instradatore di una volta ha finito: "Aggiorna" ricompila senza
  * instradare e riporta il rame della compilazione prima (keepCopperFrom).
+ *
+ * Le regole NON dicono `autoroute: false`. Una scheda che lo dice e' disegnata
+ * tutta nei suoi file e si compila dai soli file, senza riportare niente: vedi
+ * compile-rame-solo-dai-file.test.ts (sbb-dl-principale, 12/11/2026).
  */
 const MAIN = `export default () => (
   <board width="30mm" height="16mm">
@@ -25,7 +29,7 @@ const FILES = {
   "main.tsx": MAIN,
   [DESIGN_RULES_PATH]: JSON.stringify({
     preset: "custom",
-    rules: { minTraceWidthMm: 0.15, minClearanceMm: 0.15, autoroute: false },
+    rules: { minTraceWidthMm: 0.15, minClearanceMm: 0.15 },
   }),
 };
 

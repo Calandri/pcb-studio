@@ -101,8 +101,13 @@ export async function POST(req: Request): Promise<Response> {
           return;
         }
 
-        // the copper already on the board, carried over as it is
-        send("passo", { step: "Recupero il rame esistente", progress: 0.04 });
+        /*
+         * The saved board: its schematic is reused when it still holds, and its
+         * copper is carried over only onto a board that does not draw its own.
+         * compileProject decides that, not this route: a board drawn in its
+         * files (`autoroute: false`) is compiled from the files alone.
+         */
+        send("passo", { step: "Leggo la scheda salvata", progress: 0.04 });
         t = Date.now();
         const inCache = await getCompileCache(projectId).catch(() => null);
         mark("getCompileCache", t);

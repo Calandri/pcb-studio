@@ -502,7 +502,8 @@ export interface CompileOptions {
   /**
    * Whether to lay copper. IGNORED: compileProject forces `false` (no automatic
    * routing, 2026-11-09), so the compile stops at the geometry and the copper
-   * of the previous board is CARRIED OVER as it is.
+   * of the previous board is CARRIED OVER as it is (see keepCopperFrom: not
+   * onto a board drawn in its files).
    *
    * "Recompile" and "route" are two different gestures. Recompiling means
    * reading the files again and showing the real board: it takes seconds. The
@@ -518,7 +519,9 @@ export interface CompileOptions {
   route?: boolean;
   /**
    * The already compiled board whose copper to carry over. Without it,
-   * recompiling shows only the copper the files draw themselves.
+   * recompiling shows only the copper the files draw themselves. IGNORED on a
+   * board drawn in its files (design rules `autoroute: false`): that one is
+   * compiled from the files alone, whoever calls (see compileProject).
    */
   keepCopperFrom?: unknown[];
   /**
@@ -637,6 +640,28 @@ export async function compileProject(
    * looked like an autorouting run and the page hung: no path may start one.
    */
   opts = { ...opts, route: false, place: false };
+  /*
+   * THE COPPER OF THE SAVED BOARD IS CARRIED OVER ONLY ONTO A BOARD THAT DOES
+   * NOT DRAW ITS OWN. A board drawn in its files (design rules `autoroute:
+   * false`: every trace a <trace pcbPath>, every via a <via>) is compiled from
+   * the files alone, whoever compiles it and whatever board they hand over.
+   *
+   * The rule lived in two of the three callers (the MCP compile and the
+   * agent's, be75280) and not in the page's "Aggiorna" (POST /api/compile),
+   * which always gave the saved board. On sbb-dl-principale (12/11/2026) the
+   * files changed a part (U9 from five pins to three) and the copper around
+   * it, "Aggiorna" started while the saved board was still the one of the
+   * files before, and the board saved at 12:02:14 had 7 traces and 7 vias of
+   * that older board next to the new ones, with the same ids, one across a
+   * pad of U9. carryCopper cannot tell that copper from copper worth keeping:
+   * it knows the connection of an old trace by the ids of its ports, which
+   * all shift when a part before them changes its pins; a connection that is
+   * gone keeps its copper "as orphaned"; and a <via> moved or deleted in the
+   * files belongs to no trace, so the old one always stays. On a board whose
+   * files draw the copper there is nothing to carry: what the files no longer
+   * draw is copper nobody declares.
+   */
+  const rameDiPrima: unknown[] = projectRules.rules.autoroute === false ? [] : (opts.keepCopperFrom ?? []);
   const profiler = new Profiler();
 
   /*
@@ -755,7 +780,7 @@ export async function compileProject(
      * The overlaps themselves stay, as errors on the board.
      */
     const senzaSbroglio = geometry.filter((el) => el.type !== "pcb_autorouting_error");
-    const conRame = carryCopper(senzaSbroglio, opts.keepCopperFrom ?? []);
+    const conRame = carryCopper(senzaSbroglio, rameDiPrima);
     const conMano = applyManualRoutes({
       circuitJson: conRame,
       routes: parsedManualEdits.pcb_routes,
