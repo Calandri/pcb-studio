@@ -186,30 +186,67 @@ function formaDelCortile(s: CourtyardShape): Forma | null {
   return forma(angoli(s.x, s.y, s.w - 2 * r, s.h - 2 * r, s.rot), r);
 }
 
-/** how much of its rectangle a declared outline must fill to be read as that rectangle */
-const QUASI_RETTANGOLO = 0.9;
+/**
+ * HOW DEEP A NOTCH MAY BE for a declared outline to be read as its rectangle
+ * (in the part's frame): every point of the outline within this of the
+ * rectangle's border. The one threshold of the rule, for two real cases:
+ * - the "bone" of C66 on sbb-dl-principale, drawn round pads and body one by
+ *   one: notches 0,05-0,07 deep, no part fits in them: its rectangle;
+ * - the octagon of U1 (an LQFP at 225 degrees): the hull of body and pads, the
+ *   four empty corners of its square cut at 45 degrees so that three parts can
+ *   stand there. It fills ~94% of its square, and the rule by AREA (90%) read
+ *   it as the square: the three parts hit. By depth it stays an octagon.
+ * An L, a T, a circle, an octagon stay what they are.
+ */
+const TACCA_MAX_MM = 0.15;
+
+/**
+ * How far into the rectangle around them (in a frame turned by `giro`) the
+ * sides of an outline go: the largest distance of a point of a side from the
+ * rectangle's border. Along a side that distance is the least of four linear
+ * ones, so its largest value is at an end or where two of them cross.
+ */
+function profonditaNelRettangolo(punti: Punto[], giro: number): number {
+  const [c, s] = cs(giro);
+  const uv = punti.map((p) => ({ u: p.x * c + p.y * s, v: -p.x * s + p.y * c }));
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const q of uv) {
+    minU = Math.min(minU, q.u);
+    maxU = Math.max(maxU, q.u);
+    minV = Math.min(minV, q.v);
+    maxV = Math.max(maxV, q.v);
+  }
+  const bordi = (q: { u: number; v: number }) => [q.u - minU, maxU - q.u, q.v - minV, maxV - q.v];
+  let massima = 0;
+  for (let i = 0; i < uv.length; i++) {
+    const ga = bordi(uv[i]), gb = bordi(uv[(i + 1) % uv.length]);
+    const tempi = [0, 1];
+    for (let j = 0; j < 4; j++) {
+      for (let k = j + 1; k < 4; k++) {
+        const den = gb[j] - ga[j] - (gb[k] - ga[k]);
+        if (Math.abs(den) < 1e-15) continue;
+        const t = (ga[k] - ga[j]) / den;
+        if (t > 0 && t < 1) tempi.push(t);
+      }
+    }
+    for (const t of tempi) massima = Math.max(massima, Math.min(...ga.map((a, j) => a + t * (gb[j] - a))));
+  }
+  return massima;
+}
 
 /**
  * A DECLARED COURTYARD, as it is: a rect, a circle or a pill as drawn, an
- * outline or a polygon point by point. One exception: an outline that fills at
- * least QUASI_RETTANGOLO of its rectangle in the part's frame is that rectangle.
- * It is the courtyard drawn around pads and body one by one (the "bone" of a
- * capacitor whose pads are taller than its body): its notches are a few
- * hundredths deep, no part fits in them, and IPC-7351 draws a courtyard as a
- * rectangle. An L-shaped outline, or any other shape a connector needs, fills
- * less of its rectangle and stays as drawn.
+ * outline or a polygon point by point. One exception: an outline whose sides
+ * all stay within TACCA_MAX_MM of its rectangle in the part's frame is that
+ * rectangle: it differs from it only by tiny notches and steps, no part fits in
+ * them, and IPC-7351 draws a courtyard as a rectangle. Any other shape (an L, a
+ * T, an octagon round the corners of a QFP) stays as drawn, and is measured as
+ * drawn, never as the rectangle that holds it.
  */
 function cortileDichiarato(s: CourtyardShape, giro: number): Forma | null {
   const f = formaDelCortile(s);
   if (!f || s.kind !== "poly" || f.punti.length < 4) return f;
-  const r = scatolaOrientata(f.punti, giro);
-  const areaR = Math.hypot(r[1].x - r[0].x, r[1].y - r[0].y) * Math.hypot(r[3].x - r[0].x, r[3].y - r[0].y);
-  let doppia = 0;
-  for (let i = 0; i < f.punti.length; i++) {
-    const a = f.punti[i], b = f.punti[(i + 1) % f.punti.length];
-    doppia += a.x * b.y - b.x * a.y;
-  }
-  return areaR > 0 && Math.abs(doppia) / 2 >= QUASI_RETTANGOLO * areaR - 1e-9 ? forma(r) : f;
+  return profonditaNelRettangolo(f.punti, giro) <= TACCA_MAX_MM + 1e-9 ? forma(scatolaOrientata(f.punti, giro)) : f;
 }
 
 /**

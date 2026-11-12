@@ -346,6 +346,62 @@ describe("the footprint: one clean rectangle, the same drawn and measured", () =
     expect(misuraIngombri(dentro, 0.2).scontri).toHaveLength(1);
   });
 
+  describe("a declared outline is its rectangle only for tiny notches (depth, not area)", () => {
+    it("the bone of C66, notches 0,07 deep: its rectangle", () => {
+      const osso: Array<[number, number]> = [
+        [-1.5, -0.7], [-0.6, -0.7], [-0.6, -0.63], [0.6, -0.63], [0.6, -0.7], [1.5, -0.7],
+        [1.5, 0.7], [0.6, 0.7], [0.6, 0.63], [-0.6, 0.63], [-0.6, 0.7], [-1.5, 0.7], [-1.5, -0.7],
+      ];
+      const [o] = leggiIngombri([...parte("C66"), pad("C66", -0.9, 0, 0.8, 0.95), pad("C66", 0.9, 0, 0.8, 0.95), contorno("C66", osso)], 0.2);
+      expect(o.forme[0].punti).toHaveLength(4);
+      expect(box(o.forme[0])).toEqual([-1.5, -0.7, 1.5, 0.7]);
+    });
+
+    /*
+     * U1 of sbb-dl-principale: an LQFP at 225 degrees whose courtyard is an
+     * octagon, the corners of its 10 mm square cut by 2 mm at 45 degrees (92%
+     * of the square: the area rule read it as the square). Built in the part's
+     * frame and turned with it.
+     */
+    const g = (225 * Math.PI) / 180;
+    const gira = ([x, y]: [number, number]): [number, number] => [x * Math.cos(g) - y * Math.sin(g), x * Math.sin(g) + y * Math.cos(g)].map((v) => Math.round(v * 1e9) / 1e9) as [number, number];
+    const ottagono: Array<[number, number]> = ([[-3, -5], [3, -5], [5, -3], [5, 3], [3, 5], [-3, 5], [-5, 3], [-5, -3], [-3, -5]] as Array<[number, number]>).map(gira);
+    const u1 = (): El[] => [...parte("U1", { rotation: 225 }), pad("U1", ...gira([-4, 0]), 0.3, 1.5, { rot: 225 }), pad("U1", ...gira([4, 0]), 0.3, 1.5, { rot: 225 }), contorno("U1", ottagono)];
+    /** a small part with a declared courtyard 0,8 x 0,8 (its pad and excess inside), at (x, y) of U1's frame and turned with it */
+    const piccolo = (id: string, x: number, y: number): El[] => {
+      const [bx, by] = gira([x, y]);
+      return [...parte(id, { x: bx, y: by, rotation: 225 }), pad(id, bx, by, 0.2, 0.2, { rot: 225 }), { ...cortileRect(id, bx, by, 0.8, 0.8), ccw_rotation: 225 }];
+    };
+
+    it("U1's octagon stays an octagon: a part in a cut corner does not hit, one over the cut does", () => {
+      const [o] = leggiIngombri(u1(), 0.2);
+      expect(o.fonte).toBe("cortile");
+      expect(o.forme[0].punti).toHaveLength(8);
+      // in the corner the cut freed (x + y = 8 is the cut): its nearest corner at x + y = 8,3, inside the square
+      expect(misuraIngombri([...u1(), ...piccolo("C1", 4.55, 4.55)], 0.2).scontri).toEqual([]);
+      // over the cut: its nearest corner at x + y = 7,8
+      const sopra = misuraIngombri([...u1(), ...piccolo("C2", 4.3, 4.3)], 0.2).scontri;
+      expect(sopra.map((s) => [s.a, s.b])).toEqual([["U1", "C2"]]);
+      // measured on the octagon, not on the square that holds it: its corner (8 - 7,8) / sqrt 2 past the cut, not 0,7 into the square
+      expect(sopra[0].sovrapposizioneMm).toBeCloseTo(0.2 * Math.SQRT1_2, 3);
+    });
+
+    it("an L and a T stay what they are", () => {
+      const elle: Array<[number, number]> = [[0, 0], [6, 0], [6, 2], [2, 2], [2, 5], [0, 5], [0, 0]];
+      const ti: Array<[number, number]> = [[-3, 0], [3, 0], [3, 1], [0.5, 1], [0.5, 4], [-0.5, 4], [-0.5, 1], [-3, 1], [-3, 0]];
+      expect(leggiIngombri([...parte("J9"), pad("J9", 1, 1, 1, 1), contorno("J9", elle)], 0.2)[0].forme[0].punti).toHaveLength(6);
+      expect(leggiIngombri([...parte("J8"), pad("J8", 0, 0.5, 0.5, 0.5), contorno("J8", ti)], 0.2)[0].forme[0].punti).toHaveLength(8);
+    });
+
+    it("the viewer draws the octagon the check measures", () => {
+      const scena = buildScene([{ type: "pcb_board", pcb_board_id: "b", center: { x: 0, y: 0 }, width: 30, height: 30, num_layers: 2 }, ...u1()] as never)!;
+      const [g8] = scena.ingombri;
+      expect(g8.forme[0].punti).toHaveLength(8);
+      expect(g8.forme[0]).toEqual(leggiIngombri(u1(), 0.2)[0].forme[0]);
+      expect(g8.dichiarato).toBe(true);
+    });
+  });
+
   it("the viewer and the placement check still read the size alone: the model's box is read when asked", () => {
     const cj = [...parte("BZ1"), pad("BZ1", -4.35, 0, 1.3, 3.4), pad("BZ1", 4.35, 0, 1.3, 3.4), corpo("BZ1", 0, 0, 9, 9)];
     expect(footprintBoxes(cj).get("BZ1")).toMatchObject({ source: "piazzole", minY: -1.7, maxY: 1.7 });
