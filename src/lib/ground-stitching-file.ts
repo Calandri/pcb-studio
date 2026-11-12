@@ -55,7 +55,7 @@ export const RIGA_USO = `<${COMPONENTE_CUCITURA} />`;
 const PREFISSO = "VCM";
 
 /** a net a selector "net.X" can name */
-const RETE_SCRIVIBILE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const RETE_SCRIVIBILE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const n3 = (v: number): string => String(Math.round(v * 1000) / 1000);
 

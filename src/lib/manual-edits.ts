@@ -26,10 +26,23 @@
  * through props and not the native format, which would not work here.
  */
 
-import { manualRouteKey, mergeManualRoutes, parseManualRoutes, portSelectorResolver, type ManualRoute } from "./manual-routes";
+import {
+  manualRouteKey,
+  mergeManualRoutes,
+  parseManualRoutes,
+  parseManualViaMoves,
+  portSelectorResolver,
+  statoDelRame,
+  stessoPercorso,
+  viaMoveKey,
+  type ManualRoute,
+  type ManualViaMove,
+} from "./manual-routes";
 import { parentFrameOffset, parseLength } from "./pcb-route-model";
 
 export const MANUAL_EDITS_PATH = "manual-edits.json";
+
+export type { ManualViaMove };
 
 export interface ManualPlacement {
   /** component name, e.g. "R1" */
@@ -75,6 +88,14 @@ export interface ManualEdits {
    */
   pcb_routes: ManualRoute[];
   /**
+   * The vias of the files that a person moved in Sposta: where the files put
+   * each one and where it has to be. With the routes that carry `replaces`
+   * they are the CORRECTIONS of the files' copper: they win over the file, and
+   * whoever generates the sources copies them there (see manual-routes.ts,
+   * applyManualRoutes). A file written before the field existed has none.
+   */
+  pcb_vias: ManualViaMove[];
+  /**
    * Which compiled board these edits were made on, and on which sources.
    *
    * Every manual edit changes this file, so the compile cache — keyed by the
@@ -103,6 +124,7 @@ export function emptyManualEdits(): ManualEdits {
     pcb_placements: [],
     manual_trace_hints: [],
     pcb_routes: [],
+    pcb_vias: [],
   };
 }
 
@@ -212,6 +234,7 @@ export function parseManualEdits(raw: string | undefined | null): ManualEdits {
   }
 
   out.pcb_routes = parseManualRoutes(obj.pcb_routes);
+  out.pcb_vias = parseManualViaMoves(obj.pcb_vias);
   return out;
 }
 
@@ -223,6 +246,8 @@ export function serializeManualEdits(edits: ManualEdits): string {
     pcb_placements: rest.pcb_placements,
     manual_trace_hints: rest.manual_trace_hints,
     pcb_routes: rest.pcb_routes,
+    // only when there are some: a file that never had a moved via is written as it always was, byte for byte
+    ...(rest.pcb_vias.length > 0 ? { pcb_vias: rest.pcb_vias } : {}),
     ...(board_base ? { board_base } : {}),
   };
   return `${JSON.stringify(ordered, null, 2)}\n`;
@@ -1184,6 +1209,85 @@ export function applyRoutePatch(
   return { edits: { ...edits, pcb_routes: [...kept, ...added] }, replaced, added };
 }
 
+/** the corrections of the files' copper one gesture makes: routes with `replaces` and moved vias */
+export interface CopperPatch {
+  routes: ManualRoute[];
+  vias: ManualViaMove[];
+}
+
+/**
+ * Writes the corrections of one gesture into the file, each by its key, the
+ * rest untouched. What the step replaced comes back, so that the editor can
+ * undo exactly this.
+ *
+ * A TRACE OR A VIA MOVED AGAIN KEEPS WHERE THE FILES PUT IT. The editor reads
+ * what is on screen: for copper a correction already moved, that is the
+ * correction, not the files. Written as it comes, the second correction would
+ * start from the first (`original` the moved path, `from` the moved place):
+ * the first would stay in the file next to it, and letting go of the second
+ * would put back copper the files never drew. So a correction that starts
+ * where another one ends takes that one's start, and its place in the file.
+ */
+export function applyCopperPatch(
+  edits: ManualEdits,
+  patch: CopperPatch,
+): { edits: ManualEdits; added: CopperPatch; replaced: CopperPatch } {
+  const added: CopperPatch = { routes: [], vias: [] };
+  const replaced: CopperPatch = { routes: [], vias: [] };
+
+  let routes = edits.pcb_routes;
+  for (const nuova of patch.routes) {
+    if (!nuova.replaces) continue;
+    const prima = routes.find(
+      (r) => r.replaces && r.connection === nuova.connection && stessoPercorso(r.points, nuova.replaces!.original),
+    );
+    const route = prima ? { ...nuova, replaces: prima.replaces } : nuova;
+    const chiave = manualRouteKey(route);
+    for (const r of routes) {
+      if (manualRouteKey(r) === chiave && !replaced.routes.includes(r)) replaced.routes.push(r);
+    }
+    routes = [...routes.filter((r) => manualRouteKey(r) !== chiave), route];
+    added.routes = [...added.routes.filter((r) => manualRouteKey(r) !== chiave), route];
+  }
+
+  let vias = edits.pcb_vias;
+  for (const nuova of patch.vias) {
+    const prima = vias.find((v) => v.net === nuova.net && v.to.x === nuova.from.x && v.to.y === nuova.from.y);
+    const via = prima ? { ...nuova, from: prima.from } : nuova;
+    const chiave = viaMoveKey(via);
+    for (const v of vias) {
+      if (viaMoveKey(v) === chiave && !replaced.vias.includes(v)) replaced.vias.push(v);
+    }
+    vias = vias.filter((v) => viaMoveKey(v) !== chiave);
+    added.vias = added.vias.filter((v) => viaMoveKey(v) !== chiave);
+    // dragged back to where the files put it: there is nothing left to correct
+    if (via.from.x === via.to.x && via.from.y === via.to.y) continue;
+    vias = [...vias, via];
+    added.vias.push(via);
+  }
+  return { edits: { ...edits, pcb_routes: routes, pcb_vias: vias }, added, replaced };
+}
+
+/**
+ * The corrections of the files' copper that a save of the WHOLE file brings
+ * in: the ones in `voluto` that `correnti` does not hold as they are (another
+ * key, or the same key with anything else changed). The ones it keeps and the
+ * ones it drops are not in the list: kept, they were checked when they went
+ * in; dropped, the copper of the files comes back, which is nobody's to check.
+ *
+ * Both files are as parseManualEdits reads them, so two equal corrections are
+ * written the same way.
+ */
+export function correzioniNuove(correnti: ManualEdits, voluto: ManualEdits): CopperPatch {
+  const scritta = (v: unknown) => JSON.stringify(v);
+  const route = new Map(correnti.pcb_routes.filter((r) => r.replaces).map((r) => [manualRouteKey(r), scritta(r)]));
+  const vie = new Map(correnti.pcb_vias.map((v) => [viaMoveKey(v), scritta(v)]));
+  return {
+    routes: voluto.pcb_routes.filter((r) => r.replaces && route.get(manualRouteKey(r)) !== scritta(r)),
+    vias: voluto.pcb_vias.filter((v) => vie.get(viaMoveKey(v)) !== scritta(v)),
+  };
+}
+
 /** how much a single save may carry: the editor sends one event per drag */
 export const EDIT_LIMITS = {
   maxEvents: 500,
@@ -1225,6 +1329,7 @@ export function applyEditEvents({
     pcb_placements: [...edits.pcb_placements],
     manual_trace_hints: [...edits.manual_trace_hints],
     pcb_routes: [...edits.pcb_routes],
+    pcb_vias: [...edits.pcb_vias],
     ...(edits.board_base ? { board_base: edits.board_base } : {}),
   };
   // one pass over the sources, not one per event: an imported main.tsx is megabytes
@@ -1373,6 +1478,14 @@ export function releaseManualEdits(
     r.connection.includes(`.${name} >`) ||
     (r.from?.startsWith(`.${name} >`) ?? false) ||
     (r.to?.startsWith(`.${name} >`) ?? false);
+  /*
+   * The corrections of one drag are let go together: a moved via names no
+   * part, so it goes with the routes of its gesture that touch the part.
+   * Releasing every trace releases every moved via with them.
+   */
+  const gestiLiberati = new Set(
+    traceActive && name !== null ? edits.pcb_routes.filter((r) => r.gesto && touches(r)).map((r) => r.gesto as string) : [],
+  );
   return {
     ...(edits.board_base ? { board_base: edits.board_base } : {}),
     pcb_routes:
@@ -1381,6 +1494,11 @@ export function releaseManualEdits(
         : name === null
           ? []
           : edits.pcb_routes.filter((r) => !touches(r)),
+    pcb_vias: !traceActive
+      ? edits.pcb_vias
+      : name === null
+        ? []
+        : edits.pcb_vias.filter((v) => !v.gesto || !gestiLiberati.has(v.gesto)),
     schematic_placements: keepPlacement(edits.schematic_placements, schActive),
     pcb_placements: keepPlacement(edits.pcb_placements, pcbActive),
     manual_trace_hints: !traceActive
@@ -1401,8 +1519,13 @@ export interface OrphanEdits {
   /** pcb placements naming a component that is not on the board */
   pcb_placements: string[];
   schematic_placements: string[];
-  /** routes whose connection, net or pads no longer exist: their key */
+  /**
+   * routes whose connection, net or pads no longer exist, and corrections of
+   * the files' copper (`replaces`) whose trace is not on the board: their key
+   */
   pcb_routes: string[];
+  /** moved vias with no via of their net where the files had it: their key (viaMoveKey) */
+  pcb_vias: string[];
   /** trace hints whose port selector resolves to nothing */
   manual_trace_hints: string[];
   total: number;
@@ -1456,13 +1579,28 @@ export function findOrphanEdits(circuitJson: unknown[], edits: ManualEdits): Orp
       return !id || !onSchematic.has(id);
     })
     .map((p) => p.selector);
-  const routes = edits.pcb_routes
-    .filter((r) => {
-      if (r.net) return !nets.has(r.net);
-      if (r.from && r.to) return !resolvePort(r.from) || !resolvePort(r.to);
-      return !connections.has(r.connection);
-    })
-    .map((r) => manualRouteKey(r));
+  /*
+   * A correction of the files' copper is an orphan when the copper it starts
+   * from is not on the board, which is more than its name existing: the same
+   * reading that lays them says it (statoDelRame), on a board just compiled as
+   * on one they are already laid on. One the files have absorbed is not an
+   * orphan: it has nothing left to do, and leaves the file at the next save.
+   */
+  const rame = edits.pcb_routes.some((r) => r.replaces) || edits.pcb_vias.length > 0
+    ? statoDelRame(els, edits.pcb_routes, edits.pcb_vias)
+    : null;
+  const routes = [
+    ...edits.pcb_routes
+      .filter((r) => {
+        if (r.replaces) return false;
+        if (r.net) return !nets.has(r.net);
+        if (r.from && r.to) return !resolvePort(r.from) || !resolvePort(r.to);
+        return !connections.has(r.connection);
+      })
+      .map((r) => manualRouteKey(r)),
+    ...(rame?.orfane.routes ?? []),
+  ];
+  const vias = rame?.orfane.vias ?? [];
   const hints = edits.manual_trace_hints
     .filter((h) => !resolvePort(h.pcb_port_selector))
     .map((h) => h.pcb_port_selector);
@@ -1470,8 +1608,29 @@ export function findOrphanEdits(circuitJson: unknown[], edits: ManualEdits): Orp
     pcb_placements: pcb,
     schematic_placements: sch,
     pcb_routes: [...new Set(routes)],
+    pcb_vias: vias,
     manual_trace_hints: hints,
-    total: pcb.length + sch.length + new Set(routes).size + hints.length,
+    total: pcb.length + sch.length + new Set(routes).size + vias.length + hints.length,
+  };
+}
+
+/**
+ * The edits without the corrections the files have absorbed (rule 4 of
+ * applyManualRoutes): the sources now draw what the correction asked for, so
+ * it has nothing left to say, and kept in the file it would win again over
+ * the next change of the sources. Judged on the saved board, which is the
+ * board of the files: the same object comes back when there is none to drop.
+ */
+export function senzaAssorbite(edits: ManualEdits, circuitJson: unknown[]): ManualEdits {
+  if (!edits.pcb_routes.some((r) => r.replaces) && edits.pcb_vias.length === 0) return edits;
+  const { assorbite } = statoDelRame(circuitJson, edits.pcb_routes, edits.pcb_vias);
+  if (assorbite.routes.length === 0 && assorbite.vias.length === 0) return edits;
+  const route = new Set(assorbite.routes);
+  const vie = new Set(assorbite.vias);
+  return {
+    ...edits,
+    pcb_routes: edits.pcb_routes.filter((r) => !r.replaces || !route.has(manualRouteKey(r))),
+    pcb_vias: edits.pcb_vias.filter((v) => !vie.has(viaMoveKey(v))),
   };
 }
 

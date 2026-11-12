@@ -126,6 +126,7 @@ function withOrphans(
     ...orphans.pcb_placements,
     ...orphans.schematic_placements,
     ...orphans.pcb_routes,
+    ...orphans.pcb_vias,
     ...orphans.manual_trace_hints,
   ].slice(0, 8);
   summary.message = `${summary.message} ${orphans.total} modifiche a mano non trovano piu' il loro pezzo (${names.join(", ")}${orphans.total > names.length ? ", ..." : ""}).`;
@@ -793,6 +794,7 @@ export async function compileProject(
     const conMano = applyManualRoutes({
       circuitJson: conRame,
       routes: parsedManualEdits.pcb_routes,
+      vias: parsedManualEdits.pcb_vias,
       viaDiameter: projectRules.rules.minViaDiameterMm,
       viaHoleDiameter: projectRules.rules.minViaHoleMm,
     });
@@ -1459,6 +1461,7 @@ export async function compileProject(
   const manual = applyManualRoutes({
     circuitJson: routed,
     routes: parsedManualEdits.pcb_routes,
+    vias: parsedManualEdits.pcb_vias,
     viaDiameter: projectRules.rules.minViaDiameterMm,
     viaHoleDiameter: projectRules.rules.minViaHoleMm,
   });

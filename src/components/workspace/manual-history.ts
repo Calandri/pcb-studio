@@ -1,5 +1,5 @@
 import type { EditEvent, ManualEdits, ManualPlacement, PlacementPatch } from "@/lib/manual-edits";
-import { manualRouteKey, type ManualRoute } from "@/lib/manual-routes";
+import { manualRouteKey, viaMoveKey, type ManualRoute } from "@/lib/manual-routes";
 
 /*
  * The pure half of the manual editor's bookkeeping: which pending edits were
@@ -35,6 +35,8 @@ const KEY_OF: { [K in ListKey]: (item: ManualEdits[K][number]) => string } = {
   manual_trace_hints: (h) => h.pcb_port_selector,
   // the identity the server replaces by: the pad pair, not the connection
   pcb_routes: (r) => manualRouteKey(r),
+  // a moved via: its net and where the files put it
+  pcb_vias: (v) => viaMoveKey(v),
 };
 
 const LIST_LABEL: Record<ListKey, string> = {
@@ -42,6 +44,7 @@ const LIST_LABEL: Record<ListKey, string> = {
   pcb_placements: "rame",
   manual_trace_hints: "pista guidata",
   pcb_routes: "pista",
+  pcb_vias: "via spostata",
 };
 
 /** JSON with sorted keys: two equal entries compare equal whatever order the parser built them in */

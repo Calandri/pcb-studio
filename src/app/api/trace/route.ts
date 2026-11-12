@@ -2,6 +2,7 @@ import { baseHolds, boardBaseOf } from "@/lib/board-base";
 import { requireProjectAccess } from "@/lib/acl";
 import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
+import { resolveDesignRules } from "@/lib/design-rules";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import {
   boardFreshness,
@@ -21,6 +22,8 @@ import {
   saveCompileCache,
   updateProjectFile,
 } from "@/lib/project-store";
+import { rameCheEntra, rameRifiutato } from "@/lib/spinta/porte";
+import type { EsitoDelRame } from "@/lib/spinta/verifica";
 import { deleteTrace } from "@/lib/trace-edit";
 import { vieSemprePassanti } from "@/lib/via-layers";
 
@@ -42,6 +45,14 @@ const RESTORE_LIMITS = { maxElements: 64, maxBytes: 500_000, maxRoutes: 50, maxP
  * The answer says what went (the copper and the hand routes), and
  * action=restore puts exactly that back: Cmd+Z in Instrada. Without it a
  * detached trace was gone for good (tm-4l-r3, 2026-11-10: 828 routes to 821).
+ *
+ * A DRAWN route comes back unchecked, as it is saved everywhere else. A
+ * CORRECTION of the files' copper (a route with `replaces`, see
+ * lib/spinta/porte.ts) is another thing: it wins over the files, and what a
+ * restore carries comes from the page. So one the file does not hold already
+ * is checked like the gesture that made it, on the board as the restore
+ * leaves it, before anything is written: refused, neither the file nor the
+ * board changes.
  */
 export async function POST(req: Request): Promise<Response> {
   let body: Record<string, unknown>;
@@ -165,11 +176,27 @@ export async function POST(req: Request): Promise<Response> {
   let removedRoutes: ManualRoute[] = [];
   if (result.editsChanged) {
     let written: string | null = null;
+    /*
+     * A restore that carries a correction of the files' copper. The copper it
+     * starts from, or the laid trace that remembers it, is among the elements
+     * put back: so it is judged on the board with those on it, against the
+     * file actually being replaced, inside its write (see rameCheEntra). The
+     * rules are read only then: a restore of drawn copper costs what it did.
+     */
+    const conCorrezioni = restoring && restoreRoutes.some((r) => r.replaces);
+    const regole = conCorrezioni ? resolveDesignRules(fsMap).rules : null;
+    let esito: EsitoDelRame = { ok: true };
     try {
       const r = await updateProjectFile(projectId, MANUAL_EDITS_PATH, (current) => {
+        // may run again on a conflict: the verdict is the one of the run that decides
+        esito = { ok: true };
         const redone = change(cached.circuitJson, current);
         if (!redone?.editsChanged) return null;
         const before = parseManualEdits(current);
+        if (regole) {
+          esito = rameCheEntra({ scheda: redone.circuitJson, regole, correnti: before, voluto: redone.edits });
+          if (!esito.ok) return null;
+        }
         const afterKeys = new Set(redone.edits.pcb_routes.map(manualRouteKey));
         removedRoutes = before.pcb_routes.filter((x) => !afterKeys.has(manualRouteKey(x)));
         const base = nextBoardBase({
@@ -186,6 +213,9 @@ export async function POST(req: Request): Promise<Response> {
     } catch (err) {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 409 });
     }
+    // refused: the file was not written, and the board is not saved either
+    const rifiutato = esito as EsitoDelRame;
+    if (!rifiutato.ok) return rameRifiutato(rifiutato.motivo, rifiutato.cambiata === true);
     if (written !== null && fresh === "exact") {
       hash = filesHash({ ...sources, [MANUAL_EDITS_PATH]: written });
     }

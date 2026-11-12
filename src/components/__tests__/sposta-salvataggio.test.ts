@@ -108,6 +108,7 @@ describe("una scheda che arriva toglie solo le sovrapposizioni che mostra gia'",
       schematic_placements: [],
       manual_trace_hints: [],
       pcb_routes: [],
+      pcb_vias: [],
       pcb_placements: [
         { selector: "C1", center: { x: 1, y: 1 } },
         { selector: "C2", center: { x: 2, y: 2 } },

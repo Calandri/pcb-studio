@@ -1,10 +1,13 @@
 import { accessoDaRichiesta, requireProjectAccess } from "@/lib/acl";
 import { withLibrary } from "@/lib/agent-tools";
+import { resolveDesignRules } from "@/lib/design-rules";
 import { boardStanding, commitManualEdits, rilasciaPezzi } from "@/lib/manual-edits-store";
 import {
+  applyCopperPatch,
   applyEditEvents,
   applyPlacementPatches,
   applyRoutePatch,
+  correzioniNuove,
   countManualEdits,
   EDIT_LIMITS,
   emptyManualEdits,
@@ -15,11 +18,14 @@ import {
   parseNames,
   parsePlacementPatches,
   releaseManualEdits,
+  senzaAssorbite,
   type EditEvent,
   type ManualEdits,
 } from "@/lib/manual-edits";
 import { mergeManualRoutes, parseManualRoutes } from "@/lib/manual-routes";
 import { parseLength } from "@/lib/pcb-route-model";
+import { portaCorrezioni, rameCheEntra, rameRifiutato, SCHEDA_RISALVATA, seAncoraQuella, SENZA_SCHEDA, SOLO_CON_COPPER } from "@/lib/spinta/porte";
+import { leggiRame, verificaRame, type EsitoDelRame } from "@/lib/spinta/verifica";
 import {
   getCompileCache,
   getCompileMeta,
@@ -43,7 +49,7 @@ export const runtime = "nodejs";
  */
 
 /** what one save of the editor may carry: it sends a handful at a time */
-const POST_LIMITS = { maxRoutes: 200, maxPoints: 2000, maxNames: 400 } as const;
+const POST_LIMITS = { maxRoutes: 200, maxPoints: 2000, maxNames: 400, maxVias: 500 } as const;
 
 function payload(edits: ManualEdits, cache?: CompileCache | null, extra: Record<string, unknown> = {}) {
   return {
@@ -187,6 +193,8 @@ export async function POST(req: Request): Promise<Response> {
    */
   if (body.action === "routes") {
     const t0 = Date.now();
+    // this save does not read the board: it cannot check a correction of the files' copper, and does not take one
+    if (portaCorrezioni(body.add)) return Response.json({ error: SOLO_CON_COPPER }, { status: 400 });
     const add = parseManualRoutes(body.add, POST_LIMITS);
     const removeKeys = Array.isArray(body.remove)
       ? body.remove.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length <= 400).slice(0, POST_LIMITS.maxRoutes)
@@ -213,11 +221,86 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   /*
+   * Copper of the files moved in Sposta: a via dragged, the traces it carried
+   * or pushed (routes with `replaces`, see lib/manual-routes.ts). One gesture
+   * is one save, and every correction of it carries the same `gesto` and the
+   * instant of the save.
+   *
+   * Only the browser session gets here (the personal token stopped above: it
+   * lets go of named parts and nothing else). And the viewer is not trusted:
+   * what it sends is read within the limits of one save (leggiRame), then
+   * checked against the saved board (verificaRame): directions, lengths, the
+   * copper it starts from, the distances. A board that changed after the
+   * gesture or copper that breaks a distance is answered 409, and nothing is
+   * written.
+   *
+   * This save reads the board, megabytes that `place` and `routes` do without:
+   * there is no way to measure a distance on a board not in hand.
+   */
+  if (body.action === "copper") {
+    const t0 = Date.now();
+    const letto = leggiRame(body, POST_LIMITS, new Date().toISOString());
+    if ("errore" in letto) return Response.json({ error: letto.errore }, { status: 400 });
+    const { rame } = letto;
+    try {
+      const scheda = await getCompileCache(projectId).catch(() => null);
+      if (!scheda?.circuitJson) return rameRifiutato(SENZA_SCHEDA);
+      const regole = resolveDesignRules(await getProject(projectId)).rules;
+      const meta = await seAncoraQuella(projectId, scheda);
+      if (!meta) return rameRifiutato(SCHEDA_RISALVATA, true);
+      await baseBeforeEdit(projectId, meta);
+      let esito: EsitoDelRame = { ok: true };
+      let scritto: ReturnType<typeof applyCopperPatch> | null = null;
+      const { edits, avviso } = await commit(projectId, meta, (current) => {
+        /*
+         * May run again on a conflict, on the file somebody else just wrote:
+         * the copper is checked against THAT file, so what is written is
+         * always what was verified. A refusal writes nothing (null).
+         *
+         * The corrections the files have absorbed leave the file with this
+         * save (see senzaAssorbite): the board in hand is the one that says so.
+         */
+        const correnti = senzaAssorbite(current, scheda.circuitJson);
+        esito = verificaRame({ circuitJson: scheda.circuitJson, regole, correnti, rame });
+        if (!esito.ok) return null;
+        scritto = applyCopperPatch(correnti, rame);
+        return scritto.edits;
+      });
+      const rifiutato = esito as EsitoDelRame;
+      if (!rifiutato.ok) return rameRifiutato(rifiutato.motivo, rifiutato.cambiata === true);
+      const fatto = scritto as ReturnType<typeof applyCopperPatch> | null;
+      console.log(`[manual-edits ${projectId}] copper ${rame.routes.length} piste, ${rame.vias.length} vie: ${Date.now() - t0} ms`);
+      return Response.json({
+        ok: true,
+        routes: fatto?.added.routes ?? [],
+        vias: fatto?.added.vias ?? [],
+        // what this save took the place of, for undo
+        replaced: fatto?.replaced ?? { routes: [], vias: [] },
+        counts: countManualEdits(edits),
+        ...conAvviso(avviso),
+      });
+    } catch (err) {
+      return failure(err);
+    }
+  }
+
+  /*
    * The compiled board: needed to translate viewer ids into names, to read
    * positions for "pin", to tell which board the edits were made on, and to
    * list the edits that point at nothing.
    */
   const cache = await getCompileCache(projectId).catch(() => null);
+  /*
+   * Every save from here on has the board in hand, so the corrections of the
+   * files' copper that the files have absorbed leave the file with it (see
+   * senzaAssorbite). `place` and `routes` above do not read the board, and
+   * leave them where they are.
+   */
+  const salva: typeof commit = (id, saved, transform) =>
+    commit(id, saved, (current) => {
+      const next = transform(current);
+      return next && cache?.circuitJson ? senzaAssorbite(next, cache.circuitJson) : next;
+    });
 
   try {
     // release: a component goes back to automatic placement
@@ -236,7 +319,7 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json(payload(edits, cache, conAvviso(avviso)));
       }
       const name = typeof body.name === "string" && body.name ? body.name : null;
-      const { edits, avviso } = await commit(projectId, cache, (current) =>
+      const { edits, avviso } = await salva(projectId, cache, (current) =>
         releaseManualEdits(current, scope, name),
       );
       return Response.json(payload(edits, cache, conAvviso(avviso)));
@@ -285,7 +368,7 @@ export async function POST(req: Request): Promise<Response> {
         const rotazione = normalizeRotation(el.rotation) ?? undefined;
         posizioni.push({ nome, x, y, ...(rotazione !== undefined ? { rotazione } : {}) });
       }
-      const { edits, avviso } = await commit(projectId, cache, (current) => {
+      const { edits, avviso } = await salva(projectId, cache, (current) => {
         const pcb = current.pcb_placements.map((p) => ({ ...p }));
         for (const pos of posizioni) {
           const gia = pcb.find((p) => p.selector === pos.nome);
@@ -318,7 +401,39 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ error: "modifiche troppo grandi" }, { status: 413 });
       }
       const wanted = parseManualEdits(raw);
-      const { edits, avviso } = await commit(projectId, cache, () => wanted);
+      // a state with no correction of the files' copper in it: written as it always was, nothing to check
+      if (!wanted.pcb_routes.some((r) => r.replaces) && wanted.pcb_vias.length === 0) {
+        const { edits, avviso } = await salva(projectId, cache, () => wanted);
+        return Response.json(payload(edits, cache, conAvviso(avviso)));
+      }
+      /*
+       * A state that holds corrections. The ones the file already has as they
+       * are stay, the ones it no longer wants go, and neither costs a check:
+       * those went in checked, these give the files' copper back. The ones the
+       * file does NOT hold as they are (an undo back to the first of two
+       * drags, a redo) enter it here, so they are checked here, like a gesture:
+       * against the saved board, on the board of the state asked for (see
+       * verificaRame), and a refusal writes nothing. The check runs inside the
+       * write, on the file actually being replaced.
+       */
+      const scheda = cache?.circuitJson ?? null;
+      // the ones the files have absorbed are not wanted any more, whoever asks: see senzaAssorbite
+      const voluto = scheda ? senzaAssorbite(wanted, scheda) : wanted;
+      const files = await getProject(projectId);
+      // there is something to check, on the file as it is now: it needs a board, and the saved one
+      const daVerificare = correzioniNuove(parseManualEdits(files[MANUAL_EDITS_PATH]), voluto);
+      if (daVerificare.routes.length > 0 || daVerificare.vias.length > 0) {
+        if (!cache || !scheda) return rameRifiutato(SENZA_SCHEDA);
+        if (!(await seAncoraQuella(projectId, cache))) return rameRifiutato(SCHEDA_RISALVATA, true);
+      }
+      const regole = resolveDesignRules(files).rules;
+      let esito: EsitoDelRame = { ok: true };
+      const { edits, avviso } = await commit(projectId, cache, (current) => {
+        esito = rameCheEntra({ scheda, regole, correnti: current, voluto });
+        return esito.ok ? voluto : null;
+      });
+      const rifiutato = esito as EsitoDelRame;
+      if (!rifiutato.ok) return rameRifiutato(rifiutato.motivo, rifiutato.cambiata === true);
       return Response.json(payload(edits, cache, conAvviso(avviso)));
     }
 
@@ -337,6 +452,8 @@ export async function POST(req: Request): Promise<Response> {
     const events = Array.isArray(body.events)
       ? (body.events.filter((e) => typeof e === "object" && e !== null) as EditEvent[])
       : [];
+    // the old save of drawn traces: like `routes`, it takes no correction of the files' copper
+    if (portaCorrezioni(body.routes)) return Response.json({ error: SOLO_CON_COPPER }, { status: 400 });
     const routes = parseManualRoutes(body.routes, POST_LIMITS);
     /*
      * A route that does not pass the checks (a point at NaN, an unknown
@@ -361,7 +478,7 @@ export async function POST(req: Request): Promise<Response> {
      * them is added next to the first.
      */
     if (events.length === 0) {
-      const { edits, avviso } = await commit(projectId, cache, (current) => ({
+      const { edits, avviso } = await salva(projectId, cache, (current) => ({
         ...current,
         pcb_routes: mergeManualRoutes(current.pcb_routes, routes),
       }));
@@ -384,7 +501,7 @@ export async function POST(req: Request): Promise<Response> {
     // in the function log: a page still saving moves the old way (opened before the deploy)
     console.log(`[manual-edits ${projectId}] events ${events.length} (vecchia via), piste ${routes.length}`);
     const main = (await getProject(projectId))["main.tsx"] ?? "";
-    const { edits, avviso } = await commit(projectId, cache, (current) => {
+    const { edits, avviso } = await salva(projectId, cache, (current) => {
       const moved = applyEditEvents({
         circuitJson: cache.circuitJson as unknown[],
         main,

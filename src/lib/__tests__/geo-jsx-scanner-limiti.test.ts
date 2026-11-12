@@ -35,7 +35,7 @@ describe("lo scanner JSX resta lineare su un file costruito apposta", () => {
     const strano = `${"<a>".repeat(300)}<via pcbX={1} />${"</a>".repeat(300)}`;
     expect(soloCioCheLeggeLoSchematico(strano)).toBe(strano);
     expect(schematicKeyOf({ "main.tsx": strano })).not.toBe(schematicKeyOf({ "main.tsx": strano.replace("pcbX={1}", "pcbX={2}") }));
-    const edits = { schematic_placements: [], pcb_placements: [{ selector: "R1", center: { x: 1, y: 2 } }], manual_trace_hints: [], pcb_routes: [] };
+    const edits = { schematic_placements: [], pcb_placements: [{ selector: "R1", center: { x: 1, y: 2 } }], manual_trace_hints: [], pcb_routes: [], pcb_vias: [] };
     expect(injectManualEdits(strano, edits)).toBe(strano);
   });
 

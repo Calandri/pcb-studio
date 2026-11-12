@@ -367,7 +367,8 @@ export function rerouteLocal(
   const edits = parseManualEdits(manualEditsRaw);
   const orphans = findOrphanEdits(circuitJson, edits);
   const rules = resolveDesignRules(fsMap).rules;
-  const vias = { viaDiameter: rules.minViaDiameterMm, viaHoleDiameter: rules.minViaHoleMm };
+  // named apart from the moved vias of the file (`vias` of applyManualRoutes)
+  const viaSizes = { viaDiameter: rules.minViaDiameterMm, viaHoleDiameter: rules.minViaHoleMm };
   const fail = (reason: string, nothing = false) => ({
     circuitJson: null,
     result: {
@@ -387,14 +388,18 @@ export function rerouteLocal(
   if (applied?.error) return fail(applied.error);
   const moved = applied?.moved.length ?? 0;
 
-  // no moves and no hand-drawn traces: nothing to apply
-  if (moved === 0 && edits.pcb_routes.length === 0) {
+  // no moves, no hand-drawn traces and no moved vias: nothing to apply
+  if (moved === 0 && edits.pcb_routes.length === 0 && edits.pcb_vias.length === 0) {
     /*
      * Unless the board still carries hand copper that the file no longer
      * describes: the last hand-drawn trace taken out (Cmd+Z, "rilascia le
      * piste"). That copper goes, here, and it is a change of the board: saying
      * "nothing to apply" left the deleted trace on screen and in the exports,
      * on a board called current.
+     *
+     * The same pass puts back what the last CORRECTION of the files' copper
+     * had replaced: the trace of the files on its starting path, the via where
+     * the files put it (see applyManualRoutes). An undo needs no compile.
      */
     /*
      * Measured on the board with its vias already completed, which is how
@@ -404,7 +409,7 @@ export function rerouteLocal(
      * the compile.
      */
     const passante = vieSemprePassanti(circuitJson as El[]);
-    const cleaned = applyManualRoutes({ circuitJson: passante, routes: [], ...vias });
+    const cleaned = applyManualRoutes({ circuitJson: passante, routes: [], vias: [], ...viaSizes });
     if (cleaned.circuitJson !== passante) {
       return {
         circuitJson: cleaned.circuitJson as CircuitElement[],
@@ -423,11 +428,13 @@ export function rerouteLocal(
    * Hand-drawn traces go on top of the moved geometry: their geometry is
    * explicit intent. If one touches a moved pad it stays attached to the old
    * position: the check flags it and it gets redrawn — never silently deleted.
+   * The moved vias of the file go with them, by the same rules as the compile.
    */
   const routed = applyManualRoutes({
     circuitJson: moved > 0 && applied ? applied.circuitJson : circuitJson,
     routes: edits.pcb_routes,
-    ...vias,
+    vias: edits.pcb_vias,
+    ...viaSizes,
   });
 
   return {
