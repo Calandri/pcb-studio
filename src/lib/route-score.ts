@@ -9,16 +9,8 @@
  * vias, less copper).
  */
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
-import {
-  distanzaPuntoForma,
-  distanzaSegmentoForma,
-  ingombroForma,
-  pointSegDistance,
-  rameDelForo,
-  rameDelPad,
-  runDrcChecks,
-  type FormaRame,
-} from "./drc";
+import { runDrcChecks } from "./drc";
+import { isoleDiRame } from "./gruppi-di-rame";
 import { planeServedSourcePorts, readPours } from "./pours";
 
 export interface CircuitElement {
@@ -135,15 +127,6 @@ function totalWireLengthMm(circuitJson: CircuitElement[]): number {
   return length;
 }
 
-/*
- * A hundredth of a millimetre of slack on every contact: router coordinates are
- * rounded, and two pieces of copper that meet on paper must not come out apart
- * by a rounding.
- */
-const CONTATTO_MM = 0.01;
-/** cell of the spatial index, in mm: small enough to keep the lists short */
-const CELLA_MM = 1;
-
 /**
  * Unrouted connectivity groups, judged PAD BY PAD on the copper that is there.
  *
@@ -230,72 +213,6 @@ export function unroutedGroups(circuitJson: CircuitElement[]): Map<string, strin
   return out;
 }
 
-/** union-find on integers: the islands of copper */
-class Isole {
-  private padre: number[] = [];
-  nuovo(): number {
-    this.padre.push(this.padre.length);
-    return this.padre.length - 1;
-  }
-  radice(x: number): number {
-    let r = x;
-    while (this.padre[r] !== r) r = this.padre[r];
-    while (this.padre[x] !== r) {
-      const next = this.padre[x];
-      this.padre[x] = r;
-      x = next;
-    }
-    return r;
-  }
-  unisci(a: number, b: number): void {
-    const ra = this.radice(a);
-    const rb = this.radice(b);
-    if (ra !== rb) this.padre[ra] = rb;
-  }
-}
-
-/** a uniform grid over the board: what is near a point, without walking everything */
-class Griglia<T> {
-  private celle = new Map<string, T[]>();
-  /** the few things too big for cells (a trace across the whole board): always looked at */
-  private grandi: T[] = [];
-  aggiungi(minX: number, minY: number, maxX: number, maxY: number, cosa: T): void {
-    const x0 = Math.floor((minX - CONTATTO_MM) / CELLA_MM);
-    const x1 = Math.floor((maxX + CONTATTO_MM) / CELLA_MM);
-    const y0 = Math.floor((minY - CONTATTO_MM) / CELLA_MM);
-    const y1 = Math.floor((maxY + CONTATTO_MM) / CELLA_MM);
-    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 400) {
-      this.grandi.push(cosa);
-      return;
-    }
-    for (let cx = x0; cx <= x1; cx++) {
-      for (let cy = y0; cy <= y1; cy++) {
-        const k = `${cx},${cy}`;
-        const list = this.celle.get(k);
-        if (list) list.push(cosa);
-        else this.celle.set(k, [cosa]);
-      }
-    }
-  }
-  vicini(minX: number, minY: number, maxX: number, maxY: number): Set<T> {
-    const out = new Set<T>(this.grandi);
-    const x0 = Math.floor((minX - CONTATTO_MM) / CELLA_MM);
-    const x1 = Math.floor((maxX + CONTATTO_MM) / CELLA_MM);
-    const y0 = Math.floor((minY - CONTATTO_MM) / CELLA_MM);
-    const y1 = Math.floor((maxY + CONTATTO_MM) / CELLA_MM);
-    for (let cx = x0; cx <= x1; cx++) {
-      for (let cy = y0; cy <= y1; cy++) {
-        for (const cosa of this.celle.get(`${cx},${cy}`) ?? []) out.add(cosa);
-      }
-    }
-    return out;
-  }
-}
-
-/** "*" = every layer: plated holes and through vias */
-const stessoStrato = (a: string | null, b: string | null) =>
-  a === null || b === null || a === "*" || b === "*" || a === b;
-
 /**
  * Which island of copper each pcb port sits on.
  *
@@ -305,198 +222,11 @@ const stessoStrato = (a: string | null, b: string | null) =>
  * layer; two traces touch when the end of one lands on the other (that is how
  * a router's T-junctions are written); a via touches what reaches its ring.
  * Pads of the same port, and ports the part connects internally, are one node.
+ *
+ * The geometry lives in gruppi-di-rame.ts, shared with whoever needs the same
+ * islands with their traces and vias (the viewer's open connections): here it
+ * is asked for the islands of the count, with no poured copper.
  */
 export function copperIslands(circuitJson: CircuitElement[]): (pcbPortId: string) => number {
-  const isole = new Isole();
-  const nodoDiPorta = new Map<string, number>();
-  const nodoDiSorgente = new Map<string, number>();
-  const nodoPorta = (id: string): number => {
-    let n = nodoDiPorta.get(id);
-    if (n === undefined) {
-      n = isole.nuovo();
-      nodoDiPorta.set(id, n);
-    }
-    return n;
-  };
-
-  interface Pad {
-    nodo: number;
-    forma: FormaRame;
-    strato: string | null;
-  }
-  const pads: Pad[] = [];
-  const conPad = new Set<string>();
-  for (const el of circuitJson) {
-    if (el.type !== "pcb_smtpad" && el.type !== "pcb_plated_hole") continue;
-    const forma = el.type === "pcb_smtpad" ? rameDelPad(el) : rameDelForo(el);
-    if (!forma) continue;
-    const porta = el.pcb_port_id ? String(el.pcb_port_id) : "";
-    if (porta) conPad.add(porta);
-    pads.push({
-      nodo: porta ? nodoPorta(porta) : isole.nuovo(),
-      forma,
-      strato: el.type === "pcb_plated_hole" ? "*" : el.layer ? String(el.layer) : null,
-    });
-  }
-  for (const el of circuitJson) {
-    if (el.type !== "pcb_port" || !el.pcb_port_id) continue;
-    const id = String(el.pcb_port_id);
-    const nodo = nodoPorta(id);
-    if (el.source_port_id) nodoDiSorgente.set(String(el.source_port_id), nodo);
-    // a port no pad points at: the port's own position stands in for its copper
-    const x = num(el.x);
-    const y = num(el.y);
-    if (conPad.has(id) || x === null || y === null) continue;
-    const strati = Array.isArray(el.layers) ? (el.layers as unknown[]).map(String) : [];
-    pads.push({
-      nodo,
-      forma: { tipo: "cerchio", x, y, r: 0.05 },
-      strato: strati.length === 1 ? strati[0] : "*",
-    });
-  }
-  // the pins a part joins inside itself (two GND pins of a connector, say)
-  for (const el of circuitJson) {
-    if (el.type !== "source_component") continue;
-    for (const gruppo of (el.internally_connected_source_port_ids as unknown[] | undefined) ?? []) {
-      if (!Array.isArray(gruppo)) continue;
-      const nodi = gruppo
-        .map((sp) => nodoDiSorgente.get(String(sp)))
-        .filter((n): n is number => n !== undefined);
-      for (let i = 1; i < nodi.length; i++) isole.unisci(nodi[0], nodi[i]);
-    }
-  }
-
-  interface Tratto {
-    nodo: number;
-    ax: number;
-    ay: number;
-    bx: number;
-    by: number;
-    hw: number;
-    strato: string | null;
-  }
-  interface Capo {
-    nodo: number;
-    x: number;
-    y: number;
-    /** half width of the copper at that point: the trace, or the via's ring */
-    r: number;
-    strato: string | null;
-  }
-  const tratti = new Griglia<Tratto>();
-  const capi: Capo[] = [];
-  const aggiungiTratto = (t: Tratto) =>
-    tratti.aggiungi(
-      Math.min(t.ax, t.bx) - t.hw,
-      Math.min(t.ay, t.by) - t.hw,
-      Math.max(t.ax, t.bx) + t.hw,
-      Math.max(t.ay, t.by) + t.hw,
-      t,
-    );
-  for (const el of circuitJson) {
-    if (el.type !== "pcb_trace") continue;
-    const route = ((el.route as Array<Record<string, unknown>> | undefined) ?? []).filter(
-      (p) => num(p.x) !== null && num(p.y) !== null,
-    );
-    if (route.length === 0) continue;
-    // one route is one piece of copper: its points are drawn one after the other
-    const nodo = isole.nuovo();
-    const meta = (p: Record<string, unknown>) => (num(p.width) ?? 0.15) / 2;
-    const stratoDi = (p: Record<string, unknown>) =>
-      p.route_type === "via" ? "*" : p.layer ? String(p.layer) : null;
-    for (let i = 1; i < route.length; i++) {
-      const a = route[i - 1];
-      const b = route[i];
-      const viaA = a.route_type === "via";
-      const viaB = b.route_type === "via";
-      if (viaA && viaB) continue;
-      // a stretch between a wire and a via lies on the wire's layer, as drawn
-      const filo = viaA ? b : viaB ? a : b;
-      aggiungiTratto({
-        nodo,
-        ax: num(a.x)!,
-        ay: num(a.y)!,
-        bx: num(b.x)!,
-        by: num(b.y)!,
-        hw: meta(viaA || viaB ? filo : b.width !== undefined ? b : a),
-        strato: viaA || viaB ? stratoDi(filo) : (stratoDi(b) ?? stratoDi(a)),
-      });
-    }
-    if (route.length === 1) {
-      const p = route[0];
-      aggiungiTratto({
-        nodo,
-        ax: num(p.x)!,
-        ay: num(p.y)!,
-        bx: num(p.x)!,
-        by: num(p.y)!,
-        hw: meta(p),
-        strato: stratoDi(p),
-      });
-    }
-    // the ends, and the via points, are where other copper attaches
-    route.forEach((p, i) => {
-      const via = p.route_type === "via";
-      if (!via && i !== 0 && i !== route.length - 1) return;
-      capi.push({
-        nodo,
-        x: num(p.x)!,
-        y: num(p.y)!,
-        r: via ? (num(p.outer_diameter) ?? 0.6) / 2 : meta(p),
-        strato: stratoDi(p),
-      });
-    });
-  }
-  const vie: Capo[] = [];
-  for (const el of circuitJson) {
-    if (el.type !== "pcb_via") continue;
-    const x = num(el.x);
-    const y = num(el.y);
-    if (x === null || y === null) continue;
-    const d = num(el.outer_diameter) ?? num(el.hole_diameter) ?? 0.6;
-    const via: Capo = { nodo: isole.nuovo(), x, y, r: d / 2, strato: "*" };
-    vie.push(via);
-    capi.push(via);
-  }
-
-  // pads against the copper of the traces
-  for (const pad of pads) {
-    const box = ingombroForma(pad.forma);
-    for (const t of tratti.vicini(box.minX, box.minY, box.maxX, box.maxY)) {
-      if (!stessoStrato(pad.strato, t.strato)) continue;
-      if (isole.radice(t.nodo) === isole.radice(pad.nodo)) continue;
-      if (distanzaSegmentoForma(pad.forma, t.ax, t.ay, t.bx, t.by) <= t.hw + CONTATTO_MM) {
-        isole.unisci(t.nodo, pad.nodo);
-      }
-    }
-  }
-  // trace ends, via points and vias landing on a trace
-  for (const c of capi) {
-    for (const t of tratti.vicini(c.x - c.r, c.y - c.r, c.x + c.r, c.y + c.r)) {
-      if (t.nodo === c.nodo || !stessoStrato(c.strato, t.strato)) continue;
-      if (isole.radice(t.nodo) === isole.radice(c.nodo)) continue;
-      if (pointSegDistance(c.x, c.y, t.ax, t.ay, t.bx, t.by) <= c.r + t.hw + CONTATTO_MM) {
-        isole.unisci(t.nodo, c.nodo);
-      }
-    }
-  }
-  // vias sitting on a pad: via-in-pad, or the ring touching it
-  if (vie.length > 0) {
-    const grigliaPad = new Griglia<Pad>();
-    for (const pad of pads) {
-      const b = ingombroForma(pad.forma);
-      grigliaPad.aggiungi(b.minX, b.minY, b.maxX, b.maxY, pad);
-    }
-    for (const via of vie) {
-      for (const pad of grigliaPad.vicini(via.x - via.r, via.y - via.r, via.x + via.r, via.y + via.r)) {
-        if (isole.radice(pad.nodo) === isole.radice(via.nodo)) continue;
-        if (distanzaPuntoForma(pad.forma, via.x, via.y) <= via.r + CONTATTO_MM) {
-          isole.unisci(pad.nodo, via.nodo);
-        }
-      }
-    }
-  }
-
-  // a port with no copper at all is an island of its own
-  return (pcbPortId: string) => isole.radice(nodoDiPorta.get(pcbPortId) ?? isole.nuovo());
+  return isoleDiRame(circuitJson);
 }
