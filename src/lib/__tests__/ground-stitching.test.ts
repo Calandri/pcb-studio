@@ -561,6 +561,27 @@ describe("le isole di massa", () => {
     expect(e.isole.collegate).toEqual([expect.objectContaining({ strato: "top", areaMm2: 1600 })]);
   });
 
+  it("tante isole grandi senza posto: le posizioni provate hanno un tetto, e la risposta dice quante isole non ha guardato per intero", () => {
+    // four 40 x 40 islands on top, each under a keepout: about twenty thousand positions each, none with a place
+    const centri = [[-25, -25], [25, -25], [-25, 25], [25, 25]];
+    const cj = [
+      ...scheda(100, 100),
+      colata("top", rett(-49.7, -49.7, 49.7, 49.7), "source_net_0", centri.map(([x, y]) => rett(x - 20.3, y - 20.3, x + 20.3, y + 20.3))),
+      ...centri.map(([x, y]) => colata("top", rett(x - 20, y - 20, x + 20, y + 20))),
+      ...massaPiena(["inner1", "inner2", "bottom"], 100, 100),
+      viaEsistente(-48, -48, "k_gnd"),
+      ...centri.map(([x, y], i) => ({ type: "pcb_keepout", pcb_keepout_id: `k${i}`, shape: "rect", center: { x, y }, width: 41, height: 41, layers: ["top"] })),
+    ];
+    const e = cuci(cj, { bordo: false, passoMm: 10 });
+    expect(e.isole.trovate).toBe(4);
+    expect(e.isole.collegate).toEqual([]);
+    expect(e.isole.senzaPosto.map((i) => i.motivo)).toEqual(["zona_vietata", "zona_vietata", "zona_vietata", "zona_vietata"]);
+    expect(e.avvisi.join(" ")).toMatch(/isole: provate 60000 posizioni, 1 isole non sono state guardate per intero/);
+    // three islands looked at whole and a part of the fourth: the budget, and the positions of the grid
+    expect(e.posizioniProvate).toBeGreaterThan(60000);
+    expect(e.posizioniProvate).toBeLessThan(60200);
+  });
+
   it("collegata da una via di massa o da una pista con una via, non e' un'isola", () => {
     const conVia = cuci([...base(), viaEsistente(0, 0, "k_gnd")]);
     expect(conVia.isole.trovate).toBe(0);

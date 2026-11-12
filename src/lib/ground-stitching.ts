@@ -138,6 +138,13 @@ const ANELLO_MINIMO_MM = 0.1;
  */
 export const MAX_VIE_DI_SERIE = 1000;
 export const MAX_VIE_LIMITE = 1200;
+/**
+ * The positions tried for the islands in one call, all islands together. An
+ * island is looked at whole (up to twenty thousand positions), and stops at the
+ * first place found: this many are only reached on a board with several large
+ * islands where no via fits, and past them the call would not answer in time.
+ */
+const MAX_PROVE_PER_LE_ISOLE = 60_000;
 export const MAX_ZONE = 50;
 export const MAX_PUNTI_ZONA = 200;
 export const MAX_RETI_LONTANE = 20;
@@ -1004,8 +1011,10 @@ export function cuciLaMassa(
     if (!sagoma) continue;
     const zona = conAnello(sagoma);
     const dichiarati = [...new Set(((el.layers as unknown[] | undefined) ?? []).map(String))];
-    // a keepout that names no layer is one of the whole board
-    const suoi = dichiarati.length > 0 ? dichiarati : strati;
+    // only the layers of this board, in its order; a keepout that names none of them is one of the whole board
+    const noti = strati.filter((q) => dichiarati.includes(q));
+    const suoi = noti.length > 0 ? noti : strati;
+    // ground under the zone, measured on a lattice of at most 1500 points of its box, inside the board
     const box = scatolaDiZona(zona);
     const passoCampioni = Math.max(0.2, Math.sqrt(((box.maxX - box.minX) * (box.maxY - box.minY)) / 1500));
     let campioni = 0;
@@ -1017,8 +1026,9 @@ export function cuciLaMassa(
         for (const q of suoi) if ((massaPerStrato.get(q) ?? []).some((c) => nelRame(c, x, y))) coperti.set(q, coperti.get(q)! + 1);
       }
     }
-    const massaPerStrato2: Record<string, number> = {};
-    for (const q of suoi) massaPerStrato2[q] = campioni > 0 ? Number((coperti.get(q)! / campioni).toFixed(2)) : 0;
+    /** how much of the zone the ground covers, on each of its layers */
+    const quota: Record<string, number> = {};
+    for (const q of suoi) quota[q] = campioni > 0 ? Number((coperti.get(q)! / campioni).toFixed(2)) : 0;
     const id = String(el.pcb_keepout_id ?? "");
     vietate.push({
       zona,
@@ -1028,7 +1038,7 @@ export function cuciLaMassa(
       y: tre((box.minY + box.maxY) / 2),
       strati: suoi,
       massaSotto: campioni > 0 && suoi.every((q) => coperti.get(q)! / campioni >= MASSA_SOTTO_MINIMA),
-      massaPerStrato: massaPerStrato2,
+      massaPerStrato: quota,
       posizioni: 0,
       conPosto: 0,
       vie: 0,
@@ -1293,6 +1303,9 @@ export function cuciLaMassa(
   // --- 1. the islands of ground, first
   const collegate: IsolaDiMassa[] = [];
   const senzaPosto: Array<IsolaDiMassa & { motivo: MotivoScarto }> = [];
+  /** the positions tried for the islands so far, and the islands the budget cut short (MAX_PROVE_PER_LE_ISOLE) */
+  let provatePerLeIsole = 0;
+  let isoleNonFinite = 0;
   /**
    * A via for this island among these points: the first where one fits and
    * reaches the main plane on another layer (or it ties the island to nothing).
@@ -1302,7 +1315,14 @@ export function cuciLaMassa(
     const motivi = new Map<MotivoScarto, number>();
     const quasi: Punto[] = [];
     for (const p of punti) {
-      if (conta) provate++;
+      if (conta) {
+        if (provatePerLeIsole >= MAX_PROVE_PER_LE_ISOLE) {
+          isoleNonFinite++;
+          break;
+        }
+        provatePerLeIsole++;
+        provate++;
+      }
       const esito = prova(p.x, p.y);
       if (!esito.ok) {
         motivi.set(esito.motivo, (motivi.get(esito.motivo) ?? 0) + 1);
@@ -1398,6 +1418,9 @@ export function cuciLaMassa(
   // --- 4. the islands again: the row and the grid may have tied some, or what lies under them
   riguardaLeIsole();
   for (const s of sospese) senzaPosto.push({ ...s.dove, motivo: s.motivo });
+  if (isoleNonFinite > 0) {
+    avvisi.push(`isole: provate ${MAX_PROVE_PER_LE_ISOLE} posizioni, ${isoleNonFinite} isole non sono state guardate per intero (possono avere posto dove non si e' guardato): collega a mano le piu' grandi e rilancia`);
+  }
   if (raggiunto) {
     avvisi.push(`tetto di ${maxVie} vie raggiunto: le posizioni oltre non sono state provate (la griglia e' ordinata dalla piu' rada alla piu' fitta, quindi le vie messe coprono la scheda a un passo piu' largo); alza maxVie o il passo`);
   }
