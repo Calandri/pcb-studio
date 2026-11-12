@@ -119,7 +119,11 @@ export interface ManualRoute {
    * route is rounded to 0.001: a segment at 45 degrees stays one when both its ends keep the fourth decimal.
    */
   replaces?: { original: ManualRoutePoint[]; width: number };
-  /** the gesture it comes from: the same on every correction of one drag, undone, released and copied together */
+  /**
+   * The gesture it comes from: the same on every correction of one drag, undone, released and copied together.
+   * A HAND route carries it too once a gesture of Sposta has moved it (a route drawn in Instrada or imported from
+   * another CAD, rewritten in its place: see applyCopperPatch). It stays the hand route it was, on its grid.
+   */
   gesto?: string;
   /** when it was made, ISO 8601 */
   at?: string;

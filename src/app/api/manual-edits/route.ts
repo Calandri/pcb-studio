@@ -234,6 +234,13 @@ export async function POST(req: Request): Promise<Response> {
    * gesture or copper that breaks a distance is answered 409, and nothing is
    * written.
    *
+   * Copper that is already a hand route of the file (drawn in Instrada, or
+   * imported from another CAD) is not corrected: the gesture sends the key
+   * the route has in the file and its new path (`riscritte`), and the route
+   * is rewritten in its place, in the same save and through the same checks.
+   * Everything else of the route stays the file's: nothing about it is taken
+   * from the page.
+   *
    * This save reads the board, megabytes that `place` and `routes` do without:
    * there is no way to measure a distance on a board not in hand.
    */
@@ -269,12 +276,16 @@ export async function POST(req: Request): Promise<Response> {
       const rifiutato = esito as EsitoDelRame;
       if (!rifiutato.ok) return rameRifiutato(rifiutato.motivo, rifiutato.cambiata === true);
       const fatto = scritto as ReturnType<typeof applyCopperPatch> | null;
-      console.log(`[manual-edits ${projectId}] copper ${rame.routes.length} piste, ${rame.vias.length} vie: ${Date.now() - t0} ms`);
+      console.log(
+        `[manual-edits ${projectId}] copper ${rame.routes.length} piste, ${rame.vias.length} vie, ${rame.riscritte?.length ?? 0} riscritte: ${Date.now() - t0} ms`,
+      );
       return Response.json({
         ok: true,
         routes: fatto?.added.routes ?? [],
         vias: fatto?.added.vias ?? [],
-        // what this save took the place of, for undo
+        // the hand routes it rewrote, as they are in the file now; left out when it rewrote none
+        ...(fatto?.added.riscritte ? { riscritte: fatto.added.riscritte } : {}),
+        // what this save took the place of, for undo (for a rewritten route: the key it has now, and the route as it was)
         replaced: fatto?.replaced ?? { routes: [], vias: [] },
         counts: countManualEdits(edits),
         ...conAvviso(avviso),

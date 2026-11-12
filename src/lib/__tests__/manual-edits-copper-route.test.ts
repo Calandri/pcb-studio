@@ -660,3 +660,77 @@ describe("POST action set: a correction enters the file checked, or not at all",
     expect(verificaRame).not.toHaveBeenCalled();
   });
 });
+
+/*
+ * Copper that is already a hand route of the file is not corrected: the same
+ * save rewrites it in its place, from the key it has in the file and its new
+ * path (`riscritte`). The cases on a board made of hand copper are in
+ * spinta-riscritte.test.ts; here, the same save on the board of this file,
+ * where a gesture can move the files' copper and a drawn trace together.
+ */
+describe("POST action copper: a hand route of the file moved by the same gesture", () => {
+  /** the drawn trace between the two pins with its middle stretch one millimetre higher: its two slanted ends are as they were drawn */
+  const alzata = [top(-9.49, 0), top(-7, 3), top(-7, 4), top(7, 4), top(7, 3), top(9.49, 0)];
+  const nelFile = { ...disegnata, id: manualRouteKey(disegnata) };
+
+  it("rewritten in its place next to a correction of the files' copper: one save, one gesture on both, and the fast update lays both", async () => {
+    const conLaDisegnata = stato0({ pcb_routes: [nelFile as never] });
+    const scheda = await compileProject({ ...FILES, [MANUAL_EDITS_PATH]: conLaDisegnata });
+    await conLaScheda(FILES, scheda.circuitJson, conLaDisegnata);
+    expect(tragitto(scheda.circuitJson, FRA_PIEDINI)).toEqual([disegnata.points]);
+
+    const r = await chiama({ gesto: "g5", routes: [massaSpostata], vias: [], riscritte: [{ chiave: manualRouteKey(disegnata), points: alzata }] });
+    expect(r.status).toBe(200);
+    const detto = (await r.json()) as { routes: Array<{ at: string }>; riscritte: unknown; replaced: unknown };
+    const quando = detto.routes[0].at;
+    // the route of the file with the new path: its pads, its connection and its width were not sent, and are there
+    expect(detto.riscritte).toEqual([{ chiave: manualRouteKey(disegnata), route: { ...nelFile, points: alzata, gesto: "g5", at: quando } }]);
+    expect(detto.replaced).toEqual({ routes: [], vias: [], riscritte: [{ chiave: manualRouteKey(disegnata), route: nelFile }] });
+    const edits = await salvati();
+    expect(edits.pcb_routes).toEqual([
+      { ...nelFile, points: alzata, gesto: "g5", at: quando },
+      { ...massaSpostata, gesto: "g5", at: quando },
+    ]);
+    expect(verificaRame).toHaveBeenCalledTimes(1);
+
+    const veloce = await aggiornaVeloce();
+    expect(tragitto(veloce, FRA_PIEDINI)).toEqual([alzata]);
+    expect(tragitto(veloce, VERSO_MASSA)).toEqual([massaIn(-13)]);
+    expect(idDoppi(veloce)).toBeNull();
+    // and it is the board a compile of those files gives, trace by trace
+    const aggiornata = await compileProject(await getProject(P));
+    for (const connessione of [FRA_PIEDINI, VERSO_MASSA, ALLA_VIA]) expect(tragitto(aggiornata.circuitJson, connessione), connessione).toEqual(tragitto(veloce, connessione));
+    expect(vieIn(aggiornata.circuitJson)).toEqual(vieIn(veloce));
+  }, 120_000);
+
+  it("a key the file does not hold answers 409 as a board that changed; an entry with more than its key and its path, or off the grid of the micron, answers 400; nothing is written", async () => {
+    // the file of this project has no hand route: the key names nothing
+    const senza = await chiama({ riscritte: [{ chiave: manualRouteKey(disegnata), points: alzata }] });
+    expect(senza.status).toBe(409);
+    expect(await senza.json()).toMatchObject({ reason: expect.stringContaining("non e' piu' nel file come il gesto l'ha presa"), cambiata: true });
+    // one good correction of the files' copper sent with it is not written either
+    expect((await chiama({ routes: [massaSpostata], riscritte: [{ chiave: manualRouteKey(disegnata), points: alzata }] })).status).toBe(409);
+
+    for (const [riscritte, motivo] of [
+      [[{ chiave: manualRouteKey(disegnata), route: { ...disegnata, points: alzata } }], "pista riscritta 1: porta solo la chiave e i punti, il resto della pista e' quello del file (in piu': route)"],
+      [[{ chiave: manualRouteKey(disegnata), points: alzata, width: 2 }], "pista riscritta 1: porta solo la chiave e i punti, il resto della pista e' quello del file (in piu': width)"],
+      [[{ chiave: manualRouteKey(disegnata), points: [top(-9.49, 0), top(-7.0005, 3)] }], "pista riscritta 1: punto 2: una coordinata non e' sulla griglia di 0.001 mm"],
+      [[{ chiave: manualRouteKey(disegnata), points: [top(-9.49, 0)] }], "pista riscritta 1: una pista ha almeno due punti"],
+      ["tante", "le piste riscritte devono essere una lista"],
+    ] as Array<[unknown, string]>) {
+      const r = await chiama({ routes: [massaSpostata], riscritte });
+      expect(r.status, motivo).toBe(400);
+      expect(await r.json()).toEqual({ error: motivo });
+    }
+    expect(await scritto()).toBeUndefined();
+  });
+
+  it("the empty list the gesture always sends changes nothing: the save of the corrections answers as before", async () => {
+    const r = await chiama({ routes: [massaSpostata], vias: [], riscritte: [] });
+    expect(r.status).toBe(200);
+    const detto = (await r.json()) as Record<string, unknown>;
+    expect(Object.keys(detto).sort()).toEqual(["counts", "ok", "replaced", "routes", "vias"]);
+    expect(Object.keys(detto.replaced as object)).toEqual(["routes", "vias"]);
+    expect((await salvati()).pcb_routes).toHaveLength(1);
+  });
+});

@@ -36,6 +36,7 @@ import {
   stessoPercorso,
   viaMoveKey,
   type ManualRoute,
+  type ManualRoutePoint,
   type ManualViaMove,
 } from "./manual-routes";
 import { parentFrameOffset, parseLength } from "./pcb-route-model";
@@ -1209,10 +1210,47 @@ export function applyRoutePatch(
   return { edits: { ...edits, pcb_routes: [...kept, ...added] }, replaced, added };
 }
 
-/** the corrections of the files' copper one gesture makes: routes with `replaces` and moved vias */
+/**
+ * A hand route of the file (drawn in Instrada, or imported from another CAD)
+ * that a gesture moved: rewritten in its place, not corrected. `chiave` is the
+ * key of the route as the file holds it (manualRouteKey, the `manual_route_id`
+ * of its copper), `points` its path as it is now.
+ *
+ * NOTHING ELSE OF THE ROUTE COMES FROM THE PAGE. What the route is (its
+ * connection, its pads, its net, its width, the size of its vias) is not all
+ * on the copper the page sees, and a route rebuilt from the copper would be a
+ * guess: the file has it, and the route written is the one of the file with
+ * this path.
+ */
+export interface PercorsoRiscritto {
+  chiave: string;
+  points: ManualRoutePoint[];
+  /** the gesture and the instant of the save, like the corrections it travels with */
+  gesto?: string;
+  at?: string;
+}
+
+/**
+ * The copper one gesture moves: the corrections of the files' copper (routes
+ * with `replaces`, moved vias) and the hand routes it rewrites. `riscritte` is
+ * left out when there is none.
+ */
 export interface CopperPatch {
   routes: ManualRoute[];
   vias: ManualViaMove[];
+  riscritte?: PercorsoRiscritto[];
+}
+
+/**
+ * What a save of copper wrote, or took out: the corrections, and for every
+ * hand route rewritten a key and a route. In what was written: the key the
+ * route had, and the route as it is now. In what was taken out: the key the
+ * route has now, and the route as it was, which is the way back.
+ */
+export interface RameScritto {
+  routes: ManualRoute[];
+  vias: ManualViaMove[];
+  riscritte?: Array<{ chiave: string; route: ManualRoute }>;
 }
 
 /**
@@ -1227,13 +1265,21 @@ export interface CopperPatch {
  * the first would stay in the file next to it, and letting go of the second
  * would put back copper the files never drew. So a correction that starts
  * where another one ends takes that one's start, and its place in the file.
+ *
+ * A HAND ROUTE REWRITTEN (`riscritte`) is the route the file holds under the
+ * key named, with the new path and the gesture of the save, in the same place
+ * in the list: every other field is the file's (see PercorsoRiscritto). Its
+ * key is then whatever its new path makes it: the same for a route between
+ * two pads, another for an imported one. A key the file does not hold is not
+ * written; nor is a correction (it is corrected again, by its own list) or a
+ * curve (it is not moved). verificaRame says so before anything is written.
  */
 export function applyCopperPatch(
   edits: ManualEdits,
   patch: CopperPatch,
-): { edits: ManualEdits; added: CopperPatch; replaced: CopperPatch } {
-  const added: CopperPatch = { routes: [], vias: [] };
-  const replaced: CopperPatch = { routes: [], vias: [] };
+): { edits: ManualEdits; added: RameScritto; replaced: RameScritto } {
+  const added: RameScritto = { routes: [], vias: [] };
+  const replaced: RameScritto = { routes: [], vias: [] };
 
   let routes = edits.pcb_routes;
   for (const nuova of patch.routes) {
@@ -1264,6 +1310,32 @@ export function applyCopperPatch(
     if (via.from.x === via.to.x && via.from.y === via.to.y) continue;
     vias = [...vias, via];
     added.vias.push(via);
+  }
+
+  const riscritte: NonNullable<RameScritto["riscritte"]> = [];
+  const tornano: NonNullable<RameScritto["riscritte"]> = [];
+  /*
+   * Each key is looked up in the list as it is BEFORE any of them is
+   * rewritten: the key of an imported route is made of its points, and one
+   * moved onto the path another had would otherwise be taken for that other.
+   */
+  const prima = routes;
+  const giaRiscritto = new Set<number>();
+  for (const { chiave, points, gesto, at } of patch.riscritte ?? []) {
+    const posto = prima.findIndex((r) => manualRouteKey(r) === chiave);
+    if (posto === -1 || giaRiscritto.has(posto)) continue;
+    const era = prima[posto];
+    if (era.replaces || era.arco) continue;
+    giaRiscritto.add(posto);
+    const route: ManualRoute = { ...era, points, ...(gesto ? { gesto } : {}), ...(at ? { at } : {}) };
+    tornano.push({ chiave: manualRouteKey(route), route: era });
+    routes = [...routes.slice(0, posto), route, ...routes.slice(posto + 1)];
+    riscritte.push({ chiave, route });
+  }
+  // named only when there are some: a save with none answers what it always did
+  if (riscritte.length > 0) {
+    added.riscritte = riscritte;
+    replaced.riscritte = tornano;
   }
   return { edits: { ...edits, pcb_routes: routes, pcb_vias: vias }, added, replaced };
 }

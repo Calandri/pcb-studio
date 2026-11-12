@@ -19,7 +19,7 @@ import type { DesignRules } from "../design-rules";
 import { runDrcChecks, type DrcViolation } from "../drc";
 import { RETE_SCRIVIBILE } from "../ground-stitching-file";
 import { retiDelCircuito } from "../gruppi-di-rame";
-import { applyCopperPatch, type CopperPatch, type ManualEdits } from "../manual-edits";
+import { applyCopperPatch, type CopperPatch, type ManualEdits, type PercorsoRiscritto } from "../manual-edits";
 import {
   applyManualRoutes,
   manualRouteKey,
@@ -41,34 +41,47 @@ type El = Record<string, unknown>;
 
 /** what one save of copper may carry (Security, point 2 of the plan) */
 export interface LimitiDelRame {
+  /** the routes that correct the files and the hand routes rewritten, together */
   maxRoutes: number;
   /** the points of all its routes together, and as many again for their starting paths */
   maxPoints: number;
   maxVias: number;
 }
 
+/** how long the key of a route can be: two pad selectors of 200 and what joins them, with room */
+const CHIAVE_MASSIMA = 500;
+
 const finito = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
-/** a coordinate of a board, or why it is not one */
-function coordinata(v: unknown): number | string {
+/**
+ * A coordinate of a board, or why it is not one. `alMicron`: on the grid of
+ * 0.001 mm a hand route is read on, and one that is off it is refused, not
+ * rounded: the file would read it back at another place than the one checked.
+ */
+function coordinata(v: unknown, alMicron = false): number | string {
   if (!finito(v)) return "una coordinata non e' un numero finito";
   if (Math.abs(v) > ROUTE_LIMITS.maxCoordMm) return `una coordinata e' oltre ${ROUTE_LIMITS.maxCoordMm} mm`;
-  return round4(v);
+  if (!alMicron) return round4(v);
+  const millesimi = Math.round(v * 1000);
+  // what a sum of floats leaves between two numbers meant equal, not a tenth of a micron
+  if (Math.abs(v * 1000 - millesimi) > 1e-6) return "una coordinata non e' sulla griglia di 0.001 mm";
+  return millesimi / 1000;
 }
 
 /**
- * The points of a path as they were sent, to 0.0001 mm. Nothing is dropped:
- * two equal points in a row are a stretch of no length, and that is for
- * verificaRame to refuse, not for the reading to hide.
+ * The points of a path as they were sent, to 0.0001 mm (or on the grid of
+ * 0.001 mm, see coordinata). Nothing is dropped: two equal points in a row
+ * are a stretch of no length, and that is for verificaRame to refuse, not for
+ * the reading to hide.
  */
-function punti(v: unknown): ManualRoutePoint[] | string {
+function punti(v: unknown, alMicron = false): ManualRoutePoint[] | string {
   if (!Array.isArray(v)) return "i punti non sono una lista";
   const out: ManualRoutePoint[] = [];
   for (const [i, p] of v.entries()) {
     if (typeof p !== "object" || p === null) return `il punto ${i + 1} non e' un punto`;
     const q = p as Record<string, unknown>;
-    const x = coordinata(q.x);
-    const y = coordinata(q.y);
+    const x = coordinata(q.x, alMicron);
+    const y = coordinata(q.y, alMicron);
     if (typeof x === "string") return `punto ${i + 1}: ${x}`;
     if (typeof y === "string") return `punto ${i + 1}: ${y}`;
     if (!eStratoDiRame(q.layer)) return `punto ${i + 1}: lo strato non e' uno strato di rame`;
@@ -108,9 +121,17 @@ function connessioneScritta(v: unknown): v is string {
  *
  * Every correction read carries the gesture of the save and the instant
  * `quando`: one drag is one gesture, undone, released and copied as one.
+ *
+ * `riscritte` are the hand routes of the file the gesture moved (see
+ * PercorsoRiscritto): for each the key it has in the file and its new path,
+ * and nothing else. An entry that carries anything more is refused: what the
+ * route is comes from the file, never from the page. They are read as
+ * strictly as the corrections, on the grid of 0.001 mm the hand routes are
+ * read on, and count with them in the limits of the save. Whether the file
+ * holds a route of that key is asked of the file, by verificaRame.
  */
 export function leggiRame(
-  corpo: { routes?: unknown; vias?: unknown; gesto?: unknown },
+  corpo: { routes?: unknown; vias?: unknown; riscritte?: unknown; gesto?: unknown },
   limiti: LimitiDelRame,
   quando: string,
 ): { rame: CopperPatch } | { errore: string } {
@@ -120,10 +141,12 @@ export function leggiRame(
   }
   const routesRaw = corpo.routes ?? [];
   const viasRaw = corpo.vias ?? [];
+  const riscritteRaw = corpo.riscritte ?? [];
   if (!Array.isArray(routesRaw) || !Array.isArray(viasRaw)) return { errore: "piste e vie devono essere due liste" };
-  if (routesRaw.length > limiti.maxRoutes) return { errore: `troppe piste in un salvataggio (massimo ${limiti.maxRoutes})` };
+  if (!Array.isArray(riscritteRaw)) return { errore: "le piste riscritte devono essere una lista" };
+  if (routesRaw.length + riscritteRaw.length > limiti.maxRoutes) return { errore: `troppe piste in un salvataggio (massimo ${limiti.maxRoutes})` };
   if (viasRaw.length > limiti.maxVias) return { errore: `troppe vie in un salvataggio (massimo ${limiti.maxVias})` };
-  if (routesRaw.length === 0 && viasRaw.length === 0) return { errore: "nessuna correzione da salvare" };
+  if (routesRaw.length === 0 && viasRaw.length === 0 && riscritteRaw.length === 0) return { errore: "nessuna correzione da salvare" };
 
   const routes: ManualRoute[] = [];
   let quanti = 0;
@@ -198,23 +221,64 @@ export function leggiRame(
     }
     vias.push({ net: r.net, from, to, holeDiameter: misure.foro, outerDiameter: misure.corona, layers: [...r.layers], gesto, at: quando });
   }
-  return { rame: { routes, vias } };
+
+  const riscritte: PercorsoRiscritto[] = [];
+  for (const [i, item] of riscritteRaw.entries()) {
+    const dove = `pista riscritta ${i + 1}`;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return { errore: `${dove}: non e' una pista riscritta` };
+    const voce = item as Record<string, unknown>;
+    const inPiu = Object.keys(voce).filter((k) => k !== "chiave" && k !== "points");
+    if (inPiu.length > 0) {
+      return { errore: `${dove}: porta solo la chiave e i punti, il resto della pista e' quello del file (in piu': ${inPiu.slice(0, 5).join(", ").slice(0, 80)})` };
+    }
+    if (typeof voce.chiave !== "string" || voce.chiave === "" || voce.chiave.length > CHIAVE_MASSIMA) {
+      return { errore: `${dove}: manca la chiave che la pista ha nel file` };
+    }
+    // one route of the file, one new path: of two, which one stays would depend on how its key is made
+    if (riscritte.some((altra) => altra.chiave === voce.chiave)) return { errore: `${dove}: la stessa pista del file e' riscritta due volte` };
+    const suoi = punti(voce.points, true);
+    if (typeof suoi === "string") return { errore: `${dove}: ${suoi}` };
+    if (suoi.length < 2) return { errore: `${dove}: una pista ha almeno due punti` };
+    quanti += suoi.length;
+    if (quanti > limiti.maxPoints) return { errore: `troppi punti in un salvataggio (massimo ${limiti.maxPoints})` };
+    riscritte.push({ chiave: voce.chiave, points: suoi, gesto, at: quando });
+  }
+  return { rame: { routes, vias, ...(riscritte.length > 0 ? { riscritte } : {}) } };
 }
 
 /** a tenth of a micron, as a whole number: the direction of a stretch is judged on these, with no rounding left to argue */
 const intero = (v: number): number => Math.round(v * 1e4);
 const posto = (p: { x: number; y: number }): string => `(${round4(p.x)}; ${round4(p.y)})`;
 
+/** one step of a path, between two points in a row: the same whichever way it is walked */
+function passo(a: ManualRoutePoint, b: ManualRoutePoint): string {
+  const [p, q] = [`${intero(a.x)},${intero(a.y)},${a.layer}`, `${intero(b.x)},${intero(b.y)},${b.layer}`].sort();
+  return `${p}|${q}`;
+}
+
+/** every step of a path, on the grid of a gesture: what a route had before it was moved */
+export function passiDi(points: readonly ManualRoutePoint[]): Set<string> {
+  const out = new Set<string>();
+  for (let i = 1; i < points.length; i++) out.add(passo(points[i - 1], points[i]));
+  return out;
+}
+
 /**
  * Every stretch of a route goes at 0, 45 or 90 degrees and has a length: on
  * whole tenths of a micron `dx == 0 || dy == 0 || |dx| == |dy|`, and not both
  * zero. A change of layer is a via: it happens in one place. Null when the
  * route is good, else what is wrong with it.
+ *
+ * `dati` are the steps the route already had (passiDi of the route as it was):
+ * they are not judged. A hand route imported from another CAD may hold
+ * stretches at any angle, and those are a given: a gesture answers for the
+ * stretches it lays, not for the ones it left where they were.
  */
-export function trattiStorti(route: ManualRoute): string | null {
+export function trattiStorti(route: ManualRoute, dati?: ReadonlySet<string>): string | null {
   for (let i = 1; i < route.points.length; i++) {
     const a = route.points[i - 1];
     const b = route.points[i];
+    if (dati?.has(passo(a, b))) continue;
     const dx = intero(b.x) - intero(a.x);
     const dy = intero(b.y) - intero(a.y);
     if (a.layer !== b.layer) {
@@ -294,6 +358,12 @@ export type EsitoDelRame =
  *      the save leaves it, and the two are compared. A distance already broken
  *      elsewhere is not this copper's fault and does not stop it.
  *
+ * A HAND ROUTE REWRITTEN (`rame.riscritte`) is judged the same way, with what
+ * is its own: its start is the route the file holds under the key named
+ * (gone, the file changed after the gesture); a correction and a curve are
+ * not rewritten; and only the stretches the gesture laid answer for their
+ * direction (see trattiStorti).
+ *
  * TWO KINDS OF SAVE. A gesture (`copper`) writes its corrections INTO the
  * file: the file it leaves is `correnti` with `rame` in it. A save of the
  * whole file (`set`, the undo history) replaces it: `rame` is then the
@@ -323,6 +393,21 @@ export function verificaRame(args: {
   for (const route of rame.routes) {
     const storto = trattiStorti(route);
     if (storto) return { ok: false, motivo: `la pista ${route.connection} ${storto}` };
+  }
+
+  for (const { chiave, points } of rame.riscritte ?? []) {
+    const era = correnti.pcb_routes.find((r) => manualRouteKey(r) === chiave);
+    if (!era) {
+      return {
+        ok: false,
+        motivo: `la pista a mano ${chiave.slice(0, 120)} non e' piu' nel file come il gesto l'ha presa: la scheda salvata e' cambiata dopo il gesto, ricaricala e rifallo`,
+        cambiata: true,
+      };
+    }
+    if (era.replaces) return { ok: false, motivo: `la pista ${era.connection} e' una correzione del rame dei file: si corregge di nuovo, non si riscrive` };
+    if (era.arco) return { ok: false, motivo: `la pista ${era.connection} e' una curva: non si sposta` };
+    const storto = trattiStorti({ ...era, points }, passiDi(era.points));
+    if (storto) return { ok: false, motivo: `la pista ${era.connection} ${storto}` };
   }
 
   const scheda = circuitJson as El[];
