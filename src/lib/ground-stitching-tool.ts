@@ -34,10 +34,12 @@ export const DESCRIZIONE_CUCITURA =
   "Cuce la massa: propone, e solo con apply: true scrive, vie passanti della rete di massa a passo regolare dove la massa " +
   "c'e', senza toccare il resto. Usalo SOLO quando la persona lo chiede: le vie non si mettono per regola. " +
   "Legge la scheda salvata e le regole del progetto; una via sta dove la massa copre tutta la corona su almeno due strati, " +
-  "su ogni strato esterno con colate di massa la massa c'e' (le zone senza rame, antenne, porte acustiche, restano tali), " +
+  "su ogni strato con colate di massa, esterno o interno, la massa c'e' (le zone senza rame, antenne, quarzi, porte acustiche, " +
+  "i ritagli e i vuoti di un piano restano tali su ogni strato), " +
   "fuori dagli ingombri dei pezzi su tutte e due le facce e dagli spazi di innesto, fuori dalle piazzole (anche di massa) e " +
   "lontana da fori, vie, bordo, zone vietate e rame di altre reti su ogni strato (distanza della colata, mai sotto le regole a " +
-  "coppie). Prima collega le isole di massa staccate, poi la fila sul bordo, poi la griglia. " +
+  "coppie), col foro lontano dalla serigrafia delle due facce (minSilkscreenClearanceMm). " +
+  "Prima collega le isole di massa staccate, poi la fila sul bordo, poi la griglia. " +
   "Pratica (guide di fabbricanti e strumenti, non norme: atlaspcb.com, aivon.com, allpcb.com, flux.ai): passo massimo lambda/20 " +
   "con lambda nel materiale = c / (f x radice di er); FR4 (er circa 4,3): circa 2,7 mm a 2,7 GHz (LTE), circa 4,6 mm a 1,575 GHz " +
   "(GNSS); di serie griglia da circa 3 mm e fila sul bordo a 5-10 mm. " +

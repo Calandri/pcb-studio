@@ -32,9 +32,12 @@
  * - out of the excluded zones of the call and out of the board's keepouts;
  * - ground copper (the pours of the ground net) covers the WHOLE ring on at
  *   least two layers, otherwise it stitches nothing;
- * - on every OUTER layer that has ground pours at all, the ground pour is
- *   there: the zones a project keeps without copper (antennas, acoustic ports,
- *   windows) stay so without having to be known;
+ * - on EVERY layer that has ground pours at all, outer or inner, the ground
+ *   pour is there: the zones a project keeps without copper (antennas, crystals,
+ *   acoustic ports, windows), the cutouts of a pour and the gaps between pours
+ *   stay so on every layer, without having to be known. A via through a void of
+ *   an inner plane, with ground above and below, would put a barrel and a hole
+ *   where the copper was taken away on purpose;
  * - out of the footprint of every part on both faces (ingombro.ts: declared or
  *   computed) and out of every connector's mating space;
  * - from every pad (ground ones too: never a via in a pad) at least the pad-via
@@ -256,6 +259,7 @@ export const MOTIVI = {
   zona_vietata: "in una zona vietata della scheda (keepout)",
   massa_su_meno_di_due_strati: "la massa copre tutta la corona su meno di due strati",
   manca_massa_esterna: "su uno strato esterno con colate di massa qui la massa non c'e' (zona senza rame)",
+  manca_massa_interna: "su uno strato interno con colate di massa qui la massa non c'e' (zona senza rame, ritaglio della colata)",
   ingombro: "dentro l'ingombro di un pezzo",
   innesto: "dentro lo spazio di innesto di un connettore",
   piazzola: "troppo vicina a una piazzola (di qualunque rete)",
@@ -839,6 +843,7 @@ export function cuciLaMassa(
   const massaPerStrato = new Map<string, Colata[]>(strati.map((s) => [s, massa.filter((c) => c.layer === s)]));
   const altrePerStrato = new Map<string, Colata[]>(strati.map((s) => [s, altre.filter((c) => c.layer === s)]));
   const esterniConMassa = esterni.filter((s) => (massaPerStrato.get(s) ?? []).length > 0);
+  const interniConMassa = strati.filter((s) => !esterni.includes(s) && (massaPerStrato.get(s) ?? []).length > 0);
 
   // --- the obstacles, in cells
   const ostacoli: Ostacolo[] = [];
@@ -965,6 +970,7 @@ export function cuciLaMassa(
     const sopra = copertura(x, y);
     if (sopra.size < 2) return { ok: false, motivo: "massa_su_meno_di_due_strati" };
     for (const s of esterniConMassa) if (!sopra.has(s)) return { ok: false, motivo: "manca_massa_esterna" };
+    for (const s of interniConMassa) if (!sopra.has(s)) return { ok: false, motivo: "manca_massa_interna" };
 
     // the parts
     const disco = formaDi([{ x, y }], R);

@@ -110,6 +110,26 @@ describe("dove una via puo' stare", () => {
     expect(e.scarti.manca_massa_esterna).toBeGreaterThan(0);
   });
 
+  it("non nel vuoto di un piano interno, con la massa sopra e sotto: una zona senza rame resta tale su ogni strato", () => {
+    // top and bottom whole; inner1 and inner2 with a 6 x 6 window in the middle (antenna, crystal)
+    const vuoto = rett(-3, -3, 3, 3);
+    const cj = [...scheda(), ...massaPiena(["top", "bottom"]), ...massaPiena(["inner1", "inner2"], 20, 20, [vuoto])];
+    const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(100);
+    for (const v of e.vie) expect(dentro(v.x, v.y, rett(-3 - R, -3 - R, 3 + R, 3 + R))).toBe(false);
+    expect(e.scarti.manca_massa_interna).toBeGreaterThan(10);
+    // one inner layer is enough: the window only on inner2
+    const uno = cuci([...scheda(), ...massaPiena(["top", "inner1", "bottom"]), ...massaPiena(["inner2"], 20, 20, [vuoto])], { bordo: false, passoMm: 1 });
+    expect(uno.vie.length).toBeGreaterThan(100);
+    for (const v of uno.vie) expect(dentro(v.x, v.y, rett(-3 - R, -3 - R, 3 + R, 3 + R))).toBe(false);
+    // and a gap between two pours of the inner plane is a void as much as a window in one
+    const fessura = cuci([...scheda(), ...massaPiena(["top", "bottom"]), colata("inner1", rett(-9.7, -9.7, -1, 9.7)), colata("inner1", rett(1, -9.7, 9.7, 9.7))], { bordo: false, passoMm: 1 });
+    expect(fessura.vie.length).toBeGreaterThan(100);
+    for (const v of fessura.vie) expect(Math.abs(v.x) - R).toBeGreaterThanOrEqual(1 - 1e-9);
+    // an inner layer with no ground pour at all asks nothing
+    expect(cuci([...scheda(), ...massaPiena(["top", "bottom"])], { bordo: false, passoMm: 1 }).vie.some((v) => dentro(v.x, v.y, vuoto))).toBe(true);
+  });
+
   it("mai in una piazzola, nemmeno di massa, e lontana dalle piazzole delle altre reti", () => {
     const cj = [...scheda(), ...massaPiena(), ...pad("P1", 0, 0, 3, 3, "top", "k_gnd"), ...pad("P2", 5, 5, 2, 1, "bottom", "k_sig")];
     const e = cuci(cj, { bordo: false, passoMm: 1 });
