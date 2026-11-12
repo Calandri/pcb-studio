@@ -95,6 +95,8 @@ interface InMano {
   gesto: GestoDelRame;
   /** the last state worked out: what is on screen, and what the release closes on */
   stato: StatoDelGesto;
+  /** the hidden copper the canvas has been told of: the one of the start, until a state carries another */
+  nascosti: StatoDelGesto["nascosti"];
   /** where the pointer is now, when it has moved since the last state was worked out */
   verso: Punto | null;
   /** the frame that will work it out, if one is asked */
@@ -121,9 +123,11 @@ export function useGestoDelRame({
 }) {
   const [vivo] = useState(() => nuovoGestoVivo());
   /*
-   * What the gesture in hand hides, set when it starts and cleared when it
-   * ends: the only state of the canvas a copper gesture touches. Every state of
-   * one gesture carries the same list, so the one of its start is the one kept.
+   * What the gesture in hand hides: the only state of the canvas a copper
+   * gesture touches. Set when it starts, cleared when it ends, and in between
+   * only when the solver hands another list: a trace the gesture pushes aside
+   * enters it when it is first pushed and leaves it when the pointer comes
+   * back (StatoDelGesto.nascosti: the same object while the set is the same).
    */
   const [nascostiInMano, setNascostiInMano] = useState<StatoDelGesto["nascosti"] | null>(null);
   const inMano = useRef<InMano | null>(null);
@@ -184,6 +188,17 @@ export function useGestoDelRame({
     setNascostiInMano(null);
     return m;
   }, [vivo]);
+
+  /**
+   * The copper the gesture hides changed with the last state: the still copper
+   * is told, and drawn again without it. Only then: while the pointer moves
+   * and the gesture touches the same copper, the canvas is not drawn again.
+   */
+  const segui = useCallback((m: InMano) => {
+    if (m.stato.nascosti === m.nascosti) return;
+    m.nascosti = m.stato.nascosti;
+    setNascostiInMano(m.nascosti);
+  }, []);
 
   /** the state for the pointer where it is now; false when the solver fell over, and the gesture is over */
   const calcola = useCallback(
@@ -256,6 +271,7 @@ export function useGestoDelRame({
       inMano.current = {
         gesto: esito.gesto,
         stato: esito.stato,
+        nascosti: esito.stato.nascosti,
         verso: null,
         frame: null,
         tasto,
@@ -285,12 +301,14 @@ export function useGestoDelRame({
       if (m.frame === null) {
         m.frame = requestAnimationFrame(() => {
           m.frame = null;
-          if (inMano.current === m && calcola(m)) vivo.set({ stato: m.stato, rifiuto: null });
+          if (inMano.current !== m || !calcola(m)) return;
+          vivo.set({ stato: m.stato, rifiuto: null });
+          segui(m);
         });
       }
       return true;
     },
-    [vivo, calcola],
+    [vivo, calcola, segui],
   );
 
   /**

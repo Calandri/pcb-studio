@@ -82,7 +82,13 @@ export interface StatoDelGesto {
   /**
    * The pcb_trace and pcb_via the gesture touches: the still copper leaves
    * them out while it lasts, and `tratti` and `vie` are drawn in their place.
-   * The same lists for every position of one gesture.
+   *
+   * THE SAME OBJECT AS LONG AS THE SET IS THE SAME. The copper in hand is in
+   * it from the start to the end; a trace the gesture pushes aside enters it
+   * when it is first pushed and leaves it when the pointer comes back. The
+   * viewer redraws the still copper only when this object changes, so it must
+   * not change at every position: two states that touch the same copper carry
+   * the very same object.
    */
   nascosti: { pcbTraceIds: string[]; pcbViaIds: string[] };
   /** all the copper of the hidden traces as it stands now, stretch by stretch */
