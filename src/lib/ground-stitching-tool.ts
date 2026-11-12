@@ -16,8 +16,17 @@
  * So a write on a board older than the files is refused (a look still answers,
  * and says so). The stitching file itself does not count in that comparison:
  * written after the last compile, it changes nothing the vias are measured on.
+ *
+ * AND IT WRITES ONLY WHAT WAS SEEN (improntaDelFile). The vias are an exception
+ * to "nothing is placed by a rule" as an action someone looks at first: a write
+ * that computed them again on its own could write other vias than the ones
+ * shown (the board compiled in between, a file changed, another pitch). So a
+ * look answers with the fingerprint of the file it would write, apply carries
+ * it back, and a write whose file would be another is refused: "rifai
+ * l'anteprima". An apply with no fingerprint is an apply nobody looked at.
  */
 
+import { createHash } from "node:crypto";
 import type { CompileCache } from "./project-store";
 import { resolveDesignRules } from "./design-rules";
 import {
@@ -58,8 +67,10 @@ export const DESCRIZIONE_CUCITURA =
   "Le linee a impedenza controllata non si riconoscono da sole: mettile in retiLontane o in zoneEscluse. " +
   "Le zone vietate (keepout) della scheda contano tutte di serie, anche quelle d'altezza con la massa colata sotto: la risposta dice quante " +
   "posizioni escludono e quali (keepout), e solo se la persona lo decide si passa keepout: \"solo_rame\". " +
-  `dryRun (di serie) restituisce vie proposte con le coordinate, scarti per motivo e isole; apply: true scrive ${FILE_CUCITURA} ` +
-  "(rilanciato lo riscrive per intero) e NON compila; main.tsx non viene toccato: se non lo usa, la risposta dice le righe da aggiungere. " +
+  "dryRun (di serie) restituisce vie proposte con le coordinate, scarti per motivo, isole e l'impronta di quello che scriverebbe; " +
+  `apply: true con quell'impronta scrive ${FILE_CUCITURA} (rilanciato lo riscrive per intero) e NON compila: prima si guarda, poi si scrive ` +
+  "quello che si e' visto, e se nel frattempo la scheda e' cambiata apply rifiuta e si rifa' l'anteprima. " +
+  "main.tsx non viene toccato: se non lo usa, la risposta dice le righe da aggiungere. " +
   "apply NON scrive, e dice perche' (nel dryRun: scrivibile false e nonScrivibile), se la scheda salvata e' piu' vecchia dei file del progetto " +
   `(prima si compila: le vie si misurano sulla scheda salvata; ${FILE_CUCITURA} scritto dopo l'ultima compilazione non conta) o se ` +
   `${FILE_CUCITURA} c'e' gia' e non l'ha scritto questo strumento per questa rete (non si sovrascrive mai un file altrui).`;
@@ -81,8 +92,11 @@ export const PARAMETRI_CUCITURA = {
     "quali zone vietate (keepout) della scheda contano: \"tutti\" (di serie) o \"solo_rame\", che non conta una zona dove la massa e' colata sotto " +
     "su tutti i suoi strati (le zone d'altezza di un pezzo, non quelle dove il rame e' stato tolto). Lo decide la persona: la risposta elenca sempre " +
     "le zone che escludono posizioni (keepout.escludono: id, descrizione, strati, posizioni, quante avevano posto, massaSotto)",
-  dryRun: "true (di serie): guarda soltanto",
-  apply: `true: scrive ${FILE_CUCITURA} (stessi permessi di write_file), senza compilare`,
+  dryRun: "true (di serie): guarda soltanto, e restituisce l'impronta di quello che scriverebbe",
+  apply: `true: scrive ${FILE_CUCITURA} (stessi permessi di write_file), senza compilare. Chiede impronta`,
+  impronta:
+    "con apply: l'impronta restituita dal dryRun fatto con gli stessi parametri. Si scrive solo quello che l'anteprima ha mostrato: " +
+    "se la scheda o i parametri sono cambiati e le vie non sono piu' quelle, apply rifiuta e si rifa' l'anteprima",
 } as const;
 
 /** an island in a list for a model: at most this many, the rest counted */
@@ -117,6 +131,16 @@ export function statoDellaScheda(hashScheda: string, files: Record<string, strin
   return "vecchia";
 }
 
+/**
+ * The fingerprint of the file a run would write: how many vias, and a hash of
+ * the whole text (the net, every via with its coordinates, drill and ring, in
+ * order). Two runs with the same fingerprint write the same file.
+ */
+export function improntaDelFile(vie: number, contenuto: string): string {
+  return `${vie}-${createHash("sha256").update(contenuto).digest("hex").slice(0, 16)}`;
+}
+const IMPRONTA = /^\d{1,5}-[0-9a-f]{16}$/;
+
 export interface EsecuzioneCucitura {
   result: Record<string, unknown>;
   fileChanged?: { path: string; content: string };
@@ -138,8 +162,12 @@ export async function eseguiCucitura({
   /** writes a file of the project */
   scrivi: (path: string, content: string) => Promise<void>;
 }): Promise<EsecuzioneCucitura> {
-  const lettura = leggiOpzioniCucitura(args, ["projectId"]);
+  const lettura = leggiOpzioniCucitura(args, ["projectId", "impronta"]);
   if ("errori" in lettura) return { result: { error: `stitch_ground: ${lettura.errori.slice(0, 10).join("; ")}` } };
+  if (args.impronta !== undefined && (typeof args.impronta !== "string" || !IMPRONTA.test(args.impronta))) {
+    return { result: { error: "stitch_ground: impronta: quella restituita dal dryRun, cosi' com'e'" } };
+  }
+  const vista = args.impronta as string | undefined;
   const circuito = cache?.circuitJson as unknown[] | undefined;
   if (!Array.isArray(circuito) || !circuito.some((el) => (el as { type?: unknown })?.type === "pcb_board")) {
     return { result: { error: "nessuna scheda compilata salvata: compila prima, la cucitura si calcola sulla scheda salvata" } };
@@ -207,6 +235,7 @@ export async function eseguiCucitura({
   if (altro) nonScrivibile.push(`${altro} usa gia' nomi di via VCM<n>: rinominali prima di scrivere la cucitura`);
   const testo = fileDellaCucitura(esito);
   if ("errore" in testo) nonScrivibile.push(testo.errore);
+  const impronta = "errore" in testo ? null : improntaDelFile(esito.vie.length, testo.contenuto);
 
   const coordinate: Record<TipoVia, Array<[number, number]>> = { isola: [], bordo: [], griglia: [] };
   for (const v of esito.vie) coordinate[v.tipo].push([v.x, v.y]);
@@ -248,6 +277,7 @@ export async function eseguiCucitura({
     fileEsistente: file.stato,
     scrivibile: nonScrivibile.length === 0,
     ...(nonScrivibile.length > 0 ? { nonScrivibile } : {}),
+    ...(impronta ? { impronta } : {}),
     main: usa
       ? { usaIlFile: true, ...(chi !== "main.tsx" ? { da: chi } : {}), ...(nonAlLoroPosto > 0 ? { vieNonAlLoroPosto: nonAlLoroPosto } : {}) }
       : { usaIlFile: false, righeDaAggiungere: [RIGA_IMPORT, `${RIGA_USO} dentro <board>`] },
@@ -256,12 +286,33 @@ export async function eseguiCucitura({
   };
   if (!lettura.apply) {
     // the coordinates last: an answer cut to fit a model's context loses them before the counts
-    return { result: { ...result, nota: `dryRun: niente scritto; apply: true scrive ${FILE_CUCITURA} senza compilare`, coordinate } };
+    return {
+      result: { ...result, nota: `dryRun: niente scritto; apply: true con questa impronta scrive ${FILE_CUCITURA} senza compilare`, coordinate },
+    };
   }
 
   // --- apply: the file, whole, or nothing
   if (nonScrivibile.length > 0 || "errore" in testo) {
     return { result: { error: `stitch_ground non ha scritto niente: ${nonScrivibile.join("; ")}` } };
+  }
+  if (vista === undefined) {
+    return {
+      result: {
+        error:
+          "stitch_ground non ha scritto niente: apply chiede l'impronta dell'anteprima. Lancia prima il dryRun con gli stessi parametri, " +
+          "guarda che cosa propone e passa la sua impronta: si scrive solo quello che e' stato visto",
+      },
+    };
+  }
+  if (vista !== impronta) {
+    return {
+      result: {
+        error:
+          `stitch_ground non ha scritto niente: la scheda o i parametri sono cambiati dall'anteprima (proponeva ${vista.split("-")[0]} vie, ` +
+          `ora ne risultano ${esito.vie.length}, o le stesse in altri punti): rifai l'anteprima`,
+        impronta,
+      },
+    };
   }
   if (esito.vie.length === 0 && files[FILE_CUCITURA] === undefined) {
     return { result: { ...result, nota: `nessuna via da scrivere: ${FILE_CUCITURA} non e' stato creato` } };

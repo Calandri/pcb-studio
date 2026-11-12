@@ -44,15 +44,16 @@ describe("cucitura-massa.tsx compilato", () => {
   it("vie della rete di massa, passanti, foro e corona scritti, massa intera attorno, nessun controllo nuovo", async () => {
     const prima = await compileProject({ "main.tsx": MAIN(false), [DESIGN_RULES_PATH]: REGOLE });
     const files: Record<string, string> = { "main.tsx": MAIN(true), [DESIGN_RULES_PATH]: REGOLE };
-    const esito = await eseguiCucitura({
+    const chiamata = {
       files,
-      args: { apply: true, passoMm: 3 },
       cache: { circuitJson: prima.circuitJson as unknown[] },
-      scheda: "senza_la_cucitura",
-      scrivi: async (path, content) => {
+      scheda: "senza_la_cucitura" as const,
+      scrivi: async (path: string, content: string) => {
         files[path] = content;
       },
-    });
+    };
+    const visto = await eseguiCucitura({ ...chiamata, args: { passoMm: 3 } });
+    const esito = await eseguiCucitura({ ...chiamata, args: { apply: true, passoMm: 3, impronta: visto.result.impronta } });
     expect(esito.result).toMatchObject({ ok: true, scritto: true, main: { usaIlFile: true } });
     const proposte = esito.result.vie as number;
     expect(proposte).toBeGreaterThan(3);

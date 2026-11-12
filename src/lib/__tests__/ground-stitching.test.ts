@@ -5,7 +5,7 @@ import { DEFAULT_DESIGN_RULES, type DesignRules } from "@/lib/design-rules";
 import { distanzaPuntoForma, pointSegDistance, rameDelPad, runDrcChecks } from "@/lib/drc";
 import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, MAX_VIE_DI_SERIE, MAX_VIE_LIMITE, sceltaDellaRete, senzaLeVieAi, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
 import { chiLaUsa, FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, mainLaUsa, vieComeElementi, vieDelFile } from "@/lib/ground-stitching-file";
-import { eseguiCucitura, statoDellaScheda } from "@/lib/ground-stitching-tool";
+import { eseguiCucitura, improntaDelFile, statoDellaScheda } from "@/lib/ground-stitching-tool";
 import { MAX_FILE_CHARS } from "@/lib/project-file-limits";
 import { conflittiDiSerigrafia } from "@/lib/silkscreen-clearance";
 import { viePassantiSuOgniStrato } from "@/lib/via-layers";
@@ -86,6 +86,13 @@ const cuci = (cj: El[], o: OpzioniCucitura = {}): EsitoCucitura => {
   const e = cuciLaMassa(cj, REGOLE, o);
   if (!e.ok) throw new Error(e.errore);
   return e;
+};
+/** the write as every door does it: a look first, then apply with the fingerprint of what the look proposed */
+const scriviVisto = async (p: Parameters<typeof eseguiCucitura>[0]) => {
+  const guarda = { ...p.args };
+  delete guarda.apply;
+  const visto = await eseguiCucitura({ ...p, args: guarda, scrivi: async () => { throw new Error("un dryRun non scrive"); } });
+  return eseguiCucitura({ ...p, args: { ...guarda, apply: true, impronta: visto.result.impronta } });
 };
 const R = 0.25;
 const dentro = (x: number, y: number, a: P[]) => {
@@ -643,7 +650,7 @@ describe("il file cucitura-massa.tsx", () => {
     expect(guarda.fileChanged).toBeUndefined();
     expect(scritti[FILE_CUCITURA]).toBeUndefined();
     expect(guarda.result).toMatchObject({ ok: true, scritto: false, main: { usaIlFile: false } });
-    const scrive = await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi });
+    const scrive = await scriviVisto({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi });
     const testo = scritti[FILE_CUCITURA];
     expect(scrive.result).toMatchObject({ ok: true, scritto: true });
     expect(scrive.fileChanged?.content).toBe(testo);
@@ -655,17 +662,17 @@ describe("il file cucitura-massa.tsx", () => {
 
   it("rilanciato riscrive lo stesso file, sulla scheda compilata con le vie o su quella di prima", async () => {
     const files = { ...regole, "main.tsx": 'import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board><CucituraMassa /></board>' };
-    const uno = await eseguiCucitura({ files, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi });
+    const uno = await scriviVisto({ files, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi });
     const primo = uno.fileChanged!.content;
     expect(uno.result.main).toEqual({ usaIlFile: true });
     // the board compiled with the file: its vias are on it now, where the file puts them
     const scritte = { rete: { id: "source_net_0", nome: "GND" }, via: uno.result.via, vie: vieDelFile(primo).map((p) => ({ ...p, tipo: "griglia" })) } as EsitoCucitura;
     expect(scritte.vie.length).toBeGreaterThan(10);
     const compilata = [...cj(), ...vieComeElementi(scritte, cj())];
-    const due = await eseguiCucitura({ files: { ...files, [FILE_CUCITURA]: primo }, args: { apply: true }, cache: { circuitJson: compilata }, scheda: "aggiornata", scrivi });
+    const due = await scriviVisto({ files: { ...files, [FILE_CUCITURA]: primo }, args: { apply: true }, cache: { circuitJson: compilata }, scheda: "aggiornata", scrivi });
     expect(due.fileChanged!.content).toBe(primo);
     // the board compiled before the file was there: the file alone is newer, and that does not make the board old
-    const tre = await eseguiCucitura({ files: { ...files, [FILE_CUCITURA]: primo }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "senza_la_cucitura", scrivi });
+    const tre = await scriviVisto({ files: { ...files, [FILE_CUCITURA]: primo }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "senza_la_cucitura", scrivi });
     expect(tre.fileChanged!.content).toBe(primo);
     expect(tre.result).toMatchObject({ scheda: "senza_la_cucitura", scrivibile: true });
     expect(tre.result.schedaPiuVecchiaDeiFile).toBeUndefined();
@@ -760,7 +767,7 @@ describe("il file cucitura-massa.tsx", () => {
     });
 
     it("il file dello strumento si riconosce riga per riga: una riga in piu' o cambiata e non e' piu' suo", async () => {
-      const scrive = await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi });
+      const scrive = await scriviVisto({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi });
       const suo = scrive.fileChanged!.content;
       expect(leggiFileDellaCucitura(undefined)).toEqual({ stato: "manca" });
       const letto = leggiFileDellaCucitura(suo);
@@ -809,6 +816,55 @@ describe("il file cucitura-massa.tsx", () => {
     });
   });
 
+  describe("si scrive solo quello che l'anteprima ha mostrato", () => {
+    const files = { ...regole, "main.tsx": "export default () => <board />" };
+    const nonScrive = async () => {
+      throw new Error("non deve scrivere");
+    };
+
+    it("l'anteprima da' l'impronta del file che scriverebbe, apply la riporta e scrive quel file", async () => {
+      const visto = await eseguiCucitura({ files, args: { passoMm: 2 }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: nonScrive });
+      expect(visto.result.impronta).toMatch(new RegExp(`^${visto.result.vie as number}-[0-9a-f]{16}$`));
+      let scritto = "";
+      const r = await eseguiCucitura({ files, args: { passoMm: 2, apply: true, impronta: visto.result.impronta }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: async (_p, c) => void (scritto = c) });
+      expect(r.result).toMatchObject({ scritto: true, impronta: visto.result.impronta, vie: visto.result.vie });
+      // what was written is what was shown: the same points, in the same order
+      const mostrate = visto.result.coordinate as Record<string, Array<[number, number]>>;
+      expect(vieDelFile(scritto).map((p) => [p.x, p.y])).toEqual([...mostrate.isola, ...mostrate.bordo, ...mostrate.griglia]);
+      expect(improntaDelFile(vieDelFile(scritto).length, scritto)).toBe(visto.result.impronta);
+    });
+
+    it("la scheda cambiata fra l'anteprima e la scrittura: apply rifiuta e dice di rifare l'anteprima", async () => {
+      const visto = await eseguiCucitura({ files, args: { passoMm: 2 }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: nonScrive });
+      // compiled in between with a part where some of the vias shown were
+      const cambiata = [...cj(), ...pezzo("U9", 0, 0, 6, 6, "top")];
+      const r = await eseguiCucitura({ files, args: { passoMm: 2, apply: true, impronta: visto.result.impronta }, cache: { circuitJson: cambiata }, scheda: "aggiornata", scrivi: nonScrive });
+      expect(r.result.error).toMatch(/la scheda o i parametri sono cambiati dall'anteprima.*rifai l'anteprima/);
+      expect(r.result.error).toMatch(new RegExp(`proponeva ${visto.result.vie as number} vie`));
+      expect(r.fileChanged).toBeUndefined();
+      // the fingerprint of what it would write now comes back, and is another
+      expect(r.result.impronta).toMatch(/^\d+-[0-9a-f]{16}$/);
+      expect(r.result.impronta).not.toBe(visto.result.impronta);
+    });
+
+    it("altri parametri dall'anteprima, o le stesse vie in numero ma in altri punti: rifiutato", async () => {
+      const visto = await eseguiCucitura({ files, args: { passoMm: 2 }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: nonScrive });
+      const altroPasso = await eseguiCucitura({ files, args: { passoMm: 3, apply: true, impronta: visto.result.impronta }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: nonScrive });
+      expect(altroPasso.result.error).toMatch(/rifai l'anteprima/);
+      // the same count, hand-made: the number alone is not the fingerprint
+      const finta = `${visto.result.vie as number}-0123456789abcdef`;
+      const r = await eseguiCucitura({ files, args: { passoMm: 2, apply: true, impronta: finta }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: nonScrive });
+      expect(r.result.error).toMatch(/rifai l'anteprima/);
+    });
+
+    it("apply senza impronta e' una scrittura che nessuno ha guardato: rifiutata", async () => {
+      const r = await eseguiCucitura({ files, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: nonScrive });
+      expect(r.result.error).toMatch(/apply chiede l'impronta dell'anteprima/);
+      const storta = await eseguiCucitura({ files, args: { apply: true, impronta: "tutte" }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi: nonScrive });
+      expect(storta.result.error).toMatch(/impronta: quella restituita dal dryRun/);
+    });
+  });
+
   it("main.tsx che lo usa davvero, non in un commento; o un file di cui main.tsx e' fatto", () => {
     expect(mainLaUsa('// import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board />')).toBe(false);
     const usa = 'import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board><CucituraMassa /></board>';
@@ -828,7 +884,7 @@ describe("il file cucitura-massa.tsx", () => {
     };
 
     it("le vie del file non sono sulla scheda alle loro coordinate: lo dice e apply rifiuta, invece di cucire attorno alle proprie vie spostate", async () => {
-      const primo = (await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi })).fileChanged!.content;
+      const primo = (await scriviVisto({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi })).fileChanged!.content;
       const quante = vieDelFile(primo).length;
       expect(quante).toBeGreaterThan(10);
       const files = { ...usa, [FILE_CUCITURA]: primo };
@@ -842,13 +898,13 @@ describe("il file cucitura-massa.tsx", () => {
       expect(scrive.result.error).toMatch(/<group> spostato/);
       expect(scritti).toEqual([]);
       // with the vias where the file says the same call is the idempotent one
-      const dritta = await eseguiCucitura({ files, args: { apply: true }, cache: { circuitJson: compilataCon(primo) }, scheda: "aggiornata", scrivi });
+      const dritta = await scriviVisto({ files, args: { apply: true }, cache: { circuitJson: compilataCon(primo) }, scheda: "aggiornata", scrivi });
       expect(dritta.fileChanged!.content).toBe(primo);
     });
 
     it("un file non ancora usato da nessuno non toglie niente dalla scheda", async () => {
       // a hand-placed ground via on the very point of a via of the unused file: it is the board's, and stays
-      const primo = (await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true, bordo: false }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi })).fileChanged!.content;
+      const primo = (await scriviVisto({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true, bordo: false }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi })).fileChanged!.content;
       const p = vieDelFile(primo)[0];
       const scheda = [...cj(), viaEsistente(p.x, p.y, "k_gnd")];
       const r = await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />", [FILE_CUCITURA]: primo }, args: { bordo: false }, cache: { circuitJson: scheda }, scheda: "aggiornata", scrivi });
@@ -885,7 +941,7 @@ describe("il file cucitura-massa.tsx", () => {
     it("una scheda che ne chiederebbe di piu' si ferma al tetto di serie, e il file scritto e' sotto il limite", async () => {
       const grande = [...scheda(100, 100), ...massaPiena(["top", "bottom"], 100, 100), viaEsistente(-48, -48, "k_gnd")];
       let scritto = "";
-      const r = await eseguiCucitura({
+      const r = await scriviVisto({
         files: { ...regole, "main.tsx": "export default () => <board />" },
         args: { apply: true, passoMm: 2 },
         cache: { circuitJson: grande },

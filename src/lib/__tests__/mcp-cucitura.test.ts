@@ -69,6 +69,12 @@ async function chiamaStrumento(name: string, args: Record<string, unknown>): Pro
   return { isError: msg.result.isError === true, result: JSON.parse(msg.result.content[0].text) as Record<string, unknown> };
 }
 
+/** the write as a client does it: a look, then apply with the fingerprint the look gave back */
+async function scriviVisto(args: Record<string, unknown>) {
+  const visto = await chiamaStrumento("stitch_ground", args);
+  return chiamaStrumento("stitch_ground", { ...args, apply: true, impronta: visto.result.impronta });
+}
+
 /** a 4-layer board with ground poured on every layer */
 const rett = (a: number, b: number, c: number, d: number) => [
   { x: a, y: b },
@@ -109,7 +115,7 @@ describe("stitch_ground over MCP", () => {
   });
 
   it("apply writes cucitura-massa.tsx, starts no compile, leaves main.tsx alone and says the lines to add", async () => {
-    const r = await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 3 });
+    const r = await scriviVisto({ projectId: "p", passoMm: 3 });
     expect(r.isError).toBe(false);
     expect(r.result).toMatchObject({ ok: true, scritto: true, main: { usaIlFile: false } });
     expect(stato.files[FILE_CUCITURA]).toMatch(/connectsTo="net.GND"/);
@@ -117,13 +123,26 @@ describe("stitch_ground over MCP", () => {
     expect(compilazioni.n).toBe(0);
     // again: the same file
     const primo = stato.files[FILE_CUCITURA];
-    await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 3 });
+    await scriviVisto({ projectId: "p", passoMm: 3 });
     expect(stato.files[FILE_CUCITURA]).toBe(primo);
+  });
+
+  it("apply writes only what a look showed: without the fingerprint, or with one of other vias, nothing is written", async () => {
+    const senza = await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 3 });
+    expect(senza).toMatchObject({ isError: true, result: { error: expect.stringMatching(/apply chiede l'impronta dell'anteprima/) } });
+    const visto = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 3 });
+    expect(visto.result.impronta).toMatch(/^\d+-[0-9a-f]{16}$/);
+    // the look was at 3 mm, the write asks 2: other vias
+    const altre = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 2, apply: true, impronta: visto.result.impronta });
+    expect(altre).toMatchObject({ isError: true, result: { error: expect.stringMatching(/rifai l'anteprima/) } });
+    expect(stato.files[FILE_CUCITURA]).toBeUndefined();
+    const giusta = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 3, apply: true, impronta: visto.result.impronta });
+    expect(giusta.result).toMatchObject({ scritto: true, vie: visto.result.vie });
   });
 
   it("apply on a board older than the files is refused and writes nothing; the stitching file itself does not make the board old", async () => {
     // written once, on the board of these files
-    const primo = await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 3 });
+    const primo = await scriviVisto({ projectId: "p", passoMm: 3 });
     expect(primo.result).toMatchObject({ scritto: true, scheda: "aggiornata" });
     const scritto = stato.files[FILE_CUCITURA];
     // a look after it: the file is newer than the board, the board is not older than the project
@@ -135,7 +154,7 @@ describe("stitch_ground over MCP", () => {
     const guarda = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 3 });
     expect(guarda.isError).toBe(false);
     expect(guarda.result).toMatchObject({ ok: true, scritto: false, scheda: "vecchia", schedaPiuVecchiaDeiFile: true, scrivibile: false });
-    const scrive = await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 2 });
+    const scrive = await scriviVisto({ projectId: "p", passoMm: 2 });
     expect(scrive.isError).toBe(true);
     expect(String(scrive.result.error)).toMatch(/la scheda salvata e' piu' vecchia dei file/);
     expect(stato.files[FILE_CUCITURA]).toBe(scritto);

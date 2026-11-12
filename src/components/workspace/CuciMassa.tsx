@@ -40,6 +40,8 @@ interface Risposta {
   /** false: the file cannot be written as things stand, and why (a board older than the files, a file that is not the tool's) */
   scrivibile?: boolean;
   nonScrivibile?: string[];
+  /** the fingerprint of the file this proposal would write: the write carries it back, and writes nothing else */
+  impronta?: string;
   scritto?: boolean;
   fileChanged?: { path: string; content: string };
 }
@@ -98,12 +100,13 @@ export function CuciMassa({
   const numero = Number(passo.replace(",", "."));
   const passoValido = Number.isFinite(numero) && numero >= 1 && numero <= 10;
 
-  const chiedi = async (apply: boolean, chiesto: Chiesto): Promise<Risposta | null> => {
+  /** a look, or with `impronta` the write of what a look showed */
+  const chiedi = async (chiesto: Chiesto, impronta?: string): Promise<Risposta | null> => {
     const { data, error } = await postJson("/api/stitch-ground", {
       projectId,
       passoMm: chiesto.passoMm,
       ...(chiesto.keepout === "solo_rame" ? { keepout: chiesto.keepout } : {}),
-      ...(apply ? { apply: true } : {}),
+      ...(impronta ? { apply: true, impronta } : {}),
     });
     if (error || !data) {
       setErrore(error ?? "risposta vuota");
@@ -119,7 +122,7 @@ export function CuciMassa({
     setScritto(null);
     try {
       const chiesto: Chiesto = { passoMm: numero, keepout: soloRame ? "solo_rame" : "tutti" };
-      const r = await chiedi(false, chiesto);
+      const r = await chiedi(chiesto);
       setRisposta(r);
       setVisto(r ? chiesto : null);
       onAnteprima(
@@ -138,11 +141,17 @@ export function CuciMassa({
   };
 
   const scrivi = async () => {
-    if (visto === null) return;
+    if (visto === null || !risposta?.impronta) return;
     setLavora("scrivo");
     setErrore(null);
     try {
-      const r = await chiedi(true, visto);
+      /*
+       * The server computes the vias again and writes only if they are the
+       * ones on screen (the fingerprint): the board compiled in between, or a
+       * file changed, and it answers "rifai l'anteprima" instead of writing
+       * other vias than the ones shown.
+       */
+      const r = await chiedi(visto, risposta.impronta);
       if (r?.fileChanged) {
         onScritto(r.fileChanged.path, r.fileChanged.content);
         setScritto(r);
@@ -297,7 +306,7 @@ export function CuciMassa({
           <button
             type="button"
             onClick={() => void scrivi()}
-            disabled={visto === null || !risposta?.vie || risposta.scrivibile === false || lavora !== ""}
+            disabled={visto === null || !risposta?.vie || !risposta.impronta || risposta.scrivibile === false || lavora !== ""}
             title={risposta?.scrivibile === false ? (risposta.nonScrivibile ?? []).join(" ") : undefined}
             className="rounded-lg border border-brand bg-brand px-2.5 py-1.5 text-[12px] font-semibold text-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >

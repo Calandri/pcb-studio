@@ -492,6 +492,7 @@ function buildHandler(viewer: Viewer) {
         keepout: z.enum(["tutti", "solo_rame"]).optional().describe(PARAMETRI_CUCITURA.keepout),
         dryRun: z.boolean().optional().describe(PARAMETRI_CUCITURA.dryRun),
         apply: z.boolean().optional().describe(PARAMETRI_CUCITURA.apply),
+        impronta: z.string().optional().describe(PARAMETRI_CUCITURA.impronta),
       },
       async ({ projectId, ...args }) => {
         // looking is a read of the saved board, like inspect_board; writing is write_file's

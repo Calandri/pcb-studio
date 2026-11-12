@@ -90,7 +90,9 @@ describe("/api/stitch-ground", () => {
   });
 
   it("scrive il file, lo restituisce alla pagina e non compila", async () => {
-    const r = await chiedi({ projectId: "p", passoMm: 2.5, apply: true });
+    // as the panel does: the look, then the write with the fingerprint of the look
+    const visto = await chiedi({ projectId: "p", passoMm: 2.5 });
+    const r = await chiedi({ projectId: "p", passoMm: 2.5, apply: true, impronta: visto.d.impronta });
     expect(r.status).toBe(200);
     expect(r.d).toMatchObject({ scritto: true, fileChanged: { path: "cucitura-massa.tsx" } });
     expect(stato.files["cucitura-massa.tsx"]).toBe((r.d.fileChanged as { content: string }).content);
@@ -107,6 +109,17 @@ describe("/api/stitch-ground", () => {
     const scrive = await chiedi({ projectId: "p", passoMm: 2.5, apply: true });
     expect(scrive.status).toBe(422);
     expect(String(scrive.d.error)).toMatch(/piu' vecchia dei file/);
+    expect(stato.files["cucitura-massa.tsx"]).toBeUndefined();
+  });
+
+  it("scrive solo quello che l'anteprima ha mostrato: senza impronta o con quella di altre vie e' un 422 e niente file", async () => {
+    const senza = await chiedi({ projectId: "p", passoMm: 2.5, apply: true });
+    expect(senza.status).toBe(422);
+    expect(String(senza.d.error)).toMatch(/apply chiede l'impronta dell'anteprima/);
+    const visto = await chiedi({ projectId: "p", passoMm: 2.5 });
+    const altre = await chiedi({ projectId: "p", passoMm: 4, apply: true, impronta: visto.d.impronta });
+    expect(altre.status).toBe(422);
+    expect(String(altre.d.error)).toMatch(/rifai l'anteprima/);
     expect(stato.files["cucitura-massa.tsx"]).toBeUndefined();
   });
 

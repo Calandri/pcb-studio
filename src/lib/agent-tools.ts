@@ -257,6 +257,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         keepout: { type: "string", enum: ["tutti", "solo_rame"], description: PARAMETRI_CUCITURA.keepout },
         dryRun: { type: "boolean", description: PARAMETRI_CUCITURA.dryRun },
         apply: { type: "boolean", description: PARAMETRI_CUCITURA.apply },
+        impronta: { type: "string", description: PARAMETRI_CUCITURA.impronta },
       },
       required: [],
     },
