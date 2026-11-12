@@ -35,6 +35,8 @@ interface Risposta {
   isole?: { trovate: number; collegate: number; senzaPosto: number };
   /** the keepouts of the board: how many positions they excluded, and how many of those had a place otherwise */
   keepout?: { modo: ModoKeepout; posizioni: number; conPosto: number; zone: number };
+  /** the vias that go through a pour of another net, and through which (net, layer): the next compile opens it around them */
+  pianiAttraversati?: { vie: number; piani: Array<{ rete: string; strato: string; vie: number }> };
   avvisi?: string[];
   main?: { usaIlFile: boolean; righeDaAggiungere?: string[] };
   /** false: the file cannot be written as things stand, and why (a board older than the files, a file that is not the tool's) */
@@ -269,6 +271,13 @@ export function CuciMassa({
               <div>
                 Isole di massa staccate: {risposta.isole.trovate}, collegate {risposta.isole.collegate}, senza posto{" "}
                 {risposta.isole.senzaPosto}
+              </div>
+            )}
+            {risposta.pianiAttraversati && risposta.pianiAttraversati.vie > 0 && (
+              <div>
+                {risposta.pianiAttraversati.vie} vie attraversano colate di altre reti (
+                {risposta.pianiAttraversati.piani.map((p) => `${p.rete} su ${p.strato}: ${p.vie}`).join(", ")}): la compilazione le
+                riapre attorno a ognuna, e restano un pezzo solo.
               </div>
             )}
             {scarti.length > 0 && (
