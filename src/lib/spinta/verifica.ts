@@ -392,7 +392,14 @@ export function verificaRame(args: {
 }): EsitoDelRame {
   const { circuitJson, regole, correnti, rame, finale } = args;
   for (const route of rame.routes) {
-    const storto = trattiStorti(route);
+    /*
+     * The stretches the correction leaves where the files put them are a given,
+     * like those of an imported route (see trattiStorti): the sources write a
+     * diagonal with its ends rounded, and one tenth of a micron off 45 degrees
+     * is how a quarter of the traces of sbb-dl-principale come out (41 of 155,
+     * 2026-11-12). The gesture answers for what it lays.
+     */
+    const storto = trattiStorti(route, route.replaces ? passiDi(route.replaces.original) : undefined);
     if (storto) return { ok: false, motivo: `la pista ${route.connection} ${storto}` };
   }
 

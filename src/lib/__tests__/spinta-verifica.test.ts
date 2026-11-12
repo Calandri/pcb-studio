@@ -98,6 +98,23 @@ describe("spinta, verifica: the copper against the saved board", () => {
     });
   });
 
+  it("a stretch the files already drew a hair off 45 degrees is a given; one the correction lays answers for itself", () => {
+    // the sources write a diagonal with rounded ends: (-10; 5) to (-8; 7.0001), one tenth of a micron off
+    const deiFile: Punto[] = [top(-10, 0), top(-10, 5), top(-8, 7.0001), top(10, 7.0001), top(10, 0)];
+    const scheda = circuito([], deiFile);
+    // the long stretch pushed up by one millimetre: the diagonal is where the files put it, untouched
+    const spinta: Punto[] = [top(-10, 0), top(-10, 5), top(-8, 7.0001), top(-7, 8.0001), top(9, 8.0001), top(10, 7.0001), top(10, 0)];
+    const correzione = (points: Punto[]): ManualRoute => ({ connection: GND, points, width: 0.2, replaces: { original: deiFile, width: 0.2 } });
+    expect(trattiStorti(correzione(spinta))).toBe("il tratto da (-10; 5) a (-8; 7.0001) non e' a 0, 45 o 90 gradi");
+    expect(verifica({ routes: [correzione(spinta)] }, scheda)).toEqual({ ok: true });
+    // the same stretch moved by the correction is no longer a given
+    const mossa: Punto[] = [top(-10, 0), top(-10, 4), top(-8, 6.0001), top(-8, 7.0001), top(10, 7.0001), top(10, 0)];
+    expect(verifica({ routes: [correzione(mossa)] }, scheda)).toEqual({
+      ok: false,
+      motivo: `la pista ${GND} il tratto da (-10; 4) a (-8; 6.0001) non e' a 0, 45 o 90 gradi`,
+    });
+  });
+
   it("copper that breaks a distance is refused, in the words of the DRC", () => {
     // the trace of ground brought to 0.2 mm from the centre line of the signal's: 0 mm of copper between them
     const vicina = verifica({ routes: [massaSpostata(-2.8)] });
