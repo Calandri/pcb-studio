@@ -77,7 +77,7 @@ export const DESCRIZIONE_CUCITURA =
 
 /** what each parameter is, for both definitions */
 export const PARAMETRI_CUCITURA = {
-  rete: "nome della rete da cucire; di serie GND (se ambigua lo dice e non sceglie)",
+  rete: "nome della rete di massa da cucire (GND, AGND, DGND, PGND, VSS, EARTH, 0V: una rete di alimentazione o di segnale e' rifiutata); di serie GND (se ambigua lo dice e non sceglie)",
   passoMm: `passo della griglia in mm, ${PASSO_MIN_MM}..${PASSO_MAX_MM} (di serie ${PASSO_DI_SERIE_MM})`,
   sfalsata: "griglia sfalsata a triangolo, ogni via con sei vicine a un passo (di serie true); false: quadrata",
   bordo: "fila di vie lungo il contorno della scheda (di serie true)",

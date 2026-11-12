@@ -576,6 +576,26 @@ describe("la rete", () => {
     expect(sceltaDellaRete(cj, "NOPE")).toMatchObject({ ok: false });
   });
 
+  it("solo la massa: una rete di alimentazione o di segnale con le sue colate non si cuce, nemmeno chiesta per nome", () => {
+    const cj = [
+      ...scheda(),
+      { type: "source_net", source_net_id: "source_net_2", name: "VBAT", subcircuit_connectivity_map_key: "k_vbat", subcircuit_id: "s" },
+      { type: "source_net", source_net_id: "source_net_3", name: "AGND", subcircuit_connectivity_map_key: "k_agnd", subcircuit_id: "s" },
+      ...massaPiena(["top", "bottom"]),
+      colata("inner1", rett(-9.7, -9.7, 9.7, 9.7), "source_net_2"),
+      colata("inner2", rett(-9.7, -9.7, 0, 9.7), "source_net_1"),
+      colata("inner2", rett(1, -9.7, 9.7, 9.7), "source_net_3"),
+    ];
+    for (const rete of ["VBAT", "SIG", "source_net_2"]) {
+      const e = cuciLaMassa(cj, REGOLE, { rete });
+      expect(e).toMatchObject({ ok: false, errore: expect.stringMatching(/non e' una rete di massa.*mai una rete di alimentazione o di segnale/) });
+      // the nets offered instead are grounds only
+      expect((e as { candidate: Array<{ nome: string }> }).candidate.map((c) => c.nome).sort()).toEqual(["AGND", "GND"]);
+    }
+    expect(sceltaDellaRete(cj, "AGND")).toEqual({ id: "source_net_3", nome: "AGND" });
+    expect(sceltaDellaRete(cj, "GND")).toEqual({ id: "source_net_0", nome: "GND" });
+  });
+
   it("foro e corona mai sotto i minimi del progetto, e detto", () => {
     const e = cuciLaMassa([...scheda(), ...massaPiena()], { ...REGOLE, minViaHoleMm: 0.3, minViaDiameterMm: 0.6 }, { bordo: false }) as EsitoCucitura;
     expect(e.via).toEqual({ foroMm: 0.3, coronaMm: 0.6 });

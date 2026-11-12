@@ -623,8 +623,12 @@ function gruppi(cj: El[]) {
 }
 
 /**
- * THE NET TO STITCH, never guessed. Asked by name or id: that one, when it has
- * pours. Otherwise the ground: the net called GND, when it is also the one with
+ * THE NET TO STITCH, never guessed, and always a ground. Asked by name or id:
+ * that one, when it has pours and is a ground by its name (eMassa: GND, AGND,
+ * DGND, PGND, VSS, EARTH, 0V and their numbered ones). The vias of the
+ * stitching are the one exception to "nothing is placed by a rule", and the
+ * exception is the ground's: asked for VBAT or for a signal with a pour, the
+ * tool would have laid supply or signal vias on a grid. Otherwise the ground: the net called GND, when it is also the one with
  * the most poured copper; with no GND, the only ground-named net (eMassa) with
  * pours, when it is also the one with the most. Anything else is ambiguous and
  * said, with the candidates.
@@ -659,6 +663,13 @@ export function sceltaDellaRete(
     const id = [...nomi.entries()].find(([k, n]) => n === richiesta || k === richiesta)?.[0];
     if (!id) return { ok: false, errore: `la rete ${richiesta} non c'e' sulla scheda salvata`, candidate };
     if (!area.has(id)) return { ok: false, errore: `la rete ${richiesta} non ha colate: non c'e' massa da cucire`, candidate };
+    if (!eMassa(nomi.get(id))) {
+      return {
+        ok: false,
+        errore: `la rete ${richiesta} non e' una rete di massa (GND, AGND, DGND, PGND, VSS, EARTH, 0V): questo strumento cuce solo la massa, mai una rete di alimentazione o di segnale`,
+        candidate: candidate.filter((c) => eMassa(c.nome)),
+      };
+    }
     return { id, nome: nomi.get(id) ?? id };
   }
   const piuGrande = [...area.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0];
