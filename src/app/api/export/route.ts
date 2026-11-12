@@ -9,6 +9,7 @@ import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
 import { avvisoDelProgetto } from "@/lib/progetti-con-difetti";
 import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
+import { apertiDellaSchedaCheEsce } from "@/lib/aperti-export";
 import { idDoppi } from "@/lib/duplicate-ids";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
@@ -134,6 +135,8 @@ export async function GET(req: Request): Promise<Response> {
           duplicateIds: idDoppi(cache.circuitJson as unknown[]),
           // a board drawn in its files is compiled from them alone: there "Aggiorna" is the way out (see nonCertificata)
           copperFromFiles: resolveDesignRules(fsMap).rules.autoroute === false,
+          // nor one with a connection still open: measured from the copper, not read from the summary (aperti-export.ts)
+          openConnections: apertiDellaSchedaCheEsce(cache.circuitJson as unknown[]),
         })
       : null;
   if (fabrication && (!cacheFresh || coperta)) {

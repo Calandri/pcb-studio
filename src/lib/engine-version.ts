@@ -314,6 +314,18 @@ export function nonCertificata(summary: unknown): string | null {
             `va ripulito il rame salvato prima di esportare`),
     );
   }
+  /*
+   * And a board with open connections (aperti-export.ts): a pad of ground or of a supply left out of its copper is
+   * a board that does not work. The export let it through; Niccolo', 2026-11-12: "blocco". Measured on the board
+   * about to go, from the copper, and passed here by the export.
+   */
+  const ap = (summary as { openConnections?: { detail?: unknown } | null } | null | undefined)?.openConnections;
+  if (ap && typeof ap.detail === "string" && ap.detail) {
+    perche.push(
+      `${ap.detail}. La scheda NON e' certificata per l'export finche' ha collegamenti aperti: ` +
+        `chiudili (nel visore la vista "Collegamenti mancanti" li mostra) e riprova`,
+    );
+  }
   return perche.length > 0 ? perche.join(". ") : null;
 }
 

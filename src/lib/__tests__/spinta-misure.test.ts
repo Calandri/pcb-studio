@@ -277,8 +277,15 @@ describe("spinta, misura 2: a hand route on a connection the files draw", () => 
     // the board with the trace toward the net drawn twice is exported as it is
     db.files = files;
     db.row = { filesHash: filesHash(files), circuitJson: compilata.circuitJson, summary: compilata.summary, createdAt: "2026-11-12T10:00:00.000Z", engineVersion: CHECKS_ENGINE_VERSION, base: boardBaseOf(files) };
-    expect((await esporta(new Request("http://x/api/export?projectId=p&kind=gerber"))).status).toBe(200);
-    // FASE 2: nothing to refuse any more, the doubled trace cannot be made. Until then no check stops it.
+    // no check names the doubled trace. What the export does refuse on this board is another thing: R3.pin1 and the
+    // via V1 are ground with no copper to the rest of the ground, and a board with an open connection does not go
+    // (engine 13, aperti-export.ts)
+    const esito = await esporta(new Request("http://x/api/export?projectId=p&kind=gerber"));
+    expect(esito.status).toBe(409);
+    const { reason } = (await esito.json()) as { reason: string };
+    expect(reason).toMatch(/^\d+ collegament[oi] apert[oi] su 1 rete: GND \(/);
+    expect(reason).not.toMatch(/doppio|colata/);
+    // FASE 2: nothing to say about the trace toward the net any more, the doubled trace cannot be made.
   }, 120_000);
 
   it("taking the replacing route away again does NOT bring the file's trace back in the fast update: only a compile does", () => {
@@ -406,6 +413,14 @@ describe("spinta, misura 6: copper laid by the fast update inside the old pour o
     base: boardBaseOf(deiFile),
   });
   const esportaCome = (kind: string) => esporta(new Request(`http://x/api/export?projectId=p&kind=${kind}`));
+  /** the reason of a refused export, and that it is a refusal */
+  const motivoDelRifiuto = async (kind: string): Promise<string> => {
+    const r = await esportaCome(kind);
+    expect(r.status, kind).toBe(409);
+    return ((await r.json()) as { reason: string }).reason;
+  };
+  /** a refusal that speaks of open connections alone: no pour, no doubled id */
+  const SOLO_APERTI = /^\d+ collegament[oi] apert[oi] su \d+ ret[ei]: (?!.*(colata|doppio)).*NON e' certificata per l'export finche' ha collegamenti aperti/;
   /** the fast update of the saved board `prima` after the hand edits changed: what it saved */
   const conLAggiornamentoVeloce = async (edits: string) => {
     const conLeModifiche = { ...files, [MANUAL_EDITS_PATH]: edits };
@@ -449,7 +464,9 @@ describe("spinta, misura 6: copper laid by the fast update inside the old pour o
     expect(nonCertificata(prima.summary)).toBeNull();
     db.files = files;
     db.row = riga(filesHash(files), prima.circuitJson, prima.summary, CHECKS_ENGINE_VERSION, files);
-    expect((await esportaCome("gerber")).status).toBe(200);
+    // the export has nothing to say about the pours. It stops this board for the connections its files leave without
+    // copper, which is another refusal (engine 13, aperti-export.ts)
+    expect(await motivoDelRifiuto("gerber")).toMatch(SOLO_APERTI);
   }, 120_000);
 
   it("a trace drawn across the ground pour: the DRC says it, the summary says it, the export answers 409 with the trace and the layer, and 200 again after a compile", async () => {
@@ -549,7 +566,10 @@ describe("spinta, misura 6: copper laid by the fast update inside the old pour o
     for (const kind of ["gerber", "pnp"]) {
       const rifiuto = await esportaCome(kind);
       expect(rifiuto.status, kind).toBe(409);
-      expect(((await rifiuto.json()) as { reason: string }).reason).toBe(`${detto.detail}. ${PERCHE}`);
+      // the pads in the pour first, then the connection this board leaves open
+      const { reason } = (await rifiuto.json()) as { reason: string };
+      expect(reason.startsWith(`${detto.detail}. ${PERCHE}. `), reason).toBe(true);
+      expect(reason.slice(`${detto.detail}. ${PERCHE}. `.length)).toMatch(SOLO_APERTI);
     }
     expect((await esportaCome("bom")).status).toBe(200);
 
@@ -562,7 +582,8 @@ describe("spinta, misura 6: copper laid by the fast update inside the old pour o
     expect(delleColate(aggiornata.summary.drcViolations)).toEqual([]);
     expect(aggiornata.summary.poursOverCopper).toBeUndefined();
     db.row = riga(filesHash(conLoSpostamento), aggiornata.circuitJson, aggiornata.summary, CHECKS_ENGINE_VERSION, conLoSpostamento);
-    expect((await esportaCome("gerber")).status).toBe(200);
-    expect((await esportaCome("pnp")).status).toBe(200);
+    // the pours no longer stop it; the connection left open still does
+    expect(await motivoDelRifiuto("gerber")).toMatch(SOLO_APERTI);
+    expect(await motivoDelRifiuto("pnp")).toMatch(SOLO_APERTI);
   }, 120_000);
 });
