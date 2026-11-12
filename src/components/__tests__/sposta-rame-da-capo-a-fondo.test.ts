@@ -1,0 +1,310 @@
+import { Fragment, act, createElement, useCallback, useState } from "react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+/*
+ * THE COPPER GESTURE OF "SPOSTA" FROM END TO END, with nothing standing in for
+ * anything but the database and the browser:
+ *
+ *   the real canvas and the real editor (mounted on the fake DOM), the pointer
+ *   down on a target, the REAL solver (lib/spinta/gesto.ts), the save the
+ *   editor sends, the REAL route of /api/manual-edits (read, check against the
+ *   saved board, write), the real fast update, and the board that comes back.
+ *
+ * The other tests each hold one end still (the canvas with a mocked solver,
+ * the solver with no canvas, the route with a body written by hand). This one
+ * is here because the three were written apart, against a contract: it says
+ * they fit, on a board compiled for real.
+ *
+ * The files are the real store, in memory; the saved board is handed by a
+ * mocked compile cache, as in manual-edits-copper-route.test.ts.
+ */
+const stato = vi.hoisted(() => ({
+  riga: null as null | { filesHash: string; circuitJson: unknown[]; summary: unknown; createdAt: string; engineVersion: number; base: null },
+}));
+vi.mock("@/lib/acl", () => ({
+  requireProjectAccess: async () => ({ ok: true, viewer: null }),
+  accessoDaRichiesta: async () => false,
+}));
+vi.mock("@/lib/project-store", async (originale) => {
+  const vero = await originale<typeof import("@/lib/project-store")>();
+  return {
+    ...vero,
+    // a copy, as the database gives one
+    getProject: vi.fn(async (id: string) => ({ ...(await vero.getProject(id)) })),
+    getCompileCache: vi.fn(async () => stato.riga),
+    getCompileMeta: vi.fn(async () => (stato.riga ? { filesHash: stato.riga.filesHash, createdAt: stato.riga.createdAt, engineVersion: stato.riga.engineVersion, base: null } : null)),
+  };
+});
+
+import { GET, POST } from "@/app/api/manual-edits/route";
+import { compileProject } from "@/lib/compile";
+import { DESIGN_RULES_PATH, resolveDesignRules } from "@/lib/design-rules";
+import { idDoppi } from "@/lib/duplicate-ids";
+import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
+import { MANUAL_EDITS_PATH, parseManualEdits } from "@/lib/manual-edits";
+import { filesHash, getProject, writeProjectFile } from "@/lib/project-store";
+import { rerouteLocal } from "@/lib/reroute-local";
+import { preseDelRame } from "@/lib/spinta/gesto";
+import { BoardCanvas } from "../board/BoardCanvas";
+import { VIEW_PRESETS } from "../ViewPresets";
+import { EditorBar } from "../workspace/EditorBar";
+import { AUTOSAVE_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
+import { apriFinestra, type Finestra, type Nodo } from "./dom-finto";
+
+type El = Record<string, unknown> & { type: string };
+
+const REGOLE = JSON.stringify({
+  preset: "custom",
+  rules: { minTraceWidthMm: 0.15, minClearanceMm: 0.15, pourClearanceMm: 0.2, autoPlaneVias: false, autoroute: false },
+});
+/** the board of spinta-salvataggio.test.ts: a trace between two pins, one toward ground, one that ends on a lone via */
+const MAIN = `export default () => (
+  <board width="40mm" height="24mm">
+    <net name="GND" />
+    <resistor name="R1" resistance="1k" footprint="0402" pcbX={-10} pcbY={0} />
+    <resistor name="R2" resistance="1k" footprint="0402" pcbX={10} pcbY={0} />
+    <resistor name="R3" resistance="1k" footprint="0402" pcbX={-10} pcbY={-6} />
+    <trace from=".R1 > .pin2" to=".R2 > .pin1" pcbPath={[
+      { x: 5, y: 0 },
+      { x: 5, y: 0, via: true, fromLayer: "top", toLayer: "bottom" },
+      { x: 5, y: 0 },
+      { x: 15, y: 0 },
+      { x: 15, y: 0, via: true, fromLayer: "bottom", toLayer: "top" },
+      { x: 15, y: 0 },
+    ]} thickness="0.2mm" />
+    <trace from=".R1 > .pin1" to="net.GND" pcbPath={[
+      { x: -2, y: 0 },
+      { x: -2, y: -3 },
+      { x: -2, y: -3, via: true, fromLayer: "top", toLayer: "bottom" },
+      { x: -2, y: -3 },
+      { x: -2, y: -5 },
+    ]} thickness="0.2mm" />
+    <trace from=".R3 > .pin1" to="net.GND" pcbPath={[
+      { x: -2, y: 0 },
+      { x: -2, y: -2 },
+      { x: 10, y: -2 },
+      { x: 10, y: 0 },
+    ]} thickness="0.2mm" />
+    <via name="V1" pcbX={0} pcbY={-6} connectsTo="net.GND" fromLayer="top" toLayer="bottom" />
+  </board>
+)
+`;
+const FILES: Record<string, string> = { "main.tsx": MAIN, [DESIGN_RULES_PATH]: REGOLE };
+const ALLA_VIA = ".R3 > .pin1 to net.GND";
+const FLAGS = { ...VIEW_PRESETS[0].flags, is_showing_copper_pours: true };
+
+const mm = (v: unknown) => Math.round(Number(v) * 1e4) / 1e4;
+const vie = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_via").map((v) => `${mm(v.x)};${mm(v.y)}`).sort();
+/** the path of the trace of a connection, by the name the files give it: the place of every wire point, a via where it changes face */
+const percorso = (cj: unknown[], connessione: string): string[] => {
+  const sorgenti = new Set((cj as El[]).filter((e) => e.type === "source_trace" && e.display_name === connessione).map((e) => e.source_trace_id));
+  return (cj as El[])
+    .filter((e) => e.type === "pcb_trace" && sorgenti.has(e.source_trace_id))
+    .map((e) => ((e.route as Array<Record<string, unknown>>) ?? []).filter((p) => p.route_type === "wire").map((p) => `${mm(p.x)};${mm(p.y)}`).join(" > "));
+};
+
+let compilata: Awaited<ReturnType<typeof compileProject>>;
+beforeAll(async () => {
+  compilata = await compileProject(FILES);
+}, 120_000);
+
+let progetto = 0;
+let P = "";
+let istante = 0;
+let f: Finestra;
+/** every write the page asked of the server, and what the server answered */
+let scritture: Array<{ action: unknown; status: number; error?: unknown }> = [];
+const fuori = {} as { editor: ManualEditor; scheda: unknown[] };
+
+/** the server: the real routes of /api/manual-edits */
+const server = async (url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<Response> => {
+  if (!url.startsWith("/api/manual-edits")) return Response.json({ error: "non c'e'" }, { status: 404 });
+  if ((init?.method ?? "GET") === "GET") return GET(new Request(`http://x${url}`));
+  const risposta = await POST(new Request(`http://x${url}`, { method: "POST", headers: { "content-type": "application/json" }, body: init?.body }));
+  const corpo = (await risposta.clone().json()) as Record<string, unknown>;
+  scritture.push({ action: (JSON.parse(init?.body ?? "{}") as Record<string, unknown>).action, status: risposta.status, ...(corpo.error ? { error: corpo.error } : {}) });
+  return risposta;
+};
+/** what /api/reroute-local does after a save: the fast update of the saved board for the files of now, saved in its place */
+const aggiornaVeloce = async (): Promise<unknown[]> => {
+  const files = await getProject(P);
+  const fatto = rerouteLocal(stato.riga!.circuitJson, files, files[MANUAL_EDITS_PATH]);
+  const circuitJson = fatto.circuitJson ?? stato.riga!.circuitJson;
+  stato.riga = { ...stato.riga!, filesHash: filesHash(files), circuitJson, createdAt: new Date(Date.UTC(2026, 10, 12, 11, 0, ++istante)).toISOString() };
+  return circuitJson;
+};
+
+/** the editor and the canvas of Sposta wired as Studio wires them */
+function Pagina() {
+  const [circuitJson, setCircuitJson] = useState(() => stato.riga!.circuitJson);
+  const onApplied = useCallback(async () => {
+    setCircuitJson(await aggiornaVeloce());
+    return { ok: true };
+  }, []);
+  const editor = useManualEditor({ projectId: P, onApplied });
+  const [vista, setVista] = useState(circuitJson);
+  if (vista !== circuitJson) {
+    setVista(circuitJson);
+    editor.dropShownCopper(circuitJson);
+  }
+  Object.assign(fuori, { editor, scheda: circuitJson });
+  return createElement(
+    Fragment,
+    null,
+    createElement(EditorBar, { editor, scope: "pcb" }),
+    createElement(BoardCanvas, {
+      circuitJson,
+      flags: FLAGS,
+      layer: "top",
+      mode: editor.mode === "move" ? "move" : "view",
+      regole: resolveDesignRules(FILES).rules,
+      rameInAttesa: editor.copper,
+      onGestoDelRame: editor.addCopper,
+      onMoveComponent: () => {},
+      onPickComponent: () => {},
+    } as never),
+  );
+}
+
+/** the pointer at (x; y) millimetres, off the grid of Sposta (Alt) */
+const a = (x: number, y: number) => ({ clientX: x, clientY: -y, altKey: true });
+const calma = async () => {
+  for (let i = 0; i < 6; i++) await act(async () => void (await new Promise((fatto) => setImmediate(fatto))));
+};
+const passa = async (ms: number) => {
+  await act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
+  await calma();
+};
+const bersaglio = (presa: string): Nodo => f.contenitore.cerca((n) => n.getAttribute("data-presa") === presa)[0];
+const salvati = async () => parseManualEdits((await getProject(P))[MANUAL_EDITS_PATH]);
+
+let smonta: (() => Promise<void>) | null = null;
+async function apri() {
+  ({ smonta } = await f.monta(createElement(Pagina)));
+  await calma();
+  await act(async () => fuori.editor.setMode("move"));
+}
+/** down on a target at `da`, the pointer to `verso`, its frame, and up */
+async function trascina(presa: string, da: [number, number], verso: [number, number]) {
+  const nodo = bersaglio(presa);
+  expect(nodo, `il bersaglio ${presa}`).toBeDefined();
+  await f.spara(nodo, "pointerdown", a(...da));
+  await f.spara(nodo, "pointermove", a(...verso));
+  await f.frame();
+  await f.spara(nodo, "pointerup", a(...verso));
+}
+
+beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  f = apriFinestra();
+  vi.stubGlobal("fetch", server);
+  scritture = [];
+  P = `prova-da-capo-a-fondo-${++progetto}`;
+  for (const [path, testo] of Object.entries(FILES)) await writeProjectFile(P, path, testo);
+  stato.riga = { filesHash: filesHash(await getProject(P)), circuitJson: compilata.circuitJson, summary: {}, createdAt: "2026-11-12T10:00:00.000Z", engineVersion: CHECKS_ENGINE_VERSION, base: null };
+});
+
+afterEach(async () => {
+  await smonta?.();
+  smonta = null;
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  f.chiudi();
+});
+
+describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, server e scheda veri", () => {
+  it("la scheda dei file: la via sola in (0; -6), la pista che ci finisce, e un bersaglio per ognuna", async () => {
+    expect(vie(compilata.circuitJson)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(percorso(compilata.circuitJson, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-6"]);
+    await apri();
+    const prese = preseDelRame(compilata.circuitJson);
+    expect(prese.filter((p) => p.tipo === "via")).toHaveLength(4);
+    for (const p of prese) {
+      const nome = p.tipo === "via" ? `via:${p.pcbViaId}` : `tratto:${p.pcbTraceId}:${p.indice}`;
+      // the stretches of the bottom are not drawn with the top chosen: no target for them
+      if (p.tipo === "tratto" && p.layer !== "top") expect(bersaglio(nome), nome).toBeUndefined();
+      else expect(bersaglio(nome), nome).toBeDefined();
+    }
+  }, 60_000);
+
+  it("una via trascinata di un millimetro: un salvataggio accettato, la scheda la mostra dov'e' stata messa con la sua pista, e Cmd+Z la riporta", async () => {
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    expect(via.tipo).toBe("via");
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
+    // let go: the gesture waits on screen, nothing is sent before the quiet of the autosave
+    expect(fuori.editor.copper).toHaveLength(1);
+    expect(scritture).toEqual([]);
+
+    await passa(AUTOSAVE_MS);
+    // ONE save, taken by the server as it is: read, checked against the saved board, written
+    expect(scritture).toEqual([{ action: "copper", status: 200 }]);
+    expect(fuori.editor.error).toBeNull();
+    const file = await salvati();
+    expect(file.pcb_vias.map((v) => ({ net: v.net, from: v.from, to: v.to }))).toEqual([{ net: "GND", from: { x: 0, y: -6 }, to: { x: 0, y: -5 } }]);
+    expect(file.pcb_routes.filter((r) => r.replaces).map((r) => r.connection)).toEqual([ALLA_VIA]);
+    // every correction of the drag carries its gesture
+    const gesti = new Set([...file.pcb_vias.map((v) => v.gesto), ...file.pcb_routes.map((r) => r.gesto)]);
+    expect(gesti.size).toBe(1);
+    expect([...gesti][0]).toMatch(/^[\w-]{1,64}$/);
+
+    // the board that came back: the via where it was put, its trace after it, nothing doubled, and nothing left waiting
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-5"]);
+    expect(idDoppi(fuori.scheda)).toBeNull();
+    expect(fuori.editor.copper).toEqual([]);
+
+    // Cmd+Z: the file of before, by the save the server checks, and the copper of the files back
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["set", 200]]);
+    const tornato = await salvati();
+    expect(tornato.pcb_vias).toEqual([]);
+    expect(tornato.pcb_routes).toEqual([]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-6"]);
+
+    // Cmd+Shift+Z: the corrections enter again, checked again by the server, and the board shows them
+    await f.tasto("z", { metaKey: true, shiftKey: true });
+    await calma();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["set", 200], ["set", 200]]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(idDoppi(fuori.scheda)).toBeNull();
+    expect(fuori.editor.error).toBeNull();
+  }, 60_000);
+
+  it("un tratto di pista trascinato di lato: scorre lungo la sua normale, i vicini si allungano, il server lo accetta e la scheda lo mostra", async () => {
+    await apri();
+    // the long stretch of the trace that ends on the via: from (-12; -8) to (0; -8)
+    const tratto = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
+    expect(tratto.tipo).toBe("tratto");
+    const nome = tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "";
+    // dragged down by a millimetre and sideways by three: only the part along the normal counts
+    await trascina(nome, [-6, -8], [-3, -9]);
+    await passa(AUTOSAVE_MS);
+    expect(scritture).toEqual([{ action: "copper", status: 200 }]);
+    expect(fuori.editor.error).toBeNull();
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-6"]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(idDoppi(fuori.scheda)).toBeNull();
+    expect(fuori.editor.copper).toEqual([]);
+    const file = await salvati();
+    expect(file.pcb_vias).toEqual([]);
+    expect(file.pcb_routes.map((r) => [r.connection, Boolean(r.replaces)])).toEqual([[ALLA_VIA, true]]);
+  }, 60_000);
+
+  it("una via spinta contro il bordo si ferma prima: il rame arriva fin dove puo', e quello si salva", async () => {
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    // the board ends at y = -12: the pointer goes well past it
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -20]);
+    await passa(AUTOSAVE_MS);
+    expect(scritture).toEqual([{ action: "copper", status: 200 }]);
+    const [doveSta] = vie(fuori.scheda).filter((v) => v.startsWith("0;"));
+    const y = Number(doveSta.split(";")[1]);
+    // moved toward the edge, and stopped inside the board with its ring and the edge clearance
+    expect(y).toBeLessThan(-6);
+    expect(y).toBeGreaterThan(-12 + 0.15);
+    expect(idDoppi(fuori.scheda)).toBeNull();
+  }, 60_000);
+});
