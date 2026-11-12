@@ -19,6 +19,21 @@
  * that copper is the edge: the other pour kept its own clearance from it, and
  * that is the minimum there. Two pours that touch or overlap are a short
  * whatever the clearances: that is never excused.
+ *
+ * WHERE BOTH SIDES ARE THEIR OWN PAD, the gap is not poured copper at all. On
+ * sbb-dongle (2026-11-12) the top ground pour holds pin 35 of U1 (UFQFPN48,
+ * pitch 0.5, pads 0.28 wide) and a P3V3 pad of copper holds pin 36 next to it:
+ * the two outlines run along the two pads, 0.220 mm apart, and that was said
+ * as "pour_pour_clearance 0.220mm < min 0.25mm", twice (pins 47 and 48 too).
+ * It is the gap between two pads of the part, which the footprint fixes and
+ * the rule between pads judges (pad_clearance against minClearanceMm, drc.ts):
+ * the pour clearance asks nothing of it. So an edge of one pour on a pad, a
+ * plated hole or a via of its net facing an edge of the other pour on one of
+ * the other's is not measured here; everything else is, as it was, and two
+ * outlines that touch are still a short. Only the part of an edge that is on
+ * its own copper is left out: an edge that runs along a pad and on past it is
+ * poured copper for the part that goes on, and that part is measured against
+ * the whole of the other edge (see trattiDelLato).
  */
 
 import { distanzaPropria, planeServedPorts, readPours } from "./pours";
@@ -34,6 +49,43 @@ const TOLLERANZA_MM = 0.01;
 
 /** how near to a pad or a via of its net a point of a pour is that pad's or that via's copper */
 const SUL_RAME_PROPRIO_MM = 0.003;
+
+/** how finely an edge is walked to find where it leaves its own copper, and how many steps at most */
+const PASSO_DEL_LATO_MM = 0.05;
+const MAX_PASSI_DEL_LATO = 200;
+
+/**
+ * An edge of a pour cut where it steps on or off the copper of its own net
+ * (`sulRame`): its parts, each all on a pad, a hole or a via of the net or all
+ * off them. The edge is walked every PASSO_DEL_LATO_MM, and each change is
+ * placed by halving. A stretch on or off shorter than a step can be missed:
+ * off its own copper it would be a sliver of poured copper between two pads of
+ * one net, on it a pad narrower than five hundredths.
+ */
+function trattiDelLato(p: Punto, q: Punto, sulRame: (z: Punto) => boolean): Array<{ p: Punto; q: Punto; suo: boolean }> {
+  const lungo = Math.hypot(q.x - p.x, q.y - p.y);
+  const passi = Math.max(2, Math.min(MAX_PASSI_DEL_LATO, Math.ceil(lungo / PASSO_DEL_LATO_MM)));
+  const a = (t: number): Punto => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+  const out: Array<{ p: Punto; q: Punto; suo: boolean }> = [];
+  let da = 0;
+  let suo = sulRame(p);
+  for (let i = 1; i <= passi; i++) {
+    const t = i / passi;
+    if (sulRame(a(t)) === suo) continue;
+    // the change is between the step before and this one
+    let lo = (i - 1) / passi, hi = t;
+    for (let k = 0; k < 16; k++) {
+      const m = (lo + hi) / 2;
+      if (sulRame(a(m)) === suo) lo = m;
+      else hi = m;
+    }
+    out.push({ p: a(da), q: a(lo), suo });
+    da = lo;
+    suo = !suo;
+  }
+  out.push({ p: a(da), q, suo });
+  return out;
+}
 
 export interface ColateVicine {
   a: string;
@@ -262,10 +314,15 @@ export function colateTroppoVicine(circuitJson: unknown[], regolaMm: number): Co
       indice(a);
       /*
        * Over the edges of a against the edges of b near them: the nearest
-       * approach of all, and the nearest where neither side is its own copper.
+       * approach of all (a short when it is zero), the nearest where neither
+       * side is its own copper, and the nearest where the two sides are not
+       * both their own copper (see WHERE BOTH SIDES ARE THEIR OWN PAD).
        */
       let tutto = { d: Infinity, p: { x: 0, y: 0 } };
       let bordi = { d: Infinity, p: { x: 0, y: 0 } };
+      let misurato = { d: Infinity, p: { x: 0, y: 0 } };
+      const suoRame = new Map<number, boolean>();
+      const suoiTratti = new Map<number, ReturnType<typeof trattiDelLato>>();
       for (const [p, q] of a.lati!) {
         const visti = new Set<number>();
         for (let gx = Math.floor((Math.min(p.x, q.x) - r) / PASSO); gx <= Math.floor((Math.max(p.x, q.x) + r) / PASSO); gx++) {
@@ -275,13 +332,35 @@ export function colateTroppoVicine(circuitJson: unknown[], regolaMm: number): Co
         }
         if (visti.size === 0) continue;
         let mioRame: boolean | null = null;
+        let mieiTratti: ReturnType<typeof trattiDelLato> | null = null;
         for (const k of visti) {
           const [c, d] = b.lati![k];
           const m = dSS(p, q, c, d);
           if (m.d < tutto.d) tutto = m;
           if (m.d >= bordi.d || m.d >= massimo) continue;
           mioRame ??= sulRame(a, { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
-          if (mioRame || sulRame(b, { x: (c.x + d.x) / 2, y: (c.y + d.y) / 2 })) continue;
+          let suo = suoRame.get(k);
+          if (suo === undefined) suoRame.set(k, (suo = sulRame(b, { x: (c.x + d.x) / 2, y: (c.y + d.y) / 2 })));
+          if (mioRame && suo) {
+            /*
+             * Pad against pad: where both edges are on their own copper the gap
+             * is the footprint's, judged by the rule between pads. What is
+             * measured is the nearest approach of the parts that are not both.
+             */
+            mieiTratti ??= trattiDelLato(p, q, (z) => sulRame(a, z));
+            let altri = suoiTratti.get(k);
+            if (!altri) suoiTratti.set(k, (altri = trattiDelLato(c, d, (z) => sulRame(b, z))));
+            for (const ta of mieiTratti) {
+              for (const tb of altri) {
+                if (ta.suo && tb.suo) continue;
+                const n = dSS(ta.p, ta.q, tb.p, tb.q);
+                if (n.d < misurato.d) misurato = n;
+              }
+            }
+            continue;
+          }
+          if (m.d < misurato.d) misurato = m;
+          if (mioRame || suo) continue;
           bordi = m;
         }
       }
@@ -289,9 +368,10 @@ export function colateTroppoVicine(circuitJson: unknown[], regolaMm: number): Co
       if (tutto.d > 0 && (copre(b, a.anelli[0][0]) || copre(a, b.anelli[0][0]))) tutto = { d: 0, p: copre(b, a.anelli[0][0]) ? a.anelli[0][0] : b.anelli[0][0] };
       const minimo = Math.min(a.clearance, b.clearance);
       const corto = tutto.d <= 1e-9;
-      const vicine = !corto && (bordi.d < massimo - TOLLERANZA_MM || tutto.d < minimo - TOLLERANZA_MM);
+      const sottoIlMinimo = misurato.d < minimo - TOLLERANZA_MM;
+      const vicine = !corto && (bordi.d < massimo - TOLLERANZA_MM || sottoIlMinimo);
       if (!corto && !vicine) continue;
-      const peggiore = corto || tutto.d < minimo - TOLLERANZA_MM ? tutto : bordi;
+      const peggiore = corto ? tutto : sottoIlMinimo ? misurato : bordi;
       out.push({
         a: a.id,
         b: b.id,
@@ -299,7 +379,7 @@ export function colateTroppoVicine(circuitJson: unknown[], regolaMm: number): Co
         reteB: nomi.get(b.net) ?? b.net,
         layer: a.layer,
         distanzaMm: corto ? 0 : peggiore.d,
-        minimoMm: corto || tutto.d < minimo - TOLLERANZA_MM ? minimo : massimo,
+        minimoMm: corto || sottoIlMinimo ? minimo : massimo,
         x: peggiore.p.x,
         y: peggiore.p.y,
       });
