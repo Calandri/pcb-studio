@@ -56,6 +56,10 @@ const RETE_SCRIVIBILE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const n3 = (v: number): string => String(Math.round(v * 1000) / 1000);
 
+/** how the tool's file begins: the first thing looked at before it is ever replaced */
+const INTESTAZIONE = "// Cucitura della massa (rete ";
+const RIGA_EXPORT = `export const ${COMPONENTE_CUCITURA} = () => (`;
+
 /** the text of cucitura-massa.tsx for these vias, or why it cannot be written */
 export function fileDellaCucitura(esito: EsitoCucitura): { contenuto: string } | { errore: string } {
   const rete = esito.rete.nome;
@@ -68,14 +72,17 @@ export function fileDellaCucitura(esito: EsitoCucitura): { contenuto: string } |
     (v, i) =>
       `    <via name="${PREFISSO}${i + 1}" pcbX={${n3(v.x)}} pcbY={${n3(v.y)}} connectsTo="net.${rete}" fromLayer="top" toLayer="bottom" holeDiameter={${foro}} outerDiameter={${corona}} />`,
   );
-  const griglia = `passo ${n3(esito.passoMm)} mm ${esito.sfalsata ? "sfalsato" : "regolare"}`;
-  const bordo = esito.bordo.attiva ? `, fila sul bordo ogni ${n3(esito.bordo.passoMm)} mm` : "";
+  /*
+   * The comments say what the file is and nothing that changes from one
+   * stitching to the next (how many vias, the pitch): a comment stays in the
+   * key of the schematic, and with a number in it every new stitching drew the
+   * schematic again, which the vias written as tags are there to avoid.
+   */
   const contenuto = [
-    `// Cucitura della massa (rete ${rete}): ${esito.vie.length} vie passanti, foro ${foro} mm, corona ${corona} mm, ${griglia}${bordo}.`,
-    `// ${esito.conteggio.isola} per le isole di massa, ${esito.conteggio.bordo} sul bordo, ${esito.conteggio.griglia} in griglia.`,
+    `${INTESTAZIONE}${rete}): vie passanti della rete di massa, una per riga, con rete, foro e corona scritti.`,
     "// Scritto dallo strumento stitch_ground di PCB Studio (\"Cuci la massa\"): rilanciato, riscrive questo file per intero.",
     `// Conta solo se main.tsx lo usa: ${RIGA_IMPORT} e ${RIGA_USO} dentro <board>.`,
-    `export const ${COMPONENTE_CUCITURA} = () => (`,
+    `${RIGA_EXPORT}`,
     "  <>",
     ...righe,
     "  </>",
@@ -92,9 +99,6 @@ export function fileDellaCucitura(esito: EsitoCucitura): { contenuto: string } |
   return { contenuto };
 }
 
-/** how the tool's file begins: the first thing looked at before it is ever replaced */
-const INTESTAZIONE = "// Cucitura della massa (rete ";
-const RIGA_EXPORT = `export const ${COMPONENTE_CUCITURA} = () => (`;
 /** a via line exactly as fileDellaCucitura writes it */
 const RIGA_VIA = new RegExp(
   `^\\s*<via name="${PREFISSO}\\d+" pcbX=\\{(-?\\d+(?:\\.\\d+)?)\\} pcbY=\\{(-?\\d+(?:\\.\\d+)?)\\} connectsTo="net\\.([A-Za-z_][A-Za-z0-9_]*)" ` +

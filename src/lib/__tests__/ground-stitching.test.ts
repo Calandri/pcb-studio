@@ -1,6 +1,6 @@
 import { convertSoupToGerberCommands, stringifyGerberCommandLayers } from "circuit-json-to-gerber";
 import { describe, expect, it } from "vitest";
-import { soloCioCheLeggeLoSchematico } from "@/lib/compile";
+import { schematicKeyOf, soloCioCheLeggeLoSchematico } from "@/lib/compile";
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "@/lib/design-rules";
 import { distanzaPuntoForma, pointSegDistance, rameDelPad, runDrcChecks } from "@/lib/drc";
 import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, MAX_VIE_DI_SERIE, MAX_VIE_LIMITE, sceltaDellaRete, senzaLeVieAi, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
@@ -825,6 +825,26 @@ describe("il file cucitura-massa.tsx", () => {
       expect((guarda.result.nonScrivibile as string[]).join(" ")).toMatch(/abbassa maxVie o allarga il passo/);
       const scrive = await eseguiCucitura({ files, args: { apply: true, passoMm: 2, maxVie: MAX_VIE_LIMITE }, cache: { circuitJson: grande }, scheda: "aggiornata", scrivi: async () => { throw new Error("non deve scrivere"); } });
       expect(scrive.result.error).toMatch(/oltre i 200000/);
+    });
+
+    it("rifare la cucitura a un altro passo non cambia la chiave dello schematico: ne' le vie ne' i commenti del file portano numeri che cambiano", () => {
+      const base = [...scheda(), ...massaPiena(), viaEsistente(-6, -6, "k_gnd")];
+      const file = (o: OpzioniCucitura) => {
+        const f = fileDellaCucitura(cuci(base, o));
+        if ("errore" in f) throw new Error(f.errore);
+        return f.contenuto;
+      };
+      const rado = file({ passoMm: 4 });
+      const fitto = file({ passoMm: 1.5, bordo: false, sfalsata: false });
+      expect(vieDelFile(fitto).length).toBeGreaterThan(vieDelFile(rado).length * 2);
+      const main = 'import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board><CucituraMassa /></board>';
+      expect(schematicKeyOf({ "main.tsx": main, [FILE_CUCITURA]: fitto })).toBe(schematicKeyOf({ "main.tsx": main, [FILE_CUCITURA]: rado }));
+      // and the file written before this change, with the counts in its first line, is still the tool's
+      const diPrima = rado.replace(/^\/\/ Cucitura della massa \(rete GND\): [^\n]*/, "// Cucitura della massa (rete GND): 57 vie passanti, foro 0.2 mm, corona 0.5 mm, passo 2.5 mm sfalsato, fila sul bordo ogni 2.5 mm.\n// 0 per le isole di massa, 23 sul bordo, 34 in griglia.");
+      expect(diPrima).not.toBe(rado);
+      expect(leggiFileDellaCucitura(diPrima)).toMatchObject({ stato: "dello_strumento", rete: "GND" });
+      // a comment is in the key: the same vias under that first line read as another file to the schematic
+      expect(schematicKeyOf({ "main.tsx": main, [FILE_CUCITURA]: diPrima })).not.toBe(schematicKeyOf({ "main.tsx": main, [FILE_CUCITURA]: rado }));
     });
 
     it("le vie sono tag scritti per esteso: la chiave dello schematico le toglie tutte, un elenco passato a .map resterebbe nella chiave", () => {
