@@ -189,6 +189,33 @@ describe("dove una via puo' stare", () => {
     expect(e.scarti.bordo).toBeGreaterThan(0);
   });
 
+  it("fuori dai ritagli della scheda, anche quelli scritti come percorso (una fessura fresata lungo una linea)", () => {
+    // the pours are whole: nothing but the cutout says the board is open there
+    const fessura = [{ x: -6, y: -2 }, { x: 0, y: -2 }, { x: 4, y: 3 }];
+    const cj = [
+      ...scheda(),
+      ...massaPiena(),
+      { type: "pcb_cutout", pcb_cutout_id: "f", shape: "path", route: fessura, slot_width: 1 },
+      { type: "pcb_cutout", pcb_cutout_id: "p", shape: "polygon", points: rett(5, -8, 8, -5) },
+      { type: "pcb_cutout", pcb_cutout_id: "r", shape: "rect", center: { x: -6, y: 6 }, width: 3, height: 2 },
+      { type: "pcb_cutout", pcb_cutout_id: "c", shape: "circle", center: { x: 6, y: 7 }, radius: 1 },
+    ];
+    const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(100);
+    const dallaFessura = (v: P) => Math.min(...fessura.slice(1).map((b, i) => pointSegDistance(v.x, v.y, fessura[i].x, fessura[i].y, b.x, b.y))) - 0.5;
+    for (const v of e.vie) {
+      // the ring as far from the milled edge as from the board's
+      expect(dallaFessura(v) - R).toBeGreaterThanOrEqual(REGOLE.minBoardEdgeClearanceMm - 1e-9);
+      expect(dentro(v.x, v.y, rett(5 - R - 0.3, -8 - R - 0.3, 8 + R + 0.3, -5 + R + 0.3))).toBe(false);
+      expect(dentro(v.x, v.y, rett(-7.5 - R - 0.3, 5 - R - 0.3, -4.5 + R + 0.3, 7 + R + 0.3))).toBe(false);
+      expect(Math.hypot(v.x - 6, v.y - 7) - 1 - R).toBeGreaterThanOrEqual(REGOLE.minBoardEdgeClearanceMm - 1e-9);
+    }
+    // without the slot the same grid has vias where it runs
+    const senza = cuci(cj.filter((el) => el.pcb_cutout_id !== "f"), { bordo: false, passoMm: 1 });
+    expect(senza.vie.filter((v) => dallaFessura(v) - R < REGOLE.minBoardEdgeClearanceMm).length).toBeGreaterThan(10);
+    expect(e.vie.length).toBeLessThan(senza.vie.length);
+  });
+
   it("lontana dalle piste di altre reti su ogni strato, anche dove quello strato non ha massa", () => {
     // ground on top, inner1 and bottom; a signal trace on inner2, where there is no ground
     const cj = [...scheda(), ...massaPiena(["top", "inner1", "bottom"]), ...pista("t", [{ x: -9, y: 0 }, { x: 9, y: 0 }], "inner2", 0.2, "k_sig")];
