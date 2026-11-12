@@ -6,7 +6,7 @@ import { cortileAssorbito, ingombriDeiPezzi, misuraIngombri, testoIngombri } fro
 import { DESIGN_RULES_PATH, eccedenzaDellIngombro, INGOMBRO_ECCEDENZA_MM, resolveDesignRules } from "@/lib/design-rules";
 import { CHECKS_ENGINE_VERSION, motoreDaSalvare } from "@/lib/engine-version";
 import { footprintBoxes, footprintParts } from "@/lib/footprint-bounds";
-import { leggiIngombri, misuraFra, scontri, TOLLERANZA_INGOMBRI_MM, type Forma } from "@/lib/ingombro";
+import { distanzaDeiCorpi, leggiIngombri, misuraFra, scontri, TOLLERANZA_INGOMBRI_MM, type Forma } from "@/lib/ingombro";
 import { buildScene } from "@/components/board/render";
 
 /*
@@ -228,6 +228,30 @@ describe("A. two parts whose footprints overlap hit each other in assembly", () 
     ];
     expect(misuraIngombri(nonMisurato, 0.2).cortiliAssorbiti).toEqual([]);
     expect(summarizeCircuit(nonMisurato).errors.map((e) => e.message)).toEqual(["Courtyard of J2 overlaps with courtyard of M1"]);
+  });
+
+  it("a part whose body is only in its courtyard: no distance 'from body and pads', the overlap counts", () => {
+    // J3 of n59: a connector with two pads at the ends and its body drawn only in its courtyard; C41 under that body
+    const cj = [
+      ...parte("J3"),
+      pad("J3", -3, 0, 1, 1),
+      pad("J3", 3, 0, 1, 1),
+      cortileRect("J3", 0, 0, 8, 4),
+      ...parte("C41", { ftype: "simple_capacitor", x: 0, y: 1 }),
+      pad("C41", -0.5, 1, 0.6, 0.5),
+      pad("C41", 0.5, 1, 0.6, 0.5),
+    ];
+    const [s] = misuraIngombri(cj, 0.2).scontri;
+    expect(s).toMatchObject({ a: "J3", b: "C41", fonteA: "cortile", distanzaInvolucriMm: null, corpoNonNoto: ["J3"] });
+    expect(s.sovrapposizioneMm).toBeCloseTo(0.9, 6);
+    const r = ingombriDeiPezzi(cj, 0.2).riepilogo!;
+    expect(r.detail).not.toMatch(/corpo e piazzole a|involucri a \d/);
+    expect(r.detail).toContain("corpo di J3 non noto");
+    expect(distanzaDeiCorpi(s)).toBe("corpo di J3 non noto (conta l'ingombro)");
+    // two known bodies keep their distance
+    const noti = misuraIngombri([...blocco("A", 0, 0, 2, 1), ...blocco("B", 2.29, 0, 2, 1)], 0.15).scontri[0];
+    expect(distanzaDeiCorpi(noti)).toBe("corpo e piazzole a 0.290mm");
+    expect(noti.corpoNonNoto).toBeUndefined();
   });
 
   it("a board with parts that hit is filed under today's engine all the same", () => {

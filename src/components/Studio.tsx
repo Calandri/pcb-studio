@@ -10,6 +10,7 @@ import { buildBoardReport, schematicMissing, type BoardReport } from "@/lib/boar
 import { motivoSenzaSchematico, type CompileRun } from "@/lib/compile-run";
 import type { ConflittoSerigrafia } from "@/lib/silkscreen-clearance";
 import type { IngombriDeiPezzi } from "@/lib/component-clearance";
+import { distanzaDeiCorpi } from "@/lib/ingombro";
 import { eccedenzaDellIngombro, resolveDesignRules } from "@/lib/design-rules";
 import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
@@ -1123,7 +1124,7 @@ export function Studio({
         y: c.y,
         message:
           `ingombri (${c.faccia}): ${c.a} e ${c.b} si scontrano in montaggio, ingombri sovrapposti di ${c.sovrapposizioneMm.toFixed(3)}mm, ` +
-          `corpo e piazzole a ${c.distanzaInvolucriMm.toFixed(3)}mm (${c.fonteA} / ${c.fonteB})`,
+          `${distanzaDeiCorpi(c)} (${c.fonteA} / ${c.fonteB})`,
         severity: "err",
         layer: c.faccia,
       });

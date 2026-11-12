@@ -72,7 +72,7 @@
  */
 
 import { dalGerber } from "./silkscreen-clearance";
-import { leggiIngombri, misuraFra, scontri, TOLLERANZA_INGOMBRI_MM, type Faccia, type IngombroDelPezzo, type Punto, type Riquadro } from "./ingombro";
+import { distanzaDeiCorpi, leggiIngombri, misuraFra, scontri, TOLLERANZA_INGOMBRI_MM, type Faccia, type IngombroDelPezzo, type Punto, type Riquadro } from "./ingombro";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -89,8 +89,16 @@ export interface PezziCheSiScontrano {
   y: number;
   /** how deep the footprints overlap: the shortest move that parts them */
   sovrapposizioneMm: number;
-  /** edge to edge between the two exact envelopes (body and pads, no excess); 0 when they touch or overlap */
-  distanzaInvolucriMm: number;
+  /**
+   * Edge to edge between the two exact envelopes (body and pads, no excess); 0
+   * when they touch or overlap. null when the body of one of the two is not
+   * known (corpoNonNoto): its envelope is its pads alone, and a distance from
+   * its pads says nothing of its body (C41 under the body of J3, whose body is
+   * only in its courtyard, read "2,187 mm" away).
+   */
+  distanzaInvolucriMm: number | null;
+  /** the parts of the pair whose body is not known (see IngombroDelPezzo.corpoNoto) */
+  corpoNonNoto?: string[];
   /** the project's componentCourtyardExcessMm, on the footprints PCB Studio computed */
   eccedenzaMm: number;
   /** what each footprint is: "cortile", "piazzole e corpo", "piazzole e corpo dal formato 0402", "piazzole", "fori di un pezzo passante" */
@@ -364,6 +372,8 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
   const trovati: PezziCheSiScontrano[] = scontri(pezzi).map((s) => {
     const A = pezzi[s.a], B = pezzi[s.b];
     const esatta = misuraFra(s.daiForiA ? A.foriEsatti : [A.involucro], s.daiForiB ? B.foriEsatti : [B.involucro]);
+    // holes on the other face are exact; a part's own envelope is, when its body is known
+    const ignoti = [...(s.daiForiA || A.corpoNoto ? [] : [A.nome]), ...(s.daiForiB || B.corpoNoto ? [] : [B.nome])];
     return {
       a: A.nome,
       b: B.nome,
@@ -371,7 +381,8 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
       x: tre(s.p.x),
       y: tre(s.p.y),
       sovrapposizioneMm: tre(s.sovrapposizione),
-      distanzaInvolucriMm: tre(esatta ? esatta.distanza : 0),
+      distanzaInvolucriMm: ignoti.length > 0 ? null : tre(esatta ? esatta.distanza : 0),
+      ...(ignoti.length > 0 ? { corpoNonNoto: ignoti } : {}),
       eccedenzaMm: e,
       fonteA: fonteDi(A, s.daiForiA),
       fonteB: fonteDi(B, s.daiForiB),
@@ -465,7 +476,7 @@ export function ingombriDeiPezzi(circuitJson: unknown[], eccedenzaMm: number): E
     ? `${n} ${n === 1 ? "coppia di pezzi si scontra" : "coppie di pezzi si scontrano"} in assemblaggio ` +
       `(ingombri sovrapposti sulla stessa faccia di piu' di ${TOLLERANZA_INGOMBRI_MM}mm, abbondanza ${eccedenzaMm}mm): ` +
       `${primo.a} e ${primo.b} su ${primo.faccia}, ingombri sovrapposti di ${primo.sovrapposizioneMm.toFixed(3)}mm, ` +
-      `involucri a ${primo.distanzaInvolucriMm.toFixed(3)}mm, a (${primo.x.toFixed(2)}; ${primo.y.toFixed(2)})`
+      `${distanzaDeiCorpi(primo)}, a (${primo.x.toFixed(2)}; ${primo.y.toFixed(2)})`
     : "";
   const dettaglioB = b
     ? `${b} ${b === 1 ? "pezzo" : "pezzi"} senza ingombro vero (${elenco(m.senzaIngombroVero.map((p) => p.pezzo))}): ingombro ricavato dalle sole piazzole, metti nel footprint il corpo vero (cortile)`

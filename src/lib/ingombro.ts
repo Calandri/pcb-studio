@@ -85,6 +85,14 @@ export interface IngombroDelPezzo {
   forme: Forma[];
   /** the exact envelope of body and pads, with no excess, on its own face */
   involucro: Forma;
+  /**
+   * The envelope holds a body (its own, or its standard size's). False when it
+   * is the pads alone: a part with no body, and a part whose body is known
+   * only through its declared courtyard (a connector whose body is drawn in
+   * the courtyard and nowhere else). A distance from such an envelope is a
+   * distance from the pads, not from the part.
+   */
+  corpoNoto: boolean;
   /** a through-hole part on the other face: its holes and rings, grown by the excess */
   fori: Forma[];
   /** the same with no excess */
@@ -406,6 +414,7 @@ export function leggiIngombri(circuitJson: unknown[] | null | undefined, ecceden
     let fonte: FonteIngombro;
     let formato: string | undefined;
     let involucro: Punto[];
+    let corpoNoto = true;
     /** the frame the envelope is taken in: the part's, or the axis of a passive's two pads */
     let cornice = giro;
     const nome = String(sorgente.name ?? id);
@@ -421,12 +430,14 @@ export function leggiIngombri(circuitJson: unknown[] | null | undefined, ecceden
     } else if (angoliPad.length > 0) {
       involucro = scatolaOrientata(angoliPad, giro);
       fonte = "piazzole";
+      corpoNoto = false;
     } else {
       // a courtyard and nothing else: the courtyard is all there is
       const pts = parte.courtyards.map(formaDelCortile).filter((f): f is Forma => f !== null).flatMap((f) => f.punti);
       if (pts.length === 0) continue;
       involucro = scatolaOrientata(pts, giro);
       fonte = "cortile";
+      corpoNoto = false;
     }
 
     // the footprint: the declared courtyard as it is, or the envelope grown by the excess
@@ -458,6 +469,7 @@ export function leggiIngombri(circuitJson: unknown[] | null | undefined, ecceden
       senzaCorpo: fonte === "piazzole" && !(pads.length === 1 && pads[0].type === "pcb_smtpad" && passanti.length === 0),
       forme,
       involucro: inv,
+      corpoNoto,
       fori,
       foriEsatti,
       innesti: innesti.get(id) ?? [],
@@ -647,6 +659,20 @@ export function scontri(pezzi: Array<Pick<IngombroDelPezzo, "faccia" | "forme" |
     }
   }
   return out;
+}
+
+/**
+ * The distance between the two parts of a pair, in words: between body and
+ * pads when both bodies are known, otherwise which body is not known and no
+ * number (a distance from the pads of a part whose body is only in its
+ * courtyard would say a part under that body is clear). The overlap of the
+ * footprints stays the number that counts. For the check's pairs
+ * (component-clearance.ts) and the viewer's markers alike.
+ */
+export function distanzaDeiCorpi(s: { distanzaInvolucriMm: number | null; corpoNonNoto?: string[] }): string {
+  if (s.distanzaInvolucriMm !== null && s.distanzaInvolucriMm !== undefined) return `corpo e piazzole a ${s.distanzaInvolucriMm.toFixed(3)}mm`;
+  const ignoti = s.corpoNonNoto ?? [];
+  return ignoti.length > 0 ? `corpo di ${ignoti.join(" e di ")} non noto (conta l'ingombro)` : "corpo non noto (conta l'ingombro)";
 }
 
 /**
