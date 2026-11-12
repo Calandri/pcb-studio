@@ -23,7 +23,7 @@ import {
 import { earlyBoardSaver, saveFinishedCompile } from "./compile-save";
 import { runSimulation } from "./simulate";
 import { compileProject } from "./compile";
-import { campiDelleRegole, DESIGN_RULES_PATH, resolveDesignRules, validaFileDelleRegole } from "./design-rules";
+import { campiDelleRegole, DESIGN_RULES_PATH, validaFileDelleRegole } from "./design-rules";
 import {
   ENCLOSURE_NAME_RE,
   listEnclosures,
@@ -670,12 +670,10 @@ async function runTool(
         /*
          * The compile never routes: a board whose copper came from the router
          * keeps it. A board drawn in its files (autoroute false) is compiled
-         * from the files alone, as before, so a trace deleted there stays gone.
+         * from the files alone, so a trace deleted there stays gone: that is
+         * decided in compileProject, for every caller.
          */
-        keepCopperFrom:
-          resolveDesignRules(compileFsMap).rules.autoroute === false
-            ? undefined
-            : ((previous?.circuitJson as unknown[] | undefined) ?? undefined),
+        keepCopperFrom: (previous?.circuitJson as unknown[] | undefined) ?? undefined,
         budgetMs: Math.min(MAX_COMPILE_MS, left - 60_000),
         // the schematic of the last board, reused when only PCB positions changed
         schematicFrom: previous ? { circuitJson: previous.circuitJson as unknown[], summary: previous.summary } : null,

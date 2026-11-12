@@ -6,7 +6,7 @@ import { executeTool, LibreriaNonLetta, motivoSenzaSegreti, withLibrary } from "
 import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
 import { compileBudgetMs, rigaDiFine } from "@/lib/compile-run";
-import { campiDelleRegole, resolveDesignRules } from "@/lib/design-rules";
+import { campiDelleRegole } from "@/lib/design-rules";
 import { rilasciaPezzi } from "@/lib/manual-edits-store";
 import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
@@ -16,7 +16,6 @@ import {
   getCompileCache,
   getProject,
   savePreviewCircuit,
-  type CompileCache,
 } from "@/lib/project-store";
 import {
   HOUSE_STYLE,
@@ -152,19 +151,6 @@ function describeCall(tool: string, args: Record<string, unknown>): string {
     default:
       return tool;
   }
-}
-
-/**
- * The copper a compile carries over, now that no compile routes (2026-11-09).
- * A board drawn in its files (design rules `autoroute: false`, like
- * sbb-dl-retro) is compiled from the files alone, exactly as before: carrying
- * the cached copper would bring back a trace just deleted from the .tsx. Any
- * other board got its copper from the router, which is gone: without the
- * cached copper the next compile would save a board with no traces.
- */
-function copperToKeep(fsMap: Record<string, string>, cache: CompileCache | null): unknown[] | undefined {
-  if (resolveDesignRules(fsMap).rules.autoroute === false) return undefined;
-  return (cache?.circuitJson as unknown[] | undefined) ?? undefined;
 }
 
 const EARLY_REPLY_NOTE =
@@ -370,7 +356,15 @@ function buildHandler(viewer: Viewer) {
          */
         const answer = await answerAtEarlyBoard<unknown, unknown>(async (answerEarly) => {
           const { summary, circuitJson } = await compileProject(fsMap, {
-            keepCopperFrom: copperToKeep(fsMap, inCache),
+            /*
+             * The copper of the saved board, for a board that got it from the
+             * router, which is gone: without it the next compile would save a
+             * board with no traces. A board drawn in its files (design rules
+             * `autoroute: false`) is compiled from the files alone, and that is
+             * decided in compileProject, for every caller: carrying the saved
+             * copper brought back traces just deleted from the .tsx.
+             */
+            keepCopperFrom: (inCache?.circuitJson as unknown[] | undefined) ?? undefined,
             // what is left of the function: the schematic does not start if it cannot end (see stimaDelloSchematico)
             budgetMs: compileBudgetMs(requestStartedAt),
             forceSchematic: forceSchematic === true,
