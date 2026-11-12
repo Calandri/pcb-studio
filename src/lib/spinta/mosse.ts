@@ -118,7 +118,11 @@ export type MotivoDelBlocco =
   /** a place beyond a metre, or not a number */
   | "fuori_limite"
   /** no such trace, stretch or via in the model */
-  | "non_trovato";
+  | "non_trovato"
+  /** a chain of pushes went over one of its limits: too deep, too many, too long (risolutore.ts) */
+  | "catena"
+  /** a trace pushed one way would have to go back the other: it is squeezed between two pushes */
+  | "stretta";
 
 /** what blocks, named */
 export type CosaBlocca =
@@ -172,21 +176,20 @@ export interface RameMosso {
 export type EsitoDellaMossa = RameMosso | { ok: false; blocco: Blocco };
 
 /** below this a difference of two distances is arithmetic, not copper: a thousandth of a micron */
-const EPS_MM = 1e-6;
+export const EPS_MM = 1e-6;
 /** two rings of one net are apart when a step of the grid is between them */
 const STACCO_MM = 1 / UNITA_PER_MM;
 
 const finito = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
-const bloccato = (blocco: Blocco): EsitoDellaMossa => ({ ok: false, blocco });
-const fermo = (): RameMosso => ({ ok: true, piste: [], vie: [], spostamento: { x: 0, y: 0 } });
+const bloccato = (blocco: Blocco): { ok: false; blocco: Blocco } => ({ ok: false, blocco });
 const unita = (p: { x: number; y: number }): Punto => ({ x: inUnita(p.x), y: inUnita(p.y) });
 const mm = (p: Punto): Punto => ({ x: inMm(p.x), y: inMm(p.y) });
 const oltreIlMetro = (p: Punto): boolean => Math.abs(p.x) > ROUTE_LIMITS.maxCoordMm * UNITA_PER_MM || Math.abs(p.y) > ROUTE_LIMITS.maxCoordMm * UNITA_PER_MM;
 
 /** the name a person knows a trace by: its connection, or its net when it is a piece of the copper of a whole net */
-const nomeDellaPista = (p: PistaDelModello): string =>
+export const nomeDellaPista = (p: PistaDelModello): string =>
   (p.aMano?.startsWith("net.") && p.nomeRete) || p.connessione || p.nomeRete || p.id || "senza nome";
-const cosaPista = (p: PistaDelModello, tratto: number): CosaBlocca => ({ tipo: "pista", pista: p.indice, connessione: p.connessione, tratto });
+export const cosaPista = (p: PistaDelModello, tratto: number): CosaBlocca => ({ tipo: "pista", pista: p.indice, connessione: p.connessione, tratto });
 const cosaVia = (v: ViaDelModello): CosaBlocca => ({ tipo: "via", via: v.indice, rete: v.nomeRete });
 const cosaPad = (p: PadDelModello): CosaBlocca =>
   p.passante ? { tipo: "foro", nome: p.nome, id: p.id, ostacolo: p.indice, metallizzato: true } : { tipo: "pad", nome: p.nome, id: p.id, ostacolo: p.indice };
@@ -195,13 +198,13 @@ const viaDopo = (preposizione: "da" | "su", v: ViaDelModello): string =>
   v.nomeRete ? `${preposizione === "da" ? "dalla" : "sulla"} via di ${v.nomeRete}` : `${preposizione} una via`;
 
 /** a segment in mm */
-interface Segmento {
+export interface Segmento {
   ax: number;
   ay: number;
   bx: number;
   by: number;
 }
-const segmento = (a: { x: number; y: number }, b: { x: number; y: number }): Segmento => ({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+export const segmento = (a: { x: number; y: number }, b: { x: number; y: number }): Segmento => ({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
 const mezzo = (s: Segmento): { x: number; y: number } => ({ x: (s.ax + s.bx) / 2, y: (s.ay + s.by) / 2 });
 
 /** why a trace cannot be touched at all, whatever the move; null when it can */
@@ -279,7 +282,7 @@ function ancoraTenuto(modello: Modello, pista: PistaDelModello, tenuta: Tenuta, 
 }
 
 /** one piece of copper as the move leaves it, to be judged against everything that does not move */
-interface Pezzo extends Segmento {
+export interface Pezzo extends Segmento {
   /** half the width of a stretch, the radius of a ring */
   mezza: number;
   /** null: a via, copper on every layer */
@@ -292,6 +295,26 @@ interface Pezzo extends Segmento {
   prima: Segmento;
   /** copper that was not there (the second leg of a redone stretch): it may keep a distance its stretch already had, never break one */
   nuovo: boolean;
+  /** the trace it is copper of (its place in `modello.piste`); absent for the ring of a via */
+  pista?: number;
+  /** which stretch of that trace it is, when it is one the model has (a stretch that slid, got longer or shorter); absent for a leg drawn anew */
+  tratto?: number;
+}
+
+/** the geometry of a move before anything is measured against the board: the copper it gives, piece by piece */
+export interface Geometria extends RameMosso {
+  pezzi: Pezzo[];
+  /** the stretches of the model that are no longer where the model has them */
+  cambiati: Array<{ pista: number; tratto: number }>;
+}
+export type EsitoDellaGeometria = Geometria | { ok: false; blocco: Blocco };
+const niente = (): Geometria => ({ ok: true, piste: [], vie: [], spostamento: { x: 0, y: 0 }, pezzi: [], cambiati: [] });
+
+/** how far two kinds of copper of different nets are kept: the distance the project draws at, never under the minimum of the check for that pair */
+export function distanzaDaTenere(modello: Modello, a: TipoRame, b: TipoRame): number {
+  const { regole } = modello;
+  const disegno = finito(regole.targetClearanceMm) && regole.targetClearanceMm > 0 ? regole.targetClearanceMm : 0;
+  return Math.max(disegno, distanzaMinimaFra(regole, a, b));
 }
 
 /**
@@ -300,12 +323,18 @@ interface Pezzo extends Segmento {
  * Null when every distance holds; else the worst one, named.
  *
  * `fuori`: the traces and the vias that are moving, whose old copper is still
- * in the model.
+ * in the model; and `salta`, the stretches somebody else answers for (the
+ * solver of the pushes: the ones that are elsewhere already, and the ones that
+ * can give way, which it measures on the whole way the copper came).
  */
-function giudica(modello: Modello, pezzi: Pezzo[], fuori: { piste: Set<number>; vie: Set<number> }): Blocco | null {
+export function giudica(
+  modello: Modello,
+  pezzi: Pezzo[],
+  fuori: { piste: ReadonlySet<number>; vie: ReadonlySet<number>; salta?: (pista: number, tratto: number) => boolean },
+): Blocco | null {
   const { regole } = modello;
   const disegno = finito(regole.targetClearanceMm) && regole.targetClearanceMm > 0 ? regole.targetClearanceMm : 0;
-  const richiesta = (a: TipoRame, b: TipoRame): number => Math.max(disegno, distanzaMinimaFra(regole, a, b));
+  const richiesta = (a: TipoRame, b: TipoRame): number => distanzaDaTenere(modello, a, b);
   const bordo = regole.minBoardEdgeClearanceMm;
   const fraFori = regole.minHoleToHoleMm;
   const portata = Math.max(
@@ -343,7 +372,7 @@ function giudica(modello: Modello, pezzi: Pezzo[], fuori: { piste: Set<number>; 
 
     // the traces of the other nets, on its layer
     for (const rif of modello.vicino.tratti.vicini(minX, minY, maxX, maxY)) {
-      if (fuori.piste.has(rif.pista)) continue;
+      if (fuori.piste.has(rif.pista) || fuori.salta?.(rif.pista, rif.tratto)) continue;
       const altra = modello.piste[rif.pista];
       if (stessaRete(altra.rete, p.rete)) continue;
       const suo = altra.tratti[rif.tratto];
@@ -478,7 +507,7 @@ function capoInUnPad(modello: Modello, pista: PistaDelModello, capo: { x: number
 }
 
 /** a stretch of a trace as a piece to judge: its new place, and the one it had */
-const pezzoDiPista = (pista: PistaDelModello, strato: string, nuovo: Segmento, prima: Segmento, aggiunto = false): Pezzo => ({
+const pezzoDiPista = (pista: PistaDelModello, strato: string, nuovo: Segmento, prima: Segmento, aggiunto = false, tratto?: number): Pezzo => ({
   ...nuovo,
   mezza: pista.larghezza / 2,
   strato,
@@ -487,6 +516,8 @@ const pezzoDiPista = (pista: PistaDelModello, strato: string, nuovo: Segmento, p
   foro: 0,
   prima,
   nuovo: aggiunto,
+  pista: pista.indice,
+  ...(tratto === undefined ? {} : { tratto }),
 });
 
 /**
@@ -578,6 +609,34 @@ function vicinoDi(modello: Modello, pista: PistaDelModello, tratto: TrattoDelMod
  * marks the targets that can never move (preseDelRame).
  */
 export function traslaTratto(modello: Modello, presa: { pista: number; tratto: number }, spostamento: { x: number; y: number }): EsitoDellaMossa {
+  const g = geometriaDelTratto(modello, presa, spostamento);
+  if (!g.ok) return g;
+  if (g.pezzi.length > 0) {
+    const blocco = giudica(modello, g.pezzi, { piste: new Set(g.piste.map((m) => m.pista)), vie: new Set() });
+    if (blocco) return bloccato(blocco);
+  }
+  return { ok: true, piste: g.piste, vie: g.vie, spostamento: g.spostamento };
+}
+
+/**
+ * The geometry of move 1, with nothing measured against the rest of the board:
+ * the paths of the traces it touches and the three pieces of copper it leaves
+ * (the stretch and its two neighbours), or the block of the trace itself (a
+ * pad at an end, a stretch that would vanish, an acute corner).
+ *
+ * `percorsi`: the paths of the traces a solve has ALREADY moved (the chain of
+ * pushes, risolutore.ts). The stretch is then taken where it stands now, and
+ * what it was at the start of the gesture is still what its pieces remember.
+ * `almeno`: the stretch goes at least as far as asked, to the first place of
+ * its grid beyond; without it, to the nearest.
+ */
+export function geometriaDelTratto(
+  modello: Modello,
+  presa: { pista: number; tratto: number },
+  spostamento: { x: number; y: number },
+  opzioni: { percorsi?: ReadonlyMap<number, ManualRoutePoint[]>; almeno?: boolean } = {},
+): EsitoDellaGeometria {
+  const puntiDi = (p: PistaDelModello): ManualRoutePoint[] => opzioni.percorsi?.get(p.indice) ?? p.punti;
   const pista = modello.piste[presa.pista];
   const tratto = pista?.tratti[presa.tratto];
   if (!pista || !tratto) {
@@ -586,7 +645,8 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
   const ferma = pistaFerma(pista);
   if (ferma) return bloccato(ferma);
 
-  const [a, b] = capiDelTratto(pista, tratto);
+  const a = puntiDi(pista)[tratto.da];
+  const b = puntiDi(pista)[tratto.da + 1];
   const questo = cosaPista(pista, tratto.indice);
   const alCentro = { ...mezzo(segmento(a, b)), layer: tratto.strato };
   // the two neighbours: the stretches before and after, of its own trace or of the one chained to it
@@ -600,8 +660,8 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
 
   const A = unita(a);
   const B = unita(b);
-  const P = unita(vp.pista.punti[vp.lontano]);
-  const N = unita(vn.pista.punti[vn.lontano]);
+  const P = unita(puntiDi(vp.pista)[vp.lontano]);
+  const N = unita(puntiDi(vn.pista)[vn.lontano]);
   const rs = rettaDi(A, ds);
   const rp = rettaDi(P, vp.verso);
   const rn = rettaDi(N, vn.verso);
@@ -642,7 +702,9 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
   for (let resto = 0; resto < passo; resto++) {
     const prova = traslata(rs, resto);
     if (!suGriglia(incrocio(rp, prova)) || !suGriglia(incrocio(prova, rn))) continue;
-    const vicino = resto + passo * Math.round((chiesto - resto) / passo);
+    const giri = (chiesto - resto) / passo;
+    // "at least": the first place beyond, but not one further for a millionth of a unit a sum of floats left over
+    const vicino = resto + passo * (!opzioni.almeno ? Math.round(giri) : chiesto >= 0 ? Math.ceil(giri - 1e-6) : Math.floor(giri + 1e-6));
     if (quanto === null || Math.abs(vicino - chiesto) < Math.abs(quanto - chiesto)) quanto = vicino;
   }
   if (quanto === null) {
@@ -650,7 +712,7 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
     return bloccato({ motivo: "direzione", cosa: questo, dove: alCentro, messaggio: "bloccato: un vertice cadrebbe fuori dalla griglia" });
   }
   // less than half a step: the stretch stays as it is, and nothing of the trace is written again
-  if (Math.abs(chiesto) < passo / 2) return fermo();
+  if (opzioni.almeno ? chiesto === 0 || quanto === 0 : Math.abs(chiesto) < passo / 2) return niente();
   const nuova = traslata(rs, quanto);
   const ia = incrocio(rp, nuova);
   const ib = incrocio(nuova, rn);
@@ -685,7 +747,7 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
   const percorsi = new Map<number, ManualRoutePoint[]>();
   const metti = (di: PistaDelModello, k: number, dove: Punto) => {
     let punti = percorsi.get(di.indice);
-    if (!punti) percorsi.set(di.indice, (punti = [...di.punti]));
+    if (!punti) percorsi.set(di.indice, (punti = [...puntiDi(di)]));
     punti[k] = { ...mm(dove), layer: di.punti[k].layer };
   };
   metti(pista, tratto.da, ia);
@@ -708,13 +770,13 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
       if (!ancoraTenuto(modello, v.pista, tenuta, [nuovo(v.pista, v.tratto)])) return bloccato(bloccoDellaTenuta(modello, tenuta, v.tratto.strato));
     }
   }
-  const pezzi = [
+  // each piece remembers the stretch as the model has it: where it was when the gesture began
+  const toccati = [
     { pista: vp.pista, tratto: vp.tratto },
     { pista, tratto },
     { pista: vn.pista, tratto: vn.tratto },
-  ].map((x) => pezzoDiPista(x.pista, x.tratto.strato, nuovo(x.pista, x.tratto), segmento(...capiDelTratto(x.pista, x.tratto))));
-  const blocco = giudica(modello, pezzi, { piste: new Set(percorsi.keys()), vie: new Set() });
-  if (blocco) return bloccato(blocco);
+  ];
+  const pezzi = toccati.map((x) => pezzoDiPista(x.pista, x.tratto.strato, nuovo(x.pista, x.tratto), segmento(...capiDelTratto(x.pista, x.tratto)), false, x.tratto.indice));
 
   // the line went `quanto` of its steps along its normal (a; b), which is one unit long, or a diagonal
   const traslazione = quanto / (rs.a * rs.a + rs.b * rs.b) / UNITA_PER_MM;
@@ -723,6 +785,8 @@ export function traslaTratto(modello: Modello, presa: { pista: number; tratto: n
     piste: [...percorsi].map(([indice, punti]) => ({ pista: indice, punti })),
     vie: [],
     spostamento: { x: rs.a * traslazione, y: rs.b * traslazione },
+    pezzi,
+    cambiati: toccati.map((x) => ({ pista: x.pista.indice, tratto: x.tratto.indice })),
   };
 }
 
@@ -781,6 +845,17 @@ function gambe(P: Punto, V: Punto, d: Direzione): { a: number; b: number; e: Dir
  * first, and reads nothing of the rules.
  */
 export function spostaVia(modello: Modello, quale: number, a: { x: number; y: number }): EsitoDellaMossa {
+  const g = geometriaDellaVia(modello, quale, a);
+  if (!g.ok) return g;
+  if (g.pezzi.length > 0) {
+    const blocco = giudica(modello, g.pezzi, { piste: new Set(g.piste.map((m) => m.pista)), vie: new Set(g.vie.map((v) => v.via)) });
+    if (blocco) return bloccato(blocco);
+  }
+  return { ok: true, piste: g.piste, vie: g.vie, spostamento: g.spostamento };
+}
+
+/** the geometry of move 2, with nothing measured against the rest of the board: the ring where it goes, and the legs of its traces */
+export function geometriaDellaVia(modello: Modello, quale: number, a: { x: number; y: number }): EsitoDellaGeometria {
   const via = modello.vie[quale];
   if (!via) {
     return bloccato({ motivo: "non_trovato", cosa: { tipo: "niente" }, dove: { x: 0, y: 0 }, messaggio: "questa via non e' sulla scheda" });
@@ -811,11 +886,12 @@ export function spostaVia(modello: Modello, quale: number, a: { x: number; y: nu
   const suGriglia = (v: number): number => Math.round((v * UNITA_PER_MM) / griglia) * griglia + 0;
   const V = { x: suGriglia(a.x), y: suGriglia(a.y) };
   if (oltreIlMetro(V)) return bloccato({ motivo: "fuori_limite", cosa: questa, dove: qui, messaggio: "bloccato: oltre il metro non e' una scheda" });
-  if (V.x === C.x && V.y === C.y) return fermo();
+  if (V.x === C.x && V.y === C.y) return niente();
   const arrivo = mm(V);
 
   const piste: PistaMossa[] = [];
   const pezzi: Pezzo[] = [];
+  const cambiati: Array<{ pista: number; tratto: number }> = [];
   for (const i of attaccate) {
     const pista = modello.piste[i];
     const suoi = new Set(via.attacchi.filter((x) => x.pista === i).map((x) => x.punto));
@@ -851,6 +927,7 @@ export function spostaVia(modello: Modello, quale: number, a: { x: number; y: nu
         if (!ancoraTenuto(modello, pista, tenuta, nuovi)) return { blocco: bloccoDellaTenuta(modello, tenuta, tratto.strato) };
       }
       nuovi.forEach((s, n) => pezzi.push(pezzoDiPista(pista, tratto.strato, s, vecchio, n === 1)));
+      cambiati.push({ pista: pista.indice, tratto: tratto.indice });
       return { gomito: g.e ? { ...Q, layer: tratto.strato } : null };
     };
     for (let k = 0; k <= ultimo; k++) {
@@ -898,9 +975,14 @@ export function spostaVia(modello: Modello, quale: number, a: { x: number; y: nu
     prima: segmento(qui, qui),
     nuovo: false,
   };
-  const blocco = giudica(modello, [anello, ...pezzi], { piste: new Set(attaccate), vie: new Set([via.indice]) });
-  if (blocco) return bloccato(blocco);
-  return { ok: true, piste, vie: [{ via: via.indice, da: qui, a: arrivo }], spostamento: { x: inMm(V.x - C.x), y: inMm(V.y - C.y) } };
+  return {
+    ok: true,
+    piste,
+    vie: [{ via: via.indice, da: qui, a: arrivo }],
+    spostamento: { x: inMm(V.x - C.x), y: inMm(V.y - C.y) },
+    pezzi: [anello, ...pezzi],
+    cambiati,
+  };
 }
 
 /** the block of something joined to a via by its ring alone */

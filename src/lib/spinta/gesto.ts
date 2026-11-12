@@ -19,8 +19,11 @@
  * stops at the last one that solves. Then it is brought as near to what blocks
  * as it can go, by halving the last step.
  *
- * Nothing is pushed here: copper of another net nearer than the distance to
- * keep is a block (mosse.ts).
+ * THE TRACES IN THE WAY STEP ASIDE (risolutore.ts): a stretch of another net
+ * the copper in hand comes too close to slides away by the least it takes, and
+ * pushes the next in turn. A pushed trace is hidden from the still copper and
+ * drawn with the gesture for as long as it is pushed, and goes back by itself
+ * when the pointer does. What cannot give way is a block, as before.
  *
  * COPPER OF THE FILES AND HAND COPPER ARE GRABBED THE SAME WAY, and one gesture
  * can move both (a via of the files with a hand trace ending on it). They are
@@ -42,6 +45,7 @@ import type {
 } from "./gesto-tipi";
 import { capiDelTratto, leggiModello, type Modello } from "./modello";
 import { spostaVia, traslaTratto, type Blocco, type EsitoDellaMossa, type RameMosso } from "./mosse";
+import { Risolutore } from "./risolutore";
 import { correzioniDellaMossa, riscritteDellaMossa } from "./salvataggio";
 
 declare const sigillo: unique symbol;
@@ -59,10 +63,15 @@ interface Interno {
   normale: { x: number; y: number } | null;
   /** how far one step goes at most, mm */
   passo: number;
-  /** the traces and the vias the gesture can touch: their places in the model */
+  /** the traces and the vias in hand: their places in the model */
   piste: number[];
   vie: number[];
+  /** the copper in hand, hidden from the still copper for the whole gesture */
   nascosti: StatoDelGesto["nascosti"];
+  /** the same with the traces pushed aside, one object for each set of them: the viewer redraws the still copper when the object changes */
+  nascostiCon: Map<string, StatoDelGesto["nascosti"]>;
+  /** the moves with the push, and what it keeps from one position of the pointer to the next */
+  risolutore: Risolutore;
   /** the copper behind every state handed out, so that closing the gesture need not solve again */
   esiti: WeakMap<StatoDelGesto, RameMosso>;
 }
@@ -155,8 +164,20 @@ function bloccoDelGesto(modello: Modello, blocco: Blocco): BloccoDelGesto {
 function statoDi(g: Interno, esito: RameMosso, posizione: { x: number; y: number }, blocco: Blocco | null): StatoDelGesto {
   const { modello } = g;
   const mosse = new Map(esito.piste.map((p) => [p.pista, p.punti]));
+  // the traces pushed aside, in the order of the board whatever order they were pushed in
+  const spinte = esito.piste.map((p) => p.pista).filter((i) => !g.piste.includes(i)).sort((a, b) => a - b);
+  let nascosti = g.nascosti;
+  if (spinte.length > 0) {
+    const insieme = spinte.join(",");
+    const gia = g.nascostiCon.get(insieme);
+    nascosti = gia ?? { pcbTraceIds: [...g.nascosti.pcbTraceIds, ...spinte.map((i) => modello.piste[i].id)], pcbViaIds: g.nascosti.pcbViaIds };
+    if (!gia) {
+      if (g.nascostiCon.size > 512) g.nascostiCon.clear();
+      g.nascostiCon.set(insieme, nascosti);
+    }
+  }
   const tratti: TrattoInMovimento[] = [];
-  for (const i of g.piste) {
+  for (const i of [...g.piste, ...spinte]) {
     const pista = modello.piste[i];
     const punti = mosse.get(i) ?? pista.punti;
     for (let k = 0; k + 1 < punti.length; k++) {
@@ -172,7 +193,7 @@ function statoDi(g: Interno, esito: RameMosso, posizione: { x: number; y: number
     return { x: dove.x, y: dove.y, outerDiameter: via.corona, holeDiameter: via.foro };
   });
   const stato: StatoDelGesto = {
-    nascosti: g.nascosti,
+    nascosti,
     tratti,
     vie,
     posizione,
@@ -212,6 +233,8 @@ export function iniziaGesto(args: {
       piste,
       vie: [via.indice],
       nascosti: { pcbTraceIds: piste.map((i) => modello.piste[i].id), pcbViaIds: [via.id] },
+      nascostiCon: new Map(),
+      risolutore: new Risolutore(modello),
       esiti: new WeakMap(),
     };
   } else if (presa?.tipo === "tratto") {
@@ -236,6 +259,8 @@ export function iniziaGesto(args: {
       piste,
       vie: [],
       nascosti: { pcbTraceIds: piste.map((i) => modello.piste[i].id), pcbViaIds: [] },
+      nascostiCon: new Map(),
+      risolutore: new Risolutore(modello),
       esiti: new WeakMap(),
     };
   } else {
@@ -253,8 +278,10 @@ export function iniziaGesto(args: {
  * For a stretch only what `verso` has across the stretch counts.
  */
 function risolvi(g: Interno, verso: { x: number; y: number }): { esito: RameMosso; blocco: Blocco | null; posizione: { x: number; y: number } } {
-  const { modello, partenza, normale } = g;
+  const { partenza, normale } = g;
   if (!finito(verso?.x) || !finito(verso?.y)) return { esito: FERMO, blocco: null, posizione: partenza };
+  // the time one movement of the pointer may take runs from here, over all its steps
+  const inizio = typeof performance !== "undefined" ? performance.now() : Date.now();
   const dx = verso.x - partenza.x;
   const dy = verso.y - partenza.y;
   // across the stretch, with its sign; for a via, straight to the place
@@ -263,8 +290,8 @@ function risolvi(g: Interno, verso: { x: number; y: number }): { esito: RameMoss
   /** the move with the thing a fraction `t` of the way */
   const mossa = (t: number): EsitoDellaMossa =>
     g.presa.tipo === "via"
-      ? spostaVia(modello, g.presa.via, { x: partenza.x + dx * t, y: partenza.y + dy * t })
-      : traslaTratto(modello, g.presa, { x: normale!.x * diLato * t, y: normale!.y * diLato * t });
+      ? g.risolutore.spostaVia(g.presa.via, { x: partenza.x + dx * t, y: partenza.y + dy * t }, inizio)
+      : g.risolutore.traslaTratto(g.presa, { x: normale!.x * diLato * t, y: normale!.y * diLato * t }, inizio);
 
   const passi = Math.max(1, Math.ceil(lunga / g.passo));
   const fin = Math.min(passi, PASSI_MASSIMI);
