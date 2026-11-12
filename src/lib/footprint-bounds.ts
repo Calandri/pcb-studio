@@ -165,30 +165,79 @@ function scatolaDelModello(jscad: unknown): { w: number; h: number; dx: number; 
   return { w, h, dx: fin(centro[0]) ?? 0, dy: fin(centro[1]) ?? 0 };
 }
 
+/** whether an angle in degrees is `a`, modulo 360 */
+const vale = (gradi: number, a: number) => Math.abs(((((gradi - a) % 360) + 540) % 360) - 180) < 1e-6;
+
+/** cosine and sine of a turn in degrees, exact on the quarter turns */
+function cosSen(gradi: number): [number, number] {
+  const g = ((gradi % 360) + 360) % 360;
+  if (g === 0) return [1, 0];
+  if (g === 90) return [0, 1];
+  if (g === 180) return [-1, 0];
+  if (g === 270) return [0, -1];
+  const a = (g * Math.PI) / 180;
+  return [Math.cos(a), Math.sin(a)];
+}
+
+/**
+ * HOW A 3D MODEL LIES ON THE BOARD, from cad_component.rotation. The 3D viewer
+ * (@tscircuit/3d-viewer, getCadModelTransform and useCadModelTransformGraph)
+ * puts the model's point v at position + Rx(x) Ry(y) Rz(z) v, three.js Euler
+ * "XYZ": turned by z first, then Ry(180) mirrors x, then Rx(180) mirrors y.
+ *
+ * On the bottom face tscircuit writes {x: 0, y: 180, z: -θ} for a part turned
+ * by θ (pcb_component.rotation θ): measured with a compile of tscircuit
+ * (12/11/2026, footprint-bounds-bottom.test.ts) and on sbb-dl-principale, where
+ * every part on the bottom at 90 carries z 270. Turning by -θ and then
+ * mirroring x is mirroring x and then turning by θ, which is what tscircuit
+ * does to the pads of a part on the bottom: the model lands on its pads.
+ *
+ * Reading z as the angle of the body, as before, turned the body of a part on
+ * the bottom at 45 / 135 / 225 / 315 by 90 degrees, and mirroring an off-centre
+ * box before turning it by -θ put it on the other side of the origin at 90 and
+ * 270: a part under the real body read clear.
+ *
+ * `porta` takes an offset in the model's frame to the board, `angolo` is the
+ * angle of a w x h rectangle of the model once on the board. null when the
+ * model is stood on a side (x or y neither 0 nor 180): its box on the board is
+ * not w x h.
+ */
+export function modelloSullaScheda(rotazione: unknown): { porta: (dx: number, dy: number) => { x: number; y: number }; angolo: number } | null {
+  const r = rotazione as { x?: unknown; y?: unknown; z?: unknown } | undefined;
+  const rx = fin(r?.x) ?? 0, ry = fin(r?.y) ?? 0, z = fin(r?.z) ?? 0;
+  const specchiaX = vale(ry, 180), specchiaY = vale(rx, 180);
+  if ((!specchiaX && !vale(ry, 0)) || (!specchiaY && !vale(rx, 0))) return null;
+  const [c, s] = cosSen(z);
+  return {
+    porta: (dx, dy) => {
+      const u = dx * c - dy * s, v = dx * s + dy * c;
+      return { x: specchiaX ? -u : u, y: specchiaY ? -v : v };
+    },
+    // a mirror turns a rectangle at a into one at -a; two mirrors are a half turn, the same rectangle
+    angolo: specchiaX !== specchiaY ? ((-z % 360) + 360) % 360 : ((z % 360) + 360) % 360,
+  };
+}
+
 /**
  * The body of a part on the board, from its cad_component: the size tscircuit
- * writes, else (`dalModello`) the box of its 3D model. null when neither says.
+ * writes, else (`dalModello`) the box of its 3D model, laid on the board as the
+ * 3D viewer lays the model (see modelloSullaScheda). null when neither says.
  */
 export function corpoDelPezzo(cad: El, opts: { dalModello?: boolean } = {}): Corpo | null {
   const pos = cad.position as { x?: unknown; y?: unknown } | undefined;
   const x = fin(pos?.x), y = fin(pos?.y);
   if (x === null || y === null) return null;
-  const rotazione = cad.rotation as { x?: unknown; y?: unknown; z?: unknown } | undefined;
-  const rot = fin(rotazione?.z) ?? 0;
+  const giacitura = modelloSullaScheda(cad.rotation);
+  if (!giacitura) return null;
   const size = cad.size as { x?: unknown; y?: unknown } | undefined;
   const w = fin(size?.x), h = fin(size?.y);
-  if (w !== null && h !== null && w > 0 && h > 0) return { x, y, w, h, rot };
+  if (w !== null && h !== null && w > 0 && h > 0) return { x, y, w, h, rot: giacitura.angolo };
   if (!opts.dalModello) return null;
   const s = scatolaDelModello(cad.model_jscad);
   if (!s) return null;
-  /*
-   * A box off the model's origin travels with it: turned with the part and,
-   * on the bottom face (the model flipped about y), mirrored first.
-   */
-  const capovolto = Math.abs(Math.abs(fin(rotazione?.y) ?? 0) - 180) < 1e-6 || Math.abs(Math.abs(fin(rotazione?.x) ?? 0) - 180) < 1e-6;
-  const dx = capovolto ? -s.dx : s.dx;
-  const a = (rot * Math.PI) / 180;
-  return { x: x + dx * Math.cos(a) - s.dy * Math.sin(a), y: y + dx * Math.sin(a) + s.dy * Math.cos(a), w: s.w, h: s.h, rot };
+  // a box off the model's origin travels with the model
+  const d = giacitura.porta(s.dx, s.dy);
+  return { x: x + d.x, y: y + d.y, w: s.w, h: s.h, rot: giacitura.angolo };
 }
 
 /** the body of the part on the board, when its size is known */
