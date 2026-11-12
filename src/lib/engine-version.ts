@@ -120,7 +120,19 @@
 // beside a via of its own net with no copper between the two is open, and is counted. And the export refuses a board
 // with open connections (aperti-export.ts: how many, on how many nets, which pins are out), measured on the board
 // about to go like the rest: until 12 such a board answered 200 (decided by Niccolo' on 2026-11-12, "blocco")
-export const CHECKS_ENGINE_VERSION = 13;
+// 14 (2026-11-12): pour against pour does not measure the gap between two pads that the two pours hold
+// (pour-pour.ts, WHERE BOTH SIDES ARE THEIR OWN PAD). Where the edge of one pour is on a pad, a plated hole or a via of
+// its own net and faces an edge of the other pour that is on one of the other's, the gap is not poured copper: it is
+// the footprint's, or a ring's, and the rule of the copper judges it (pad_clearance against minClearanceMm, which
+// measures pad against via too). It was said as "pour_pour_clearance" against the pour clearance: on sbb-dongle two
+// pairs of neighbouring pins of a UFQFPN48 at 0.220 mm (min 0.25), on sbb-dl-principale n92 six pairs of a pad and a
+// via each in its own pour at 0.155, 0.173 and 0.185 mm, all above the 0.152 of the copper rule. A via counts as a
+// plated hole here on purpose: around it the "pour" is its ring. Everything else is measured as before: poured
+// copper against poured copper (the larger of the two clearances), poured copper of one against a pad of the other
+// (the smaller), two outlines that touch (a short, always); of an edge that runs along a pad and on past it only the
+// part on the pad is left out. Under minClearanceMm the error stays, and it is the pads'. Copper and pours do not
+// change: a board of engine 13 comes to 14 with a recheck ("Ricontrolla"), no compile
+export const CHECKS_ENGINE_VERSION = 14;
 
 /**
  * The first engine that measures the footprints of the parts and absorbs
