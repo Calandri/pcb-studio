@@ -68,8 +68,12 @@
  *
  * GROUND ISLANDS: the pieces of ground pour that are not connected to the rest
  * (through pours, vias, pads, plated holes and traces of the net) get a via
- * FIRST, where one fits and reaches the main plane on another layer; the ones
- * where none fits are listed with their area and the reason.
+ * FIRST, where one fits and reaches the main plane on another layer: the whole
+ * island is looked at, not only its middle. Every via proposed, of the islands,
+ * of the edge and of the grid, joins the pieces it stands in, so the islands are
+ * counted again after the grid: one tied by a via of the grid is tied, and one
+ * that lay only over other islands gets its via once those are on the plane.
+ * The ones where none fits are listed with their area and the reason.
  *
  * Pure and deterministic: the same board and options give the same vias in the
  * same order. The input is never changed.
@@ -296,7 +300,7 @@ export interface EsitoCucitura {
   bordo: { attiva: boolean; passoMm: number };
   /** the highest frequency at which the pitch is still lambda / 20 in FR4 */
   copreFinoGHz: number;
-  /** the vias proposed, islands first, then the edge row, then the grid */
+  /** the vias proposed: islands first, then the edge row, then the grid, and last the islands that only then had a place */
   vie: Array<{ x: number; y: number; tipo: TipoVia }>;
   conteggio: Record<TipoVia, number>;
   /** the positions tried (islands, edge, grid) and why the refused ones were */
@@ -1100,56 +1104,85 @@ export function cuciLaMassa(
   const scarta = (m: MotivoScarto, n = 1) => {
     scarti[m] = (scarti[m] ?? 0) + n;
   };
-  const accetta = (x: number, y: number, tipo: TipoVia) => {
+  const isole = isoleDiMassa(cj, g, gruppoMassa, massa, strati);
+  const accetta = (x: number, y: number, tipo: TipoVia, sopra: Map<string, Colata[]>) => {
     celleAccettate.metti(accettate.length, x, y, x, y);
     accettate.push({ x, y });
     vie.push({ x, y, tipo });
+    // a via is one copper with every piece of ground it stands in, on every layer
+    isole.lega([...sopra.values()].flat().map((q) => q.indice));
   };
 
   // --- 1. the islands of ground, first
-  const isole = isoleDiMassa(cj, g, gruppoMassa, massa, strati);
   const collegate: IsolaDiMassa[] = [];
   const senzaPosto: Array<IsolaDiMassa & { motivo: MotivoScarto }> = [];
-  for (const isola of isole.isole) {
-    const c = isola.colata;
-    const dove = { strato: c.layer, areaMm2: Number(c.areaMm2.toFixed(3)), x: tre(isola.punto.x), y: tre(isola.punto.y) };
-    // a via placed for an island before it already ties this one too
-    if (isole.principale.has(c.indice)) {
-      collegate.push(dove);
-      continue;
-    }
-    if (vie.length >= maxVie) {
-      senzaPosto.push({ ...dove, motivo: "tetto" });
-      continue;
-    }
+  /**
+   * A via for this island among these points: the first where one fits and
+   * reaches the main plane on another layer (or it ties the island to nothing).
+   * `quasi`: the points where a via fits and reaches only other islands.
+   */
+  const cercaPosto = (c: Colata, punti: Punto[], conta: boolean): { presa: true } | { presa: false; motivo: MotivoScarto; quasi: Punto[] } => {
     const motivi = new Map<MotivoScarto, number>();
-    let presa: { p: Punto; sopra: Map<string, Colata[]> } | null = null;
-    for (const p of puntiDellIsola(c, R)) {
-      provate++;
+    const quasi: Punto[] = [];
+    for (const p of punti) {
+      if (conta) provate++;
       const esito = prova(p.x, p.y);
       if (!esito.ok) {
         motivi.set(esito.motivo, (motivi.get(esito.motivo) ?? 0) + 1);
         continue;
       }
-      // it has to reach the main plane on another layer, or it ties the island to nothing
-      const alPiano = [...esito.sopra.entries()].some(([s, cc]) => s !== c.layer && cc.some((q) => isole.principale.has(q.indice)));
+      const alPiano = [...esito.sopra.entries()].some(([s, cc]) => s !== c.layer && cc.some((q) => isole.nelPiano(q.indice)));
       if (!alPiano) {
         motivi.set("non_raggiunge_il_piano", (motivi.get("non_raggiunge_il_piano") ?? 0) + 1);
+        quasi.push(p);
         continue;
       }
-      presa = { p, sopra: esito.sopra };
-      break;
+      accetta(p.x, p.y, "isola", esito.sopra);
+      return { presa: true };
     }
-    if (presa) {
-      accetta(presa.p.x, presa.p.y, "isola");
+    const motivo = [...motivi.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]?.[0] ?? "massa_su_meno_di_due_strati";
+    return { presa: false, motivo, quasi };
+  };
+  /** the islands with no via of their own yet */
+  let sospese: Array<{ c: Colata; dove: IsolaDiMassa; motivo: MotivoScarto; quasi: Punto[] }> = [];
+  for (const isola of isole.isole) {
+    const c = isola.colata;
+    const dove = { strato: c.layer, areaMm2: Number(c.areaMm2.toFixed(3)), x: tre(isola.punto.x), y: tre(isola.punto.y) };
+    // a via placed for an island before it already ties this one too
+    if (isole.nelPiano(c.indice)) {
       collegate.push(dove);
-      // every piece the via stands in is on the main plane now, and whatever those pieces were joined to
-      for (const cc of presa.sopra.values()) for (const q of cc) for (const m of isole.conGli(q.indice)) isole.principale.add(m);
-    } else {
-      const motivo = [...motivi.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]?.[0] ?? "massa_su_meno_di_due_strati";
-      senzaPosto.push({ ...dove, motivo });
+      continue;
     }
+    if (vie.length >= maxVie) {
+      sospese.push({ c, dove, motivo: "tetto", quasi: [] });
+      continue;
+    }
+    const esito = cercaPosto(c, puntiDellIsola(c, R), true);
+    if (esito.presa) collegate.push(dove);
+    else sospese.push({ c, dove, motivo: esito.motivo, quasi: esito.quasi });
   }
+  /**
+   * The islands left, looked at again: one that another via tied meanwhile is
+   * tied, and one whose only places lay over other islands gets its via when
+   * those are on the plane. Until nothing changes.
+   */
+  const riguardaLeIsole = () => {
+    for (let cambia = true; cambia; ) {
+      cambia = false;
+      const restano: typeof sospese = [];
+      for (const s of sospese) {
+        if (isole.nelPiano(s.c.indice)) {
+          collegate.push(s.dove);
+          cambia = true;
+        } else if (s.quasi.length > 0 && vie.length < maxVie && cercaPosto(s.c, s.quasi, false).presa) {
+          collegate.push(s.dove);
+          cambia = true;
+        } else restano.push(s);
+      }
+      sospese = restano;
+    }
+  };
+  riguardaLeIsole();
 
   // --- 2. the row along the edge, 3. the grid
   const candidati: Array<{ p: Punto; tipo: TipoVia }> = [
@@ -1170,9 +1203,12 @@ export function cuciLaMassa(
     const { p, tipo } = candidati[i];
     provate++;
     const esito = prova(p.x, p.y);
-    if (esito.ok) accetta(p.x, p.y, tipo);
+    if (esito.ok) accetta(p.x, p.y, tipo, esito.sopra);
     else scarta(esito.motivo);
   }
+  // --- 4. the islands again: the row and the grid may have tied some, or what lies under them
+  riguardaLeIsole();
+  for (const s of sospese) senzaPosto.push({ ...s.dove, motivo: s.motivo });
   if (raggiunto) {
     avvisi.push(`tetto di ${maxVie} vie raggiunto: le posizioni oltre non sono state provate (la griglia e' ordinata dalla piu' rada alla piu' fitta, quindi le vie messe coprono la scheda a un passo piu' largo); alza maxVie o il passo`);
   }
@@ -1269,8 +1305,11 @@ function filaDelBordo(contorno: Punto[], passo: number, rientro: number): Punto[
 
 /**
  * Points of an island where a via could go, nearest to the middle of its box
- * first: a lattice fine enough for a ring, never more than a few thousand
- * points, only those already on its copper with the ring inside.
+ * first: a lattice fine enough for a ring over the WHOLE island (at most twenty
+ * thousand positions of its box), only those already on its copper with the
+ * ring inside. All of them: an island whose middle is taken (a part, a keepout)
+ * has its place at one end, and only the 400 nearest to the middle used to be
+ * tried.
  */
 function puntiDellIsola(c: Colata, R: number): Punto[] {
   const w = c.maxX - c.minX, h = c.maxY - c.minY;
@@ -1286,7 +1325,7 @@ function puntiDellIsola(c: Colata, R: number): Punto[] {
     }
   }
   out.sort((a, b) => a.d - b.d || a.p.y - b.p.y || a.p.x - b.p.x);
-  return out.slice(0, 400).map((o) => o.p);
+  return out.map((o) => o.p);
 }
 
 // ---------------------------------------------------------------------------
@@ -1299,7 +1338,8 @@ function puntiDellIsola(c: Colata, R: number): Punto[] {
  * pads (on their layer), the plated holes (every layer), the traces. A piece
  * joins what stands in its copper; a trace joins the pads, vias and traces its
  * points touch. The main plane is the group holding the most poured area; the
- * pieces outside it are the islands, largest first.
+ * pieces outside it are the islands, largest first. `lega` joins pieces a new
+ * via stands in, `nelPiano` says whether a piece is on the main plane by now.
  */
 function isoleDiMassa(
   cj: El[],
@@ -1307,8 +1347,8 @@ function isoleDiMassa(
   gruppoMassa: string,
   massa: Colata[],
   strati: string[],
-): { isole: Array<{ colata: Colata; punto: Punto }>; principale: Set<number>; conGli: (indice: number) => number[] } {
-  if (massa.length === 0) return { isole: [], principale: new Set(), conGli: () => [] };
+): { isole: Array<{ colata: Colata; punto: Punto }>; nelPiano: (indice: number) => boolean; lega: (indici: number[]) => void } {
+  if (massa.length === 0) return { isole: [], nelPiano: () => false, lega: () => {} };
   const padre: number[] = [];
   const nuovo = (): number => {
     padre.push(padre.length);
@@ -1417,23 +1457,21 @@ function isoleDiMassa(
     const r = radice(nodoDi.get(c.indice)!);
     areaDelGruppo.set(r, (areaDelGruppo.get(r) ?? 0) + c.areaMm2);
   }
+  // a node of the main plane: its group grows as vias join pieces to it
   const piano = [...areaDelGruppo.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
-  const principale = new Set(massa.filter((c) => radice(nodoDi.get(c.indice)!) === piano).map((c) => c.indice));
+  const nelPiano = (indice: number): boolean => {
+    const nodo = nodoDi.get(indice);
+    return nodo !== undefined && radice(nodo) === radice(piano);
+  };
   const isole = massa
-    .filter((c) => !principale.has(c.indice))
+    .filter((c) => !nelPiano(c.indice))
     .sort((a, b) => b.areaMm2 - a.areaMm2 || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .map((c) => ({ colata: c, punto: puntoNellaColata(c) }));
-  /** the pieces joined to this one (itself included) */
-  const membri = new Map<number, number[]>();
-  for (const c of massa) {
-    const r = radice(nodoDi.get(c.indice)!);
-    membri.set(r, [...(membri.get(r) ?? []), c.indice]);
-  }
-  const conGli = (indice: number): number[] => {
-    const nodo = nodoDi.get(indice);
-    return nodo === undefined ? [indice] : (membri.get(radice(nodo)) ?? [indice]);
+  const lega = (indici: number[]): void => {
+    const nodi = indici.map((i) => nodoDi.get(i)).filter((n): n is number => n !== undefined);
+    for (let i = 1; i < nodi.length; i++) unisci(nodi[0], nodi[i]);
   };
-  return { isole, principale, conGli };
+  return { isole, nelPiano, lega };
 }
 
 /** the copper of two pours on one layer overlaps or touches: a vertex of one in the other, or two edges that meet */

@@ -376,6 +376,80 @@ describe("le isole di massa", () => {
     expect(e.isole.senzaPosto).toEqual([expect.objectContaining({ strato: "top", areaMm2: 16, motivo: "zona_vietata" })]);
   });
 
+  it("l'isola col centro occupato ha il suo posto a un capo: si guarda tutta l'isola, non solo il mezzo", () => {
+    // a 16 x 3 strip on top in a window of the top plane; a part 13 mm long sits on its middle
+    const striscia = rett(-8, -1.5, 8, 1.5);
+    const cj = [
+      ...scheda(),
+      colata("top", rett(-9.7, -9.7, 9.7, 9.7), "source_net_0", [rett(-8.3, -1.8, 8.3, 1.8)]),
+      colata("top", striscia),
+      ...massaPiena(["inner1", "inner2", "bottom"]),
+      viaEsistente(-6, -6, "k_gnd"),
+      ...pezzo("U1", 0, 0, 13, 4, "top"),
+    ];
+    const e = cuci(cj, { bordo: false, passoMm: 10 });
+    expect(e.isole.trovate).toBe(1);
+    expect(e.isole.senzaPosto).toEqual([]);
+    expect(e.isole.collegate).toHaveLength(1);
+    expect(e.vie[0].tipo).toBe("isola");
+    expect(dentro(e.vie[0].x, e.vie[0].y, striscia)).toBe(true);
+    expect(Math.abs(e.vie[0].x)).toBeGreaterThan(6.5 + R);
+  });
+
+  it("le isole si ricontano dopo la griglia: quella che stava solo sopra un'altra isola ha la sua via quando l'altra e' sul piano", () => {
+    /*
+     * Two layers. On top a strip A (10 x 1) in a window of the top plane; on the
+     * bottom a square B (3 x 3, smaller than A, so looked at after it) in a window
+     * of the bottom plane, under the left end of A; under the rest of A the bottom
+     * has no copper. A via in A reaches only B; B gets its own where the top plane
+     * is over it; then A has its place.
+     */
+    const a = rett(-5, -0.5, 5, 0.5);
+    const b = rett(-5.5, -1.5, -2.5, 1.5);
+    const cj = [
+      { type: "pcb_board", pcb_board_id: "b", width: 20, height: 20, center: { x: 0, y: 0 }, num_layers: 2 },
+      { type: "source_net", source_net_id: "source_net_0", name: "GND", subcircuit_connectivity_map_key: "k_gnd", subcircuit_id: "s" },
+      colata("top", rett(-9.7, -9.7, 9.7, 9.7), "source_net_0", [rett(-5.3, -0.8, 5.3, 0.8)]),
+      colata("top", a),
+      colata("bottom", rett(-9.7, -9.7, 9.7, 9.7), "source_net_0", [rett(-5.8, -1.8, 5.8, 1.8)]),
+      colata("bottom", b),
+      { type: "pcb_via", pcb_via_id: "v0", x: -8, y: -8, outer_diameter: 0.45, hole_diameter: 0.2, layers: ["top", "bottom"], subcircuit_connectivity_map_key: "k_gnd" },
+    ];
+    const e = cuci(cj, { bordo: false, passoMm: 3 });
+    expect(e.isole.trovate).toBe(2);
+    expect(e.isole.senzaPosto).toEqual([]);
+    expect(e.isole.collegate).toHaveLength(2);
+    const diIsola = e.vie.filter((v) => v.tipo === "isola");
+    expect(diIsola).toHaveLength(2);
+    expect(diIsola.some((v) => dentro(v.x, v.y, a) && dentro(v.x, v.y, b))).toBe(true);
+    expect(diIsola.some((v) => dentro(v.x, v.y, b) && !dentro(v.x, v.y, rett(-5.3, -0.8, 5.3, 0.8)))).toBe(true);
+  });
+
+  it("un'isola legata da una via della griglia e' collegata, non senza posto", () => {
+    /*
+     * A 40 x 40 island: its own lattice is 0.283 mm wide (twenty thousand
+     * positions of its box) and steps over the only free band, 0.18 mm wide
+     * between two keepouts (lattice at 9.948 and 10.231, band 9.97..10.15). The
+     * grid has a column at x = 10, in the band.
+     */
+    const isola = rett(-20, -20, 20, 20);
+    const cj = [
+      ...scheda(60, 60),
+      colata("top", rett(-29.7, -29.7, 29.7, 29.7), "source_net_0", [rett(-20.3, -20.3, 20.3, 20.3)]),
+      colata("top", isola),
+      ...massaPiena(["inner1", "inner2", "bottom"], 60, 60),
+      viaEsistente(-25, -25, "k_gnd"),
+      { type: "pcb_keepout", pcb_keepout_id: "k1", shape: "rect", center: { x: -5.14, y: 0 }, width: 29.72, height: 41, layers: ["top"] },
+      { type: "pcb_keepout", pcb_keepout_id: "k2", shape: "rect", center: { x: 15.2, y: 0 }, width: 9.6, height: 41, layers: ["top"] },
+    ];
+    const e = cuci(cj, { bordo: false, passoMm: 2.5, sfalsata: false });
+    expect(e.isole.trovate).toBe(1);
+    expect(e.conteggio.isola).toBe(0);
+    expect(e.vie.filter((v) => dentro(v.x, v.y, isola)).map((v) => v.x)).toContain(10);
+    expect(e.isole.senzaPosto).toEqual([]);
+    expect(e.isole.collegate).toEqual([expect.objectContaining({ strato: "top", areaMm2: 1600 })]);
+  });
+
   it("collegata da una via di massa o da una pista con una via, non e' un'isola", () => {
     const conVia = cuci([...base(), viaEsistente(0, 0, "k_gnd")]);
     expect(conVia.isole.trovate).toBe(0);
