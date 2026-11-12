@@ -105,7 +105,9 @@ describe("spinta, verifica: the copper against the saved board", () => {
     // the long stretch pushed up by one millimetre: the diagonal is where the files put it, untouched
     const spinta: Punto[] = [top(-10, 0), top(-10, 5), top(-8, 7.0001), top(-7, 8.0001), top(9, 8.0001), top(10, 7.0001), top(10, 0)];
     const correzione = (points: Punto[]): ManualRoute => ({ connection: GND, points, width: 0.2, replaces: { original: deiFile, width: 0.2 } });
-    expect(trattiStorti(correzione(spinta))).toBe("il tratto da (-10; 5) a (-8; 7.0001) non e' a 0, 45 o 90 gradi");
+    // judged with nothing given, the diagonal of the files is not at 45 degrees; as the correction it is, it is a given
+    expect(trattiStorti(correzione(spinta), new Set())).toBe("il tratto da (-10; 5) a (-8; 7.0001) non e' a 0, 45 o 90 gradi");
+    expect(trattiStorti(correzione(spinta))).toBeNull();
     expect(verifica({ routes: [correzione(spinta)] }, scheda)).toEqual({ ok: true });
     // the same stretch moved by the correction is no longer a given
     const mossa: Punto[] = [top(-10, 0), top(-10, 4), top(-8, 6.0001), top(-8, 7.0001), top(10, 7.0001), top(10, 0)];

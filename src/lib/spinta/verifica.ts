@@ -276,10 +276,18 @@ export function passiDi(points: readonly ManualRoutePoint[]): Set<string> {
  * stretches it lays, not for the ones it left where they were.
  */
 export function trattiStorti(route: ManualRoute, dati?: ReadonlySet<string>): string | null {
+  /*
+   * A correction of the files' copper says itself what it started from
+   * (`replaces.original`): the stretches it leaves where the files put them
+   * are a given too. The sources write a diagonal with its ends rounded, and
+   * one tenth of a micron off 45 degrees is how a quarter of the traces of
+   * sbb-dl-principale come out (41 of 155, 2026-11-12).
+   */
+  const lasciati = dati ?? (route.replaces ? passiDi(route.replaces.original) : undefined);
   for (let i = 1; i < route.points.length; i++) {
     const a = route.points[i - 1];
     const b = route.points[i];
-    if (dati?.has(passo(a, b))) continue;
+    if (lasciati?.has(passo(a, b))) continue;
     const dx = intero(b.x) - intero(a.x);
     const dy = intero(b.y) - intero(a.y);
     if (a.layer !== b.layer) {
@@ -392,14 +400,7 @@ export function verificaRame(args: {
 }): EsitoDelRame {
   const { circuitJson, regole, correnti, rame, finale } = args;
   for (const route of rame.routes) {
-    /*
-     * The stretches the correction leaves where the files put them are a given,
-     * like those of an imported route (see trattiStorti): the sources write a
-     * diagonal with its ends rounded, and one tenth of a micron off 45 degrees
-     * is how a quarter of the traces of sbb-dl-principale come out (41 of 155,
-     * 2026-11-12). The gesture answers for what it lays.
-     */
-    const storto = trattiStorti(route, route.replaces ? passiDi(route.replaces.original) : undefined);
+    const storto = trattiStorti(route);
     if (storto) return { ok: false, motivo: `la pista ${route.connection} ${storto}` };
   }
 
