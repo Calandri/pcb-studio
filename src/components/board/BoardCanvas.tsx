@@ -4,6 +4,13 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useS
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import { useVistaCondivisa } from "./vista-condivisa";
+import {
+  CollegamentiApertiSulVisore,
+  LegendaAperti,
+  apertiInVista,
+  useInquadraAperto,
+  type ApertoScelto,
+} from "./CollegamentiAperti";
 import { opacitaStrato, stratoScelto } from "./strati-visibili";
 import { GRID_DEFAULT, GRID_OPTIONS, ascoltaGriglia, grigliaSalvata, salvaGriglia } from "./griglia";
 import {
@@ -152,6 +159,8 @@ export function BoardCanvas({
   vistaKey,
   eccedenzaIngombroMm,
   anteprimaVie = null,
+  apertiAccesi = false,
+  apertoScelto = null,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -212,6 +221,14 @@ export function BoardCanvas({
    * (strati-visibili.ts) and drawn whatever layer is chosen.
    */
   anteprimaVie?: { punti: Array<{ x: number; y: number; colore: string }>; diametroMm: number } | null;
+  /**
+   * The open connections (CollegamentiAperti.tsx) are drawn in every view: the
+   * person asked for them from the panel. The views that show them by
+   * themselves (is_showing_rats_nest) do not need it.
+   */
+  apertiAccesi?: boolean;
+  /** the open connection clicked in the panel: the canvas goes there and lights it */
+  apertoScelto?: ApertoScelto | null;
 }) {
   const scene = useMemo(() => buildScene(circuitJson, { eccedenzaIngombroMm }), [circuitJson, eccedenzaIngombroMm]);
   /** the board's real outline as an SVG path; null when it is a plain rectangle */
@@ -361,6 +378,7 @@ export function BoardCanvas({
    * Guarda/Sposta/Instrada or tab. See vista-condivisa.ts.
    */
   useVistaCondivisa({ chiave: vistaKey, board: scene?.board ?? null, misurato, size, view, setView, fit });
+  useInquadraAperto(circuitJson, apertoScelto, size, setView);
 
   const zoomAt = useCallback((px: number, py: number, factor: number) => {
     setView((v) => {
@@ -1769,6 +1787,17 @@ export function BoardCanvas({
                 pointerEvents="none"
               />
             ))}
+
+          {/* the open connections: over everything, on whatever face is being looked at */}
+          {apertiInVista(flags, apertiAccesi) && (
+            <CollegamentiApertiSulVisore
+              circuitJson={circuitJson}
+              mmPerPx={mmPerPx}
+              forza={(s) => layerOpacity(s as LayerId)}
+              scelto={apertoScelto?.id ?? null}
+              sposta={mmPointTx}
+            />
+          )}
         </g>
 
         {/* designators must not be mirrored: they are drawn outside the flipped group */}
@@ -1909,6 +1938,8 @@ export function BoardCanvas({
           Ingombri non disegnati: il calcolo si e&apos; fermato ({scene.ingombriNonCalcolati})
         </div>
       )}
+
+      {apertiInVista(flags, apertiAccesi) && <LegendaAperti circuitJson={circuitJson} />}
 
       {/* view controls, as in the mockup */}
       <div className="absolute top-[18px] right-[18px] flex flex-col gap-1.5">

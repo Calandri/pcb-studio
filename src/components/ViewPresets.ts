@@ -90,7 +90,7 @@ export const VIEW_PRESETS: ViewPreset[] = [
     key: "connections",
     label: "Collegamenti mancanti",
     description:
-      "Mostra come linee dritte i collegamenti che devono ancora diventare piste, con la lunghezza di quelle già fatte.",
+      "I collegamenti che devono ancora diventare piste: una linea dritta tratteggiata fra le due piazzole più vicine. Capo pieno: su questa faccia; capo vuoto: su un'altra.",
     flags: {
       ...NONE,
       is_showing_rats_nest: true,
