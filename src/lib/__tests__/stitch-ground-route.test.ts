@@ -9,12 +9,16 @@ const stato = vi.hoisted(() => ({
   files: {} as Record<string, string>,
   /** the files the saved board was compiled from: its hash is theirs */
   compilati: {} as Record<string, string>,
+  /** the project is in the database */
+  esiste: true,
+  /** every access asked of the route, in order */
+  accessiChiesti: [] as string[],
 }));
 vi.mock("@/lib/acl", () => ({
-  requireProjectAccess: vi.fn(async (_p: string, need: "view" | "edit") => ({
-    viewer: null,
-    ok: need === "view" ? stato.livello !== "none" : stato.livello === "edit",
-  })),
+  requireProjectAccess: vi.fn(async (_p: string, need: "view" | "edit") => {
+    stato.accessiChiesti.push(need);
+    return { viewer: null, ok: need === "view" ? stato.livello !== "none" : stato.livello === "edit" };
+  }),
 }));
 vi.mock("@/lib/library-store", async (originale) => ({
   ...(await originale<typeof import("@/lib/library-store")>()),
@@ -31,6 +35,7 @@ vi.mock("@/lib/project-store", async (originale) => {
   return {
   ...vero,
   getProject: vi.fn(async () => ({ ...stato.files })),
+  projectExists: vi.fn(async () => stato.esiste),
   getCompileCache: vi.fn(async () => ({
     filesHash: vero.filesHash(stato.compilati),
     summary: {},
@@ -74,6 +79,8 @@ describe("/api/stitch-ground", () => {
     stato.livello = "edit";
     stato.files = { "main.tsx": "export default () => <board />" };
     stato.compilati = { ...stato.files };
+    stato.esiste = true;
+    stato.accessiChiesti = [];
     compilazioni.n = 0;
   });
 
@@ -120,6 +127,14 @@ describe("/api/stitch-ground", () => {
     const altre = await chiedi({ projectId: "p", passoMm: 4, apply: true, impronta: visto.d.impronta });
     expect(altre.status).toBe(422);
     expect(String(altre.d.error)).toMatch(/rifai l'anteprima/);
+    expect(stato.files["cucitura-massa.tsx"]).toBeUndefined();
+  });
+
+  it("progetto inesistente: 404, niente scritto, e l'accesso in modifica (che lo creerebbe) non viene nemmeno chiesto", async () => {
+    stato.esiste = false;
+    expect(await chiedi({ projectId: "sbagliato", passoMm: 2.5 })).toMatchObject({ status: 404, d: { error: "il progetto non esiste" } });
+    expect(await chiedi({ projectId: "sbagliato", passoMm: 2.5, apply: true, impronta: "12-0123456789abcdef" })).toMatchObject({ status: 404 });
+    expect(stato.accessiChiesti).toEqual(["view", "view"]);
     expect(stato.files["cucitura-massa.tsx"]).toBeUndefined();
   });
 

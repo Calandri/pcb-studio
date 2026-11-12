@@ -16,6 +16,7 @@ import {
   filesHash,
   getCompileCache,
   getProject,
+  projectExists,
   writeProjectFile,
   type FsMap,
 } from "./project-store";
@@ -728,6 +729,18 @@ async function runTool(
      * file itself left out of the comparison), and does not compile.
      */
     case "stitch_ground": {
+      /*
+       * Only on a project that is there. Reading one that is not gives the
+       * example board (getProject), and whoever opened this door for a write
+       * used to create it on the way: an apply on a mistyped id left an empty
+       * project behind. Nothing here creates one.
+       */
+      if (!(await projectExists(projectId))) {
+        return { result: { error: "stitch_ground: il progetto non esiste. La cucitura si fa su un progetto che c'e', con la sua scheda compilata: controlla l'id (list_projects)" } };
+      }
+      if (typeof fsMap["main.tsx"] !== "string") {
+        return { result: { error: "stitch_ground: il progetto non ha main.tsx: non c'e' una scheda da cucire" } };
+      }
       const cache = await getCompileCache(projectId).catch(() => null);
       let scheda: StatoScheda | null = null;
       if (cache) {

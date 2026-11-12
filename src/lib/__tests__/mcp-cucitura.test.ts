@@ -11,6 +11,8 @@ const stato = vi.hoisted(() => ({
   scheda: null as unknown[] | null,
   /** the files the saved board was compiled from: its hash is theirs */
   compilati: {} as Record<string, string>,
+  /** the project is in the database */
+  esiste: true,
 }));
 vi.mock("@/lib/api-tokens", () => ({ resolveApiToken: vi.fn(async () => ({ userId: "u1", email: "u1@example.com" })) }));
 vi.mock("@/lib/acl", () => ({
@@ -33,7 +35,9 @@ vi.mock("@/lib/project-store", async (originale) => {
   const vero = await originale<typeof import("@/lib/project-store")>();
   return {
     ...vero,
-    getProject: vi.fn(async () => ({ ...stato.files })),
+    // a project that is not there reads as the example board, as the real getProject gives it
+    getProject: vi.fn(async () => (stato.esiste ? { ...stato.files } : { "main.tsx": "export default () => <board />" })),
+    projectExists: vi.fn(async () => stato.esiste),
     getCompileCache: vi.fn(async () =>
       stato.scheda ? { filesHash: vero.filesHash(stato.compilati), circuitJson: stato.scheda, summary: {}, createdAt: "2026-11-12", engineVersion: 11 } : null,
     ),
@@ -53,6 +57,8 @@ vi.mock("@/lib/compile", async (originale) => ({
 
 const { POST } = await import("@/app/api/mcp/[transport]/route");
 const { FILE_CUCITURA } = await import("@/lib/ground-stitching-file");
+const { claimProject } = await import("@/lib/acl");
+const { writeProjectFile } = await import("@/lib/project-store");
 
 async function chiamaStrumento(name: string, args: Record<string, unknown>): Promise<{ isError: boolean; result: Record<string, unknown> }> {
   const r = await POST(
@@ -100,7 +106,10 @@ describe("stitch_ground over MCP", () => {
     stato.files = { "main.tsx": "export default () => <board />" };
     stato.compilati = { ...stato.files };
     stato.scheda = SCHEDA;
+    stato.esiste = true;
     compilazioni.n = 0;
+    vi.mocked(claimProject).mockClear();
+    vi.mocked(writeProjectFile).mockClear();
   });
 
   it("dryRun (the default) proposes and writes nothing; it takes viewing access only", async () => {
@@ -181,6 +190,28 @@ describe("stitch_ground over MCP", () => {
     expect(e).not.toMatch(/script/);
     expect(stato.files[FILE_CUCITURA]).toBeUndefined();
     expect(compilazioni.n).toBe(0);
+  });
+
+  it("on a project id that does not exist it creates nothing and says so, looking or writing", async () => {
+    stato.esiste = false;
+    // anyone signed in may edit a project that is not there yet: that is how write_file creates one
+    stato.accesso = "edit";
+    const guarda = await chiamaStrumento("stitch_ground", { projectId: "sbb-dl-principlae" });
+    expect(guarda).toMatchObject({ isError: true, result: { error: expect.stringMatching(/il progetto non esiste/) } });
+    const scrive = await chiamaStrumento("stitch_ground", { projectId: "sbb-dl-principlae", apply: true, impronta: "12-0123456789abcdef" });
+    expect(scrive).toMatchObject({ isError: true, result: { error: expect.stringMatching(/il progetto non esiste/) } });
+    expect(claimProject).not.toHaveBeenCalled();
+    expect(writeProjectFile).not.toHaveBeenCalled();
+    // write_file through the same route does create it: the stand-in is the one the route calls
+    await chiamaStrumento("write_file", { projectId: "nuovo", path: "main.tsx", content: "export default () => <board />" });
+    expect(claimProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("on a project with no main.tsx there is no board to stitch", async () => {
+    stato.files = { "parti.tsx": "export const Parti = () => <></>" };
+    const r = await chiamaStrumento("stitch_ground", { projectId: "p" });
+    expect(r).toMatchObject({ isError: true, result: { error: expect.stringMatching(/non ha main\.tsx/) } });
+    expect(writeProjectFile).not.toHaveBeenCalled();
   });
 
   it("with no saved board it says so", async () => {

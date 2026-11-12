@@ -495,13 +495,16 @@ function buildHandler(viewer: Viewer) {
         impronta: z.string().optional().describe(PARAMETRI_CUCITURA.impronta),
       },
       async ({ projectId, ...args }) => {
-        // looking is a read of the saved board, like inspect_board; writing is write_file's
+        /*
+         * Looking is a read of the saved board, like inspect_board; writing
+         * asks what write_file asks. But it never CREATES the project, as
+         * write_file does on the way: whoever may edit a project that does not
+         * exist yet (anyone signed in) left an empty one behind with an apply
+         * on a mistyped id. The tool answers that the project is not there.
+         */
         const accesso = await projectAccess(projectId, viewer);
         if (accesso === "none") return denied();
-        if (args.apply === true) {
-          if (accesso !== "edit") return deniedEdit();
-          await claimProject(projectId, viewer, null);
-        }
+        if (args.apply === true && accesso !== "edit") return deniedEdit();
         const { result } = await executeTool(projectId, "stitch_ground", args);
         // an error keeps its candidates (the nets with pours, when the net is ambiguous)
         return typeof (result as { error?: unknown }).error === "string"
