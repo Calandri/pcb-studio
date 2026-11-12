@@ -44,12 +44,27 @@ vi.mock("@/lib/project-store", async (originale) => {
     writeProjectFile: vi.fn(async (_p: string, path: string, content: string) => {
       stato.files[path] = content;
     }),
+    // what a compile leaves behind: a saved board, a preview, the base of a board
+    saveCompileCache: vi.fn(async () => ({ saved: true, keptPrevious: false })),
+    savePreviewCircuit: vi.fn(async () => {}),
+    stampCompileBase: vi.fn(async () => {}),
   };
 });
+/*
+ * "No compile starts": the two ways a board is compiled here are stand-ins that
+ * count, and the test below ("the compile tool reaches the stand-in") shows
+ * they are the ones the route runs. The stitching has no reason to call them,
+ * so the count alone would pass whatever it did: what a compile leaves behind
+ * (a saved board, a preview) is looked at too, see nessunaCompilazione.
+ */
 const compilazioni = vi.hoisted(() => ({ n: 0 }));
 vi.mock("@/lib/compile", async (originale) => ({
   ...(await originale<typeof import("@/lib/compile")>()),
   compileProject: vi.fn(async () => {
+    compilazioni.n++;
+    throw new Error("nessuna compilazione deve partire da sola");
+  }),
+  compileGeometryOnly: vi.fn(async () => {
     compilazioni.n++;
     throw new Error("nessuna compilazione deve partire da sola");
   }),
@@ -58,7 +73,15 @@ vi.mock("@/lib/compile", async (originale) => ({
 const { POST } = await import("@/app/api/mcp/[transport]/route");
 const { FILE_CUCITURA } = await import("@/lib/ground-stitching-file");
 const { claimProject } = await import("@/lib/acl");
-const { writeProjectFile } = await import("@/lib/project-store");
+const { writeProjectFile, saveCompileCache, savePreviewCircuit, stampCompileBase } = await import("@/lib/project-store");
+
+/** nothing was compiled and no board was saved: the board in the database is the one of before */
+function nessunaCompilazione() {
+  expect(compilazioni.n).toBe(0);
+  expect(saveCompileCache).not.toHaveBeenCalled();
+  expect(savePreviewCircuit).not.toHaveBeenCalled();
+  expect(stampCompileBase).not.toHaveBeenCalled();
+}
 
 async function chiamaStrumento(name: string, args: Record<string, unknown>): Promise<{ isError: boolean; result: Record<string, unknown> }> {
   const r = await POST(
@@ -110,6 +133,14 @@ describe("stitch_ground over MCP", () => {
     compilazioni.n = 0;
     vi.mocked(claimProject).mockClear();
     vi.mocked(writeProjectFile).mockClear();
+    vi.mocked(saveCompileCache).mockClear();
+    vi.mocked(savePreviewCircuit).mockClear();
+    vi.mocked(stampCompileBase).mockClear();
+  });
+
+  it("the compile tool reaches the stand-in that counts compiles: a compile started through this route would be seen", async () => {
+    await chiamaStrumento("compile", { projectId: "p" }).catch(() => null);
+    expect(compilazioni.n).toBe(1);
   });
 
   it("dryRun (the default) proposes and writes nothing; it takes viewing access only", async () => {
@@ -120,7 +151,7 @@ describe("stitch_ground over MCP", () => {
     expect(r.result.vie as number).toBeGreaterThan(10);
     expect((r.result.coordinate as { griglia: unknown[] }).griglia.length).toBeGreaterThan(0);
     expect(stato.files[FILE_CUCITURA]).toBeUndefined();
-    expect(compilazioni.n).toBe(0);
+    nessunaCompilazione();
   });
 
   it("apply writes cucitura-massa.tsx, starts no compile, leaves main.tsx alone and says the lines to add", async () => {
@@ -129,7 +160,7 @@ describe("stitch_ground over MCP", () => {
     expect(r.result).toMatchObject({ ok: true, scritto: true, main: { usaIlFile: false } });
     expect(stato.files[FILE_CUCITURA]).toMatch(/connectsTo="net.GND"/);
     expect(stato.files["main.tsx"]).toBe("export default () => <board />");
-    expect(compilazioni.n).toBe(0);
+    nessunaCompilazione();
     // again: the same file
     const primo = stato.files[FILE_CUCITURA];
     await scriviVisto({ projectId: "p", passoMm: 3 });
@@ -189,7 +220,7 @@ describe("stitch_ground over MCP", () => {
     expect(e).toMatch(/retiLontane\[0\]/);
     expect(e).not.toMatch(/script/);
     expect(stato.files[FILE_CUCITURA]).toBeUndefined();
-    expect(compilazioni.n).toBe(0);
+    nessunaCompilazione();
   });
 
   it("on a project id that does not exist it creates nothing and says so, looking or writing", async () => {
@@ -212,6 +243,22 @@ describe("stitch_ground over MCP", () => {
     const r = await chiamaStrumento("stitch_ground", { projectId: "p" });
     expect(r).toMatchObject({ isError: true, result: { error: expect.stringMatching(/non ha main\.tsx/) } });
     expect(writeProjectFile).not.toHaveBeenCalled();
+  });
+
+  it("keepout passes through: all of them by default, solo_rame when asked, and the answer lists the zones that exclude positions", async () => {
+    stato.scheda = [...SCHEDA, { type: "pcb_keepout", pcb_keepout_id: "tasto", shape: "rect", center: { x: 0, y: 0 }, width: 8, height: 8, layers: ["top"], description: "TASTO H7,6" }];
+    const tutti = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 2 });
+    expect(tutti.result.keepout).toMatchObject({ modo: "tutti", zone: 1, escludono: [{ id: "tasto", descrizione: "TASTO H7,6", strati: ["top"], massaSotto: true }] });
+    const k = tutti.result.keepout as { posizioni: number; conPosto: number };
+    expect(k.posizioni).toBeGreaterThan(5);
+    expect(k.conPosto).toBeGreaterThan(5);
+    const rame = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 2, keepout: "solo_rame" });
+    expect(rame.result.keepout).toMatchObject({ modo: "solo_rame", posizioni: 0 });
+    expect(rame.result.vie).toBe((tutti.result.vie as number) + k.conPosto);
+    // the two looks are of different vias: the fingerprint of one does not write the other
+    expect(rame.result.impronta).not.toBe(tutti.result.impronta);
+    // any other word is refused by the schema of the tool, before the tool is run
+    await expect(chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 2, keepout: "nessuno" })).rejects.toThrow(/MCP error/);
   });
 
   it("with no saved board it says so", async () => {

@@ -57,8 +57,19 @@ vi.mock("@/lib/project-store", async (originale) => {
   writeProjectFile: vi.fn(async (_p: string, path: string, content: string) => {
     stato.files[path] = content;
   }),
+  // what a compile leaves behind: a saved board, a preview, the base of a board
+  saveCompileCache: vi.fn(async () => ({ saved: true, keptPrevious: false })),
+  savePreviewCircuit: vi.fn(async () => {}),
+  stampCompileBase: vi.fn(async () => {}),
   };
 });
+/*
+ * "Non compila": the two ways a board is compiled are stand-ins that count, and
+ * the first test shows the tool door (executeTool, the one this route goes
+ * through) reaches them. The stitching has no reason to call them, so the count
+ * alone would pass whatever it did: what a compile leaves behind (a saved
+ * board, a preview) is looked at too, see nessunaCompilazione.
+ */
 const compilazioni = vi.hoisted(() => ({ n: 0 }));
 vi.mock("@/lib/compile", async (originale) => ({
   ...(await originale<typeof import("@/lib/compile")>()),
@@ -66,9 +77,23 @@ vi.mock("@/lib/compile", async (originale) => ({
     compilazioni.n++;
     throw new Error("nessuna compilazione deve partire da sola");
   }),
+  compileGeometryOnly: vi.fn(async () => {
+    compilazioni.n++;
+    throw new Error("nessuna compilazione deve partire da sola");
+  }),
 }));
 
 const { POST } = await import("@/app/api/stitch-ground/route");
+const { executeTool } = await import("@/lib/agent-tools");
+const { saveCompileCache, savePreviewCircuit, stampCompileBase } = await import("@/lib/project-store");
+
+/** nothing was compiled and no board was saved: the board in the database is the one of before */
+function nessunaCompilazione() {
+  expect(compilazioni.n).toBe(0);
+  expect(saveCompileCache).not.toHaveBeenCalled();
+  expect(savePreviewCircuit).not.toHaveBeenCalled();
+  expect(stampCompileBase).not.toHaveBeenCalled();
+}
 const chiedi = async (body: Record<string, unknown>) => {
   const r = await POST(new Request("http://localhost/api/stitch-ground", { method: "POST", body: JSON.stringify(body) }));
   return { status: r.status, d: (await r.json()) as Record<string, unknown> };
@@ -82,6 +107,15 @@ describe("/api/stitch-ground", () => {
     stato.esiste = true;
     stato.accessiChiesti = [];
     compilazioni.n = 0;
+    vi.mocked(saveCompileCache).mockClear();
+    vi.mocked(savePreviewCircuit).mockClear();
+    vi.mocked(stampCompileBase).mockClear();
+  });
+
+  it("lo strumento compile, dalla stessa porta, arriva alla controfigura che conta le compilazioni: una compilazione partita da qui si vedrebbe", async () => {
+    const r = await executeTool("p", "compile", {});
+    expect(String((r.result as { error?: unknown }).error)).toMatch(/nessuna compilazione deve partire da sola/);
+    expect(compilazioni.n).toBe(1);
   });
 
   it("guardare chiede di vedere il progetto, scrivere chiede la modifica", async () => {
@@ -90,6 +124,7 @@ describe("/api/stitch-ground", () => {
     expect(guarda.status).toBe(200);
     expect(guarda.d.vie as number).toBeGreaterThan(5);
     expect(guarda.d.fileChanged).toBeUndefined();
+    nessunaCompilazione();
     expect(await chiedi({ projectId: "p", passoMm: 2.5, apply: true })).toMatchObject({ status: 403 });
     expect(stato.files["cucitura-massa.tsx"]).toBeUndefined();
     stato.livello = "none";
@@ -104,7 +139,7 @@ describe("/api/stitch-ground", () => {
     expect(r.d).toMatchObject({ scritto: true, fileChanged: { path: "cucitura-massa.tsx" } });
     expect(stato.files["cucitura-massa.tsx"]).toBe((r.d.fileChanged as { content: string }).content);
     expect(stato.files["main.tsx"]).toBe("export default () => <board />");
-    expect(compilazioni.n).toBe(0);
+    nessunaCompilazione();
   });
 
   it("scheda piu' vecchia dei file: l'anteprima lo dice con scrivibile false, scrivere e' un 422 e il file non nasce", async () => {

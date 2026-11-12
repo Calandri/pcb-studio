@@ -115,6 +115,7 @@ describe("dove una via puo' stare", () => {
     // three layers everywhere, the bottom only on the left: the right half is a copper-free window on the bottom
     const cj = [...scheda(), ...massaPiena(["top", "inner1", "inner2"]), colata("bottom", rett(-9.7, -9.7, -1, 9.7))];
     const e = cuci(cj, { bordo: false });
+    expect(e.vie.length).toBeGreaterThan(20);
     for (const v of e.vie) expect(v.x + R).toBeLessThanOrEqual(-1 + 1e-9);
     expect(e.scarti.manca_massa_esterna).toBeGreaterThan(0);
   });
@@ -142,6 +143,7 @@ describe("dove una via puo' stare", () => {
   it("mai in una piazzola, nemmeno di massa, e lontana dalle piazzole delle altre reti", () => {
     const cj = [...scheda(), ...massaPiena(), ...pad("P1", 0, 0, 3, 3, "top", "k_gnd"), ...pad("P2", 5, 5, 2, 1, "bottom", "k_sig")];
     const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(100);
     const p1 = rameDelPad(cj.find((x) => x.pcb_smtpad_id === "P1")!)!;
     const p2 = rameDelPad(cj.find((x) => x.pcb_smtpad_id === "P2")!)!;
     for (const v of e.vie) {
@@ -154,6 +156,7 @@ describe("dove una via puo' stare", () => {
   it("fuori dall'ingombro dei pezzi su tutte e due le facce", () => {
     const cj = [...scheda(), ...massaPiena(), ...pezzo("U1", -4, 0, 5, 5, "top"), ...pezzo("U2", 4, 0, 5, 5, "bottom")];
     const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(100);
     for (const v of e.vie) {
       for (const c of [rett(-6.5, -2.5, -1.5, 2.5), rett(1.5, -2.5, 6.5, 2.5)]) {
         const d = dentro(v.x, v.y, c) ? 0 : Math.min(...c.map((a, i) => pointSegDistance(v.x, v.y, a.x, a.y, c[(i + 1) % 4].x, c[(i + 1) % 4].y)));
@@ -172,6 +175,7 @@ describe("dove una via puo' stare", () => {
       { type: "pcb_note_text", pcb_note_text_id: "nt", pcb_component_id: "J1", text: "innesto: spina", anchor_position: { x: 0, y: -2 } },
     ];
     const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(100);
     for (const v of e.vie) expect(dentro(v.x, v.y, rett(-2 - R, -6 - R, 2 + R, 2 + R))).toBe(false);
     expect(e.scarti.innesto).toBeGreaterThan(0);
   });
@@ -179,6 +183,7 @@ describe("dove una via puo' stare", () => {
   it("lontana dai fori: fra i fori minHoleToHoleMm, la corona da un foro nudo quanto dal bordo", () => {
     const cj = [...scheda(), ...massaPiena(), { type: "pcb_hole", pcb_hole_id: "h", hole_shape: "circle", hole_diameter: 2, x: 0, y: 0 }];
     const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(100);
     for (const v of e.vie) {
       const d = Math.hypot(v.x, v.y);
       expect(d - 1 - 0.1).toBeGreaterThanOrEqual(REGOLE.minHoleToHoleMm - 1e-9);
@@ -229,12 +234,15 @@ describe("dove una via puo' stare", () => {
     // ground on top, inner1 and bottom; a signal trace on inner2, where there is no ground
     const cj = [...scheda(), ...massaPiena(["top", "inner1", "bottom"]), ...pista("t", [{ x: -9, y: 0 }, { x: 9, y: 0 }], "inner2", 0.2, "k_sig")];
     const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(100);
     for (const v of e.vie) expect(Math.abs(v.y) - 0.1 - R).toBeGreaterThanOrEqual(REGOLE.pourClearanceMm! - 1e-9);
     expect(e.scarti.pista_altra_rete).toBeGreaterThan(0);
     // and farther when asked: from the traces, and from a net named in retiLontane
     const piu = cuci(cj, { bordo: false, passoMm: 1, distanzaPisteMm: 1 });
+    expect(piu.vie.length).toBeGreaterThan(50);
     for (const v of piu.vie) expect(Math.abs(v.y) - 0.1 - R).toBeGreaterThanOrEqual(1 - 1e-9);
     const radio = cuci(cj, { bordo: false, passoMm: 1, retiLontane: [{ rete: "SIG", distanzaMm: 2 }] });
+    expect(radio.vie.length).toBeGreaterThan(50);
     for (const v of radio.vie) expect(Math.abs(v.y) - 0.1 - R).toBeGreaterThanOrEqual(2 - 1e-9);
     expect(radio.scarti.rete_lontana).toBeGreaterThan(0);
   });
@@ -242,6 +250,7 @@ describe("dove una via puo' stare", () => {
   it("dalle vie esistenti: le corone e i fori a distanza, e niente via dove una di massa cuce gia'", () => {
     const cj = [...scheda(), ...massaPiena(), viaEsistente(0.4, 0.2, "k_sig"), viaEsistente(5.2, 5.1, "k_gnd")];
     const e = cuci(cj, { bordo: false, passoMm: 2 });
+    expect(e.vie.length).toBeGreaterThan(20);
     for (const v of e.vie) {
       expect(Math.hypot(v.x - 0.4, v.y - 0.2) - 0.225 - R).toBeGreaterThanOrEqual(REGOLE.pourClearanceMm! - 1e-9);
       expect(Math.hypot(v.x - 5.2, v.y - 5.1)).toBeGreaterThanOrEqual(1 - 1e-6);
@@ -252,6 +261,7 @@ describe("dove una via puo' stare", () => {
   it("fuori dalle zone vietate della scheda e da quelle della chiamata", () => {
     const cj = [...scheda(), ...massaPiena(), { type: "pcb_keepout", pcb_keepout_id: "k", shape: "circle", center: { x: -4, y: 0 }, radius: 2, layers: ["bottom"] }];
     const e = cuci(cj, { bordo: false, passoMm: 1, zoneEscluse: [{ x: 4, y: 0, w: 3, h: 3 }, { punti: [{ x: 0, y: 5 }, { x: 3, y: 8 }, { x: -3, y: 8 }] }] });
+    expect(e.vie.length).toBeGreaterThan(100);
     for (const v of e.vie) {
       expect(Math.hypot(v.x + 4, v.y) - 2).toBeGreaterThanOrEqual(R - 1e-9);
       expect(dentro(v.x, v.y, rett(2.5 - R, -1.5 - R, 5.5 + R, 1.5 + R))).toBe(false);
@@ -398,6 +408,7 @@ describe("la griglia", () => {
 
   it("sfalsata: righe a passo per radice di 3 mezzi, una si' e una no spostata di mezzo passo, sei vicine a un passo", () => {
     const e = cuci(cj(), { bordo: false, passoMm: 2.5 });
+    expect(e.vie.length).toBeGreaterThan(50);
     const righe = [...new Set(e.vie.map((v) => v.y))].sort((a, b) => a - b);
     const passoRiga = (2.5 * Math.sqrt(3)) / 2;
     for (let i = 1; i < righe.length; i++) expect(righe[i] - righe[i - 1]).toBeCloseTo(passoRiga, 2);
@@ -415,6 +426,7 @@ describe("la griglia", () => {
 
   it("regolare: quadrata", () => {
     const e = cuci(cj(), { bordo: false, passoMm: 2, sfalsata: false });
+    expect(e.vie.length).toBeGreaterThan(100);
     for (const v of e.vie) {
       expect(Math.abs(v.x / 2 - Math.round(v.x / 2))).toBeLessThan(1e-6);
       expect(Math.abs(v.y / 2 - Math.round(v.y / 2))).toBeLessThan(1e-6);
@@ -436,6 +448,7 @@ describe("la griglia", () => {
 
   it("niente grumi fra la fila sul bordo e la griglia", () => {
     const e = cuci(cj(), { passoMm: 2.5 });
+    expect(e.vie.length).toBeGreaterThan(50);
     for (const v of e.vie) {
       const vicina = Math.min(...e.vie.filter((w) => w !== v).map((w) => Math.hypot(w.x - v.x, w.y - v.y)));
       expect(vicina).toBeGreaterThanOrEqual(1.25 - 1e-6);
