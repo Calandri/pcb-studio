@@ -194,6 +194,42 @@ function pennaDi(el: El): number {
 
 const FORME = new Set(["pcb_silkscreen_line", "pcb_silkscreen_rect", "pcb_silkscreen_circle", "pcb_silkscreen_oval", "pcb_silkscreen_pill", "pcb_silkscreen_graphic"]);
 
+/** one silkscreen element as it prints: its strokes with the half-width of its pen, and its filled regions */
+export interface DisegnoStampato {
+  faccia: Faccia;
+  /** the text, for a text; null for a path or a shape */
+  testo: string | null;
+  segmenti: Array<[Punto, Punto]>;
+  mezzaPenna: number;
+  regioni: Punto[][];
+}
+
+/**
+ * What one silkscreen element prints (a path, a shape, a text), or null when it
+ * is not silkscreen or prints nothing. The clash check below reads every
+ * element through here, and so does whoever must keep off the ink (the
+ * stitching of the ground, ground-stitching.ts): one reading of the silkscreen.
+ */
+export function disegnoStampato(el: El): DisegnoStampato | null {
+  const faccia = el.layer === "top" ? "top" : el.layer === "bottom" ? "bottom" : null;
+  if (!faccia) return null;
+  if (el.type === "pcb_silkscreen_path") {
+    const punti = ((el.route as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [])
+      .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
+      .filter((p): p is Punto => p.x !== null && p.y !== null);
+    if (punti.length === 0) return null;
+    // a path of one point is a dot
+    const segmenti: Array<[Punto, Punto]> = punti.length === 1 ? [[punti[0], punti[0]]] : [];
+    for (let i = 1; i < punti.length; i++) segmenti.push([punti[i - 1], punti[i]]);
+    return { faccia, testo: null, segmenti, mezzaPenna: pennaDi(el) / 2, regioni: [] };
+  }
+  const testo = el.type === "pcb_silkscreen_text";
+  if (!testo && !FORME.has(String(el.type))) return null;
+  const { segmenti, regioni } = dalGerber(el, faccia);
+  if (segmenti.length === 0 && regioni.length === 0) return null;
+  return { faccia, testo: testo ? String(el.text ?? "") : null, segmenti, mezzaPenna: pennaDi(el) / 2, regioni };
+}
+
 /** a little union-find, by index */
 function unione(n: number) {
   const padre = Array.from({ length: n }, (_, i) => i);
@@ -338,28 +374,11 @@ export function conflittiDiSerigrafia(circuitJson: unknown[], toleranceMm: numbe
   };
 
   for (const el of els) {
-    const faccia = el.layer === "top" ? "top" : el.layer === "bottom" ? "bottom" : null;
-    if (!faccia) continue;
-    if (el.type === "pcb_silkscreen_path") {
-      const punti = ((el.route as Array<{ x?: unknown; y?: unknown }> | undefined) ?? [])
-        .map((p) => ({ x: num(p?.x), y: num(p?.y) }))
-        .filter((p): p is Punto => p.x !== null && p.y !== null);
-      if (punti.length === 0) continue;
-      const u = nuovaUnita(el, faccia, null);
-      const h = pennaDi(el) / 2;
-      // a path of one point is a dot
-      if (punti.length === 1) traccia(u, punti[0], punti[0], h);
-      for (let i = 1; i < punti.length; i++) traccia(u, punti[i - 1], punti[i], h);
-      continue;
-    }
-    const testo = el.type === "pcb_silkscreen_text";
-    if (!testo && !FORME.has(String(el.type))) continue;
-    const { segmenti, regioni: piene } = dalGerber(el, faccia);
-    if (segmenti.length === 0 && piene.length === 0) continue;
-    const u = nuovaUnita(el, faccia, testo ? String(el.text ?? "") : null);
-    const h = pennaDi(el) / 2;
-    for (const [a, b] of segmenti) traccia(u, a, b, h);
-    for (const r of piene) {
+    const d = disegnoStampato(el);
+    if (!d) continue;
+    const u = nuovaUnita(el, d.faccia, d.testo);
+    for (const [a, b] of d.segmenti) traccia(u, a, b, d.mezzaPenna);
+    for (const r of d.regioni) {
       regioni.push({ u, punti: r });
       for (let i = 0; i < r.length; i++) traccia(u, r[i], r[(i + 1) % r.length], 0);
     }

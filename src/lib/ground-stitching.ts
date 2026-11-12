@@ -51,6 +51,11 @@
  *   recognise a controlled impedance line for sure (a ground via next to a
  *   coplanar line changes its impedance), so whoever launches the tool names
  *   the radio nets or draws the zones;
+ * - its hole at least the project's silkscreen clearance (minSilkscreenClearanceMm)
+ *   from every stroke, text and filled drawing of the silkscreen, on both faces
+ *   (the hole goes through both): a hole under a designator drills it away, and
+ *   the silkscreen check of the compile (silkscreen-clearance.ts) would list
+ *   every one of them;
  * - not within half a pitch of a ground via that is already there (it already
  *   stitches that spot), and not nearer to another proposed via than half the
  *   pitch (no clumps).
@@ -68,11 +73,12 @@
  */
 
 import { distanzaPuntoForma, foroDi, ingombroForma, pointSegDistance, rameDelForo, rameDelPad, TOLLERANZA_MM, type Capsula, type FormaRame } from "./drc";
-import { distanzaMinimaFra, eccedenzaDellIngombro, MAX_POUR_CLEARANCE_MM, type DesignRules } from "./design-rules";
+import { distanzaDellaSerigrafia, distanzaMinimaFra, eccedenzaDellIngombro, MAX_POUR_CLEARANCE_MM, type DesignRules } from "./design-rules";
 import { distanzaRiquadri, forma as formaDi, leggiIngombri, misuraForme, TOLLERANZA_INGOMBRI_MM, type Forma } from "./ingombro";
 import { eMassa } from "./net-roles";
 import { dSS } from "./pour-pour";
 import { distanzaPropria } from "./pours";
+import { disegnoStampato } from "./silkscreen-clearance";
 import { stratiDiRame } from "./via-layers";
 
 /** an element of the Circuit JSON, as drc.ts reads it */
@@ -258,6 +264,7 @@ export const MOTIVI = {
   pista_altra_rete: "troppo vicina a una pista di un'altra rete",
   colata_altra_rete: "troppo vicina a una colata di un'altra rete",
   rete_lontana: "troppo vicina a una rete da cui stare lontano (retiLontane)",
+  serigrafia: "il foro finirebbe sotto la serigrafia, o piu' vicino di minSilkscreenClearanceMm a una scritta o a un disegno",
   gia_cucita: "una via di massa esistente a meno di mezzo passo cuce gia' quel punto",
   vicina_a_cucitura: "troppo vicina a un'altra via di cucitura proposta (niente grumi)",
   non_raggiunge_il_piano: "sotto l'isola non c'e' la massa principale su un altro strato",
@@ -904,6 +911,22 @@ export function cuciLaMassa(
   const celleIngombri = new Celle(2);
   formeIngombro.forEach((x, i) => celleIngombri.metti(i, x.f.box.minX, x.f.box.minY, x.f.box.maxX, x.f.box.maxY));
 
+  // --- the silkscreen as it prints, both faces: strokes with their pen, and filled drawings
+  const luceSerigrafia = Math.max(distanzaDellaSerigrafia(rules), TOLLERANZA_MM);
+  const tratti: Array<{ ax: number; ay: number; bx: number; by: number; h: number }> = [];
+  const pieni: Array<{ punti: Punto[]; anello: Anello }> = [];
+  for (const el of cj) {
+    if (!String(el.type).startsWith("pcb_silkscreen_")) continue;
+    const d = disegnoStampato(el);
+    if (!d) continue;
+    for (const [a, b] of d.segmenti) tratti.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y, h: d.mezzaPenna });
+    for (const r of d.regioni) if (r.length >= 3) pieni.push({ punti: r, anello: anelloDi(r) });
+  }
+  const celleSerigrafia = new Celle(1);
+  tratti.forEach((t, i) =>
+    celleSerigrafia.metti(i, Math.min(t.ax, t.bx) - t.h, Math.min(t.ay, t.by) - t.h, Math.max(t.ax, t.bx) + t.h, Math.max(t.ay, t.by) + t.h),
+  );
+
   /** the widest distance any check asks, for the cells to look at */
   const portata =
     R +
@@ -1009,6 +1032,21 @@ export function cuciLaMassa(
         if (extra > 0 && toccaDisco(c, x, y, R + extra)) return { ok: false, motivo: "rete_lontana" };
       }
     }
+
+    // the silkscreen: the hole (it goes through both faces) keeps the silkscreen clearance from the ink
+    let inchiostro = false;
+    celleSerigrafia.cerca(x, y, rh + luceSerigrafia, (i) => {
+      const t = tratti[i];
+      if (pointSegDistance(x, y, t.ax, t.ay, t.bx, t.by) - t.h - rh < luceSerigrafia) return (inchiostro = true);
+    });
+    for (const p of pieni) {
+      if (inchiostro) break;
+      const a = p.anello;
+      const r = rh + luceSerigrafia;
+      if (x < a.minX - r || x > a.maxX + r || y < a.minY - r || y > a.maxY + r) continue;
+      if (distanzaDaZona(p, x, y) - rh < luceSerigrafia) inchiostro = true;
+    }
+    if (inchiostro) return { ok: false, motivo: "serigrafia" };
 
     // a ground via already there, and the vias proposed so far
     let gia = false;

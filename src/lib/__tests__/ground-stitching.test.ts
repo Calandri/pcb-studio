@@ -5,6 +5,7 @@ import { distanzaPuntoForma, pointSegDistance, rameDelPad, runDrcChecks } from "
 import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, sceltaDellaRete, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
 import { FILE_CUCITURA, fileDellaCucitura, mainLaUsa, vieComeElementi, vieDelFile } from "@/lib/ground-stitching-file";
 import { eseguiCucitura } from "@/lib/ground-stitching-tool";
+import { conflittiDiSerigrafia } from "@/lib/silkscreen-clearance";
 import { viePassantiSuOgniStrato } from "@/lib/via-layers";
 
 /*
@@ -202,6 +203,35 @@ describe("dove una via puo' stare", () => {
     }
     expect(e.scarti.zona_vietata).toBeGreaterThan(0);
     expect(e.scarti.zona_esclusa).toBeGreaterThan(0);
+  });
+
+  it("mai col foro sotto la serigrafia: tratti e testi delle due facce, a minSilkscreenClearanceMm", () => {
+    const riga: El = { type: "pcb_silkscreen_path", pcb_silkscreen_path_id: "s1", layer: "top", stroke_width: 0.15, route: [{ x: -9, y: 0.9 }, { x: 9, y: 0.9 }] };
+    const testo: El = { type: "pcb_silkscreen_text", pcb_silkscreen_text_id: "t1", layer: "bottom", text: "MASSA", font_size: 1.5, anchor_position: { x: 0, y: -5 }, anchor_alignment: "center" };
+    const base = [...scheda(), ...massaPiena()];
+    const cj = [...base, riga, testo];
+    const senzaRegola = cuci(base, { bordo: false, passoMm: 1 });
+    const e = cuci(cj, { bordo: false, passoMm: 1 });
+    expect(e.vie.length).toBeGreaterThan(50);
+    expect(e.vie.length).toBeLessThan(senzaRegola.vie.length);
+    expect(e.scarti.serigrafia).toBeGreaterThan(0);
+    // the stroke as it prints is 0.15 wide: the hole (0.2) keeps 0.15 from its edge
+    for (const v of e.vie) expect(Math.abs(v.y - 0.9) - 0.075 - 0.1).toBeGreaterThanOrEqual(0.15 - 1e-9);
+    // the compile's own check: no hole under the ink, on either face; the same vias placed without looking at it have some
+    const sottoInchiostro = (vie: EsitoCucitura) =>
+      conflittiDiSerigrafia([...cj, ...vieComeElementi(vie, cj)], 0.15).filter((c) => c.tipo === "serigrafia_foro");
+    expect(sottoInchiostro(e)).toEqual([]);
+    const prima = sottoInchiostro(senzaRegola);
+    expect(prima.some((c) => c.faccia === "top")).toBe(true);
+    expect(prima.some((c) => c.faccia === "bottom")).toBe(true);
+  });
+
+  it("una serigrafia piu' larga per regola del progetto tiene il foro piu' lontano", () => {
+    const riga: El = { type: "pcb_silkscreen_path", pcb_silkscreen_path_id: "s1", layer: "bottom", stroke_width: 0.15, route: [{ x: -9, y: 0.6 }, { x: 9, y: 0.6 }] };
+    const cj = [...scheda(), ...massaPiena(), riga];
+    const e = cuciLaMassa(cj, { ...REGOLE, minSilkscreenClearanceMm: 0.5 }, { bordo: false, passoMm: 1 }) as EsitoCucitura;
+    expect(e.vie.length).toBeGreaterThan(50);
+    for (const v of e.vie) expect(Math.abs(v.y - 0.6) - 0.075 - 0.1).toBeGreaterThanOrEqual(0.5 - 1e-9);
   });
 });
 
