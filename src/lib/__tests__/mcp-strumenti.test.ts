@@ -41,7 +41,17 @@ vi.mock("@/lib/project-store", async (originale) => {
   };
 });
 
+const compilazioni = vi.hoisted(() => ({ n: 0 }));
+vi.mock("@/lib/compile", async (originale) => ({
+  ...(await originale<typeof import("@/lib/compile")>()),
+  compileProject: vi.fn(async () => {
+    compilazioni.n++;
+    throw new Error("nessuna compilazione deve partire da sola");
+  }),
+}));
+
 const { POST } = await import("@/app/api/mcp/[transport]/route");
+const { DESIGN_RULES_PATH, MAX_REGOLE_CHARS, resolveDesignRules } = await import("@/lib/design-rules");
 
 /** a tools/call as a client sends it; the answer's text, parsed, and whether it is an error */
 async function chiamaStrumento(name: string, args: Record<string, unknown>): Promise<{ isError: boolean; result: Record<string, unknown> }> {
@@ -78,5 +88,77 @@ describe("release_manual_edits", () => {
     expect(r.isError).toBe(true);
     expect(r.result.error).toBe("posizioni a mano NON liberate (autenticazione rifiutata [28P01]): riprova tra poco; se continua, liberale dalla pagina");
     expect(JSON.stringify(r.result)).not.toMatch(/neondb_owner|neon\.tech|10\.1\.2\.3/);
+  });
+});
+
+describe("write_file of design-rules.json", () => {
+  beforeEach(() => {
+    stato.accesso = "edit";
+    stato.files = { "main.tsx": "export default () => <board />" };
+    compilazioni.n = 0;
+  });
+  const scrivi = (content: string) => chiamaStrumento("write_file", { projectId: "p", path: DESIGN_RULES_PATH, content });
+
+  it("a valid file is written as the panel writes it, read back by read_project and by the rules, and nothing compiles", async () => {
+    const r = await scrivi(JSON.stringify({ preset: "custom", rules: { minTraceWidthMm: 0.15, minClearanceMm: 0.15, componentCourtyardExcessMm: 0.25, autoroute: false, clearanceByPairMm: { "pad-via": 0.1 } } }));
+    expect(r.isError).toBe(false);
+    expect(r.result).toMatchObject({ ok: true, path: DESIGN_RULES_PATH, preset: "custom" });
+    const letto = await chiamaStrumento("read_project", { projectId: "p" });
+    const file = (letto.result.files as Record<string, string>)[DESIGN_RULES_PATH];
+    expect(file).toBeDefined();
+    const regole = resolveDesignRules({ [DESIGN_RULES_PATH]: file });
+    expect(regole).toMatchObject({ preset: "custom", isCustom: true });
+    expect(regole.warnings).toBeUndefined();
+    expect(regole.rules).toMatchObject({ minTraceWidthMm: 0.15, minClearanceMm: 0.15, componentCourtyardExcessMm: 0.25, autoroute: false, clearanceByPairMm: { "pad-via": 0.1 } });
+    // a factory preset alone
+    expect((await scrivi('{"preset": "oshpark"}')).result).toMatchObject({ ok: true, preset: "oshpark" });
+    expect(compilazioni.n).toBe(0);
+  });
+
+  it("every wrong file is refused whole, with the field and its limit, and nothing is written", async () => {
+    const prima = { ...stato.files };
+    const casi: Array<[string, RegExp]> = [
+      ["{ preset: custom", /non e' un JSON valido/],
+      ['{"preset": "custom", "rules": {"minTraceWidthMm": NaN}}', /non e' un JSON valido/],
+      ['{"preset": "custom", "rules": {"minTraceWidthMm": -0.1}}', /minTraceWidthMm: -0\.1 fuori dai limiti 0\.05\.\.2/],
+      ['{"preset": "custom", "rules": {"minClearanceMm": 1e9}}', /minClearanceMm: 1000000000 fuori dai limiti 0\.05\.\.2/],
+      ['{"preset": "custom", "rules": {"viaCostMm": 1e999}}', /viaCostMm: deve essere un numero \(limiti 0\.\.50\)/],
+      ['{"preset": "custom", "rules": {"componentCourtyardExcessMm": "0.2"}}', /componentCourtyardExcessMm: deve essere un numero \(limiti 0\.\.1\)/],
+      ['{"preset": "custom", "rules": {"componentCourtyardExcessMm": 1.5}}', /componentCourtyardExcessMm: 1\.5 fuori dai limiti 0\.\.1/],
+      ['{"preset": "custom", "rules": {"autoroute": "no"}}', /autoroute: deve essere true o false/],
+      ['{"preset": "custom", "rules": {"minTraceWidthMm": 0.3}}', /targetTraceWidthMm 0\.25 e' sotto il minimo 0\.3$/],
+      ['{"preset": "custom", "rules": {"spessoreRame": 35}}', /rules\.spessoreRame: campo sconosciuto/],
+      ['{"preset": "custom", "rules": {"clearanceByPairMm": {"pad-pad": 0.001}}}', /clearanceByPairMm\.pad-pad: 0\.001 fuori dai limiti 0\.01\.\.2/],
+      ['{"preset": "oshpark", "rules": {"minTraceWidthMm": 0.2}}', /rules: vale solo con preset "custom"/],
+      ['{"preset": "pcbway"}', /preset: deve essere uno di jlcpcb_standard, oshpark, jlcpcb_enhanced, custom/],
+      ['{"preset": "custom", "rules": {}, "note": "x"}', /note: campo sconosciuto/],
+      ["[1, 2]", /serve un oggetto/],
+      [JSON.stringify({ preset: "custom", rules: {}, x: "y".repeat(MAX_REGOLE_CHARS) }), /file troppo grande \(\d+ caratteri, massimo 20000\)/],
+    ];
+    for (const [content, atteso] of casi) {
+      const r = await scrivi(content);
+      expect(r.isError, content.slice(0, 80)).toBe(false);
+      expect(String(r.result.error), content.slice(0, 80)).toMatch(/^design-rules\.json non valido: /);
+      expect(String(r.result.error), content.slice(0, 80)).toMatch(atteso);
+      expect(stato.files).toEqual(prima);
+    }
+    expect(compilazioni.n).toBe(0);
+  });
+
+  it("what was sent does not come back in the message: only short names and numbers", async () => {
+    const r = await scrivi(JSON.stringify({ preset: "custom", rules: { "../../segreti": 1, minClearanceMm: "DROP TABLE progetti" } }));
+    const e = String(r.result.error);
+    expect(e).toContain("rules.un campo dal nome non valido: campo sconosciuto");
+    expect(e).toContain("minClearanceMm: deve essere un numero");
+    expect(e).not.toMatch(/segreti|DROP TABLE/);
+  });
+
+  it("who may not write a .tsx may not write the rules", async () => {
+    stato.accesso = "view";
+    const r = await scrivi('{"preset": "oshpark"}');
+    expect(r).toMatchObject({ isError: true, result: { error: "serve accesso in modifica a questo progetto" } });
+    const tsx = await chiamaStrumento("write_file", { projectId: "p", path: "main.tsx", content: "x" });
+    expect(tsx.isError).toBe(true);
+    expect(stato.files[DESIGN_RULES_PATH]).toBeUndefined();
   });
 });

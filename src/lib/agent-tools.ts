@@ -22,7 +22,7 @@ import {
 import { earlyBoardSaver, saveFinishedCompile } from "./compile-save";
 import { runSimulation } from "./simulate";
 import { compileProject } from "./compile";
-import { resolveDesignRules } from "./design-rules";
+import { campiDelleRegole, DESIGN_RULES_PATH, resolveDesignRules, validaFileDelleRegole } from "./design-rules";
 import {
   ENCLOSURE_NAME_RE,
   listEnclosures,
@@ -64,11 +64,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "write_file",
     description:
       "Create or overwrite a project file with the FULL new content (no diffs). " +
-      "The browser re-renders the circuit immediately after every write.",
+      "The browser re-renders the circuit immediately after every write. " +
+      `${DESIGN_RULES_PATH} sets the project's design rules, checked whole and refused with the reason when a field is unknown or out of its limits: ` +
+      `{"preset": "jlcpcb_standard" | "oshpark" | "jlcpcb_enhanced"} or {"preset": "custom", "rules": {"minTraceWidthMm": 0.15, "minClearanceMm": 0.15, "componentCourtyardExcessMm": 0.2}}; ` +
+      `fields of rules (missing ones keep JLCPCB standard): ${campiDelleRegole()}. It does not compile: compile after it.`,
     input_schema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "e.g. main.tsx, or schematico.json for the drawing's notes" },
+        path: { type: "string", description: `e.g. main.tsx, schematico.json for the drawing's notes, ${DESIGN_RULES_PATH} for the design rules` },
         content: { type: "string", description: "complete file content" },
       },
       required: ["path", "content"],
@@ -408,10 +411,35 @@ async function runTool(
           fileChanged: { path, content },
         };
       }
+      /*
+       * THE PROJECT'S DESIGN RULES (design-rules.json): traces, vias, edge,
+       * componentCourtyardExcessMm. Only the panel of the rules could set them,
+       * so an agent working through the MCP left every board on the defaults.
+       * Checked whole with the panel's schema and limits, but strict: a field
+       * unknown or out of its limits refuses the file with the reason, nothing
+       * is saved half-right (validaFileDelleRegole). Written as the panel
+       * writes it; no compile starts: the board reads as one to update.
+       */
+      if (path === DESIGN_RULES_PATH) {
+        const esito = validaFileDelleRegole(content);
+        if ("errori" in esito) return { result: { error: `${DESIGN_RULES_PATH} non valido: ${esito.errori.slice(0, 10).join("; ")}` } };
+        await writeProjectFile(projectId, path, esito.contenuto);
+        return {
+          result: {
+            ok: true,
+            path,
+            chars: esito.contenuto.length,
+            preset: esito.regole.preset,
+            rules: esito.regole.rules,
+            note: "rules saved: the saved board is now older than the files, compile to check it against them",
+          },
+          fileChanged: { path, content: esito.contenuto },
+        };
+      }
       if (!FILE_PATH_RE.test(path)) {
         return {
           result: {
-            error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}, ${STENCIL_PATH}) are allowed`,
+            error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}, ${STENCIL_PATH}, ${DESIGN_RULES_PATH}) are allowed`,
           },
         };
       }

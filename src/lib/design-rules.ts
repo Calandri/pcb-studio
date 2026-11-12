@@ -336,6 +336,12 @@ const LIMITS: Record<
   componentCourtyardExcessMm: { min: 0, max: 1 },
 };
 
+/** the limits of one pair's own distance (clearanceByPairMm): under ten microns a mangled file */
+const LIMITE_COPPIA = { min: 0.01, max: 2 };
+
+/** the switches of the rules: true or false */
+const INTERRUTTORI = ["autoPlaneVias", "pasteOnPlatedHoles", "autoroute"] as const;
+
 /**
  * An out-of-range value is not a preference, it is a typo that would produce
  * an unsellable board or a DRC that stops reporting anything: clamp it back
@@ -371,7 +377,7 @@ function clampRules(input: Partial<DesignRules> | undefined, avvisi: string[] = 
   for (const { chiave } of COPPIE) {
     const v = input.clearanceByPairMm?.[chiave];
     if (typeof v !== "number" || !Number.isFinite(v)) continue;
-    coppie[chiave] = Math.min(2, Math.max(0.01, v));
+    coppie[chiave] = Math.min(LIMITE_COPPIA.max, Math.max(LIMITE_COPPIA.min, v));
     if (coppie[chiave] !== v) avvisi.push(`distanza ${chiave}: ${v} portata a ${coppie[chiave]}`);
   }
   if (Object.keys(coppie).length > 0) out.clearanceByPairMm = coppie;
@@ -490,4 +496,87 @@ export function buildProjectRules(
     isCustom: true,
     ...(avvisi.length > 0 ? { warnings: avvisi } : {}),
   };
+}
+
+/** the longest design-rules.json a tool may write: a full set of rules is well under a kilobyte */
+export const MAX_REGOLE_CHARS = 20_000;
+
+/** a key worth repeating in a message: a short identifier, nothing else of what was sent */
+const nomeSicuro = (k: string) => (/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(k) ? k : "un campo dal nome non valido");
+
+/** the fields a project's rules may carry, with their limits, for whoever writes the file (the tools' descriptions) */
+export function campiDelleRegole(): string {
+  return [
+    ...Object.entries(LIMITS).map(([k, { min, max }]) => `${k} ${min}..${max}`),
+    `clearanceByPairMm {${COPPIE.map((c) => c.chiave).join(", ")}} ${LIMITE_COPPIA.min}..${LIMITE_COPPIA.max}`,
+    ...INTERRUTTORI.map((k) => `${k} true/false`),
+  ].join("; ");
+}
+
+/**
+ * A design-rules.json written by a tool (the MCP write_file, the agent's),
+ * checked WHOLE before it is written: the same schema and limits the panel of
+ * the rules saves with (LIMITS, clampRules, buildProjectRules), but strict.
+ * The panel clamps a value out of its limits and says so; a file a tool writes
+ * is refused instead, with every field that is wrong and its limit, so nothing
+ * is saved half-right and nothing is changed behind the writer's back.
+ * - valid JSON, an object, at most MAX_REGOLE_CHARS;
+ * - preset: one of FAB_RULESETS or "custom"; rules only with "custom";
+ * - every field of rules known, of its type and within its limits, and the
+ *   fields consistent with each other (what clampRules would correct);
+ * - nothing of what was sent goes back in a message but short identifiers and
+ *   numbers.
+ * What is written is the file as the panel writes it (serializeDesignRules).
+ */
+export function validaFileDelleRegole(content: string): { regole: ProjectRules; contenuto: string } | { errori: string[] } {
+  if (content.length > MAX_REGOLE_CHARS) return { errori: [`file troppo grande (${content.length} caratteri, massimo ${MAX_REGOLE_CHARS})`] };
+  let data: unknown;
+  try {
+    data = JSON.parse(content);
+  } catch {
+    return { errori: ["non e' un JSON valido (NaN e Infinity non sono JSON)"] };
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return { errori: ["serve un oggetto {\"preset\": ..., \"rules\": {...}}"] };
+  const obj = data as Record<string, unknown>;
+  const errori: string[] = [];
+  for (const k of Object.keys(obj)) if (k !== "preset" && k !== "rules") errori.push(`${nomeSicuro(k)}: campo sconosciuto (ammessi preset e rules)`);
+  const ammessi = [...FAB_RULESETS.map((r) => r.key), "custom"];
+  if (typeof obj.preset !== "string" || !ammessi.includes(obj.preset)) errori.push(`preset: deve essere uno di ${ammessi.join(", ")}`);
+  if (obj.preset !== "custom") {
+    if (obj.rules !== undefined) errori.push('rules: vale solo con preset "custom" (un preset di fabbrica ha le sue regole)');
+  } else if (typeof obj.rules !== "object" || obj.rules === null || Array.isArray(obj.rules)) {
+    errori.push("rules: serve un oggetto con le regole");
+  } else {
+    const rules = obj.rules as Record<string, unknown>;
+    for (const [k, v] of Object.entries(rules)) {
+      if (k in LIMITS) {
+        const { min, max } = LIMITS[k as keyof typeof LIMITS];
+        if (typeof v !== "number" || !Number.isFinite(v)) errori.push(`${k}: deve essere un numero (limiti ${min}..${max})`);
+        else if (v < min || v > max) errori.push(`${k}: ${v} fuori dai limiti ${min}..${max}`);
+      } else if ((INTERRUTTORI as readonly string[]).includes(k)) {
+        if (typeof v !== "boolean") errori.push(`${k}: deve essere true o false`);
+      } else if (k === "clearanceByPairMm") {
+        if (typeof v !== "object" || v === null || Array.isArray(v)) {
+          errori.push(`clearanceByPairMm: serve un oggetto {${COPPIE.map((c) => `"${c.chiave}"`).join(", ")}}`);
+          continue;
+        }
+        for (const [c, d] of Object.entries(v as Record<string, unknown>)) {
+          if (!COPPIE.some((q) => q.chiave === c)) errori.push(`clearanceByPairMm.${/^[a-z]+-[a-z]+$/.test(c) ? c : "?"}: coppia sconosciuta (ammesse ${COPPIE.map((q) => q.chiave).join(", ")})`);
+          else if (typeof d !== "number" || !Number.isFinite(d)) errori.push(`clearanceByPairMm.${c}: deve essere un numero (limiti ${LIMITE_COPPIA.min}..${LIMITE_COPPIA.max})`);
+          else if (d < LIMITE_COPPIA.min || d > LIMITE_COPPIA.max) errori.push(`clearanceByPairMm.${c}: ${d} fuori dai limiti ${LIMITE_COPPIA.min}..${LIMITE_COPPIA.max}`);
+        }
+      } else {
+        errori.push(`rules.${nomeSicuro(k)}: campo sconosciuto`);
+      }
+    }
+    // the fields against each other: whatever the panel would correct is refused here
+    if (errori.length === 0) {
+      const avvisi: string[] = [];
+      clampRules(rules as Partial<DesignRules>, avvisi);
+      errori.push(...avvisi.map((a) => a.replace(/: portat[oa] .*$/, "")));
+    }
+  }
+  if (errori.length > 0) return { errori };
+  const regole = buildProjectRules(obj.preset as string, obj.rules as Partial<DesignRules> | undefined);
+  return { regole, contenuto: serializeDesignRules(regole) };
 }
