@@ -1,5 +1,6 @@
 import type { EditEvent, ManualEdits, ManualPlacement, PlacementPatch } from "@/lib/manual-edits";
 import { manualRouteKey, viaMoveKey, type ManualRoute } from "@/lib/manual-routes";
+import type { RameInAttesa } from "../board/gesto-del-rame";
 
 /*
  * The pure half of the manual editor's bookkeeping: which pending edits were
@@ -199,7 +200,9 @@ export type EditorStep =
   /** a trace detached in Instrada */
   | { kind: "staccata"; traceId: string; removed: RemovedTrace }
   /** only on the redo side: a gesture undone before it was even saved */
-  | { kind: "gesto"; events: EditEvent[] };
+  | { kind: "gesto"; events: EditEvent[] }
+  /** only on the redo side: copper dragged in Sposta, undone before it was even saved */
+  | { kind: "rame"; gesto: RameInAttesa };
 
 /** how many steps the editor keeps, each way */
 export const HISTORY_MAX = 100;

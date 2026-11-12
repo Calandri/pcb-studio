@@ -13,6 +13,9 @@ import {
   type ApertoScelto,
 } from "./CollegamentiAperti";
 import { opacitaStrato, stratoScelto } from "./strati-visibili";
+import { BersagliDelRame } from "./BersagliDelRame";
+import { AvvisoDelGesto, RameInMovimento } from "./RameInMovimento";
+import { NESSUN_RAME, useGestoDelRame, type RameInAttesa, type RameNascosto } from "./gesto-del-rame";
 import { GRID_DEFAULT, GRID_OPTIONS, ascoltaGriglia, grigliaSalvata, salvaGriglia } from "./griglia";
 import {
   DESIGNATOR_FONT,
@@ -27,6 +30,7 @@ import {
   type PlacedNetLabel,
 } from "./net-labels";
 
+import type { DesignRules } from "@/lib/design-rules";
 import { rameDellaScheda } from "@/lib/open-connections";
 import { ETICHETTA_FONTE, type DescrizionePezzo } from "@/lib/part-description";
 import { forma, percorsoDellaForma, scontri, type Forma } from "@/lib/ingombro";
@@ -163,6 +167,9 @@ export function BoardCanvas({
   anteprimaVie = null,
   apertiAccesi = false,
   apertoScelto = null,
+  regole,
+  rameInAttesa = NESSUN_RAME,
+  onGestoDelRame,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -231,6 +238,16 @@ export function BoardCanvas({
   apertiAccesi?: boolean;
   /** the open connection clicked in the panel: the canvas goes there and lights it */
   apertoScelto?: ApertoScelto | null;
+  /**
+   * The project's rules. With them and `onGestoDelRame`, in move mode the
+   * copper can be dragged too: a via with its traces, a straight stretch of a
+   * trace (gesto-del-rame.ts). The solver stops the copper at these distances.
+   */
+  regole?: DesignRules;
+  /** the copper gestures let go and not on the saved board yet: drawn where they were left */
+  rameInAttesa?: readonly RameInAttesa[];
+  /** a copper gesture was let go and moved something: what to save, and what to keep on screen */
+  onGestoDelRame?: (gesto: RameInAttesa) => void;
 }) {
   const scene = useMemo(() => buildScene(circuitJson, { eccedenzaIngombroMm }), [circuitJson, eccedenzaIngombroMm]);
   /** the board's real outline as an SVG path; null when it is a plain rectangle */
@@ -267,6 +284,14 @@ export function BoardCanvas({
     /** where every part of the group was when the drag started */
     gruppo: Array<{ id: string; x: number; y: number; rotation: number }>;
   } | null>(null);
+  /** copper in hand: next to the parts' drag, with its own targets and its own state (gesto-del-rame.ts) */
+  const rame = useGestoDelRame({
+    attivo: mode === "move" && selectMode === "off" && regole !== undefined && onGestoDelRame !== undefined,
+    circuitJson,
+    regole,
+    inAttesa: rameInAttesa,
+    onGesto: onGestoDelRame,
+  });
   /** the part under the start of a Shift box: a Shift click on it adds or removes it */
   const marqueeSu = useRef<string | null>(null);
   /** box being drawn, in screen coordinates relative to the container */
@@ -1126,6 +1151,17 @@ export function BoardCanvas({
         (e.target as Element).setPointerCapture?.(e.pointerId);
       }}
       onPointerMove={(e) => {
+        // copper in hand follows the cursor on the same grid as a part (Alt takes it off)
+        if (
+          rame.muovi(() => {
+            const rect = wrapRef.current?.getBoundingClientRect();
+            if (!rect) return null;
+            const p = toMm(e.clientX - rect.left, e.clientY - rect.top);
+            return { x: snap(p.x, !e.altKey, gridMm), y: snap(p.y, !e.altKey, gridMm) };
+          })
+        ) {
+          return;
+        }
         // a component in hand follows the cursor, snapped to the grid
         if (compDragFrom.current) {
           const rect = wrapRef.current?.getBoundingClientRect();
@@ -1168,7 +1204,10 @@ export function BoardCanvas({
         setView((v) => ({ ...v, x: d.vx + (e.clientX - d.x), y: d.vy + (e.clientY - d.y) }));
       }}
       onPointerLeave={() => setPadSotto(null)}
+      onPointerCancel={rame.annulla}
       onPointerUp={(e) => {
+        // copper in hand is let go here: it becomes a gesture to save
+        if (rame.rilascia()) return;
         // the component is dropped here: it becomes a pending edit
         if (compDragFrom.current && compDrag) {
           const d = compDragFrom.current;
@@ -1285,7 +1324,9 @@ export function BoardCanvas({
             active={active}
             tutti={tutti}
             xray={xray}
+            nascosti={rame.nascosti}
           />
+          <RameInMovimento vivo={rame.vivo} inAttesa={rameInAttesa} drawOrder={drawOrder} scelto={scelto} xray={xray} />
 
           {/*
             THE SOLDER MASK: the green coating, over the copper.
@@ -1760,6 +1801,11 @@ export function BoardCanvas({
             );
           })}
 
+          {/* what can be grabbed of the copper: over the handles of the parts, see BersagliDelRame */}
+          {rame.bersagli.length > 0 && (
+            <BersagliDelRame bersagli={rame.bersagli} scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
+          )}
+
           {/* automatic-check markers, where they really are */}
           {showErrors &&
             markers.map((m) => {
@@ -1817,6 +1863,8 @@ export function BoardCanvas({
               sposta={mmPointTx}
             />
           )}
+
+          <AvvisoDelGesto vivo={rame.vivo} mmPerPx={mmPerPx} />
         </g>
 
         {/* designators must not be mirrored: they are drawn outside the flipped group */}
@@ -2189,6 +2237,7 @@ const RameFermo = memo(
     active,
     tutti,
     xray,
+    nascosti,
   }: {
     scene: BoardScene;
     drawOrder: LayerId[];
@@ -2197,6 +2246,13 @@ const RameFermo = memo(
     active: LayerId;
     tutti: boolean;
     xray: number;
+    /**
+     * The traces and vias a copper gesture has taken out (in hand, or let go
+     * and not on the saved board yet): RameInMovimento draws them moved. The
+     * same object from the start of a gesture to its end, so this memo holds
+     * while the pointer moves.
+     */
+    nascosti: RameNascosto | null;
   }) {
     // the rule of strati-visibili.ts; the planes keep their own top strength (0.45, see below)
     const layerOpacity = (l: LayerId) => opacitaStrato(l, tutti ? "all" : active, xray);
@@ -2248,7 +2304,7 @@ const RameFermo = memo(
       {drawOrder.map((l) => (
         <g key={`tr-${l}`} opacity={layerOpacity(l)}>
           {scene.traces
-            .filter((t) => t.layer === l && t.points.length > 1)
+            .filter((t) => t.layer === l && t.points.length > 1 && !nascosti?.piste.has(t.traceId))
             .map((t, i) => (
               <polyline
                 key={`${l}-${i}`}
@@ -2266,7 +2322,7 @@ const RameFermo = memo(
       {/* via: copper ring with the through hole, UNDER the coating: a via is
           tented, which is why on a finished board you see a green dot and
           not a metal ring (this board's file marks all 640 of them tented) */}
-      {scene.vias.map((v) => (
+      {scene.vias.filter((v) => !nascosti?.vie.has(v.id)).map((v) => (
         <g key={v.id}>
           <circle cx={v.x} cy={v.y} r={v.outer / 2} fill="#C9A227" opacity={0.9} />
           <circle cx={v.x} cy={v.y} r={v.hole / 2} fill="#06100D" />
@@ -2283,5 +2339,6 @@ const RameFermo = memo(
     a.active === b.active &&
     a.tutti === b.tutti &&
     a.xray === b.xray &&
+    a.nascosti === b.nascosti &&
     a.drawOrder.join() === b.drawOrder.join(),
 );

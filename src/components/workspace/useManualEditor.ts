@@ -11,6 +11,8 @@ import {
   type PlacementPatch,
 } from "@/lib/manual-edits";
 import { manualRouteKey, type ManualRoute } from "@/lib/manual-routes";
+import type { RameInAttesa } from "../board/gesto-del-rame";
+import { schedaMostraIlRame } from "./rame-in-attesa";
 import {
   senzaUltimoGesto,
   conflictMessage,
@@ -152,6 +154,15 @@ export interface PendingLink {
  * arrives (dropAgreed). Links, unlinks and hand-drawn traces still wait for
  * "Applica": they change the circuit.
  *
+ * COPPER DRAGGED IN SPOSTA SAVES ITSELF TOO (2026-11-12): a via with its
+ * traces, a stretch of a trace (lib/spinta). A gesture let go stays on screen
+ * where it was left, waits the same AUTOSAVE_MS and is written with ONE
+ * `copper` save, which the server checks against the saved board; then the
+ * board follows on the fast path, and the gesture leaves the screen when a
+ * board that shows it arrives. Refused, it goes at once: the copper is back
+ * where it was and the bar says why. One gesture is one step of the history,
+ * the file before and after it (see travel).
+ *
  * ONE QUEUE, IN ORDER (2026-11-10). Every write of the editor (a save, an
  * undo, a redo, Applica, a release) goes through one queue, one at a time, in
  * the order the person asked for them. Cmd+Z is never dropped: pressed five
@@ -207,6 +218,26 @@ export function useManualEditor({
   /** hand-routed traces not yet written into the project */
   const [routes, setRoutes] = useState<ManualRoute[]>([]);
   const [saved, setSaved] = useState<ManualEdits>(emptyManualEdits());
+  /*
+   * The copper gestures on screen: let go, being written, or written and not
+   * on the saved board yet. The list NOW in the ref, like the steps below: the
+   * queue reads it when its turn comes. Which ones were sent and which are
+   * written is kept by identity, like the moves (sentRef).
+   */
+  const copperRef = useRef<RameInAttesa[]>([]);
+  const [copper, setCopperState] = useState<RameInAttesa[]>([]);
+  const copperSentRef = useRef<WeakSet<RameInAttesa>>(new WeakSet());
+  const copperWrittenRef = useRef<WeakSet<RameInAttesa>>(new WeakSet());
+  /** gestures that came back with a redo: saving them is not a new step, the rest of the redo stays */
+  const copperRedoneRef = useRef<WeakSet<RameInAttesa>>(new WeakSet());
+  /** the save of the gestures is already in the queue: one let go meanwhile rides with it */
+  const copperQueuedRef = useRef(false);
+  const [unsentCopper, setUnsentCopper] = useState(0);
+  const setCopper = useCallback((next: (c: RameInAttesa[]) => RameInAttesa[]) => {
+    copperRef.current = next(copperRef.current);
+    setCopperState(copperRef.current);
+    setUnsentCopper(copperRef.current.filter((g) => !copperSentRef.current.has(g)).length);
+  }, []);
   /*
    * The steps NOW, kept in step with the state at every change: a queued undo
    * picks its step when its turn comes, after the writes before it, not when
@@ -385,15 +416,19 @@ export function useManualEditor({
   /** after a write: the board follows. Its failure does not undo the write */
   const notifyApplied = useCallback(
     async (hint?: { structural?: boolean; background?: boolean }): Promise<ApplyResult> => {
+      // the copper written before this update started: the board that comes back has it, laid or taken back by an undo
+      const written = copperRef.current.filter((g) => copperWrittenRef.current.has(g));
       try {
-        return await onApplied(hint);
+        const r = await onApplied(hint);
+        if (written.length > 0 && !(r && r.ok === false)) setCopper((c) => withoutSent(c, written));
+        return r;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         setError(`modifiche salvate, ma la scheda non si e' aggiornata: ${reason}`);
         return { ok: false, reason };
       }
     },
-    [onApplied],
+    [onApplied, setCopper],
   );
 
   /*
@@ -424,6 +459,23 @@ export function useManualEditor({
       return gone.size === 0 ? p : p.filter((e) => !gone.has(e));
     });
   }, []);
+
+  /**
+   * The same for copper: a board has arrived, and the gestures written that it
+   * shows leave the screen (see schedaMostraIlRame). A board that arrives from
+   * elsewhere does it too, e.g. "Aggiorna" after a fast update that could not
+   * be done.
+   */
+  const dropShownCopper = useCallback(
+    (circuitJson: readonly unknown[]) => {
+      if (copperRef.current.length === 0) return;
+      const shown = copperRef.current.filter(
+        (g) => copperWrittenRef.current.has(g) && schedaMostraIlRame(circuitJson, g.salvataggio),
+      );
+      if (shown.length > 0) setCopper((c) => withoutSent(c, shown));
+    },
+    [setCopper],
+  );
 
   /** raised from the first write until the board has followed the last one: see syncingRef */
   const refreshSyncing = useCallback(() => {
@@ -704,6 +756,67 @@ export function useManualEditor({
     return () => clearTimeout(t);
   }, [pending, unsentMoves, busy]);
 
+  /** a copper gesture let go in Sposta: on screen at once, written after the same quiet as a part */
+  const addCopper = useCallback(
+    (gesto: RameInAttesa) => {
+      setLastSaveOk(false);
+      setCopper((c) => [...c, gesto]);
+    },
+    [setCopper],
+  );
+
+  /**
+   * Writes the copper gestures not sent yet: ONE `copper` save each, in the
+   * order they were made, in the queue like every other write; the board
+   * follows afterwards (syncBoard), with no compile. The step of the history
+   * is the file before and after the save, both read from the server: the
+   * server rewrites what it is sent (a correction moved again keeps its start,
+   * the ones the files absorbed leave), so the page cannot work it out.
+   */
+  const saveCopper = useCallback(() => {
+    if (copperQueuedRef.current) return;
+    copperQueuedRef.current = true;
+    void enqueue(async () => {
+      copperQueuedRef.current = false;
+      // what is unsent when its turn comes: an undo before it may have taken a gesture back
+      for (const g of copperRef.current.filter((x) => !copperSentRef.current.has(x))) {
+        copperSentRef.current.add(g);
+        setCopper((c) => c);
+        const before = (await readSaved()) ?? savedRef.current;
+        try {
+          const { routes, vias, riscritte } = g.salvataggio;
+          await post({ action: "copper", gesto: g.gesto, routes, vias, riscritte });
+        } catch (err) {
+          // refused (the board changed, a distance broken) or not written: the gesture goes, the copper is back where it was
+          setCopper((c) => withoutSent(c, [g]));
+          setLastSaveOk(false);
+          setError(err instanceof Error ? err.message : String(err));
+          continue;
+        }
+        copperWrittenRef.current.add(g);
+        writesRef.current += 1;
+        const after = await readSaved();
+        if (!after) {
+          setError("rame salvato, ma non riesco a rileggere lo stato salvato: questo gesto non si annulla da qui");
+          continue;
+        }
+        commitSaved(after);
+        const step: EditorStep = { kind: "file", before, after };
+        if (copperRedoneRef.current.has(g)) setPast((p) => [...p, step]);
+        else pushStep(step);
+        setError(null);
+        setLastSaveOk(true);
+      }
+    });
+  }, [enqueue, setCopper, readSaved, post, commitSaved, pushStep, setPast]);
+
+  // a copper gesture let go: AUTOSAVE_MS of quiet, like a part, and it saves itself
+  useEffect(() => {
+    if (unsentCopper === 0) return;
+    const t = setTimeout(saveCopper, AUTOSAVE_MS);
+    return () => clearTimeout(t);
+  }, [copper, unsentCopper, saveCopper]);
+
   /**
    * Writes everything and recompiles once. Links go first: they change the
    * circuit, and it makes sense for the re-routing to start from the final
@@ -928,6 +1041,14 @@ export function useManualEditor({
    * undoes the next one.
    */
   const undo = useCallback(() => {
+    // a copper gesture not sent yet is under AUTOSAVE_MS old, the last thing done: it goes back at once, nothing is written
+    const unsentRame = copperRef.current.filter((g) => !copperSentRef.current.has(g));
+    if (unsentRame.length > 0) {
+      const last = unsentRame[unsentRame.length - 1];
+      setCopper((c) => withoutSent(c, [last]));
+      setFuture((f) => [{ kind: "rame", gesto: last }, ...f]);
+      return;
+    }
     // undo in the reverse order of doing: links first, which are the last
     // thing drawn, then the moves
     if (routes.length > 0) {
@@ -963,7 +1084,7 @@ export function useManualEditor({
         setPast((p) => [...p, step]);
       }
     });
-  }, [links, unlinks, routes, unsentNow, enqueue, runStep, setPast, setFuture]);
+  }, [links, unlinks, routes, unsentNow, enqueue, runStep, setPast, setFuture, setCopper]);
 
   /** Cmd+Shift+Z: the step undone last, done again, in the same queue */
   const redo = useCallback(() => {
@@ -977,9 +1098,16 @@ export function useManualEditor({
       setViewerKey((k) => k + 1);
       return;
     }
+    if (first.kind === "rame") {
+      // copper undone before it was saved: back on screen, and it saves itself
+      setFuture((f) => f.slice(1));
+      copperRedoneRef.current.add(first.gesto);
+      setCopper((c) => [...c, first.gesto]);
+      return;
+    }
     void enqueue(async () => {
       const step = futureRef.current[0];
-      if (!step || step.kind === "gesto") return;
+      if (!step || step.kind === "gesto" || step.kind === "rame") return;
       setFuture((f) => f.slice(1));
       setPast((p) => [...p, step]);
       if (!(await runStep(step, "redo"))) {
@@ -987,17 +1115,18 @@ export function useManualEditor({
         setFuture((f) => [step, ...f]);
       }
     });
-  }, [enqueue, runStep, setPast, setFuture]);
+  }, [enqueue, runStep, setPast, setFuture, setCopper]);
 
   /** throws away what has not been written yet: what is already on the file stays on screen */
   const discard = useCallback(() => {
     if (busyRef.current) return;
     setPending((p) => p.filter((e) => sentRef.current.has(e)));
+    setCopper((c) => c.filter((g) => copperSentRef.current.has(g)));
     setLinks([]);
     setUnlinks([]);
     setRoutes([]);
     setViewerKey((k) => k + 1);
-  }, []);
+  }, [setCopper]);
 
   /** hands a component back to the automatic flow (or everything, with name null) */
   const release = useCallback(
@@ -1030,13 +1159,18 @@ export function useManualEditor({
      * For the bar, never blocking: "attesa" a move waits its AUTOSAVE_MS,
      * "salvo" it is being written, "salvato" the last one is on the server.
      */
-    saveState: (saving ? "salvo" : unsentMoves > 0 ? "attesa" : lastSaveOk && !error ? "salvato" : null) as
+    saveState: (saving ? "salvo" : unsentMoves + unsentCopper > 0 ? "attesa" : lastSaveOk && !error ? "salvato" : null) as
       | "attesa"
       | "salvo"
       | "salvato"
       | null,
     /** a board arrived (a sync, a recompile, a compile from elsewhere): the overrides it shows go */
     dropAgreed,
+    /** the copper gestures let go in Sposta and not on the saved board yet: the canvas draws them */
+    copper,
+    addCopper,
+    /** a board arrived: the copper gestures it shows go */
+    dropShownCopper,
     /** the board on screen is being brought up to the saved moves: what arrives meanwhile is ours */
     syncing,
     /** brings the saved board up to the hand positions, as after a move (see followBoard) */
@@ -1050,7 +1184,7 @@ export function useManualEditor({
     addRoute,
     addLink,
     addUnlink,
-    canUndo: dirty > 0 || past.length > 0 || saving,
+    canUndo: dirty > 0 || unsentCopper > 0 || past.length > 0 || saving,
     canRedo: future.length > 0,
     replacePending,
     pushPending,

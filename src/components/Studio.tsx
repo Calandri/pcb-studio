@@ -753,7 +753,11 @@ export function Studio({
      * the overrides it already shows go, the others stay. An older board must
      * not put a part back where it was while the person has moved it since.
      */
-    if (seenCircuit && circuitJson) editor.dropAgreed((name) => placementOnBoard(boardParts, name));
+    if (seenCircuit && circuitJson) {
+      editor.dropAgreed((name) => placementOnBoard(boardParts, name));
+      // the same for the copper dragged in Sposta
+      editor.dropShownCopper(circuitJson);
+    }
   }
   if (swappedUnderEdits && editor.dirty === 0) setSwappedUnderEdits(false);
 
@@ -1200,8 +1204,10 @@ export function Studio({
     return out;
   }, [summary]);
 
-  /** the excess around a part the project asks (design-rules.json), for the footprints the viewer draws */
-  const eccedenzaIngombro = useMemo(() => eccedenzaDellIngombro(resolveDesignRules(fsMap ?? {}).rules), [fsMap]);
+  /** the project's rules (design-rules.json): the copper dragged in Sposta stops at their distances */
+  const regole = useMemo(() => resolveDesignRules(fsMap ?? {}).rules, [fsMap]);
+  /** the excess around a part the project asks, for the footprints the viewer draws */
+  const eccedenzaIngombro = useMemo(() => eccedenzaDellIngombro(regole), [regole]);
 
   /** ruleset this board was routed and checked with */
   const activeRules =
@@ -1827,6 +1833,10 @@ export function Studio({
                       pickedId={partId}
                       moveOverrides={pcbMoveOverrides}
                       onMoveComponent={moveComponent}
+                      // copper too: a via with its traces, a stretch of a trace, stopped by the project's rules
+                      regole={regole}
+                      rameInAttesa={editor.copper}
+                      onGestoDelRame={editor.addCopper}
                       // only what a PERSON is holding: the placer's own saved
                       // positions are a starting point, not a constraint
                       pinnedNames={editor.saved.pcb_placements
