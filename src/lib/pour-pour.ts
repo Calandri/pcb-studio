@@ -22,6 +22,7 @@
  */
 
 import { distanzaPropria, planeServedPorts, readPours } from "./pours";
+import { stratiDiRame } from "./strati-rame";
 
 type El = Record<string, unknown> & { type?: unknown };
 type Punto = { x: number; y: number };
@@ -134,12 +135,23 @@ function ramePropio(circuitJson: El[]): Map<string, Array<(p: Punto) => number>>
     if (l) l.push(f);
     else out.set(k, [f]);
   };
-  const serviti = planeServedPorts(circuitJson, readPours(circuitJson));
+  const colate = readPours(circuitJson);
+  const serviti = planeServedPorts(circuitJson, colate);
   const netDiChiave = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type === "source_net" && el.subcircuit_connectivity_map_key) netDiChiave.set(String(el.subcircuit_connectivity_map_key), String(el.source_net_id ?? ""));
   }
-  const strati = ["top", "inner1", "inner2", "inner3", "inner4", "bottom"];
+  /*
+   * A via and a through hole are copper on EVERY layer of the board (the stack
+   * comes from strati-rame.ts), and on any other layer a pour is written on:
+   * tscircuit pours a `<copperpour>` on a layer the board does not declare and
+   * says nothing. The list was written by hand up to inner4, so on an 8-layer
+   * board a pour on inner5 or inner6 did not know the vias of its own net:
+   * where it holds one whole, the other pour standing at its own clearance
+   * from that via was reported as too close.
+   */
+  const pila = stratiDiRame(num(circuitJson.find((el) => el.type === "pcb_board")?.num_layers) ?? 2);
+  const strati = [...new Set([...pila, ...colate.map((c) => c.layer)])];
   for (const el of circuitJson) {
     // a polygon pad may carry no x and y: its points say where it is
     const x = num(el.x) ?? 0, y = num(el.y) ?? 0;

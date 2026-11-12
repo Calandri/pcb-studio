@@ -21,9 +21,11 @@
  * hand-drawn trace like any other, which is the point where the check becomes
  * useful instead of decorative.
  */
-import { stratiDiRame, viaPassante, vieSemprePassanti } from "./via-layers";
+import { STRATI_NOTI, stratiDiRame, type StratoDiRame } from "./strati-rame";
+import { viaPassante, vieSemprePassanti } from "./via-layers";
 
-export type Layer = "top" | "bottom" | "inner1" | "inner2";
+/** a copper layer a route point can be on: every layer a board can have (strati-rame.ts) */
+export type Layer = StratoDiRame;
 
 export interface ManualRoutePoint {
   x: number;
@@ -108,7 +110,14 @@ type El = Record<string, unknown>;
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
-const LAYERS: Layer[] = ["top", "bottom", "inner1", "inner2"];
+/**
+ * The layers a route is read on. The list stopped at inner2: a route drawn
+ * through inner3 on a 6-layer board was refused whole when read, as "a layer
+ * that does not exist".
+ */
+const LAYERS: readonly Layer[] = STRATI_NOTI;
+/** the four layers a route could be written on before, and was laid on whatever the board declares (see conLePisteAMano) */
+const SEMPRE_POSATI: readonly string[] = stratiDiRame(4);
 
 /** sane bounds for what a route may carry: anything outside is a broken or hostile input */
 export const ROUTE_LIMITS = {
@@ -181,8 +190,11 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
  * Reads routes defensively. What is rejected, and why:
  *   - a point with a non-finite or absurd coordinate: the whole route, since a
  *     route with a hole in the middle is not the route that was drawn;
- *   - a point on a layer that does not exist: the whole route. It used to be
- *     moved silently to the top face, i.e. copper where nobody drew it;
+ *   - a point on a layer that does not exist (not one of top, inner1..inner6,
+ *     bottom): the whole route. It used to be moved silently to the top face,
+ *     i.e. copper where nobody drew it. Whether THIS board has the layer is
+ *     asked when the route is laid (see conLePisteAMano): the file is read
+ *     without a board;
  *   - consecutive identical points: dropped (a zero-length segment is noise
  *     for every check), while the same x/y on another layer stays — that is a
  *     via;
@@ -415,7 +427,7 @@ export function applyManualRoutes(args: {
 
 function conLePisteAMano({
   circuitJson,
-  routes,
+  routes: scritte,
   viaDiameter = 0.6,
   viaHoleDiameter = 0.3,
 }: {
@@ -424,6 +436,26 @@ function conLePisteAMano({
   viaDiameter?: number;
   viaHoleDiameter?: number;
 }): ApplyResult {
+  /*
+   * A ROUTE ON A LAYER THE BOARD DOES NOT HAVE IS NOT LAID.
+   *
+   * inner3..inner6 are read since the boards of six and eight layers. A board
+   * taken back to four keeps in its file the routes drawn on them, and laid on
+   * the board they would be copper that no view shows and no Gerber file
+   * holds, with the connection counted as routed. Such a route stays in the
+   * file, is left off the board (its connection is open again, and says so)
+   * and is named in `unknown`. top, bottom, inner1 and inner2 are laid on any
+   * board, as they always were: nothing changes for a route that could be
+   * written before.
+   */
+  const strati = stratiDiRame(Number((circuitJson as El[]).find((e) => e.type === "pcb_board")?.num_layers ?? 2));
+  const posabili = new Set([...strati, ...SEMPRE_POSATI]);
+  const fuoriPila: string[] = [];
+  const routes = scritte.filter((r) => {
+    const mancante = r.points.find((p) => !posabili.has(p.layer));
+    if (mancante) fuoriPila.push(`${manualRouteKey(r)} (${mancante.layer}: la scheda ha ${strati.length} strati)`);
+    return !mancante;
+  });
   /*
    * Hand copper whose route is no longer in the file goes too: a released or
    * deleted route must not survive as copper marked `manual` that nothing
@@ -437,7 +469,7 @@ function conLePisteAMano({
       !(e.type === "pcb_trace" && e.manual === true && typeof e.manual_route_id === "string" && !keys.has(e.manual_route_id)),
   );
   if (routes.length === 0) {
-    return { circuitJson: els.length === circuitJson.length ? circuitJson : els, applied: [], branches: [], unknown: [] };
+    return { circuitJson: els.length === circuitJson.length ? circuitJson : els, applied: [], branches: [], unknown: fuoriPila };
   }
 
   const sourceTraceIdByName = new Map<string, string>();
@@ -483,7 +515,7 @@ function conLePisteAMano({
 
   const applied: string[] = [];
   const branchNames: string[] = [];
-  const unknown: string[] = [];
+  const unknown: string[] = [...fuoriPila];
   const replacing = new Map<string, ManualRoute>();
   /** further copper of a connection: a net's tree, or a branch drawn next to it */
   const rami = new Map<string, ManualRoute[]>();
@@ -656,7 +688,6 @@ function conLePisteAMano({
    * so the via lists the whole stack: `[from, to]`, as it used to, read as a
    * blind via to the planes and to the drill file (see vieSemprePassanti).
    */
-  const strati = stratiDiRame(Number(els.find((e) => e.type === "pcb_board")?.num_layers ?? 2));
   let nVia = 0;
   for (const e of [...out]) {
     if (e.type !== "pcb_trace" || !e.manual) continue;

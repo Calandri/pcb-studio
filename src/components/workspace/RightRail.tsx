@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { estimateCost, type BoardReport, type Severity } from "@/lib/board-report";
+import { estimateCost, millimetri, type BoardReport, type Severity } from "@/lib/board-report";
 import { BOARD_THICKNESS_MM } from "@/lib/enclosure-template";
 import { downloadTextFile, meshesToStl } from "@/lib/stl-export";
 import type { EnclosuresApi } from "@/lib/use-enclosures";
@@ -359,7 +359,7 @@ function BoardRail({
           <PreflightRow
             ok
             label="Struttura confermata"
-            value={`${report.layerCount} strati · 1,6 mm`}
+            value={`${report.layerCount} strati · ${millimetri(report.thicknessMm)} mm`}
           />
           <PreflightRow
             ok={report.compiled && report.unrouted === 0}

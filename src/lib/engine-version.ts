@@ -79,7 +79,17 @@
 // In the same engine, one check does change its answer: the ERC no longer reports the three ports (top, bottom, pin1)
 // tscircuit gives to every <via> written in a file as "pin non collegato" (erc.ts). sbb-dl-principale had 543 such
 // lines for its 181 vias and "Cuci la massa" adds three per via: the list, 200 lines at most, held nothing else. The
-// count of unconnected pins of a board with written vias goes down by three per via; a recheck is enough
+// count of unconnected pins of a board with written vias goes down by three per via; a recheck is enough.
+// Still in 12 (not published when this was added): boards of six and eight copper layers. The layers of a board come
+// from one place (strati-rame.ts: top, inner1..inner(n-2), bottom, from the number the board declares) and every list
+// written by hand uses it. On a board of two or four layers no check changes its answer and no count changes. On six
+// and eight layers two answers change, both corrections: a hand route through inner3..inner6 is read and laid on a
+// board that has that layer (it was thrown away whole when read, so it could not be saved and its connection stayed
+// open; on a board without that layer it is left off and its connection stays open, as before); and pour against pour
+// knows the vias and the through holes of a pour's own net on every layer of the board (the list stopped at inner4:
+// on an 8-layer board, where a pour on inner5 or inner6 holds a via of its net whole, the other pour standing at its
+// own clearance from that via was reported as "pour_pour_clearance"; the same for a pour written on inner5 or inner6
+// of a board with fewer layers). The other checks already read the layer as it is written
 export const CHECKS_ENGINE_VERSION = 12;
 
 /**

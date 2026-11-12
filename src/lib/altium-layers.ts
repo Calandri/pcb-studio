@@ -1,5 +1,6 @@
 import { chiaveCoppia, type ChiaveCoppia, type TipoRame } from "./design-rules";
 import type { Layer, ManualRoute } from "./manual-routes";
+import { pilaDiRame } from "./strati-rame";
 
 /**
  * The LAYERS of an Altium board, and what each one is for.
@@ -63,7 +64,10 @@ const NON_RAME = /overlay|paste|solder|dielectric|mechanical|courtyard|assembly|
 /**
  * A board with more copper layers than the import can represent.
  *
- * The app knows four faces (top, inner1, inner2, bottom). A six layer board
+ * This import maps a stack onto four faces (top, inner1, inner2, bottom). The
+ * rest of the app has handled six and eight layers since 2026-11-12 (see
+ * strati-rame.ts); the import was not widened with it, because no .PcbDoc with
+ * more than two inner layers in use was at hand to check it against. A six layer board
  * used to be squashed onto them in silence: the third and fourth inner layer
  * landed on inner2 together, and two nets that run one above the other on the
  * real board became copper on the same face — shorts that exist only in the
@@ -104,7 +108,7 @@ export function leggiStrati(
    * Overlay, TOP, Dielectric, GND, ...) and each entry carries the
    * `legacyLayerId` that the primitives use. Ordering by the stack is what makes
    * the first copper layer top, the last bottom, and the ones in between inner1
-   * and inner2 — the four faces tscircuit knows.
+   * and inner2: the four faces this import maps onto.
    */
   const rame: Array<{ id: number; nome: string; piano: boolean }> = [];
   for (const l of arr(pcb.layers)) {
@@ -149,7 +153,8 @@ export function leggiStrati(
         `lasciati fuori gli strati interni vuoti ${vuoti.map((r) => r.nome).join(", ")}`,
     );
   }
-  const facce: Layer[] = ["top", "inner1", "inner2", "bottom"];
+  // the four faces this import maps a stack onto (it refuses more inner layers in use, see above): from strati-rame.ts
+  const facce: Layer[] = pilaDiRame(4);
   usati.forEach((r, i) => {
     const faccia: Layer =
       i === 0 ? "top" : i === usati.length - 1 ? "bottom" : (facce[Math.min(i, 2)] ?? "inner2");

@@ -18,7 +18,7 @@ import { isTypingTarget } from "../keyboard";
 import {
   LAYER_COLOR,
   PAD_COLOR,
-  LAYER_ORDER,
+  layerDrawOrder,
   boardOutlinePath,
   buildScene,
   colatePerRete,
@@ -78,7 +78,7 @@ export function RouteCanvas({
    * went on saying Top. "all" keeps the last layer drawn on and shows them all.
    */
   layer?: string;
-  /** a layer picked here (1-4, V): told to whoever owns the choice */
+  /** a layer picked here (1 to the number of layers, V): told to whoever owns the choice */
   onLayer?: (layer: LayerId) => void;
   /** how much the layers that are not the chosen one show through, 0-100 (0 = not drawn) */
   xray?: number;
@@ -441,7 +441,8 @@ export function RouteCanvas({
   }
 
   const mm = 1 / view.k;
-  const usedLayers = LAYER_ORDER.filter((l) => scene.board.layers >= 4 || l === "top" || l === "bottom");
+  // every copper layer the board declares, from the bottom up (2, 4, 6 or 8: see strati-rame.ts)
+  const usedLayers = layerDrawOrder(scene.board.layers);
   /*
    * The rule of strati-visibili.ts, the same as the board view: the layer
    * drawn on at full strength, the others as much as the x-ray asks and not
@@ -701,7 +702,7 @@ export function RouteCanvas({
       <div className="pointer-events-none absolute bottom-4 left-4 max-w-[520px] rounded-[9px] border border-[#1F2C29] bg-[rgba(9,14,13,0.9)] px-3 py-1.5 text-[11px] leading-relaxed text-muted backdrop-blur">
         {note ? <span className="text-brand">{note}</span> : "Clicca un pad per partire, poi clicca per ogni angolo e chiudi su un altro pad. I pad BIANCHI sono la tua stessa net: la pista puo' chiudere solo li'. Clicca una pista esistente per selezionarla e staccarla (Canc due volte) o ridisegnarla (R due volte)."}
         <span className="ml-2 text-faint">
-          1-4 cambia strato e lascia una via · V via e torna allo strato di prima · Backspace
+          1-{usedLayers.length} cambia strato e lascia una via · V via e torna allo strato di prima · Backspace
           toglie l&apos;ultimo angolo · Esc annulla ·
           Shift trascina la vista · + e - zoom, 0 inquadra tutto, Z e trascina per un&apos;area
         </span>

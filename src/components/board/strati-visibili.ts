@@ -1,3 +1,4 @@
+import { eStratoDiRame } from "@/lib/strati-rame";
 import type { LayerId } from "./render";
 
 /**
@@ -19,11 +20,9 @@ import type { LayerId } from "./render";
 /** what "Sezione della scheda" holds: one copper layer, or all of them */
 export type StratoScelto = LayerId | "all";
 
-const NOTI: readonly string[] = ["top", "bottom", "inner1", "inner2", "all"];
-
-/** the rail hands over a string: anything unknown means top, as it always did */
+/** the rail hands over a string: anything that is not a copper layer (strati-rame.ts) or "all" means top, as it always did */
 export function stratoScelto(layer: string | undefined | null): StratoScelto {
-  return layer && NOTI.includes(layer) ? (layer as StratoScelto) : "top";
+  return layer === "all" || eStratoDiRame(layer) ? layer : "top";
 }
 
 /**
@@ -33,7 +32,7 @@ export function stratoScelto(layer: string | undefined | null): StratoScelto {
  * checker named its layer.
  */
 export function stratoDiRame(layer: string | undefined | null): LayerId | undefined {
-  return layer === "top" || layer === "bottom" || layer === "inner1" || layer === "inner2" ? layer : undefined;
+  return eStratoDiRame(layer) ? layer : undefined;
 }
 
 /** how strongly a layer is drawn: 1 = full, 0 = not drawn at all */

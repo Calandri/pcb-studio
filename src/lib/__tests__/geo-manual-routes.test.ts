@@ -91,7 +91,8 @@ describe("parseManualRoutes", () => {
   it("refuses broken points and unknown layers instead of moving them to the top face", () => {
     const parsed = parseManualRoutes([
       { connection: "a", points: [{ x: 0, y: 0 }, { x: Number.NaN, y: 1 }] },
-      { connection: "b", points: [{ x: 0, y: 0, layer: "inner3" }, { x: 1, y: 0, layer: "inner3" }] },
+      // a layer no board has. It was "inner3" until the boards of six and eight layers: inner3..inner6 are copper layers now
+      { connection: "b", points: [{ x: 0, y: 0, layer: "inner7" }, { x: 1, y: 0, layer: "inner7" }] },
       { connection: "c", points: [{ x: 0, y: 0 }, { x: 1, y: 0, layer: "bottom" }] },
       null,
       { connection: "d", points: [{ x: 0, y: 0 }] },

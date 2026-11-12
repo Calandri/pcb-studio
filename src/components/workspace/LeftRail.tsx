@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import type { BoardReport } from "@/lib/board-report";
+import { millimetri, type BoardReport } from "@/lib/board-report";
 import type { InspectComponent } from "@/lib/inspect";
 import type { EnclosuresApi } from "@/lib/use-enclosures";
 import { CAD_IMPORT_EXTENSIONS } from "@/lib/cad-import";
@@ -224,11 +224,11 @@ function PcbSections({
       <section className="flex flex-col gap-3">
         <SectionHead title="SEZIONE DELLA SCHEDA" />
         <div className="flex flex-col gap-[7px] rounded-2xl border border-line bg-gradient-to-b from-[#0E1514] to-[#0A0F0E] px-3 py-3.5">
-          {/* every copper layer together (key 0); 1, 2, 3, 4 pick one */}
+          {/* every copper layer together (key 0); 1, 2, 3... pick one, in the order of the rows */}
           <button
             type="button"
             onClick={() => onLayer("all")}
-            title="Tutti gli strati di rame insieme (0). Uno solo: 1, 2, 3, 4 in ordine dall'alto"
+            title={`Tutti gli strati di rame insieme (0). Uno solo: ${report.layers.map((_, i) => i + 1).join(", ")} in ordine dall'alto`}
             className={`flex items-center justify-between rounded-[9px] px-1 py-[5px] text-left text-[12px] font-semibold transition-colors ${
               layer === "all" ? "bg-[#141E1B] text-brand" : "text-text hover:bg-[#141E1B]"
             }`}
@@ -276,6 +276,17 @@ function PcbSections({
               </button>
             );
           })}
+          {/*
+            The depths next to the names are the board's thickness cut in equal
+            steps: no project declares its stackup, and a number read as the
+            real depth of a plane is worse than no number. Said here, in words.
+          */}
+          {report.nominalDepths && (
+            <p className="px-1 text-[10.5px] leading-[1.4] text-[#5F726C]">
+              Le quote in mm sono indicative: lo spessore della scheda ({millimetri(report.thicknessMm)} mm) diviso in parti
+              uguali. Non sono la pila vera, quella la decide chi fabbrica la scheda.
+            </p>
+          )}
           {/*
             Which face's parts "Sposta" shows and lets you grab: the face of
             the chosen layer (bottom on Bottom, top otherwise). Both faces only

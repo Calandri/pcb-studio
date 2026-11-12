@@ -13,6 +13,7 @@ import {
 import { buildProjectRules, DESIGN_RULES_PATH, serializeDesignRules } from "./design-rules";
 import { LUNGHEZZE_PATH, serializzaGruppi } from "./lunghezze";
 import type { Layer, ManualRoute, ManualRoutePoint } from "./manual-routes";
+import { eStratoDiRame } from "./strati-rame";
 import { modelli3dNativi } from "./altium-3d";
 import { schematicaNativa, type FoglioAltium } from "./altium-schematic";
 import {
@@ -905,10 +906,10 @@ function identityFromNative(native: Record<string, unknown>): Map<string, Compon
   return out;
 }
 
-const LAYERS: Layer[] = ["top", "bottom", "inner1", "inner2"];
+/** the layer of a point of copper already drawn: any copper layer a board can have (strati-rame.ts), else the top */
 const asLayer = (v: unknown): Layer => {
   const s = String(v ?? "top").toLowerCase();
-  return (LAYERS as string[]).includes(s) ? (s as Layer) : "top";
+  return eStratoDiRame(s) ? s : "top";
 };
 
 /**

@@ -8,6 +8,7 @@ import { descriviPezzo } from "@/lib/part-description";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildBoardReport, schematicMissing, type BoardReport } from "@/lib/board-report";
+import { didascaliaDelloStrato } from "@/lib/strati-rame";
 import { motivoSenzaSchematico, type CompileRun } from "@/lib/compile-run";
 import type { ConflittoSerigrafia } from "@/lib/silkscreen-clearance";
 import type { IngombriDeiPezzi } from "@/lib/component-clearance";
@@ -113,8 +114,9 @@ export function Studio({
   const [bothSides, setBothSides] = useState(false);
 
   /*
-   * 1, 2, 3, 4: only that copper layer, in stackup order (2 = Bottom on a
-   * 2-layer board); 0: all of them. The same as clicking the layer in "Sezione
+   * 1, 2, 3...: only that copper layer, in stackup order (1 = Top, the last
+   * one = Bottom: 2 on a 2-layer board, 6 on a 6-layer one); 0: all of them.
+   * The same as clicking the layer in "Sezione
    * della scheda", so in Sposta it also changes the face whose parts can be
    * grabbed. Only on the board tab (on the schematic 0 frames the sheet), never
    * while typing, never with a modifier (Cmd+1 belongs to the browser).
@@ -2015,7 +2017,7 @@ export function Studio({
               </span>
               <span className="flex-1" />
               <span className="font-mono text-[10px] text-[#4E625C]">
-                {tab === "pcb" ? layerCaption(layer) : TAB_CAPTIONS[tab]}
+                {tab === "pcb" ? didascaliaDelloStrato(layer) : TAB_CAPTIONS[tab]}
               </span>
               <button
                 type="button"
@@ -2231,12 +2233,6 @@ const TAB_BODIES: Record<BoardTab, string> = {
   bom: "L'elenco dei componenti da comprare, con codice fornitore e quantità.",
   stato: "A che punto è ogni componente: footprint controllato, datasheet, errata, a cosa serve qui, collegamenti.",
 };
-
-function layerCaption(layer: string): string {
-  if (layer === "top") return "lato componenti";
-  if (layer === "bottom") return "lato saldature";
-  return layer === "inner1" ? "piano interno 1" : "piano interno 2";
-}
 
 function toolLabel(name: string): string {
   const labels: Record<string, string> = {

@@ -21,13 +21,13 @@
  * segment is connected too, as one on BIRDY_BAT's inner2 showed). Everywhere else the inner layer keeps only the
  * clearance the pour engine already cuts around the hole.
  */
+import { stratiDiRame } from "./strati-rame";
+
 type El = Record<string, unknown> & { type?: unknown };
 type Punto = { x: number; y: number };
 
-export function stratiDiRame(numeroStrati: number): string[] {
-  const n = Number.isFinite(numeroStrati) && numeroStrati >= 2 ? Math.floor(numeroStrati) : 2;
-  return ["top", ...Array.from({ length: n - 2 }, (_, i) => `inner${i + 1}`), "bottom"];
-}
+// the copper layers of a board: one source, strati-rame.ts (kept here for whoever imports it from this file)
+export { stratiDiRame };
 
 /** the layers an element lists, as strings */
 const elencati = (v: unknown): string[] => (Array.isArray(v) ? (v as unknown[]).map(String) : []);

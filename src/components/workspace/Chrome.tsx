@@ -1,6 +1,7 @@
 "use client";
 
 import type { BoardReport } from "@/lib/board-report";
+import { didascaliaDelloStrato } from "@/lib/strati-rame";
 import { LogoMark } from "../Logo";
 
 export type BoardTab = "schematic" | "pcb" | "cad" | "bom" | "stato";
@@ -167,14 +168,7 @@ export function Footer({
   viaSizes?: Array<{ pad: number; foro: number; quante: number }>;
   onEditRules?: () => void;
 }) {
-  const sideCaption =
-    layer === "top"
-      ? "lato componenti"
-      : layer === "bottom"
-        ? "lato saldature"
-        : layer === "inner1"
-          ? "piano interno 1"
-          : "piano interno 2";
+  const sideCaption = didascaliaDelloStrato(layer);
 
   return (
     <footer className="flex items-center gap-4 border-t border-line bg-surface px-[18px]">

@@ -19,6 +19,7 @@
  * names written bare (designators, nets) are reduced to [A-Za-z0-9_] first.
  */
 import { disposizionePin, type LatiDelSimbolo } from "./altium-schematic";
+import { eStratoDiRame } from "./strati-rame";
 
 interface El {
   type: string;
@@ -1121,9 +1122,9 @@ export function circuitJsonToProjectFiles(
    * same thing the app builds on its own boards, so from here on the imported
    * board is treated like any other.
    */
-  const STRATO_DI_RAME = /^(top|bottom|inner[1-8])$/;
   const pourLines = (opts.piani ?? [])
-    .filter((p) => STRATO_DI_RAME.test(String(p.faccia)))
+    // only on a copper layer a board can have (strati-rame.ts)
+    .filter((p) => eStratoDiRame(String(p.faccia)))
     .map((p) => {
       /*
        * With an outline the pour fills exactly the shape the file drew; without

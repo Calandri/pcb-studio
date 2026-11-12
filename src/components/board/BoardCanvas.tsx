@@ -25,7 +25,7 @@ import {
   HOLE_COPPER,
   LAYER_COLOR,
   PAD_COLOR,
-  LAYER_ORDER,
+  layerDrawOrder,
   boardOutlinePath,
   buildScene,
   colatePerRete,
@@ -995,9 +995,8 @@ export function BoardCanvas({
   const scelto = stratoScelto(layer);
   const tutti = scelto === "all";
   const active: LayerId = scelto === "all" ? "top" : scelto;
-  const usedLayers = LAYER_ORDER.filter(
-    (l) => scene.board.layers >= 4 || l === "top" || l === "bottom",
-  );
+  // every copper layer the board declares, from the bottom up (2, 4, 6 or 8: see strati-rame.ts)
+  const usedLayers = layerDrawOrder(scene.board.layers);
   /*
    * The chosen layer is drawn LAST, so above all the others.
    * Before, the order was fixed (top copper always on top) and working on an
@@ -1935,7 +1934,7 @@ export function BoardCanvas({
         gridMm={gridMm}
         onGrid={setGridMm}
         pxPerMm={Math.round(view.k)}
-        strati={scene.board.layers >= 4 ? 4 : 2}
+        strati={usedLayers.length}
       />
     </div>
   );

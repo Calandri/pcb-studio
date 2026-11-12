@@ -4,6 +4,8 @@
  * Everything derived from the real compilation data, no made-up values.
  */
 
+import { COLORE_DEL_RAME, nomeDelloStrato, pilaDiRame } from "./strati-rame";
+
 export type Severity = "err" | "warn" | "ok";
 
 export interface CheckRow {
@@ -19,6 +21,7 @@ export interface CheckRow {
 export interface LayerRow {
   id: string;
   name: string;
+  /** how deep the layer sits from the top face, in mm with a comma: nominal, see BoardReport.nominalDepths */
   depthMm: string;
   coverage: number;
   color: string;
@@ -42,6 +45,19 @@ export interface BoardReport {
   passed: number;
   checks: CheckRow[];
   layers: LayerRow[];
+  /**
+   * The thickness the depths of `layers` are spread over: the one the board
+   * carries (`pcb_board.thickness`, what `<board thickness>` declares; a board
+   * that declares none gets 1.4 from tscircuit), or 1.6 when the board has none.
+   */
+  thicknessMm: number;
+  /**
+   * The depths of the inner layers are NOT the real stackup: nothing in a
+   * project declares one (a board says how many layers and how thick, no
+   * more), so they are the thickness cut in equal steps. True whenever the
+   * board has inner layers; the panel says it in words.
+   */
+  nominalDepths: boolean;
   widthMm: number | null;
   heightMm: number | null;
   layerCount: number;
@@ -115,12 +131,16 @@ export function schematicMissing(circuitJson: unknown[] | null | undefined): boo
   );
 }
 
-const LAYER_COLORS: Record<string, string> = {
-  top: "#F2C078",
-  inner1: "#3BE8B0",
-  inner2: "#7FB4FF",
-  bottom: "#B9853A",
-};
+/** the colour of each row of the panel: the copper colours of the viewer, with the top a shade lighter as it always was here */
+const LAYER_COLORS: Record<string, string> = { ...COLORE_DEL_RAME, top: "#F2C078" };
+
+/** the thickness of a board that carries none (a Circuit JSON made by hand): what the panel always assumed */
+const SPESSORE_DI_SERIE_MM = 1.6;
+
+/** millimetres as a person writes them here: a comma, no zeros at the end (1,6 and not 1.600) */
+export function millimetri(mm: number): string {
+  return String(Math.round(mm * 1000) / 1000).replace(".", ",");
+}
 
 export function buildBoardReport(
   circuitJson: unknown[] | null,
@@ -376,20 +396,25 @@ export function buildBoardReport(
   const pours = elements.filter((e) => e.type === "pcb_copper_pour");
   const maxCount = Math.max(1, ...perLayer.values());
 
-  const layerIds =
-    layerCount >= 4 ? ["top", "inner1", "inner2", "bottom"] : ["top", "bottom"];
-  const thickness = 1.6;
+  /*
+   * ONE ROW PER COPPER LAYER, as many as the board declares (strati-rame.ts).
+   * The list stopped at four: st-camera, six layers, showed Top, Inner 1,
+   * Inner 2, Bottom. And the depths were spread over 1.6 mm whatever the board
+   * said: they are now spread over the board's own thickness, in equal steps,
+   * which is all that can be said without a declared stackup (nominalDepths).
+   */
+  const layerIds = pilaDiRame(layerCount);
+  const suo = board?.thickness;
+  const thickness = typeof suo === "number" && Number.isFinite(suo) && suo > 0 ? suo : SPESSORE_DI_SERIE_MM;
   const layers: LayerRow[] = layerIds.map((id, i) => {
     const pour = pours.find((p) => p.layer === id);
     const raw = perLayer.get(id) ?? 0;
     return {
       id,
       name:
-        id === "top"
-          ? "Top"
-          : id === "bottom"
-            ? "Bottom"
-            : `${id === "inner1" ? "Inner 1" : "Inner 2"}${pour ? ` · ${String(pour.connects_to ?? "").replace("net.", "") || "piano"}` : ""}`,
+        id === "top" || id === "bottom"
+          ? nomeDelloStrato(id)
+          : `${nomeDelloStrato(id)}${pour ? ` · ${String(pour.connects_to ?? "").replace("net.", "") || "piano"}` : ""}`,
       depthMm: (i * (thickness / (layerIds.length - 1))).toFixed(3).replace(".", ","),
       // a copper pour covers almost everything; on the others we scale to the max
       coverage: pour ? 92 : Math.round((raw / maxCount) * 88),
@@ -407,6 +432,8 @@ export function buildBoardReport(
     passed: passedCount,
     checks,
     layers,
+    thicknessMm: thickness,
+    nominalDepths: layerIds.length > 2,
     widthMm,
     heightMm,
     layerCount,

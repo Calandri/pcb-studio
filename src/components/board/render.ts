@@ -10,35 +10,44 @@
 import { courtyardShape, footprintBoxes, type CourtyardShape } from "@/lib/footprint-bounds";
 import { INGOMBRO_ECCEDENZA_MM } from "@/lib/design-rules";
 import { leggiIngombri, type Forma } from "@/lib/ingombro";
+import { COLORE_DEL_RAME, eStratoDiRame, pilaDiRame, type StratoDiRame } from "@/lib/strati-rame";
 
 export interface El {
   type: string;
   [key: string]: unknown;
 }
 
-export type LayerId = "top" | "inner1" | "inner2" | "bottom";
-
-export const LAYER_ORDER: LayerId[] = ["bottom", "inner2", "inner1", "top"];
+/** a copper layer of the board: the names are in one place, strati-rame.ts */
+export type LayerId = StratoDiRame;
 
 /**
- * The copper layers in stackup order, top first: what keys 1, 2, 3... pick
- * (1 = Top, 2 = Inner 1, 3 = Inner 2, 4 = Bottom on a 4-layer board; 1 = Top,
- * 2 = Bottom on a 2-layer one). A key past the last layer picks nothing.
+ * The copper layers of a board in stackup order, top first: Top, Inner 1 ...
+ * Inner N-2, Bottom, from the number the board declares (strati-rame.ts says
+ * what an odd or a missing number gives).
+ */
+export function layerStack(layerCount: number): LayerId[] {
+  return pilaDiRame(layerCount);
+}
+
+/** the same layers from the bottom up: the order they are painted in, so the top lies over the others */
+export function layerDrawOrder(layerCount: number): LayerId[] {
+  return layerStack(layerCount).reverse();
+}
+
+/**
+ * What keys 1, 2, 3... pick, in stackup order: 1 = Top, then the inner layers,
+ * the last one = Bottom (1 = Top, 4 = Bottom on a 4-layer board, 1 = Top,
+ * 6 = Bottom on a 6-layer one, 2 = Bottom on a 2-layer one). A key past the
+ * last layer picks nothing, and 0 is all of them.
  */
 export function layerForKey(key: string, layerCount: number): LayerId | "all" | null {
   if (key === "0") return "all";
   if (!/^[1-9]$/.test(key)) return null;
-  const stack: LayerId[] = layerCount >= 4 ? ["top", "inner1", "inner2", "bottom"] : ["top", "bottom"];
-  return stack[Number(key) - 1] ?? null;
+  return layerStack(layerCount)[Number(key) - 1] ?? null;
 }
 
-/** copper: top is the warmest, the inner ones are told apart at a glance */
-export const LAYER_COLOR: Record<LayerId, string> = {
-  top: "#E8A33C",
-  inner1: "#3BE8B0",
-  inner2: "#7FB4FF",
-  bottom: "#B9853A",
-};
+/** copper: top is the warmest, the inner ones are told apart at a glance (see COLORE_DEL_RAME) */
+export const LAYER_COLOR: Record<LayerId, string> = COLORE_DEL_RAME;
 
 /**
  * I PAD NON SONO PISTE, e devono vedersi.
@@ -53,6 +62,11 @@ export const PAD_COLOR: Record<LayerId, string> = {
   top: "#F7CE8B",
   inner1: "#8DF3D0",
   inner2: "#B6D4FF",
+  // the copper colour of the layer, 43% of the way to white, like the two above
+  inner3: "#FFBFDF",
+  inner4: "#D5F29D",
+  inner5: "#9AE4EE",
+  inner6: "#E9D4FF",
   bottom: "#DCB176",
 };
 
@@ -384,9 +398,13 @@ export interface BoardScene {
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 
+/**
+ * The layer an element says it is on. inner3 and inner4 used to fall back on
+ * the top here, so the copper of a 6-layer board was drawn on the wrong layer.
+ */
 const asLayer = (v: unknown, fallback: LayerId = "top"): LayerId => {
   const s = String(v ?? "");
-  return s === "top" || s === "bottom" || s === "inner1" || s === "inner2" ? s : fallback;
+  return eStratoDiRame(s) ? s : fallback;
 };
 
 export function buildScene(
