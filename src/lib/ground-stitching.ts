@@ -749,14 +749,39 @@ const tre = (v: number): number => Math.round(v * 1000) / 1000;
 export function senzaLeVieAi(circuitJson: unknown[], punti: Punto[], reteId: string): unknown[] {
   if (punti.length === 0) return circuitJson;
   const cj = circuitJson as El[];
+  const sua = viaDellaReteA(cj, punti, reteId);
+  return cj.filter((el) => sua(el) === null);
+}
+
+/**
+ * How many of these points hold a via of the net on the board, to the micron:
+ * a board compiled with the tool's file has every one of its vias where the
+ * file says, unless something moved them (the component placed inside a
+ * `<group>` with an offset or a rotation).
+ */
+export function vieDellaReteAi(circuitJson: unknown[], punti: Punto[], reteId: string): number {
+  const cj = circuitJson as El[];
+  const sua = viaDellaReteA(cj, punti, reteId);
+  const trovati = new Set<string>();
+  for (const el of cj) {
+    const k = sua(el);
+    if (k !== null) trovati.add(k);
+  }
+  return trovati.size;
+}
+
+/** for an element: the point (as a key) it stands on, when it is a via of the net on one of the points; else null */
+function viaDellaReteA(cj: El[], punti: Punto[], reteId: string): (el: El) => string | null {
   const chiavi = new Set(punti.map((p) => `${tre(p.x)},${tre(p.y)}`));
   const g = gruppi(cj);
   const gruppo = g.chiaveDiRete.get(reteId) ?? `net:${reteId}`;
-  return cj.filter((el) => {
-    if (el.type !== "pcb_via") return true;
+  return (el) => {
+    if (el.type !== "pcb_via") return null;
     const x = num(el.x), y = num(el.y);
-    return x === null || y === null || !chiavi.has(`${tre(x)},${tre(y)}`) || g.via(el) !== gruppo;
-  });
+    if (x === null || y === null) return null;
+    const k = `${tre(x)},${tre(y)}`;
+    return chiavi.has(k) && g.via(el) === gruppo ? k : null;
+  };
 }
 
 // ---------------------------------------------------------------------------

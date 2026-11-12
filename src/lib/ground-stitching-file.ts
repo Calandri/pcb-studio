@@ -126,12 +126,27 @@ export function vieDelFile(contenuto: string | undefined): Punto[] {
   return file.stato === "dello_strumento" ? file.vie : [];
 }
 
-/** whether main.tsx imports the file and places its component */
+/** whether a file (main.tsx, or one main.tsx is made of) imports the stitching file and places its component */
 export function mainLaUsa(main: string | undefined): boolean {
   if (!main) return false;
   const codice = main.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  const importa = new RegExp(`import\\s*\\{[^}]*\\b${COMPONENTE_CUCITURA}\\b[^}]*\\}\\s*from\\s*["']\\./cucitura-massa(?:\\.tsx)?["']`).test(codice);
+  const importa = new RegExp(`import\\s*\\{[^}]*\\b${COMPONENTE_CUCITURA}\\b[^}]*\\}\\s*from\\s*["'](?:\\.{1,2}/)+cucitura-massa(?:\\.tsx)?["']`).test(codice);
   return importa && new RegExp(`<${COMPONENTE_CUCITURA}\\s*/>`).test(codice);
+}
+
+/**
+ * The file of the project that imports the stitching file and places its
+ * component: main.tsx when it does, else the first other one (a project
+ * generated in pieces, sbb-dl-principale, places its parts from files main.tsx
+ * imports); null when none does.
+ */
+export function chiLaUsa(files: Record<string, string>): string | null {
+  if (mainLaUsa(files["main.tsx"])) return "main.tsx";
+  for (const path of Object.keys(files).sort()) {
+    if (path === FILE_CUCITURA || path === "main.tsx" || !path.endsWith(".tsx")) continue;
+    if (mainLaUsa(files[path])) return path;
+  }
+  return null;
 }
 
 /** another file of the project already names a via VCM<n>: two vias with one name */

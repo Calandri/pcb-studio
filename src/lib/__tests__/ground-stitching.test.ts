@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "@/lib/design-rules";
 import { distanzaPuntoForma, pointSegDistance, rameDelPad, runDrcChecks } from "@/lib/drc";
 import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, sceltaDellaRete, senzaLeVieAi, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
-import { FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, mainLaUsa, vieComeElementi, vieDelFile } from "@/lib/ground-stitching-file";
+import { chiLaUsa, FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, mainLaUsa, vieComeElementi, vieDelFile } from "@/lib/ground-stitching-file";
 import { eseguiCucitura, statoDellaScheda } from "@/lib/ground-stitching-tool";
 import { conflittiDiSerigrafia } from "@/lib/silkscreen-clearance";
 import { viePassantiSuOgniStrato } from "@/lib/via-layers";
@@ -718,9 +718,53 @@ describe("il file cucitura-massa.tsx", () => {
     });
   });
 
-  it("main.tsx che lo usa davvero, non in un commento", () => {
+  it("main.tsx che lo usa davvero, non in un commento; o un file di cui main.tsx e' fatto", () => {
     expect(mainLaUsa('// import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board />')).toBe(false);
-    expect(mainLaUsa('import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board><CucituraMassa /></board>')).toBe(true);
+    const usa = 'import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board><CucituraMassa /></board>';
+    expect(mainLaUsa(usa)).toBe(true);
+    expect(chiLaUsa({ "main.tsx": usa, "parti.tsx": usa })).toBe("main.tsx");
+    expect(chiLaUsa({ "main.tsx": "export default () => <board />", [FILE_CUCITURA]: usa })).toBeNull();
+    const parti = 'import { CucituraMassa } from "../cucitura-massa"\nexport const Parti = () => <><CucituraMassa /></>';
+    expect(chiLaUsa({ "main.tsx": 'import { Parti } from "./pezzi/parti"\nexport default () => <board><Parti /></board>', "pezzi/parti.tsx": parti })).toBe("pezzi/parti.tsx");
+  });
+
+  describe("<CucituraMassa /> dentro un <group> spostato", () => {
+    const usa = { ...regole, "main.tsx": 'import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board><group pcbX={3} pcbY={2}><CucituraMassa /></group></board>' };
+    /** the board compiled with the file: its vias where the file says, or all moved by the group's offset */
+    const compilataCon = (testo: string, dx = 0, dy = 0) => {
+      const scritte = { rete: { id: "source_net_0", nome: "GND" }, via: { foroMm: 0.2, coronaMm: 0.5 }, vie: vieDelFile(testo).map((p) => ({ x: p.x + dx, y: p.y + dy, tipo: "griglia" })) } as EsitoCucitura;
+      return [...cj(), ...vieComeElementi(scritte, cj())];
+    };
+
+    it("le vie del file non sono sulla scheda alle loro coordinate: lo dice e apply rifiuta, invece di cucire attorno alle proprie vie spostate", async () => {
+      const primo = (await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi })).fileChanged!.content;
+      const quante = vieDelFile(primo).length;
+      expect(quante).toBeGreaterThan(10);
+      const files = { ...usa, [FILE_CUCITURA]: primo };
+      const spostata = compilataCon(primo, 3, 2);
+      const guarda = await eseguiCucitura({ files, args: {}, cache: { circuitJson: spostata }, scheda: "aggiornata", scrivi });
+      expect(guarda.result).toMatchObject({ ok: true, scrivibile: false, main: { usaIlFile: true, vieNonAlLoroPosto: expect.any(Number) } });
+      expect((guarda.result.main as { vieNonAlLoroPosto: number }).vieNonAlLoroPosto).toBeGreaterThan(quante / 2);
+      expect((guarda.result.nonScrivibile as string[]).join(" ")).toMatch(/non sono sulla scheda alle coordinate del file.*<group> spostato/);
+      const scritti: string[] = [];
+      const scrive = await eseguiCucitura({ files, args: { apply: true }, cache: { circuitJson: spostata }, scheda: "aggiornata", scrivi: async (path) => void scritti.push(path) });
+      expect(scrive.result.error).toMatch(/<group> spostato/);
+      expect(scritti).toEqual([]);
+      // with the vias where the file says the same call is the idempotent one
+      const dritta = await eseguiCucitura({ files, args: { apply: true }, cache: { circuitJson: compilataCon(primo) }, scheda: "aggiornata", scrivi });
+      expect(dritta.fileChanged!.content).toBe(primo);
+    });
+
+    it("un file non ancora usato da nessuno non toglie niente dalla scheda", async () => {
+      // a hand-placed ground via on the very point of a via of the unused file: it is the board's, and stays
+      const primo = (await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true, bordo: false }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi })).fileChanged!.content;
+      const p = vieDelFile(primo)[0];
+      const scheda = [...cj(), viaEsistente(p.x, p.y, "k_gnd")];
+      const r = await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />", [FILE_CUCITURA]: primo }, args: { bordo: false }, cache: { circuitJson: scheda }, scheda: "aggiornata", scrivi });
+      const griglia = (r.result.coordinate as { griglia: Array<[number, number]> }).griglia;
+      expect(griglia.length).toBeGreaterThan(5);
+      expect(griglia.some(([x, y]) => x === p.x && y === p.y)).toBe(false);
+    });
   });
 
   it("una rete che net.<nome> non sa scrivere non si scrive", () => {

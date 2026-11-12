@@ -33,10 +33,11 @@ import {
   PASSO_MIN_MM,
   sceltaDellaRete,
   senzaLeVieAi,
+  vieDellaReteAi,
   type MotivoScarto,
   type TipoVia,
 } from "./ground-stitching";
-import { FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, mainLaUsa, nomiGiaUsati, RIGA_IMPORT, RIGA_USO } from "./ground-stitching-file";
+import { chiLaUsa, FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, nomiGiaUsati, RIGA_IMPORT, RIGA_USO } from "./ground-stitching-file";
 
 /** what the tool is, for whoever chooses it: the agent's definition and the MCP one */
 export const DESCRIZIONE_CUCITURA =
@@ -146,7 +147,28 @@ export async function eseguiCucitura({
    */
   const file = leggiFileDellaCucitura(files[FILE_CUCITURA]);
   const suoPerQuestaRete = file.stato === "dello_strumento" && (file.rete === null || file.rete === scelta.nome);
-  const scheda = suoPerQuestaRete ? senzaLeVieAi(circuito, file.vie, scelta.id) : circuito;
+  /** the file of the project that places the component, null when none does */
+  const chi = chiLaUsa(files);
+  const usa = chi !== null;
+  /*
+   * And only where the board holds them: a board compiled with the file, by a
+   * project that places its component, has every via where the file says. When
+   * it does not (the component inside a <group> with an offset or a rotation:
+   * the coordinates of the file are the board's), the vias are somewhere else
+   * on the board, nothing is taken off, and nothing is written: a second run
+   * would stitch around its own displaced vias and write another file.
+   */
+  let scheda = circuito;
+  let nonAlLoroPosto = 0;
+  if (suoPerQuestaRete && usa && file.vie.length > 0) {
+    if (statoScheda === "aggiornata") {
+      nonAlLoroPosto = file.vie.length - vieDellaReteAi(circuito, file.vie, scelta.id);
+      if (nonAlLoroPosto === 0) scheda = senzaLeVieAi(circuito, file.vie, scelta.id);
+    } else if (statoScheda !== "senza_la_cucitura") {
+      // an old board, or one that was not compared: nothing is written on it, the look takes off what is there
+      scheda = senzaLeVieAi(circuito, file.vie, scelta.id);
+    }
+  }
   const esito = cuciLaMassa(scheda, regole, lettura.opzioni);
   if (!esito.ok) return { result: { error: esito.errore, ...(esito.candidate ? { candidate: esito.candidate } : {}) } };
 
@@ -166,6 +188,13 @@ export async function eseguiCucitura({
   } else if (file.stato === "dello_strumento" && !suoPerQuestaRete) {
     nonScrivibile.push(`${FILE_CUCITURA} tiene la cucitura della rete ${String(file.rete).slice(0, 60)} e questa chiamata cuce ${esito.rete.nome}: il file tiene una rete sola e non si sovrascrive con un'altra`);
   }
+  if (nonAlLoroPosto > 0 && file.stato === "dello_strumento") {
+    nonScrivibile.push(
+      `la scheda e' compilata con ${FILE_CUCITURA} ma ${nonAlLoroPosto} delle sue ${file.vie.length} vie non sono sulla scheda alle coordinate del file: ` +
+        `${RIGA_USO} e' dentro un <group> spostato o ruotato, o dentro un altro componente? Le coordinate del file sono quelle della scheda: ` +
+        `metti ${RIGA_USO} direttamente dentro <board>, ricompila e rifai l'anteprima`,
+    );
+  }
   const altro = nomiGiaUsati(files);
   if (altro) nonScrivibile.push(`${altro} usa gia' nomi di via VCM<n>: rinominali prima di scrivere la cucitura`);
   const testo = fileDellaCucitura(esito);
@@ -176,7 +205,6 @@ export async function eseguiCucitura({
   const perche: Partial<Record<MotivoScarto, string>> = {};
   for (const m of Object.keys(esito.scarti) as MotivoScarto[]) perche[m] = MOTIVI[m];
   for (const i of esito.isole.senzaPosto) perche[i.motivo] = MOTIVI[i.motivo];
-  const usa = mainLaUsa(files["main.tsx"]);
   const result: Record<string, unknown> = {
     ok: true,
     scritto: false,
@@ -205,7 +233,9 @@ export async function eseguiCucitura({
     fileEsistente: file.stato,
     scrivibile: nonScrivibile.length === 0,
     ...(nonScrivibile.length > 0 ? { nonScrivibile } : {}),
-    main: usa ? { usaIlFile: true } : { usaIlFile: false, righeDaAggiungere: [RIGA_IMPORT, `${RIGA_USO} dentro <board>`] },
+    main: usa
+      ? { usaIlFile: true, ...(chi !== "main.tsx" ? { da: chi } : {}), ...(nonAlLoroPosto > 0 ? { vieNonAlLoroPosto: nonAlLoroPosto } : {}) }
+      : { usaIlFile: false, righeDaAggiungere: [RIGA_IMPORT, `${RIGA_USO} dentro <board>`] },
     scheda: statoScheda ?? "non_confrontata",
     ...(statoScheda === "vecchia" ? { schedaPiuVecchiaDeiFile: true } : {}),
   };
