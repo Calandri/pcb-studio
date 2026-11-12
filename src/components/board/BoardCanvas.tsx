@@ -151,6 +151,7 @@ export function BoardCanvas({
   partInfo,
   vistaKey,
   eccedenzaIngombroMm,
+  anteprimaVie = null,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -205,6 +206,12 @@ export function BoardCanvas({
   vistaKey?: string;
   /** the project's componentCourtyardExcessMm, for the footprints PCB Studio computes (see ingombro.ts) */
   eccedenzaIngombroMm?: number;
+  /**
+   * The vias "Cuci la massa" proposes, before anything is written: dots at
+   * their size. Vias go through the board, so they are on every layer
+   * (strati-visibili.ts) and drawn whatever layer is chosen.
+   */
+  anteprimaVie?: { punti: Array<{ x: number; y: number; colore: string }>; diametroMm: number } | null;
 }) {
   const scene = useMemo(() => buildScene(circuitJson, { eccedenzaIngombroMm }), [circuitJson, eccedenzaIngombroMm]);
   /** the board's real outline as an SVG path; null when it is a plain rectangle */
@@ -1747,6 +1754,22 @@ export function BoardCanvas({
               </g>
               );
             })}
+
+          {/* the stitching vias proposed, not written yet */}
+          {anteprimaVie &&
+            anteprimaVie.punti.map((p, i) => (
+              <circle
+                key={`cucitura-${i}`}
+                cx={p.x}
+                cy={p.y}
+                r={Math.max(anteprimaVie.diametroMm / 2, mmPerPx * 2.5)}
+                fill={p.colore}
+                fillOpacity={0.85}
+                stroke="#06100D"
+                strokeWidth={mmPerPx}
+                pointerEvents="none"
+              />
+            ))}
         </g>
 
         {/* designators must not be mirrored: they are drawn outside the flipped group */}

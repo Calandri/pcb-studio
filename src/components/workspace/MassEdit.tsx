@@ -51,6 +51,13 @@ export interface MassEditProps {
   onRefresh?: () => void;
   /** declare the shown board current as it is, with no refresh at all */
   onAccept?: () => void;
+  /**
+   * Opens "Cuci la massa" (CuciMassa.tsx): ground vias at a regular pitch,
+   * previewed and then written to a file. Niccolo' asked for it (2026-11-12) as
+   * the one exception to "no vias by rule": an action someone launches, never
+   * something a compile does.
+   */
+  onCuciMassa?: () => void;
 }
 
 interface Verbo {
@@ -110,6 +117,7 @@ export function MassEdit({
   onAsk,
   onRefresh,
   onAccept,
+  onCuciMassa,
 }: MassEditProps) {
   const [aperto, setAperto] = useState(false);
   /*
@@ -253,6 +261,32 @@ export function MassEdit({
               </div>
             );
           })}
+          {onCuciMassa && ambito === "tutto" && (
+            <div
+              className={`grid grid-cols-[1fr_auto_auto] items-center gap-1.5 rounded-[10px] border border-transparent py-2 pl-2.5 pr-2 transition-colors ${
+                lavora ? "opacity-40" : "hover:border-[#22302C] hover:bg-white/[0.02]"
+              }`}
+            >
+              <div className="text-[13px]">
+                Cuci la massa
+                <em className="mt-0.5 block text-[11.5px] not-italic text-faint">
+                  vie di massa a passo regolare dove la massa c&apos;è: anteprima sulla scheda, poi un file, niente compilazione
+                </em>
+              </div>
+              <button
+                type="button"
+                disabled={lavora}
+                onClick={() => {
+                  setAperto(false);
+                  onCuciMassa();
+                }}
+                className="whitespace-nowrap rounded-lg border border-[#22302C] bg-transparent px-2.5 py-1.5 text-[12px] font-semibold text-brand transition-opacity hover:opacity-90 disabled:cursor-not-allowed"
+              >
+                Apri
+              </button>
+              <span className="w-[62px]" />
+            </div>
+          )}
         </div>
 
         <div className="mt-auto flex items-center gap-2 border-t border-line px-3.5 py-2.5 text-[12px] text-muted">

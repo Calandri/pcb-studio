@@ -36,6 +36,7 @@ import { PartPicker } from "./workspace/PartPicker";
 import { ClaudeWork } from "./workspace/ClaudeWork";
 import { RightRail, type ErcSummary } from "./workspace/RightRail";
 import { MassEdit, type MassAction } from "./workspace/MassEdit";
+import { CuciMassa, type AnteprimaCucitura } from "./workspace/CuciMassa";
 import { useEnclosures } from "@/lib/use-enclosures";
 import { useSharedSelection } from "./workspace/useSharedSelection";
 import { readSseStream } from "./sse-stream";
@@ -506,6 +507,10 @@ export function Studio({
       boardJobRef.current = null;
     }
   }, [claimBoard, runCompile]);
+
+  /** "Cuci la massa": open, and the vias it proposes drawn on the board */
+  const [cuciAperta, setCuciAperta] = useState(false);
+  const [anteprimaCucitura, setAnteprimaCucitura] = useState<AnteprimaCucitura | null>(null);
 
   /** what the mass edit is doing, and for how long */
   const [massBusy, setMassBusy] = useState("");
@@ -1738,6 +1743,7 @@ export function Studio({
                       layer={layer}
                       xray={xray}
                       markers={drcMarkers}
+                      anteprimaVie={anteprimaCucitura}
                       eccedenzaIngombroMm={eccedenzaIngombro}
                       hoveredComponentId={hoverPartId}
                       onHoverComponent={setHoverPartId}
@@ -1781,6 +1787,7 @@ export function Studio({
                       layer={layer}
                       xray={xray}
                       markers={drcMarkers}
+                      anteprimaVie={anteprimaCucitura}
                       eccedenzaIngombroMm={eccedenzaIngombro}
                       hoveredComponentId={hoverPartId}
                       onHoverComponent={setHoverPartId}
@@ -1944,6 +1951,22 @@ export function Studio({
               onAsk={askMass}
               onRefresh={() => void refreshGeometryFromFiles()}
               onAccept={() => void acceptBoardAsIs()}
+              onCuciMassa={() => setCuciAperta(true)}
+            />
+          )}
+          {tab === "pcb" && circuitJson && cuciAperta && (
+            <CuciMassa
+              projectId={projectId}
+              onAnteprima={setAnteprimaCucitura}
+              // written, not compiled: the files have it, the board on screen is older
+              onScritto={(path, content) => {
+                setFsMap((m) => ({ ...(m ?? {}), [path]: content }));
+                setCircuitStale(true);
+              }}
+              onChiudi={() => {
+                setCuciAperta(false);
+                setAnteprimaCucitura(null);
+              }}
             />
           )}
 
