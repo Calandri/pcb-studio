@@ -205,11 +205,11 @@ ${LIBRARY_RULES}
 ${ENCLOSURE_RULES}
 
 ## Connections
-- The compile result lists every declared connection and flags UNROUTED ones: a design is not done while unroutedConnections is non-empty (draw the missing traces by hand with pcbPath, add space, or move parts).
+- The compile result lists every declared connection and flags UNROUTED ones: a design is not done while unroutedConnections is non-empty (draw the missing traces by hand with pcbPath, add space, or move parts). Each entry names the connection of a pin that is really left out. A net with a copper pour is connected only where copper really touches: a pad beside its plane, or in a piece of pour cut off from the rest, is open.
 - Every component pin that matters must be connected via <trace>; use named nets for rails and shared signals.
 - Organize the board into FUNCTIONAL SECTIONS with <group name="power" subcircuit> ... </group> (e.g. power, mcu, sensors, connectors): put the section's components AND its traces inside the group.
 - Use the compile's GEOMETRIC feedback to place parts instead of guessing:
-  - unroutedDetail: for each unrouted connection, the net name and the exact pad coordinates (x, y, layer) that still need connecting. Move components so those pads face each other with a clear path.
+  - unroutedDetail: for each open net, its name and the pads to join, in pairs (x, y, layer): points[0] with points[1], points[2] with points[3]. Each pair is one missing stretch, the pad left out and the nearest pad of the copper it must reach; layer null is a through hole. Draw that trace, or move components so the two pads face each other with a clear path.
   - congestion: board cells (A1..F4) with the highest copper coverage. Spread parts out of high-coverage cells or enlarge the board.
   - ratsnest: totalLengthMm (ideal routed length — lower is better), estimatedCrossings (net segments crossing each other — reduce by moving parts so connected pads are on the same side), longestNets with centroids. When tuning placement, try to reduce crossings and the longest nets.
 ${SCHEMATIC_METRICS}
