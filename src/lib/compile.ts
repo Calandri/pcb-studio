@@ -2221,29 +2221,76 @@ function carryCopper(geometry: CircuitElement[], vecchio: unknown[]): CircuitEle
   );
   if (rame.length === 0) return geometry;
 
-  /** the name of a connection, from the old board and from the new one */
-  const chiaveDiRete = (elenco: CircuitElement[]) => {
-    const nome = new Map<string, string>();
+  /**
+   * A port by what it is, its part, its name and its pin ("R1 > pin2/2"), not
+   * by its id. The ids are numbered in the order the parts are read: a part
+   * that changes its pins, or one added or taken away, shifts the id of every
+   * port after it. On sbb-dl-principale (12/11/2026) U9 went from five pins to
+   * three and 155 of the 668 connections with the same name had other port
+   * ids: their old traces no longer found their connection, or found another
+   * one that happened to have those ids. The name with the pin, because a
+   * library part can have two ports on one pin (D16 there: "C" and "pin1" on
+   * pin 1). A name two ports still share, or a port of no named part (a via),
+   * says nothing: that port has no name here.
+   */
+  const nomiDellePorte = (elenco: CircuitElement[]): Map<string, string> => {
+    const pezzo = new Map<string, string>();
     for (const el of elenco) {
-      if (el.type !== "source_trace" || !el.source_trace_id) continue;
-      const porte = ((el.connected_source_port_ids as string[] | undefined) ?? [])
-        .slice()
-        .sort()
-        .join("|");
-      nome.set(String(el.source_trace_id), porte);
+      if (el.type === "source_component" && el.source_component_id && typeof el.name === "string") {
+        pezzo.set(String(el.source_component_id), el.name);
+      }
     }
+    const nome = new Map<string, string>();
+    const quante = new Map<string, number>();
+    for (const el of elenco) {
+      if (el.type !== "source_port" || !el.source_port_id) continue;
+      const di = pezzo.get(String(el.source_component_id ?? ""));
+      if (di === undefined || (el.name === undefined && el.pin_number === undefined)) continue;
+      const n = `${di} > ${String(el.name ?? "")}/${String(el.pin_number ?? "")}`;
+      nome.set(String(el.source_port_id), n);
+      quante.set(n, (quante.get(n) ?? 0) + 1);
+    }
+    for (const [id, n] of nome) if ((quante.get(n) ?? 0) > 1) nome.delete(id);
     return nome;
   };
-  const vecchie = chiaveDiRete(vecchio as CircuitElement[]);
-  const nuove = new Map(
-    [...chiaveDiRete(geometry)].map(([id, porte]) => [porte, id] as const),
-  );
+  /**
+   * The name of a connection, from the old board and from the new one: by the
+   * ids of its ports, and by their names when every one of them has one.
+   */
+  const chiaviDiRete = (elenco: CircuitElement[]) => {
+    const nomi = nomiDellePorte(elenco);
+    const perId = new Map<string, string>();
+    const perNome = new Map<string, string>();
+    for (const el of elenco) {
+      if (el.type !== "source_trace" || !el.source_trace_id) continue;
+      const porte = ((el.connected_source_port_ids as string[] | undefined) ?? []).map(String);
+      perId.set(String(el.source_trace_id), porte.slice().sort().join("|"));
+      const coiNomi = porte.map((p) => nomi.get(p));
+      if (porte.length > 0 && coiNomi.every((n) => n !== undefined)) {
+        perNome.set(String(el.source_trace_id), (coiNomi as string[]).sort().join("|"));
+      }
+    }
+    return { perId, perNome };
+  };
+  const rovescia = (m: Map<string, string>) => new Map([...m].map(([id, chiave]) => [chiave, id] as const));
+  const vecchie = chiaviDiRete(vecchio as CircuitElement[]);
+  const delleNuove = chiaviDiRete(geometry);
+  const nuove = { perId: rovescia(delleNuove.perId), perNome: rovescia(delleNuove.perNome) };
 
-  /** the connection the old trace belongs to on the NEW board, if it still exists */
+  /**
+   * The connection the old trace belongs to on the NEW board, if it still
+   * exists: the one that joins the same pins of the same parts, and only when
+   * the names do not find one (a part renamed) the one with the same port ids,
+   * as before.
+   */
   const nuovoIdDi = (el: CircuitElement): string | undefined => {
     const vecchioId = String(el.source_trace_id ?? "");
-    const porte = vecchioId ? vecchie.get(vecchioId) : undefined;
-    return porte ? nuove.get(porte) : undefined;
+    if (!vecchioId) return undefined;
+    const nome = vecchie.perNome.get(vecchioId);
+    const colNome = nome ? nuove.perNome.get(nome) : undefined;
+    if (colNome) return colNome;
+    const porte = vecchie.perId.get(vecchioId);
+    return porte ? nuove.perId.get(porte) : undefined;
   };
   /** the connections the files already draw: the geometry has copper for them */
   const disegnate = new Set(
