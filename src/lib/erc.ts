@@ -105,8 +105,25 @@ export function runErcChecks(circuitJson: El[]): ErcReport {
     }
   }
 
+  /*
+   * A <via> WRITTEN IN A FILE IS NOT A PART WITH PINS. tscircuit gives it three
+   * ports (top, bottom, pin1) whose `source_component_id` is the id of its
+   * `source_manually_placed_via`, and puts none of them in a source trace, not
+   * even when the via says `connectsTo` a net. Each one came out as "?.top non è
+   * collegato a nulla": 543 lines for the 181 vias of sbb-dl-principale, three
+   * more for every stitching via (ground-stitching.ts), and the list, 200 lines
+   * at most, held nothing else. Whether a via reaches its net is measured on the
+   * copper, by the DRC and by the plane checks: here its ports are not pins.
+   */
+  const vieScritte = new Set(
+    circuitJson
+      .filter((el) => el.type === "source_manually_placed_via")
+      .map((el) => String(el.source_manually_placed_via_id ?? "")),
+  );
+
   // --- 1. unconnected pins (and violated do_not_connect)
   for (const port of ports) {
+    if (vieScritte.has(String(port.source_component_id ?? ""))) continue;
     const id = String(port.source_port_id ?? "");
     const connected = groupOfPort.has(id);
     const label = `${nameOf(port.source_component_id)}.${String(port.name ?? "pin")}`;

@@ -394,7 +394,7 @@ export function padsOffPlane(
   circuitJson: unknown[],
   pours: PourShape[],
   reachMm = 1,
-): Array<{ pad: string; port: string; net: string; x: number; y: number }> {
+): Array<{ pad: string; port: string; net: string; x: number; y: number; layer: string }> {
   const served = planeServedPorts(circuitJson, pours);
   if (served.size === 0) return [];
   const els = circuitJson as El[];
@@ -449,7 +449,7 @@ export function padsOffPlane(
     }
   }
 
-  const out: Array<{ pad: string; port: string; net: string; x: number; y: number }> = [];
+  const out: Array<{ pad: string; port: string; net: string; x: number; y: number; layer: string }> = [];
   for (const el of els) {
     if (el.type !== "pcb_smtpad") continue;
     const net = served.get(String(el.pcb_port_id ?? ""));
@@ -529,6 +529,8 @@ export function padsOffPlane(
       net,
       x,
       y,
+      // the face the pad is on: the one whose plane it is not in (drc.ts puts the dot there)
+      layer,
     });
   }
   return out;

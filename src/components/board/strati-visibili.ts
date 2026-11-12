@@ -26,6 +26,16 @@ export function stratoScelto(layer: string | undefined | null): StratoScelto {
   return layer && NOTI.includes(layer) ? (layer as StratoScelto) : "top";
 }
 
+/**
+ * A layer named by somebody else (the checker writes a string next to each
+ * finding): the copper layer it is, or undefined when it is none of them.
+ * Undefined means "on every face": a hole, a via, a finding saved before the
+ * checker named its layer.
+ */
+export function stratoDiRame(layer: string | undefined | null): LayerId | undefined {
+  return layer === "top" || layer === "bottom" || layer === "inner1" || layer === "inner2" ? layer : undefined;
+}
+
 /** how strongly a layer is drawn: 1 = full, 0 = not drawn at all */
 export function opacitaStrato(l: LayerId, scelto: StratoScelto, xray: number): number {
   if (scelto === "all" || l === scelto) return 1;

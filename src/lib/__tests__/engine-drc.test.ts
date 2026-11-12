@@ -317,7 +317,8 @@ describe("pin_escape reads the pad on the layer of the trace", () => {
   it("a crooked entry into that pad is still reported (measured on C4.2 it read as straight)", () => {
     const found = escapes([board(), c4, ball, trace("bottom", 0.4, -0.4)]);
     expect(found).toHaveLength(1);
-    expect(found[0].points).toEqual([{ x: 0, y: 0 }]);
+    // the dot is on the layer of the trace that enters crooked: the bottom (engine 12, PuntoDrc)
+    expect(found[0].points).toEqual([{ x: 0, y: 0, layer: "bottom" }]);
   });
 
   it("a through-hole pad is left from both faces, and judged from both", () => {
@@ -371,7 +372,8 @@ describe("a plane keeps its distance from the vias of the other nets, on every l
     const found = drc([piano("inner1"), via("v_vbus", "k_sig", 2, 2, ["inner2", "bottom"])]);
     expect(found).toHaveLength(1);
     expect(found[0].message).toContain("v_vbus <-> GND pour on inner1: 0.000mm < min 0.152mm");
-    expect(found[0].points).toEqual([{ x: 2, y: 2 }]);
+    // the via goes through, the plane that did not open is on inner1: the dot is of inner1 (engine 12, PuntoDrc)
+    expect(found[0].points).toEqual([{ x: 2, y: 2, layer: "inner1" }]);
     // the same with the list completed: what the via lists does not decide what the hole crosses
     expect(drc([piano("inner1"), via("v_vbus", "k_sig", 2, 2, ["top", "inner1", "inner2", "bottom"])])).toHaveLength(1);
   });
@@ -497,8 +499,8 @@ describe("the plane check asks only the edges near the via, and answers the same
     return { cj, vie, piani };
   };
 
-  const attese = ({ vie, piani }: ReturnType<typeof scheda>, minimo: number): Array<{ testo: string; x: number; y: number }> => {
-    const out: Array<{ testo: string; x: number; y: number }> = [];
+  const attese = ({ vie, piani }: ReturnType<typeof scheda>, minimo: number): Array<{ testo: string; x: number; y: number; layer: string }> => {
+    const out: Array<{ testo: string; x: number; y: number; layer: string }> = [];
     for (const v of vie) {
       for (const p of piani) {
         if (p.net === v.net) continue;
@@ -509,7 +511,7 @@ describe("the plane check asks only the edges near the via, and answers the same
           for (const a of [p.esterno, ...p.buchi]) for (let i = 0, j = a.length - 1; i < a.length; j = i++) m = Math.min(m, dalSegmento(v.x, v.y, a[j], a[i]));
           d = Math.max(0, m - 0.25);
         }
-        if (d < minimo - 0.01) out.push({ testo: `${v.id} <-> N${p.net} pour on ${p.layer}: ${d.toFixed(3)}mm`, x: v.x, y: v.y });
+        if (d < minimo - 0.01) out.push({ testo: `${v.id} <-> N${p.net} pour on ${p.layer}: ${d.toFixed(3)}mm`, x: v.x, y: v.y, layer: p.layer });
       }
     }
     return out;
@@ -541,7 +543,8 @@ describe("the plane check asks only the edges near the via, and answers the same
     const [tutte] = runDrcChecks(s.cj, regole(0.152)).filter((v) => v.rule === "pour_clearance");
     expect(tutte.count).toBe(plain.length);
     expect(tutte.message).toContain(plain[0].testo);
-    expect(tutte.points).toEqual(plain.slice(0, 200).map((m) => ({ x: m.x, y: m.y })));
+    // each dot at the via, on the layer of the plane that is too close to it
+    expect(tutte.points).toEqual(plain.slice(0, 200).map((m) => ({ x: m.x, y: m.y, layer: m.layer })));
   });
 
   it("two openings that overlap: a via in both is in no copper, whatever was asked before it", () => {

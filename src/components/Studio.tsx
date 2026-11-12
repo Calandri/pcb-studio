@@ -2,7 +2,8 @@
 
 import { avvisoDelProgetto } from "@/lib/progetti-con-difetti";
 import { isTypingTarget } from "./keyboard";
-import { layerForKey } from "./board/render";
+import { layerForKey, type LayerId } from "./board/render";
+import { stratoDiRame } from "./board/strati-visibili";
 import { descriviPezzo } from "@/lib/part-description";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1088,9 +1089,9 @@ export function Studio({
 
   const drcMarkers = useMemo(() => {
     const violations =
-      (summary as { drcViolations?: Array<{ rule: string; message: string; points?: Array<{ x: number; y: number }> }> } | null)
+      (summary as { drcViolations?: Array<{ rule: string; message: string; points?: Array<{ x: number; y: number; layer?: string }> }> } | null)
         ?.drcViolations ?? [];
-    const out: Array<{ id: string; x: number; y: number; message: string; severity: "err" | "warn"; layer?: "top" | "bottom" }> = [];
+    const out: Array<{ id: string; x: number; y: number; message: string; severity: "err" | "warn"; layer?: LayerId }> = [];
     for (const v of violations) {
       for (const point of v.points ?? []) {
         out.push({
@@ -1099,6 +1100,12 @@ export function Studio({
           y: point.y,
           message: v.message,
           severity: /via|escape/.test(v.rule) ? "warn" : "err",
+          /*
+           * The layer the checker found the problem on (drc.ts, PuntoDrc): the
+           * dot follows it like the copper it is about. No layer = through the
+           * board, or a board checked before the checker said it: on every face.
+           */
+          layer: stratoDiRame(point.layer),
         });
       }
     }

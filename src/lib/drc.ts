@@ -8,6 +8,22 @@ import type { PianiSuVie } from "./engine-version";
 import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 import { netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
 
+/**
+ * One dot of a violation. `layer` is the copper layer the problem is ON (top,
+ * bottom, inner1, inner2), when it is on one: two traces too close on the
+ * bottom are a problem of the bottom, and whoever looks at the top must not
+ * find the dot there ("solo i marcatori della faccia visibile", Niccolo',
+ * 2026-11-12). Absent when the problem goes through the board (a hole, a via,
+ * a through pad against the edge) or the layer is not known: the viewer then
+ * shows the dot on every face. It is per POINT, not per violation, because the
+ * occurrences of a rule are aggregated and they are on different layers.
+ */
+export interface PuntoDrc {
+  x: number;
+  y: number;
+  layer?: string;
+}
+
 export interface DrcViolation {
   rule: string;
   message: string;
@@ -16,7 +32,7 @@ export interface DrcViolation {
    * a violation says WHAT is wrong but not WHERE: on aggregated ones the
    * points of all occurrences are kept.
    */
-  points?: Array<{ x: number; y: number }>;
+  points?: PuntoDrc[];
   /**
    * How many times the rule fired, when the occurrences are aggregated. The
    * points are capped per rule (a board with three thousand crooked exits does
@@ -792,11 +808,14 @@ export function runDrcChecks(
     rule: string,
     message: string,
     point?: { x: number; y: number } | null,
+    /** the layer the problem is on; null or absent = through the board, or not known (see PuntoDrc) */
+    strato?: string | null,
   ) => {
     const n = (perRegola.get(rule) ?? 0) + 1;
     perRegola.set(rule, n);
     if (n <= MAX_PER_REGOLA) {
-      raw.push({ rule, message, points: point ? [point] : undefined });
+      const punto: PuntoDrc | null = point ? (strato ? { x: point.x, y: point.y, layer: strato } : point) : null;
+      raw.push({ rule, message, points: punto ? [punto] : undefined });
     }
   };
 
@@ -946,6 +965,7 @@ export function runDrcChecks(
         thin && num(thin.x) !== null && num(thin.y) !== null
           ? { x: num(thin.x)!, y: num(thin.y)! }
           : null,
+        thin ? stratoDelPunto(thin) : null,
       );
     }
   }
@@ -1090,6 +1110,7 @@ export function runDrcChecks(
           "board_edge_clearance",
           `${b.label} closer than ${bordoM}mm to the board edge`,
           boxCenter(b),
+          b.layer,
         );
       }
     }
@@ -1168,6 +1189,8 @@ export function runDrcChecks(
           "pad_clearance",
           `${a.label} <-> ${b.label}: ${d.toFixed(3)}mm < min ${minimo}mm${quale(rules, minimo, a.kind, b.kind)}`,
           midpoint(boxCenter(a), boxCenter(b)),
+          // a through pad against a pad of one face: the problem is on that face
+          a.layer ?? b.layer,
         );
       }
     }
@@ -1243,6 +1266,7 @@ export function runDrcChecks(
         "trace_angle",
         `${el.pcb_trace_id}: segmento a ${Math.round(deg)}° (ammessi 0, 45, 90)`,
         { x: (ax + bx) / 2, y: (ay + by) / 2 },
+        stratoDelPunto(route[i], route[i - 1]),
       );
     }
   }
@@ -1327,6 +1351,7 @@ export function runDrcChecks(
         "pin_escape",
         `${el.pcb_trace_id}: esce dal pad a ${Math.round(offAxis)}° fuori asse invece che dritto`,
         { x, y },
+        stratoDelPunto(from, to),
       );
     }
   }
@@ -1409,6 +1434,7 @@ export function runDrcChecks(
         "board_edge_clearance",
         `${seg.label} closer than ${bordoM}mm to the board edge`,
         { x: (seg.ax + seg.bx) / 2, y: (seg.ay + seg.by) / 2 },
+        seg.layer,
       );
     }
   }
@@ -1429,6 +1455,7 @@ export function runDrcChecks(
             x: (seg.ax + seg.bx) / 2,
             y: (seg.ay + seg.by) / 2,
           }),
+          seg.layer ?? pad.layer,
         );
       }
     }
@@ -1450,6 +1477,7 @@ export function runDrcChecks(
           "trace_trace_clearance",
           `${a.label} <-> ${b.label}: ${Math.max(0, d).toFixed(3)}mm < min ${minimo}mm${quale(rules, minimo, "trace", "trace")} (${a.layer ?? "?"})`,
           { x: (a.ax + a.bx) / 2, y: (a.ay + a.by) / 2 },
+          a.layer ?? b.layer,
         );
       }
     }
@@ -1508,6 +1536,7 @@ export function runDrcChecks(
         "plane_stitch_missing",
         `${scoperto.pad || "pad"} sta su una rete con il piano, non e' dentro il piano della sua faccia e non ha una via della sua rete accanto`,
         { x: scoperto.x, y: scoperto.y },
+        scoperto.layer,
       );
     }
 
@@ -1653,6 +1682,8 @@ export function runDrcChecks(
         "pour_clearance",
         `${r.via} <-> ${r.rete} pour on ${r.layer}: ${r.distanzaMm.toFixed(3)}mm < min ${minimo}mm${propria !== undefined && minimo === propria ? " (the pour's own clearance)" : ""}${r.distanzaMm === 0 ? " (the plane does not open around the hole)" : ""}`,
         { x: r.x, y: r.y },
+        // the via goes through, the plane that did not open around it is on one layer
+        r.layer,
       );
     }
   }

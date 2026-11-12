@@ -313,7 +313,7 @@ describe("the routes that save a board from the cache leave only through vias", 
    * pours as they were; two parts that hit each other are an error of the
    * summary, and the export goes on.
    */
-  it("recheck: a board of engine 10 comes to engine 11 with a recheck alone, copper and pours untouched, the footprints measured", async () => {
+  it("recheck: a board of engine 10 comes to today's engine (12) with a recheck alone, copper and pours untouched, the footprints measured", async () => {
     db.row = riga(salvata, CHECKS_ENGINE_VERSION);
     await recheck(post({ projectId: "p" }));
     // poured as it should be, plus a part C5 placed by hand 0,1 mm from R1's pads (an 0402 at (-6; 0))
@@ -328,16 +328,16 @@ describe("the routes that save a board from the cache leave only through vias", 
     const dieci = [...(db.saves[0].circuitJson as El[]), ...c5];
     db.saves = [];
     db.row = riga(dieci, 10);
-    expect(CHECKS_ENGINE_VERSION).toBe(11);
+    expect(CHECKS_ENGINE_VERSION).toBe(12);
     const risposta = (await (await recheck(post({ projectId: "p" }))).json()) as Risposta & {
       summary: { courtyards?: { count: number; scontri: Array<{ a: string; b: string; faccia: string }> }; targets: { courtyardCollisions: number; allGreen: boolean } };
     };
-    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 11, currentEngineVersion: 11, previousEngineVersion: 10 });
+    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 12, currentEngineVersion: 12, previousEngineVersion: 10 });
     expect(risposta.colateDaRifare).toBeUndefined();
     expect(risposta.pianiRicolati).toBeUndefined();
     expect(risposta.nonCertificata).toBeUndefined();
     const [s] = db.saves;
-    expect(s.engine).toBe(11);
+    expect(s.engine).toBe(12);
     // the copper and the pours as they were
     const rame = (cj: unknown[]) => (cj as El[]).filter((e) => ["pcb_copper_pour", "pcb_trace", "pcb_via", "pcb_smtpad"].includes(e.type));
     expect(rame(s.circuitJson)).toEqual(rame(dieci));

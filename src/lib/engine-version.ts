@@ -70,7 +70,17 @@
 // short segment running along a pad, its ends in front of the side, came out as far as the corners): trace against pad,
 // silkscreen against pad, a pill pad against a rect pad and the board edge measure true.
 // Copper and pours do not change: a board of engine 10 comes to 11 with a recheck ("Ricontrolla"), no compile
-export const CHECKS_ENGINE_VERSION = 11;
+// 12 (2026-11-12): every point of a DRC violation says the layer its problem is on (drc.ts, PuntoDrc): the trace or the
+// pad of one layer, the plane that did not open around a via, the pad off its plane; nothing for what goes through the
+// board (a hole, a via, two through pads). The viewer draws each dot only on the face it belongs to, by the rule of
+// strati-visibili.ts: with the top chosen the dots of the bottom were all there ("solo i marcatori della faccia
+// visibile", Niccolo'). No check changes its answer and no count changes: only the summary gains the layer, so a board
+// of engine 11 comes to 12 with a recheck ("Ricontrolla"), no compile. Until then its dots stay on every face.
+// In the same engine, one check does change its answer: the ERC no longer reports the three ports (top, bottom, pin1)
+// tscircuit gives to every <via> written in a file as "pin non collegato" (erc.ts). sbb-dl-principale had 543 such
+// lines for its 181 vias and "Cuci la massa" adds three per via: the list, 200 lines at most, held nothing else. The
+// count of unconnected pins of a board with written vias goes down by three per via; a recheck is enough
+export const CHECKS_ENGINE_VERSION = 12;
 
 /**
  * The first engine that measures the footprints of the parts and absorbs

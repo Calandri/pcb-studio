@@ -12,12 +12,13 @@ import { filesHash } from "@/lib/project-store";
  * scritti, passanti, la massa non si apre attorno a loro, e i controlli della
  * compilazione si confrontano TUTTI, prima e dopo: DRC, errori, controlli
  * elettrici (PRC ed ERC), classi di fabbrica, serigrafia, ingombri, colate,
- * piani sopra le vie, connessioni aperte. Cambiano due cose sole, e il test le
- * dice per nome invece di non guardarle:
- *  - l'ERC conta tre "pin non collegato" per ogni <via> scritta in un file (le
- *    porte top, bottom e pin1 che tscircuit da' a ogni via: V1 di main.tsx ha
- *    gia' le sue tre prima della cucitura). E' dell'ERC, non della cucitura, ma
- *    con N vie sono 3 x N avvisi in piu';
+ * piani sopra le vie, connessioni aperte. Cambia una cosa sola, e il test la
+ * dice per nome invece di non guardarla:
+ *  - (fino al motore 11 l'ERC contava tre "pin non collegato" per ogni <via>
+ *    scritta in un file, le porte top, bottom e pin1 che tscircuit da' a ogni
+ *    via: V1 di main.tsx ne aveva gia' tre e con N vie erano 3 x N avvisi in
+ *    piu'. Dal motore 12 le porte di una via non sono piedini, erc.ts: l'ERC
+ *    resta uguale prima e dopo);
  *  - una classe di fabbrica PIU' SEVERA delle regole del progetto puo' contare
  *    una regola in piu' (OSH Park vuole 0,38 mm dal bordo, il progetto 0,3: la
  *    fila sul bordo sta alla distanza del progetto). La classe del progetto e
@@ -71,7 +72,7 @@ const controlli = (s: CompileSummary) => ({
 });
 
 describe("cucitura-massa.tsx compilato", () => {
-  it("vie della rete di massa, passanti, foro e corona scritti, massa intera attorno; dei controlli della compilazione cambiano solo i tre avvisi ERC per via e la distanza dal bordo di una classe piu' severa del progetto", async () => {
+  it("vie della rete di massa, passanti, foro e corona scritti, massa intera attorno; dei controlli della compilazione cambia solo la distanza dal bordo di una classe piu' severa del progetto (l'ERC non conta le porte delle vie)", async () => {
     // 1. the board as it is, compiled
     const files: Record<string, string> = { "main.tsx": MAIN(""), [DESIGN_RULES_PATH]: REGOLE };
     const prima = await compileProject(files);
@@ -132,9 +133,11 @@ describe("cucitura-massa.tsx compilato", () => {
     const a = controlli(prima.summary);
     const b = controlli(dopo.summary);
     expect({ ...b, erc: null, fabbrica: null }).toEqual({ ...a, erc: null, fabbrica: null });
-    // the ERC: three ports for each <via> of the file, as for V1 before, and nothing else
-    expect(a.erc.unconnected_pin).toBe(3);
-    expect(b.erc).toEqual({ ...a.erc, unconnected_pin: a.erc.unconnected_pin + 3 * proposte });
+    // the ERC: the ports of a <via> written in a file are not pins (engine 12, erc.ts). Before, V1 alone counted three
+    // "pin non collegato" and every stitching via three more; now neither V1 nor the new vias add a line
+    expect(a.erc.unconnected_pin).toBe(0);
+    expect(proposte).toBeGreaterThan(0);
+    expect(b.erc).toEqual(a.erc);
     // the fab classes: the project's own and the one the board satisfies are the same; only a class stricter than the project at the edge counts a rule more
     expect(b.fabbrica.classe).toBe(a.fabbrica.classe);
     expect(b.fabbrica.classi).toEqual({ ...a.fabbrica.classi, oshpark: "6:false" });
