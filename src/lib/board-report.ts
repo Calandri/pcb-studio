@@ -78,6 +78,7 @@ interface SummaryLike {
     detail?: string;
     nonMisurati?: string;
     senzaIngombroVero?: { count?: number; detail?: string };
+    ingombroNonNoto?: { count?: number; detail?: string };
     disegniDiScheda?: { count?: number; detail?: string };
     nelloSpazioDiInnesto?: { count?: number; detail?: string };
   };
@@ -177,7 +178,7 @@ export function buildBoardReport(
    */
   const ingombri = summary?.courtyards;
   const scontri = typeof ingombri?.count === "number" ? ingombri.count : 0;
-  const avvisiIngombri = [ingombri?.nelloSpazioDiInnesto, ingombri?.senzaIngombroVero, ingombri?.disegniDiScheda].filter(
+  const avvisiIngombri = [ingombri?.nelloSpazioDiInnesto, ingombri?.ingombroNonNoto, ingombri?.senzaIngombroVero, ingombri?.disegniDiScheda].filter(
     (a): a is { count?: number; detail?: string } => typeof a?.count === "number" && a.count > 0,
   );
   const ingombriNonMisurati = typeof ingombri?.nonMisurati === "string";

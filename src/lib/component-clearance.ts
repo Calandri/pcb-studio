@@ -45,6 +45,11 @@
  *    the size's (see formatoDelPassivo). Everything else (modules, ICs,
  *    connectors, inductors, buttons, microphones) is listed by designator.
  *
+ * E. PARTS WHOSE FOOTPRINT IS NOT KNOWN (a warning): no pad, no courtyard
+ *    that encloses something, no body (pezziSenzaIngombro in ingombro.ts).
+ *    They are measured against nothing, so they are said by designator: a
+ *    silence here would read as "nothing hits".
+ *
  * D. PARTS IN A CONNECTOR'S MATING SPACE (a warning): a connector may declare,
  *    inside its footprint, the room the part that goes into it takes (a plug
  *    and its cable, a board, a tool: see spaziDiInnesto in ingombro.ts). Every
@@ -73,7 +78,7 @@
  */
 
 import { dalGerber } from "./silkscreen-clearance";
-import { distanzaDeiCorpi, leggiIngombri, misuraFra, scontri, TOLLERANZA_INGOMBRI_MM, type Faccia, type IngombroDelPezzo, type Punto, type Riquadro } from "./ingombro";
+import { distanzaDeiCorpi, leggiIngombri, misuraFra, pezziSenzaIngombro, scontri, TOLLERANZA_INGOMBRI_MM, type Faccia, type IngombroDelPezzo, type Punto, type Riquadro } from "./ingombro";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -154,6 +159,8 @@ export interface IngombriDeiPezzi {
   scontri: PezziCheSiScontrano[];
   /** B, a warning */
   senzaIngombroVero: { count: number; pezzi: PezzoSenzaIngombro[]; detail: string };
+  /** E, a warning: parts with no footprint to read at all, measured against nothing */
+  ingombroNonNoto?: { count: number; pezzi: PezzoSenzaIngombro[]; detail: string };
   /** the passives whose body was deduced from their standard size */
   dedottiDalFormato: number;
   /** D, a warning: parts whose footprint enters a connector's mating space (see spaziDiInnesto in ingombro.ts) */
@@ -334,6 +341,8 @@ function disegniDellaScheda(els: El[], pezzi: IngombroDelPezzo[]): DisegniTrovat
 export interface MisuraDegliIngombri {
   scontri: PezziCheSiScontrano[];
   senzaIngombroVero: PezzoSenzaIngombro[];
+  /** E */
+  ingombroNonNoto: PezzoSenzaIngombro[];
   dedottiDalFormato: number;
   disegniDiScheda: DisegnoDiScheda[];
   nelloSpazioDiInnesto: NelloSpazioDiInnesto[];
@@ -397,6 +406,11 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
     .map((p) => ({ pezzo: p.nome, faccia: p.faccia, x: tre(p.centro.x), y: tre(p.centro.y) }))
     .sort((a, b) => perNome(a.pezzo, b.pezzo));
 
+  // E
+  const ingombroNonNoto = pezziSenzaIngombro(els, pezzi)
+    .map((p) => ({ pezzo: p.nome, faccia: p.faccia, x: tre(p.centro.x), y: tre(p.centro.y) }))
+    .sort((a, b) => perNome(a.pezzo, b.pezzo));
+
   // D: the parts of a connector's face that enter its mating space
   const nelloSpazioDiInnesto: NelloSpazioDiInnesto[] = [];
   for (const conn of pezzi) {
@@ -423,6 +437,7 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
   return {
     scontri: trovati,
     senzaIngombroVero,
+    ingombroNonNoto,
     dedottiDalFormato: pezzi.filter((p) => p.fonte === "piazzole e corpo dal formato").length,
     disegniDiScheda: c.pezzi,
     nelloSpazioDiInnesto,
@@ -470,8 +485,8 @@ export function ingombriDeiPezzi(circuitJson: unknown[], eccedenzaMm: number): E
       cortiliAssorbiti: [],
     };
   }
-  const n = m.scontri.length, b = m.senzaIngombroVero.length, c = m.disegniDiScheda.length, d = m.nelloSpazioDiInnesto.length;
-  if (n === 0 && b === 0 && c === 0 && d === 0) return { riepilogo: undefined, cortiliAssorbiti: m.cortiliAssorbiti };
+  const n = m.scontri.length, b = m.senzaIngombroVero.length, c = m.disegniDiScheda.length, d = m.nelloSpazioDiInnesto.length, k = m.ingombroNonNoto.length;
+  if (n === 0 && b === 0 && c === 0 && d === 0 && k === 0) return { riepilogo: undefined, cortiliAssorbiti: m.cortiliAssorbiti };
   const primo = m.scontri[0];
   const dettaglioA = primo
     ? `${n} ${n === 1 ? "coppia di pezzi si scontra" : "coppie di pezzi si scontrano"} in assemblaggio ` +
@@ -481,6 +496,9 @@ export function ingombriDeiPezzi(circuitJson: unknown[], eccedenzaMm: number): E
     : "";
   const dettaglioB = b
     ? `${b} ${b === 1 ? "pezzo" : "pezzi"} senza ingombro vero (${elenco(m.senzaIngombroVero.map((p) => p.pezzo))}): ingombro ricavato dalle sole piazzole, metti nel footprint il corpo vero (cortile)`
+    : "";
+  const dettaglioE = k
+    ? `${k} ${k === 1 ? "pezzo" : "pezzi"} con ingombro non noto (${elenco(m.ingombroNonNoto.map((p) => p.pezzo))}): niente piazzole, cortile o corpo da cui leggerlo, il controllo non li misura`
     : "";
   const dettaglioD = d
     ? `${d} ${d === 1 ? "pezzo sta" : "pezzi stanno"} dove si infila la parte che entra in un connettore: ` +
@@ -495,9 +513,10 @@ export function ingombriDeiPezzi(circuitJson: unknown[], eccedenzaMm: number): E
       count: n,
       eccedenzaMm,
       severity: "error",
-      detail: dettaglioA || [dettaglioD, dettaglioB, dettaglioC].filter(Boolean).join("; "),
+      detail: dettaglioA || [dettaglioD, dettaglioE, dettaglioB, dettaglioC].filter(Boolean).join("; "),
       scontri: m.scontri.slice(0, ELENCATI),
       senzaIngombroVero: { count: b, pezzi: m.senzaIngombroVero.slice(0, ELENCATI), detail: dettaglioB },
+      ...(k > 0 ? { ingombroNonNoto: { count: k, pezzi: m.ingombroNonNoto.slice(0, ELENCATI), detail: dettaglioE } } : {}),
       dedottiDalFormato: m.dedottiDalFormato,
       ...(d > 0 ? { nelloSpazioDiInnesto: { count: d, pezzi: m.nelloSpazioDiInnesto.slice(0, ELENCATI), detail: dettaglioD } } : {}),
       disegniDiScheda: { count: c, pezzi: m.disegniDiScheda.slice(0, ELENCATI), detail: dettaglioC, elementiDiScheda: m.elementiDiScheda, elementi: m.elementiDiSilkscreen },
@@ -527,6 +546,7 @@ export function testoIngombri(r: IngombriDeiPezzi | undefined): string {
     );
   }
   if (r.nelloSpazioDiInnesto && r.nelloSpazioDiInnesto.count > 0) parti.push(` AVVISO ingombri: ${r.nelloSpazioDiInnesto.detail}.`);
+  if (r.ingombroNonNoto && r.ingombroNonNoto.count > 0) parti.push(` AVVISO ingombri: ${r.ingombroNonNoto.detail}.`);
   if (r.senzaIngombroVero.count > 0) parti.push(` AVVISO ingombri: ${r.senzaIngombroVero.detail}.`);
   if (r.disegniDiScheda.count > 0) parti.push(` AVVISO ingombri: ${r.disegniDiScheda.detail}.`);
   return parti.join("");

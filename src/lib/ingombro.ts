@@ -380,6 +380,42 @@ export function spaziDiInnesto(els: El[]): Map<string, Array<{ forma: Forma; des
   return out;
 }
 
+/** a shape that encloses something: a circle or a pill with its radius, a polygon with an area */
+function racchiude(f: Forma): boolean {
+  if (f.r > 1e-9) return true;
+  if (f.punti.length < 3) return false;
+  let doppia = 0;
+  for (let i = 0; i < f.punti.length; i++) {
+    const a = f.punti[i], b = f.punti[(i + 1) % f.punti.length];
+    doppia += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(doppia) / 2 > 1e-6;
+}
+
+/**
+ * THE PARTS WHOSE FOOTPRINT IS NOT KNOWN: a part on the board (a
+ * pcb_component with its source_component, not a via placed by hand) with no
+ * pad, no courtyard that encloses something and no body, so leggiIngombri
+ * gives it nothing. Never left out in silence: the check says them (a
+ * warning), and they are not measured against anything.
+ */
+export function pezziSenzaIngombro(circuitJson: unknown[] | null | undefined, pezzi: Array<Pick<IngombroDelPezzo, "id">>): Array<{ id: string; nome: string; faccia: Faccia; centro: Punto }> {
+  const els = (Array.isArray(circuitJson) ? circuitJson : []) as El[];
+  const noti = new Set(pezzi.map((p) => p.id));
+  const sorgenti = new Map<string, El>();
+  for (const el of els) if (el.type === "source_component") sorgenti.set(String(el.source_component_id ?? ""), el);
+  const out: Array<{ id: string; nome: string; faccia: Faccia; centro: Punto }> = [];
+  for (const comp of els) {
+    if (comp.type !== "pcb_component") continue;
+    const id = String(comp.pcb_component_id ?? "");
+    const sorgente = sorgenti.get(String(comp.source_component_id ?? ""));
+    if (!sorgente || noti.has(id)) continue;
+    const c = comp.center as { x?: unknown; y?: unknown } | undefined;
+    out.push({ id, nome: String(sorgente.name ?? id), faccia: comp.layer === "bottom" ? "bottom" : "top", centro: { x: fin(c?.x) ?? 0, y: fin(c?.y) ?? 0 } });
+  }
+  return out;
+}
+
 /**
  * The footprint of every part on the board (see the top of this file).
  * `eccedenzaMm`: the project's componentCourtyardExcessMm.
@@ -410,6 +446,14 @@ export function leggiIngombri(circuitJson: unknown[] | null | undefined, ecceden
     const giro = fin(comp.rotation) ?? parte.body?.rot ?? 0;
     const angoliPad = tuttiGliAngoli(pads);
 
+    /*
+     * Its declared courtyards that enclose something: one of zero width or of
+     * two points is a line, not a courtyard, and taken as the footprint it
+     * would leave the body out (the part would read as a segment and its pads).
+     * With none left the footprint is computed, as for a part that declares none.
+     */
+    const cortili = parte.courtyards.map((c) => cortileDichiarato(c, giro)).filter((f): f is Forma => f !== null && racchiude(f));
+
     // the exact envelope: body and pads, in the part's frame
     let fonte: FonteIngombro;
     let formato: string | undefined;
@@ -433,7 +477,7 @@ export function leggiIngombri(circuitJson: unknown[] | null | undefined, ecceden
       corpoNoto = false;
     } else {
       // a courtyard and nothing else: the courtyard is all there is
-      const pts = parte.courtyards.map(formaDelCortile).filter((f): f is Forma => f !== null).flatMap((f) => f.punti);
+      const pts = parte.courtyards.map(formaDelCortile).filter((f): f is Forma => f !== null && racchiude(f)).flatMap((f) => f.punti);
       if (pts.length === 0) continue;
       involucro = scatolaOrientata(pts, giro);
       fonte = "cortile";
@@ -442,10 +486,9 @@ export function leggiIngombri(circuitJson: unknown[] | null | undefined, ecceden
 
     // the footprint: the declared courtyard as it is, or the envelope grown by the excess
     let forme: Forma[];
-    if (parte.box.source === "cortile") {
+    if (cortili.length > 0) {
       fonte = "cortile";
       formato = undefined;
-      const cortili = parte.courtyards.map((c) => cortileDichiarato(c, giro)).filter((f): f is Forma => f !== null);
       // the pads that stick out of it (a crystal's) are footprint too, each with the excess
       const fuori = pads.map((p) => formaDelPad(p, e)).filter((f): f is Forma => f !== null && !coperta(f, cortili));
       forme = [...cortili, ...fuori];
@@ -518,6 +561,55 @@ function normali(punti: Punto[]): Punto[] {
   return out;
 }
 
+/** twice the signed area of a polygon, counterclockwise positive */
+function areaDoppia(punti: Punto[]): number {
+  let d = 0;
+  for (let i = 0; i < punti.length; i++) {
+    const a = punti[i], b = punti[(i + 1) % punti.length];
+    d += a.x * b.y - b.x * a.y;
+  }
+  return d;
+}
+
+/** whether a polygon turns always the same way (collinear points allowed) */
+function convesso(punti: Punto[]): boolean {
+  let segno = 0;
+  const n = punti.length;
+  for (let i = 0; i < n; i++) {
+    const a = punti[i], b = punti[(i + 1) % n], c = punti[(i + 2) % n];
+    const z = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(z) < 1e-12) continue;
+    if (segno === 0) segno = Math.sign(z);
+    else if (Math.sign(z) !== segno) return false;
+  }
+  return true;
+}
+
+/** the area a polygon shares with a convex one: the first clipped by each side of the second (Sutherland-Hodgman) */
+function areaComune(soggetto: Punto[], convessoP: Punto[]): number {
+  const verso = Math.sign(areaDoppia(convessoP)) || 1;
+  const dentroDi = (p: Punto, a: Punto, b: Punto) => verso * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) >= 0;
+  const incrocio = (p: Punto, q: Punto, a: Punto, b: Punto): Punto => {
+    const dx = q.x - p.x, dy = q.y - p.y, ex = b.x - a.x, ey = b.y - a.y;
+    const den = dx * ey - dy * ex;
+    const t = Math.abs(den) < 1e-15 ? 0 : ((a.x - p.x) * ey - (a.y - p.y) * ex) / den;
+    return { x: p.x + t * dx, y: p.y + t * dy };
+  };
+  let out = soggetto;
+  for (let i = 0; i < convessoP.length && out.length > 0; i++) {
+    const a = convessoP[i], b = convessoP[(i + 1) % convessoP.length];
+    const prima = out;
+    out = [];
+    for (let j = 0; j < prima.length; j++) {
+      const p = prima[j], q = prima[(j + 1) % prima.length];
+      const pd = dentroDi(p, a, b), qd = dentroDi(q, a, b);
+      if (pd) out.push(p);
+      if (pd !== qd) out.push(incrocio(p, q, a, b));
+    }
+  }
+  return out.length >= 3 ? Math.abs(areaDoppia(out)) / 2 : 0;
+}
+
 export interface Misura {
   /** edge to edge, 0 when the two shapes touch or overlap */
   distanza: number;
@@ -557,6 +649,18 @@ export function misuraForme(a: Forma, b: Forma): Misura {
   const p = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
   if (luce > 0) return { distanza: luce, sovrapposizione: 0, p };
   if (nuclei > 0) return { distanza: 0, sovrapposizione: -luce, p };
+  /*
+   * A concave outline (an L, a T) against a convex shape whose sides touch it:
+   * on the hull of the L a part resting in its notch would overlap it deeply,
+   * while the two only touch. The area they share decides whether the cores
+   * overlap at all; when they do, the depth below is still taken on the hulls
+   * and may come out larger than the true one (two concave outlines are
+   * measured on their hulls as before).
+   */
+  if (a.punti.length >= 3 && b.punti.length >= 3) {
+    const ca = convesso(a.punti), cb = convesso(b.punti);
+    if (ca !== cb && areaComune(ca ? b.punti : a.punti, ca ? a.punti : b.punti) <= 1e-9) return { distanza: 0, sovrapposizione: a.r + b.r, p };
+  }
   // the cores themselves overlap: the shortest move along a side's normal, on their hulls
   let minimo = Infinity;
   for (const n of [...normali(a.punti), ...normali(b.punti)]) {

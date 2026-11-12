@@ -148,6 +148,7 @@ export async function inspectSavedBoard(
               ...ingombri,
               scontri: (ingombri.scontri ?? []).slice(0, 60),
               senzaIngombroVero: { ...ingombri.senzaIngombroVero, pezzi: (ingombri.senzaIngombroVero?.pezzi ?? []).slice(0, 60) },
+              ...(ingombri.ingombroNonNoto ? { ingombroNonNoto: { ...ingombri.ingombroNonNoto, pezzi: ingombri.ingombroNonNoto.pezzi.slice(0, 60) } } : {}),
               disegniDiScheda: { ...ingombri.disegniDiScheda, pezzi: (ingombri.disegniDiScheda?.pezzi ?? []).slice(0, 60) },
               ...(ingombri.nelloSpazioDiInnesto
                 ? { nelloSpazioDiInnesto: { ...ingombri.nelloSpazioDiInnesto, pezzi: ingombri.nelloSpazioDiInnesto.pezzi.slice(0, 60) } }

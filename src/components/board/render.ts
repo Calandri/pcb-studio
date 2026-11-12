@@ -372,6 +372,12 @@ export interface BoardScene {
   courtyards: Courtyard[];
   /** the footprint of every part (see IngombroScena) */
   ingombri: IngombroScena[];
+  /**
+   * The footprints could not be computed, and why: the board is drawn all the
+   * same, without them, and the viewer says so in a line (never silence, never
+   * a blank PCB view).
+   */
+  ingombriNonCalcolati?: string;
   components: ComponentBox[];
 }
 
@@ -508,7 +514,11 @@ export function buildScene(
     silkPaths: [],
     silkTexts: [],
     courtyards: [],
-    ingombri: leggiIngombri(elements, opts.eccedenzaIngombroMm ?? INGOMBRO_ECCEDENZA_MM).map((p) => ({
+    ingombri: [],
+    components: [],
+  };
+  try {
+    scene.ingombri = leggiIngombri(elements, opts.eccedenzaIngombroMm ?? INGOMBRO_ECCEDENZA_MM).map((p) => ({
       componentId: p.id,
       name: p.nome,
       layer: p.faccia,
@@ -517,9 +527,12 @@ export function buildScene(
       senzaCorpo: p.senzaCorpo,
       fori: p.fori,
       innesti: p.innesti,
-    })),
-    components: [],
-  };
+    }));
+  } catch (err) {
+    // one odd footprint must not take the whole PCB view down: see ingombriNonCalcolati
+    scene.ingombriNonCalcolati = (err instanceof Error ? err.message : String(err)).slice(0, 120);
+    console.error("ingombri non calcolati:", err);
+  }
 
   for (const el of elements) {
     switch (el.type) {

@@ -338,6 +338,12 @@ describe("the footprint: one clean rectangle, the same drawn and measured", () =
     expect(l.forme[0].punti).toHaveLength(6);
     // the room in the L is free: a part there does not hit
     expect(misuraIngombri([...parte("J9"), pad("J9", 1, 1, 1, 1), contorno("J9", elle), ...blocco("C8", 4.5, 4, 1, 0.5)], 0.2).scontri).toEqual([]);
+    // a courtyard resting in the notch, touching both inner sides of the L: a contact, not a collision (on the L's hull it was 3 mm deep)
+    const nellaTacca = [...parte("J9"), pad("J9", 1, 1, 1, 1), contorno("J9", elle), ...parte("C8", { x: 4, y: 3.5 }), pad("C8", 4, 3.5, 0.5, 0.5), cortileRect("C8", 4, 3.5, 4, 3)];
+    expect(misuraIngombri(nellaTacca, 0.2).scontri).toEqual([]);
+    // 0,01 into the arm of the L: a collision
+    const dentro = [...parte("J9"), pad("J9", 1, 1, 1, 1), contorno("J9", elle), ...parte("C8", { x: 4, y: 3.49 }), pad("C8", 4, 3.49, 0.5, 0.5), cortileRect("C8", 4, 3.49, 4, 3)];
+    expect(misuraIngombri(dentro, 0.2).scontri).toHaveLength(1);
   });
 
   it("the viewer and the placement check still read the size alone: the model's box is read when asked", () => {
@@ -375,6 +381,39 @@ describe("B. parts with no real footprint", () => {
     expect(s.count).toBe(0);
     expect(s.senzaIngombroVero.detail).toBe("2 pezzi senza ingombro vero (L1, U3): ingombro ricavato dalle sole piazzole, metti nel footprint il corpo vero (cortile)");
     expect(testoIngombri(s)).toContain("AVVISO ingombri: 2 pezzi senza ingombro vero");
+  });
+});
+
+describe("E. parts whose footprint is not known", () => {
+  it("a part with no pad, no courtyard and no body is said, not left out in silence", () => {
+    const cj = [
+      ...blocco("C1", 0, 0, 1, 0.5),
+      { type: "source_component", source_component_id: "s_M1", name: "M1", ftype: "simple_chip" },
+      { type: "pcb_component", pcb_component_id: "M1", source_component_id: "s_M1", center: { x: 3, y: 4 }, layer: "bottom", rotation: 0, width: 1, height: 1 },
+      // a via placed by hand: a pcb_component with no source_component, not a part
+      { type: "pcb_component", pcb_component_id: "via1", center: { x: 9, y: 9 }, layer: "top" },
+    ];
+    const m = misuraIngombri(cj, 0.2);
+    expect(m.ingombroNonNoto).toEqual([{ pezzo: "M1", faccia: "bottom", x: 3, y: 4 }]);
+    const r = ingombriDeiPezzi(cj, 0.2).riepilogo!;
+    expect(r.count).toBe(0);
+    expect(r.ingombroNonNoto?.detail).toBe("1 pezzo con ingombro non noto (M1): niente piazzole, cortile o corpo da cui leggerlo, il controllo non li misura");
+    expect(r.detail).toBe(r.ingombroNonNoto?.detail);
+    expect(testoIngombri(r)).toContain("AVVISO ingombri: 1 pezzo con ingombro non noto (M1)");
+    expect(buildBoardReport([{ type: "pcb_board", width: 10, height: 10 }], { courtyards: r }).checks.find((c) => c.id === "place")).toMatchObject({ severity: "warn", count: "1 avvisi" });
+  });
+
+  it("a declared courtyard of zero width or of two points encloses nothing: the body counts", () => {
+    const base = [...parte("U1"), pad("U1", -0.5, 0, 0.3, 0.3), pad("U1", 0.5, 0, 0.3, 0.3), corpo("U1", 0, 0, 4, 2)];
+    const piatto = { type: "pcb_courtyard_rect", pcb_courtyard_rect_id: "cy0", pcb_component_id: "U1", center: { x: 0, y: 0 }, width: 0, height: 2, layer: "top" };
+    const due = contorno("U1", [[-1, 0], [1, 0]]);
+    for (const cortile of [piatto, due]) {
+      const [u] = leggiIngombri([...base, cortile], 0.2);
+      expect(u.fonte).toBe("piazzole e corpo");
+      expect(box(u.forme[0])).toEqual([-2.2, -1.2, 2.2, 1.2]);
+      // a part under the body hits
+      expect(misuraIngombri([...base, cortile, ...blocco("C1", 1.5, 0.5, 0.4, 0.2)], 0.2).scontri).toHaveLength(1);
+    }
   });
 });
 

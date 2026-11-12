@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import { useVistaCondivisa } from "./vista-condivisa";
@@ -834,22 +834,40 @@ export function BoardCanvas({
    * collision the check (component-clearance.ts) reports after the compile,
    * computed on the same shapes moved like their part.
    */
+  /*
+   * Per part, WHAT hits: its own footprint (red on its face) and/or, for a
+   * through-hole part, its holes on the other face (red there, where the
+   * collision is: USB1's pins against U9 on the bottom are not USB1's top
+   * courtyard). A failure here leaves the board drawn, with no red.
+   */
   const inCollisione = useMemo(() => {
-    const out = new Set<string>();
+    const out = new Map<string, { proprie: boolean; fori: boolean }>();
     if (!scene || scene.ingombri.length === 0) return out;
-    const sposta = (id: string, forme: Forma[]): Forma[] =>
-      forme.map((f) => forma(f.punti.map((q) => mmPointTx(id, q.x, q.y)), f.r));
-    const vivi = scene.ingombri.map((g) => {
-      const mosso = Boolean(moveOverrides[g.componentId]) || Boolean(compDrag?.ids.includes(g.componentId)) || girati.has(g.componentId);
-      return {
-        faccia: (latoDiParte(g.componentId, g.layer) === "bottom" ? "bottom" : "top") as "top" | "bottom",
-        forme: mosso ? sposta(g.componentId, g.forme) : g.forme,
-        fori: mosso ? sposta(g.componentId, g.fori) : g.fori,
+    try {
+      const sposta = (id: string, forme: Forma[]): Forma[] =>
+        forme.map((f) => forma(f.punti.map((q) => mmPointTx(id, q.x, q.y)), f.r));
+      const vivi = scene.ingombri.map((g) => {
+        const mosso = Boolean(moveOverrides[g.componentId]) || Boolean(compDrag?.ids.includes(g.componentId)) || girati.has(g.componentId);
+        return {
+          faccia: (latoDiParte(g.componentId, g.layer) === "bottom" ? "bottom" : "top") as "top" | "bottom",
+          forme: mosso ? sposta(g.componentId, g.forme) : g.forme,
+          fori: mosso ? sposta(g.componentId, g.fori) : g.fori,
+        };
+      });
+      const segna = (i: number, daiFori: boolean) => {
+        const id = scene.ingombri[i].componentId;
+        const c = out.get(id) ?? { proprie: false, fori: false };
+        if (daiFori) c.fori = true;
+        else c.proprie = true;
+        out.set(id, c);
       };
-    });
-    for (const s of scontri(vivi)) {
-      out.add(scene.ingombri[s.a].componentId);
-      out.add(scene.ingombri[s.b].componentId);
+      for (const s of scontri(vivi)) {
+        segna(s.a, s.daiForiA);
+        segna(s.b, s.daiForiB);
+      }
+    } catch (err) {
+      console.error("scontri degli ingombri non calcolati:", err);
+      out.clear();
     }
     return out;
     // latoDiParte reads girati, which is in the list
@@ -1504,14 +1522,30 @@ export function BoardCanvas({
             face of their part, by the rule of strati-visibili.ts.
           */}
           {showIngombri &&
-            scene.ingombri.filter((g) => !nascosti.has(g.componentId)).map((g) => {
-              const forza = layerOpacity(facciaDiPezzo.get(g.componentId) ?? g.layer);
-              if (forza <= 0) return null;
-              const rosso = inCollisione.has(g.componentId);
+            // a part of the face not drawn is not there, except its holes where they hit on the face that is
+            scene.ingombri.filter((g) => !nascosti.has(g.componentId) || inCollisione.get(g.componentId)?.fori).map((g) => {
+              const nascosto = nascosti.has(g.componentId);
+              const faccia = facciaDiPezzo.get(g.componentId) ?? g.layer;
+              const forza = layerOpacity(faccia);
+              const scontro = inCollisione.get(g.componentId);
+              const rosso = scontro?.proprie === true;
               const linea = Math.max(0.05, mmPerPx);
               const tratteggio = `${Math.max(0.25, mmPerPx * 5)} ${Math.max(0.15, mmPerPx * 3)}`;
+              // the holes of a through-hole part that hit on the other face: red on that face, by its rule
+              const forzaFori = scontro?.fori ? layerOpacity(faccia === "bottom" ? "top" : "bottom") : 0;
+              const fori =
+                forzaFori > 0 ? (
+                  <g key={`ing-fori-${g.componentId}`} data-ingombro={`fori-${g.componentId}`} transform={compTx(g.componentId)} opacity={forzaFori} style={{ pointerEvents: "none" }}>
+                    {g.fori.map((f, i) => (
+                      <path key={i} d={percorsoDellaForma(f)} fill="rgba(255,77,94,0.16)" stroke={COLORE_SCONTRO} strokeWidth={linea} />
+                    ))}
+                  </g>
+                ) : null;
+              if (nascosto || forza <= 0) return fori;
               return (
-                <g key={`ing-${g.componentId}`} data-ingombro={`ingombro-${g.componentId}`} transform={compTx(g.componentId)} opacity={forza} style={{ pointerEvents: "none" }}>
+                <Fragment key={`ing-${g.componentId}`}>
+                {fori}
+                <g data-ingombro={`ingombro-${g.componentId}`} transform={compTx(g.componentId)} opacity={forza} style={{ pointerEvents: "none" }}>
                   {g.forme.map((f, i) => (
                     <path
                       key={i}
@@ -1534,6 +1568,7 @@ export function BoardCanvas({
                     />
                   ))}
                 </g>
+                </Fragment>
               );
             })}
 
@@ -1843,6 +1878,13 @@ export function BoardCanvas({
           style={{ left: tip.x + 12, top: tip.y - 8 }}
         >
           {tip.text}
+        </div>
+      )}
+
+      {/* the footprints could not be computed: the board is drawn, and this says why there are none */}
+      {showIngombri && scene.ingombriNonCalcolati !== undefined && (
+        <div className="pointer-events-none absolute top-[18px] left-[18px] z-20 max-w-[60%] truncate rounded-md border border-[#3E1F1D] bg-[rgba(9,14,13,0.92)] px-2.5 py-1 text-[11px] text-[#FFB4AB]">
+          Ingombri non disegnati: il calcolo si e&apos; fermato ({scene.ingombriNonCalcolati})
         </div>
       )}
 

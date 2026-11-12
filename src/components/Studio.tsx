@@ -1149,6 +1149,16 @@ export function Studio({
         layer: c.faccia,
       });
     }
+    for (const c of ingombri?.ingombroNonNoto?.pezzi ?? []) {
+      out.push({
+        id: `ingombro-non-noto-${out.length}`,
+        x: c.x,
+        y: c.y,
+        message: `${c.pezzo}: ingombro non noto (niente piazzole, cortile o corpo da cui leggerlo), il controllo non lo misura`,
+        severity: "warn",
+        layer: c.faccia,
+      });
+    }
     for (const c of ingombri?.disegniDiScheda.pezzi ?? []) {
       out.push({
         id: `disegno-di-scheda-${out.length}`,
