@@ -9,6 +9,8 @@ const stato = vi.hoisted(() => ({
   accesso: "edit" as "none" | "view" | "edit",
   files: {} as Record<string, string>,
   scheda: null as unknown[] | null,
+  /** the files the saved board was compiled from: its hash is theirs */
+  compilati: {} as Record<string, string>,
 }));
 vi.mock("@/lib/api-tokens", () => ({ resolveApiToken: vi.fn(async () => ({ userId: "u1", email: "u1@example.com" })) }));
 vi.mock("@/lib/acl", () => ({
@@ -33,7 +35,7 @@ vi.mock("@/lib/project-store", async (originale) => {
     ...vero,
     getProject: vi.fn(async () => ({ ...stato.files })),
     getCompileCache: vi.fn(async () =>
-      stato.scheda ? { filesHash: "x", circuitJson: stato.scheda, summary: {}, createdAt: "2026-11-12", engineVersion: 11 } : null,
+      stato.scheda ? { filesHash: vero.filesHash(stato.compilati), circuitJson: stato.scheda, summary: {}, createdAt: "2026-11-12", engineVersion: 11 } : null,
     ),
     writeProjectFile: vi.fn(async (_p: string, path: string, content: string) => {
       stato.files[path] = content;
@@ -90,6 +92,7 @@ describe("stitch_ground over MCP", () => {
   beforeEach(() => {
     stato.accesso = "edit";
     stato.files = { "main.tsx": "export default () => <board />" };
+    stato.compilati = { ...stato.files };
     stato.scheda = SCHEDA;
     compilazioni.n = 0;
   });
@@ -116,6 +119,26 @@ describe("stitch_ground over MCP", () => {
     const primo = stato.files[FILE_CUCITURA];
     await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 3 });
     expect(stato.files[FILE_CUCITURA]).toBe(primo);
+  });
+
+  it("apply on a board older than the files is refused and writes nothing; the stitching file itself does not make the board old", async () => {
+    // written once, on the board of these files
+    const primo = await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 3 });
+    expect(primo.result).toMatchObject({ scritto: true, scheda: "aggiornata" });
+    const scritto = stato.files[FILE_CUCITURA];
+    // a look after it: the file is newer than the board, the board is not older than the project
+    const dopo = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 3 });
+    expect(dopo.result).toMatchObject({ ok: true, scheda: "senza_la_cucitura", scrivibile: true });
+    expect(dopo.result.schedaPiuVecchiaDeiFile).toBeUndefined();
+    // a part moved in main.tsx and not compiled: the look says so, the write is refused
+    stato.files["main.tsx"] = 'export default () => <board><resistor name="R1" resistance="1k" footprint="0402" pcbX={3} /></board>';
+    const guarda = await chiamaStrumento("stitch_ground", { projectId: "p", passoMm: 3 });
+    expect(guarda.isError).toBe(false);
+    expect(guarda.result).toMatchObject({ ok: true, scritto: false, scheda: "vecchia", schedaPiuVecchiaDeiFile: true, scrivibile: false });
+    const scrive = await chiamaStrumento("stitch_ground", { projectId: "p", apply: true, passoMm: 2 });
+    expect(scrive.isError).toBe(true);
+    expect(String(scrive.result.error)).toMatch(/la scheda salvata e' piu' vecchia dei file/);
+    expect(stato.files[FILE_CUCITURA]).toBe(scritto);
   });
 
   it("with the same access as write_file: none sees nothing, view may look but not write", async () => {

@@ -8,6 +8,14 @@
  * from) and the project's rules, takes off it the vias a previous run wrote
  * (see ground-stitching-file.ts), runs cuciLaMassa, and only with apply: true
  * writes cucitura-massa.tsx. It never compiles and never touches main.tsx.
+ *
+ * IT WRITES ONLY ON A BOARD THAT IS THE FILES' (statoDellaScheda). The vias are
+ * measured on the saved board: with a part or a trace moved in the files and
+ * not compiled yet, they would be written where the old board had room, and
+ * the next compile would find them on the part or across the trace, a short.
+ * So a write on a board older than the files is refused (a look still answers,
+ * and says so). The stitching file itself does not count in that comparison:
+ * written after the last compile, it changes nothing the vias are measured on.
  */
 
 import type { CompileCache } from "./project-store";
@@ -48,7 +56,10 @@ export const DESCRIZIONE_CUCITURA =
   `${FORO_DI_SERIE_MM} mm e corona ${CORONA_DI_SERIE_MM} mm alzati ai minimi del progetto se servono, al massimo ${MAX_VIE_DI_SERIE} vie. ` +
   "Le linee a impedenza controllata non si riconoscono da sole: mettile in retiLontane o in zoneEscluse. " +
   `dryRun (di serie) restituisce vie proposte con le coordinate, scarti per motivo e isole; apply: true scrive ${FILE_CUCITURA} ` +
-  "(rilanciato lo riscrive per intero) e NON compila; main.tsx non viene toccato: se non lo usa, la risposta dice le righe da aggiungere.";
+  "(rilanciato lo riscrive per intero) e NON compila; main.tsx non viene toccato: se non lo usa, la risposta dice le righe da aggiungere. " +
+  "apply NON scrive, e dice perche' (nel dryRun: scrivibile false e nonScrivibile), se la scheda salvata e' piu' vecchia dei file del progetto " +
+  `(prima si compila: le vie si misurano sulla scheda salvata; ${FILE_CUCITURA} scritto dopo l'ultima compilazione non conta) o se ` +
+  `${FILE_CUCITURA} c'e' gia' e non l'ha scritto questo strumento per questa rete (non si sovrascrive mai un file altrui).`;
 
 /** what each parameter is, for both definitions */
 export const PARAMETRI_CUCITURA = {
@@ -70,6 +81,33 @@ export const PARAMETRI_CUCITURA = {
 /** an island in a list for a model: at most this many, the rest counted */
 const MAX_ISOLE_ELENCATE = 50;
 
+/**
+ * How the saved board stands against the project's files:
+ * - "aggiornata": compiled from these very files;
+ * - "senza_la_cucitura": compiled from these files when cucitura-massa.tsx was
+ *   not there yet (the tool wrote it since): the board is the files', and holds
+ *   no via of the stitching;
+ * - "vecchia": anything else. Some file changed after the last compile, or the
+ *   stitching file was written again after the board was compiled with it (its
+ *   earlier vias are on the board, and cannot be told from the others).
+ */
+export type StatoScheda = "aggiornata" | "senza_la_cucitura" | "vecchia";
+
+/**
+ * `hashScheda`: the hash of the files the saved board was compiled from;
+ * `files`: the project's files now, as a compile would read them (library
+ * included); `hash`: the same hash (filesHash of project-store).
+ */
+export function statoDellaScheda(hashScheda: string, files: Record<string, string>, hash: (files: Record<string, string>) => string): StatoScheda {
+  if (hashScheda === hash(files)) return "aggiornata";
+  if (FILE_CUCITURA in files) {
+    const altri = { ...files };
+    delete altri[FILE_CUCITURA];
+    if (hashScheda === hash(altri)) return "senza_la_cucitura";
+  }
+  return "vecchia";
+}
+
 export interface EsecuzioneCucitura {
   result: Record<string, unknown>;
   fileChanged?: { path: string; content: string };
@@ -79,15 +117,15 @@ export async function eseguiCucitura({
   files,
   args,
   cache,
-  schedaVecchia,
+  scheda: statoScheda,
   scrivi,
 }: {
   files: Record<string, string>;
   args: Record<string, unknown>;
   /** the saved board of the project */
   cache: Pick<CompileCache, "circuitJson"> | null;
-  /** the saved board is older than the files; null when it could not be told */
-  schedaVecchia: boolean | null;
+  /** how the saved board stands against the files (statoDellaScheda); null when it could not be told */
+  scheda: StatoScheda | null;
   /** writes a file of the project */
   scrivi: (path: string, content: string) => Promise<void>;
 }): Promise<EsecuzioneCucitura> {
@@ -114,6 +152,15 @@ export async function eseguiCucitura({
 
   /** why the file cannot be written as things stand: said in a look, and the write is refused with it */
   const nonScrivibile: string[] = [];
+  if (statoScheda === "vecchia") {
+    nonScrivibile.push(
+      "la scheda salvata e' piu' vecchia dei file del progetto (un file e' cambiato dopo l'ultima compilazione, oppure " +
+        `${FILE_CUCITURA} e' stato riscritto dopo che la scheda e' stata compilata con lui): le vie sono calcolate su una scheda ` +
+        "dove pezzi e piste possono non essere piu' li'. Ricompila, poi rifai l'anteprima",
+    );
+  } else if (statoScheda === null) {
+    nonScrivibile.push("non si e' potuto confrontare la scheda salvata coi file del progetto (la libreria non si legge in questo momento): riprova");
+  }
   if (file.stato === "non_dello_strumento") {
     nonScrivibile.push(`${FILE_CUCITURA} c'e' gia' e non e' stato scritto da questo strumento (${file.perche}): non si sovrascrive, e le sue vie restano sulla scheda come sono. Rinominalo o cancellalo, poi rifai l'anteprima`);
   } else if (file.stato === "dello_strumento" && !suoPerQuestaRete) {
@@ -159,7 +206,8 @@ export async function eseguiCucitura({
     scrivibile: nonScrivibile.length === 0,
     ...(nonScrivibile.length > 0 ? { nonScrivibile } : {}),
     main: usa ? { usaIlFile: true } : { usaIlFile: false, righeDaAggiungere: [RIGA_IMPORT, `${RIGA_USO} dentro <board>`] },
-    ...(schedaVecchia ? { schedaPiuVecchiaDeiFile: true } : {}),
+    scheda: statoScheda ?? "non_confrontata",
+    ...(statoScheda === "vecchia" ? { schedaPiuVecchiaDeiFile: true } : {}),
   };
   if (!lettura.apply) {
     // the coordinates last: an answer cut to fit a model's context loses them before the counts

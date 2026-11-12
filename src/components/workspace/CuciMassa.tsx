@@ -35,7 +35,9 @@ interface Risposta {
   isole?: { trovate: number; collegate: number; senzaPosto: number };
   avvisi?: string[];
   main?: { usaIlFile: boolean; righeDaAggiungere?: string[] };
-  schedaPiuVecchiaDeiFile?: boolean;
+  /** false: the file cannot be written as things stand, and why (a board older than the files, a file that is not the tool's) */
+  scrivibile?: boolean;
+  nonScrivibile?: string[];
   scritto?: boolean;
   fileChanged?: { path: string; content: string };
 }
@@ -222,9 +224,12 @@ export function CuciMassa({
                 ))}
               </ul>
             )}
-            {risposta.schedaPiuVecchiaDeiFile && (
-              <span className="text-[#E8B23B]">La scheda salvata e&apos; piu&apos; vecchia dei file: le vie sono calcolate su quella.</span>
-            )}
+            {/* why it cannot be written: the button below is off for these */}
+            {(risposta.nonScrivibile ?? []).map((m) => (
+              <span key={m} className="text-[#FF6B5A]">
+                Non si puo&apos; scrivere: {m}.
+              </span>
+            ))}
             {(risposta.avvisi ?? []).map((a) => (
               <span key={a} className="text-[#E8B23B]">
                 {a}
@@ -251,7 +256,8 @@ export function CuciMassa({
           <button
             type="button"
             onClick={() => void scrivi()}
-            disabled={passoVisto === null || !risposta?.vie || lavora !== ""}
+            disabled={passoVisto === null || !risposta?.vie || risposta.scrivibile === false || lavora !== ""}
+            title={risposta?.scrivibile === false ? (risposta.nonScrivibile ?? []).join(" ") : undefined}
             className="rounded-lg border border-brand bg-brand px-2.5 py-1.5 text-[12px] font-semibold text-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {lavora === "scrivo" ? "Scrivo…" : `Scrivi ${risposta?.vie ?? 0} vie in cucitura-massa.tsx`}

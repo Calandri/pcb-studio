@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const stato = vi.hoisted(() => ({
   livello: "edit" as "none" | "view" | "edit",
   files: {} as Record<string, string>,
+  /** the files the saved board was compiled from: its hash is theirs */
+  compilati: {} as Record<string, string>,
 }));
 vi.mock("@/lib/acl", () => ({
   requireProjectAccess: vi.fn(async (_p: string, need: "view" | "edit") => ({
@@ -24,11 +26,13 @@ const rett = (a: number, b: number, c: number, d: number) => [
   { x: c, y: d },
   { x: a, y: d },
 ];
-vi.mock("@/lib/project-store", async (originale) => ({
-  ...(await originale<typeof import("@/lib/project-store")>()),
+vi.mock("@/lib/project-store", async (originale) => {
+  const vero = await originale<typeof import("@/lib/project-store")>();
+  return {
+  ...vero,
   getProject: vi.fn(async () => ({ ...stato.files })),
   getCompileCache: vi.fn(async () => ({
-    filesHash: "x",
+    filesHash: vero.filesHash(stato.compilati),
     summary: {},
     createdAt: "2026-11-12",
     engineVersion: 11,
@@ -48,7 +52,8 @@ vi.mock("@/lib/project-store", async (originale) => ({
   writeProjectFile: vi.fn(async (_p: string, path: string, content: string) => {
     stato.files[path] = content;
   }),
-}));
+  };
+});
 const compilazioni = vi.hoisted(() => ({ n: 0 }));
 vi.mock("@/lib/compile", async (originale) => ({
   ...(await originale<typeof import("@/lib/compile")>()),
@@ -68,6 +73,7 @@ describe("/api/stitch-ground", () => {
   beforeEach(() => {
     stato.livello = "edit";
     stato.files = { "main.tsx": "export default () => <board />" };
+    stato.compilati = { ...stato.files };
     compilazioni.n = 0;
   });
 
@@ -90,6 +96,18 @@ describe("/api/stitch-ground", () => {
     expect(stato.files["cucitura-massa.tsx"]).toBe((r.d.fileChanged as { content: string }).content);
     expect(stato.files["main.tsx"]).toBe("export default () => <board />");
     expect(compilazioni.n).toBe(0);
+  });
+
+  it("scheda piu' vecchia dei file: l'anteprima lo dice con scrivibile false, scrivere e' un 422 e il file non nasce", async () => {
+    stato.files["main.tsx"] = "export default () => <board><net name=\"GND\" /></board>";
+    const guarda = await chiedi({ projectId: "p", passoMm: 2.5 });
+    expect(guarda.status).toBe(200);
+    expect(guarda.d).toMatchObject({ scheda: "vecchia", schedaPiuVecchiaDeiFile: true, scrivibile: false });
+    expect((guarda.d.nonScrivibile as string[])[0]).toMatch(/piu' vecchia dei file/);
+    const scrive = await chiedi({ projectId: "p", passoMm: 2.5, apply: true });
+    expect(scrive.status).toBe(422);
+    expect(String(scrive.d.error)).toMatch(/piu' vecchia dei file/);
+    expect(stato.files["cucitura-massa.tsx"]).toBeUndefined();
   });
 
   it("parametri fuori dai limiti: 422 con il motivo", async () => {

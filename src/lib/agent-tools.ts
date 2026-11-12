@@ -34,7 +34,7 @@ import type { ToolDefinition } from "./llm";
 import type { AgentKeyMap } from "./llm-keys";
 import { conRiprova } from "./db-retry";
 import { classeErrore, motivoErrore } from "./error-cause";
-import { DESCRIZIONE_CUCITURA, eseguiCucitura, PARAMETRI_CUCITURA } from "./ground-stitching-tool";
+import { DESCRIZIONE_CUCITURA, eseguiCucitura, PARAMETRI_CUCITURA, statoDellaScheda, type StatoScheda } from "./ground-stitching-tool";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
 const MAX_FILE_CHARS = 200_000;
@@ -722,23 +722,24 @@ async function runTool(
     /*
      * The stitching of the ground (ground-stitching.ts): an explicit action,
      * never a rule. It reads the saved board, writes cucitura-massa.tsx only
-     * with apply: true, and does not compile.
+     * with apply: true and only on a board that is the files' (the stitching
+     * file itself left out of the comparison), and does not compile.
      */
     case "stitch_ground": {
       const cache = await getCompileCache(projectId).catch(() => null);
-      let schedaVecchia: boolean | null = null;
+      let scheda: StatoScheda | null = null;
       if (cache) {
         try {
-          schedaVecchia = cache.filesHash !== filesHash(await withLibrary(fsMap));
+          scheda = statoDellaScheda(cache.filesHash, await withLibrary(fsMap), filesHash);
         } catch {
-          // the library could not be read: whether the board is older is not known, and not said
+          // the library could not be read: whether the board is the files' is not known, and nothing is written
         }
       }
       return eseguiCucitura({
         files: fsMap,
         args,
         cache,
-        schedaVecchia,
+        scheda,
         scrivi: (path, content) => writeProjectFile(projectId, path, content),
       });
     }

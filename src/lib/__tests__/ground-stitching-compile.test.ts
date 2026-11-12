@@ -48,7 +48,7 @@ describe("cucitura-massa.tsx compilato", () => {
       files,
       args: { apply: true, passoMm: 3 },
       cache: { circuitJson: prima.circuitJson as unknown[] },
-      schedaVecchia: false,
+      scheda: "senza_la_cucitura",
       scrivi: async (path, content) => {
         files[path] = content;
       },
