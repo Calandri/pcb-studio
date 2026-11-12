@@ -803,6 +803,8 @@ describe("il file cucitura-massa.tsx", () => {
       const scrive = await scriviVisto({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi });
       const suo = scrive.fileChanged!.content;
       expect(leggiFileDellaCucitura(undefined)).toEqual({ stato: "manca" });
+      // a file left empty is handed back to the tool: nothing in it to lose
+      expect(leggiFileDellaCucitura("  \n")).toEqual({ stato: "manca" });
       const letto = leggiFileDellaCucitura(suo);
       expect(letto).toMatchObject({ stato: "dello_strumento", rete: "GND" });
       expect((letto as { vie: P[] }).vie).toHaveLength(scrive.result.vie as number);
@@ -875,9 +877,11 @@ describe("il file cucitura-massa.tsx", () => {
       expect(r.result.error).toMatch(/la scheda o i parametri sono cambiati dall'anteprima.*rifai l'anteprima/);
       expect(r.result.error).toMatch(new RegExp(`proponeva ${visto.result.vie as number} vie`));
       expect(r.fileChanged).toBeUndefined();
-      // the fingerprint of what it would write now comes back, and is another
-      expect(r.result.impronta).toMatch(/^\d+-[0-9a-f]{16}$/);
-      expect(r.result.impronta).not.toBe(visto.result.impronta);
+      // the fingerprint of what it would write now does not come back with the refusal: it comes with a look
+      expect(r.result.impronta).toBeUndefined();
+      const rivisto = await eseguiCucitura({ files, args: { passoMm: 2 }, cache: { circuitJson: cambiata }, scheda: "aggiornata", scrivi: nonScrive });
+      expect(rivisto.result.impronta).not.toBe(visto.result.impronta);
+      expect(rivisto.result.vie as number).toBeLessThan(visto.result.vie as number);
     });
 
     it("altri parametri dall'anteprima, o le stesse vie in numero ma in altri punti: rifiutato", async () => {
@@ -933,6 +937,16 @@ describe("il file cucitura-massa.tsx", () => {
       // with the vias where the file says the same call is the idempotent one
       const dritta = await scriviVisto({ files, args: { apply: true }, cache: { circuitJson: compilataCon(primo) }, scheda: "aggiornata", scrivi });
       expect(dritta.fileChanged!.content).toBe(primo);
+    });
+
+    it("un progetto che lo usa in un modo che non si riconosce dai file: se la scheda compilata ha tutte le sue vie, sono le sue", async () => {
+      const primo = (await scriviVisto({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, scheda: "aggiornata", scrivi })).fileChanged!.content;
+      // imported whole, placed through the namespace: neither an import { CucituraMassa } nor a <CucituraMassa />
+      const files = { ...regole, "main.tsx": 'import * as C from "./cucitura-massa"\nexport default () => <board><C.CucituraMassa /></board>', [FILE_CUCITURA]: primo };
+      expect(chiLaUsa(files)).toBeNull();
+      const r = await scriviVisto({ files, args: { apply: true }, cache: { circuitJson: compilataCon(primo) }, scheda: "aggiornata", scrivi });
+      expect(r.result).toMatchObject({ scritto: true, main: { usaIlFile: true } });
+      expect(r.fileChanged!.content).toBe(primo);
     });
 
     it("un file non ancora usato da nessuno non toglie niente dalla scheda", async () => {

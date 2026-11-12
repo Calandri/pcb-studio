@@ -183,9 +183,16 @@ export async function eseguiCucitura({
    */
   const file = leggiFileDellaCucitura(files[FILE_CUCITURA]);
   const suoPerQuestaRete = file.stato === "dello_strumento" && (file.rete === null || file.rete === scelta.nome);
-  /** the file of the project that places the component, null when none does */
+  /** the file of the project that places the component, null when none is seen to */
   const chi = chiLaUsa(files);
-  const usa = chi !== null;
+  const sueSullaScheda = suoPerQuestaRete && file.vie.length > 0 ? vieDellaReteAi(circuito, file.vie, scelta.id) : 0;
+  /*
+   * The project uses the file when a file of it imports and places the
+   * component, or when a board compiled with the file holds every one of its
+   * vias (two at least: one could be a via someone put there): however the
+   * project brings the component in, they are the file's.
+   */
+  const usa = chi !== null || (statoScheda === "aggiornata" && suoPerQuestaRete && file.vie.length > 1 && sueSullaScheda === file.vie.length);
   /*
    * And only where the board holds them: a board compiled with the file, by a
    * project that places its component, has every via where the file says. When
@@ -198,7 +205,7 @@ export async function eseguiCucitura({
   let nonAlLoroPosto = 0;
   if (suoPerQuestaRete && usa && file.vie.length > 0) {
     if (statoScheda === "aggiornata") {
-      nonAlLoroPosto = file.vie.length - vieDellaReteAi(circuito, file.vie, scelta.id);
+      nonAlLoroPosto = file.vie.length - sueSullaScheda;
       if (nonAlLoroPosto === 0) scheda = senzaLeVieAi(circuito, file.vie, scelta.id);
     } else if (statoScheda !== "senza_la_cucitura") {
       // an old board, or one that was not compared: nothing is written on it, the look takes off what is there
@@ -220,9 +227,9 @@ export async function eseguiCucitura({
     nonScrivibile.push("non si e' potuto confrontare la scheda salvata coi file del progetto (la libreria non si legge in questo momento): riprova");
   }
   if (file.stato === "non_dello_strumento") {
-    nonScrivibile.push(`${FILE_CUCITURA} c'e' gia' e non e' stato scritto da questo strumento (${file.perche}): non si sovrascrive, e le sue vie restano sulla scheda come sono. Rinominalo o cancellalo, poi rifai l'anteprima`);
+    nonScrivibile.push(`${FILE_CUCITURA} c'e' gia' e non e' stato scritto da questo strumento (${file.perche}): non si sovrascrive, e le sue vie restano sulla scheda come sono. Sposta in un altro file quello che contiene e lascialo vuoto, poi rifai l'anteprima`);
   } else if (file.stato === "dello_strumento" && !suoPerQuestaRete) {
-    nonScrivibile.push(`${FILE_CUCITURA} tiene la cucitura della rete ${String(file.rete).slice(0, 60)} e questa chiamata cuce ${esito.rete.nome}: il file tiene una rete sola e non si sovrascrive con un'altra`);
+    nonScrivibile.push(`${FILE_CUCITURA} tiene la cucitura della rete ${String(file.rete).slice(0, 60)} e questa chiamata cuce ${esito.rete.nome.slice(0, 60)}: il file tiene una rete sola e non si sovrascrive con un'altra`);
   }
   if (nonAlLoroPosto > 0 && file.stato === "dello_strumento") {
     nonScrivibile.push(
@@ -279,7 +286,7 @@ export async function eseguiCucitura({
     ...(nonScrivibile.length > 0 ? { nonScrivibile } : {}),
     ...(impronta ? { impronta } : {}),
     main: usa
-      ? { usaIlFile: true, ...(chi !== "main.tsx" ? { da: chi } : {}), ...(nonAlLoroPosto > 0 ? { vieNonAlLoroPosto: nonAlLoroPosto } : {}) }
+      ? { usaIlFile: true, ...(chi !== null && chi !== "main.tsx" ? { da: chi } : {}), ...(nonAlLoroPosto > 0 ? { vieNonAlLoroPosto: nonAlLoroPosto } : {}) }
       : { usaIlFile: false, righeDaAggiungere: [RIGA_IMPORT, `${RIGA_USO} dentro <board>`] },
     scheda: statoScheda ?? "non_confrontata",
     ...(statoScheda === "vecchia" ? { schedaPiuVecchiaDeiFile: true } : {}),
@@ -305,16 +312,16 @@ export async function eseguiCucitura({
     };
   }
   if (vista !== impronta) {
+    // the fingerprint of what it would write now is NOT given back: it comes with a look, with the vias to look at
     return {
       result: {
         error:
           `stitch_ground non ha scritto niente: la scheda o i parametri sono cambiati dall'anteprima (proponeva ${vista.split("-")[0]} vie, ` +
           `ora ne risultano ${esito.vie.length}, o le stesse in altri punti): rifai l'anteprima`,
-        impronta,
       },
     };
   }
-  if (esito.vie.length === 0 && files[FILE_CUCITURA] === undefined) {
+  if (esito.vie.length === 0 && file.stato === "manca") {
     return { result: { ...result, nota: `nessuna via da scrivere: ${FILE_CUCITURA} non e' stato creato` } };
   }
   await scrivi(FILE_CUCITURA, testo.contenuto);

@@ -35,7 +35,10 @@
  * via was proposed where it stood (review of 12/11/2026). The tool's file is
  * recognised by its shape, line by line: its first line, comments, the export,
  * and nothing but `<via name="VCM<n>" ... connectsTo="net.<one net>">` lines as
- * the tool writes them. One line more, or one changed, and it is someone's.
+ * the tool writes them. One line more, or one changed, and it is someone's. A
+ * file left empty is as good as none (a project has no way to delete a file):
+ * that is how its owner hands the name back to the tool, after moving what it
+ * held to another file.
  */
 
 import type { EsitoCucitura, Punto } from "./ground-stitching";
@@ -119,7 +122,8 @@ export type FileCucitura =
  * holds no via.
  */
 export function leggiFileDellaCucitura(contenuto: string | undefined): FileCucitura {
-  if (contenuto === undefined) return { stato: "manca" };
+  // a file left empty holds nothing to lose: it is as good as not there
+  if (contenuto === undefined || contenuto.trim() === "") return { stato: "manca" };
   if (!contenuto.startsWith(INTESTAZIONE)) return { stato: "non_dello_strumento", perche: "non comincia con l'intestazione che lo strumento scrive" };
   const righe = contenuto.split(/\r?\n/);
   while (righe.length > 0 && righe[righe.length - 1].trim() === "") righe.pop();

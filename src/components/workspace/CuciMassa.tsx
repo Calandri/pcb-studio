@@ -157,6 +157,11 @@ export function CuciMassa({
         setScritto(r);
       } else if (r) {
         setErrore("nessun file scritto: nessuna via da scrivere");
+      } else {
+        // refused: the dots on the board are not what would be written any more, the reason stays on the panel
+        setRisposta(null);
+        setVisto(null);
+        onAnteprima(null);
       }
     } finally {
       setLavora("");
@@ -195,9 +200,10 @@ export function CuciMassa({
       </div>
       <div className="grid gap-2.5 px-3.5 py-3 text-[12px] text-muted">
         <p className="leading-snug">
-          Vie di massa a passo regolare, solo dove la massa copre la corona su due strati, fuori da piazzole, ingombri e zone
-          senza rame. Passo massimo lambda/20: 2,5 mm copre fino a circa 2,9 GHz in FR4. Non compila: scrive{" "}
-          <code className="font-mono text-[11px]">cucitura-massa.tsx</code>.
+          Vie di massa a passo regolare, solo dove la massa copre la corona su due strati, fuori da piazzole, ingombri,
+          serigrafia e zone senza rame di ogni strato. Passo massimo lambda/20: 2,5 mm copre fino a circa 2,9 GHz in FR4. Prima
+          l&apos;anteprima, poi si scrivono le vie viste in <code className="font-mono text-[11px]">cucitura-massa.tsx</code>. Non
+          compila.
         </p>
         <label className="flex items-center gap-2">
           Passo
