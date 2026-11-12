@@ -32,7 +32,8 @@ import { SCHEMATIC_NOTES_PATH, validateSchematicNotesFile } from "./schematic-no
 import { renderPcbPng, reviewLayout } from "./vision-review";
 import type { ToolDefinition } from "./llm";
 import type { AgentKeyMap } from "./llm-keys";
-import { motivoErrore } from "./error-cause";
+import { conRiprova } from "./db-retry";
+import { classeErrore, motivoErrore } from "./error-cause";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
 const MAX_FILE_CHARS = 200_000;
@@ -732,45 +733,60 @@ async function runTool(
  * THE LIBRARY COULD NOT BE READ. It used to be swallowed: the read of the
  * library from the database failed, the project went on without it, and the
  * compile said "File lib/X.tsx not found", sending whoever read it to look for
- * a file that was never missing. Now the reason is said, the database's own
- * words without what must not travel: addresses, hosts, credentials.
+ * a file that was never missing. Now it is said, in a sentence of ours with the
+ * kind of failure and its code (classeErrore: timeout, connection, credentials,
+ * other), never in the driver's words: those can carry the database's host, an
+ * address, the user, a piece of a password. The driver's words, cleaned
+ * (motivoSenzaSegreti), go to the log only.
  */
 export class LibreriaNonLetta extends Error {
   constructor(err: unknown) {
-    super(`libreria dei componenti non letta: ${motivoSenzaSegreti(err)}`);
+    super(`libreria dei componenti non letta: errore del database (${classeErrore(err)}), riprova tra poco`);
     this.name = "LibreriaNonLetta";
+    console.error(`[libreria] lettura non riuscita: ${motivoSenzaSegreti(err)}`);
   }
 }
 
-/** an error's reason (with its causes), with no address, host or credential in it */
-export function motivoSenzaSegreti(err: unknown): string {
-  return motivoErrore(err, 300)
-    .replace(/\b[a-z][\w+.-]*:\/\/\S+/gi, "<indirizzo>")
-    .replace(/\b(password|passwd|pwd|user|token|secret|key)\s*[=:]\s*\S+/gi, "$1=<nascosto>")
-    .replace(/\b(?:[a-z0-9-]+\.)+(?:neon\.tech|amazonaws\.com|vercel\.app|neon\.build)\b/gi, "<host>");
-}
+/** an IPv4 address, with its port */
+const IPV4 = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g;
+/** an IPv6 address: three colons at least, or a "::", in brackets with its port or bare */
+const IPV6 = /\[?(?:\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b|\b(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?|::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?)\]?(?::\d{1,5})?/gi;
 
-/** the pause before the second read of the library */
-export const RIPROVA_LIBRERIA_MS = 250;
+/**
+ * An error's reason (with its causes), with no address, host or credential in
+ * it: for the log. Everything is taken out of the WHOLE text first and only
+ * then cut to `max`: cut first, a host, an address or a password in quotes
+ * broken in half no longer matched and stayed.
+ */
+export function motivoSenzaSegreti(err: unknown, max = 300): string {
+  const pulito = motivoErrore(err, 8000)
+    .replace(/\b[a-z][\w+.-]*:\/\/\S+/gi, "<indirizzo>")
+    // key=value or key: value, quoted (with spaces inside) or not
+    .replace(/\b(password|passwd|pwd|user(?:name)?|token|secret|api[_-]?key|key)\s*[=:]\s*("[^"]*"?|'[^']*'?|\S+)/gi, "$1=<nascosto>")
+    // what a database names in quotes: for user "neondb_owner", role 'x', database "y"
+    .replace(/\b(user|role|password|database|db)\s+("[^"]*"?|'[^']*'?)/gi, '$1 "<nascosto>"')
+    .replace(IPV4, "<ip>")
+    .replace(IPV6, "<ip>")
+    // a host: three labels or more, or a Neon endpoint on its own
+    .replace(/\b(?:[a-z0-9-]+\.){2,}[a-z]{2,}\b/gi, "<host>")
+    .replace(/\bep-[a-z0-9-]+\b/gi, "<host>");
+  return pulito.length > max ? `${pulito.slice(0, max - 1)}…` : pulito;
+}
 
 /**
  * Library components are mounted under `lib/<Name>.tsx` at compile time: they
  * stay shared (one copy in the DB) but the project imports them as local
- * files. A failed read is tried once more after RIPROVA_LIBRERIA_MS (a passing
- * error of the database: a dropped socket, a cold start); throws
- * LibreriaNonLetta when the second fails too.
+ * files. A read that fails on the network is tried once more (conRiprova: a
+ * passing error of the database, a dropped socket, a cold start); throws
+ * LibreriaNonLetta when the second fails too, or at once on an error of the
+ * database itself.
  */
 export async function withLibrary(fsMap: FsMap): Promise<FsMap> {
   let library: Record<string, string>;
   try {
-    library = await getLibraryFsMap();
-  } catch {
-    await new Promise((fatto) => setTimeout(fatto, RIPROVA_LIBRERIA_MS));
-    try {
-      library = await getLibraryFsMap();
-    } catch (err) {
-      throw new LibreriaNonLetta(err);
-    }
+    library = await conRiprova(() => getLibraryFsMap(), { tentativi: 2, attesaMs: 250 });
+  } catch (err) {
+    throw new LibreriaNonLetta(err);
   }
   return { ...library, ...fsMap };
 }
