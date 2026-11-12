@@ -50,6 +50,8 @@ const spie = {
   /** the board updates asked of the page: the hint, and how many writes were done by then */
   aggiornamenti: [] as Array<{ hint: unknown; scritture: number }>,
 };
+/** how much of the layers not chosen shows through (the X-ray of the viewer): 0 unless a test asks */
+let radiografia = 0;
 /** what the page holds at its last render */
 const fuori = {} as { editor: ManualEditor; scheda: unknown[] };
 
@@ -80,6 +82,7 @@ function Pagina() {
       circuitJson,
       flags: FLAGS,
       layer: "top",
+      xray: radiografia,
       mode: editor.mode === "move" ? "move" : "view",
       regole: DEFAULT_DESIGN_RULES,
       rameInAttesa: editor.copper,
@@ -148,6 +151,7 @@ async function trascinaLaVia(x: number, y: number, campi: Record<string, unknown
 
 beforeEach(() => {
   vi.clearAllMocks();
+  radiografia = 0;
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   f = apriFinestra();
   server = serverFinto();
@@ -195,6 +199,58 @@ describe("il gesto sul rame in Sposta: dal puntatore giu' al rilascio", () => {
     expect(disegni().fermo).toBeGreaterThan(inizio.fermo);
     expect(pistaFerma()).toEqual([]);
     expect(vie(true)).toEqual([[-3, 6]]);
+  });
+
+  it("una pista che il gesto spinge esce dal rame fermo quando viene spinta e ci torna quando il puntatore torna indietro: il rame fermo si ridisegna solo allora", async () => {
+    // the inner plane shows through, so its trace is in the still copper to begin with
+    radiografia = 60;
+    await apri();
+    const via = bersaglio("via:via_a");
+    /** the hand route of the inner plane (0,313 wide) in the still copper */
+    const internaFerma = () => f.contenitore.cerca((n) => n.tagName === "polyline" && n.getAttribute("stroke-width") === "0.313").length;
+    // the solver: past x = -2 the via pushes the trace of the inner plane, one millimetre aside; the same list for every such state
+    const CON_LA_SPINTA = { pcbTraceIds: ["tr_top", "tr_in1"], pcbViaIds: ["via_a"] };
+    gesto.muoviGesto.mockImplementation((_g: unknown, verso: { x: number; y: number }) =>
+      verso.x > -2
+        ? statoConLaViaIn(verso.x, verso.y, {
+            nascosti: CON_LA_SPINTA,
+            tratti: [
+              { x1: -5, y1: 0, x2: verso.x, y2: verso.y, layer: "top", width: 0.311 },
+              { x1: 1, y1: 0, x2: 1, y2: 5, layer: "inner1", width: 0.313 },
+            ],
+          })
+        : statoConLaViaIn(verso.x, verso.y),
+    );
+    const muovi = async (x: number, y: number) => {
+      await f.spara(via, "pointermove", a(x, y, { altKey: true }));
+      await f.frame();
+    };
+
+    await f.spara(via, "pointerdown", a(-5, 5));
+    const inizio = disegni();
+    expect(internaFerma()).toBe(1);
+
+    // near, not pushing yet: nothing but the copper in hand is drawn again
+    await muovi(-3, 5);
+    expect(disegni()).toEqual(inizio);
+    expect(internaFerma()).toBe(1);
+
+    // the trace is pushed: it leaves the still copper, which is drawn once more, and the gesture draws it where it was pushed
+    await muovi(-1, 5);
+    expect(disegni()).toEqual({ visore: inizio.visore + 1, fermo: inizio.fermo + 1 });
+    expect(internaFerma()).toBe(0);
+    // in the order of the layers: the inner plane under the top
+    expect(trattiMossi()).toEqual([[1, 0, 1, 5], [-5, 0, -1, 5]]);
+
+    // pushed further: the same copper, nothing but the gesture is drawn again
+    await muovi(-0.5, 5);
+    expect(disegni()).toEqual({ visore: inizio.visore + 1, fermo: inizio.fermo + 1 });
+
+    // the pointer comes back: the trace is where it was, in the still copper again
+    await muovi(-3, 5);
+    expect(disegni()).toEqual({ visore: inizio.visore + 2, fermo: inizio.fermo + 2 });
+    expect(internaFerma()).toBe(1);
+    expect(trattiMossi()).toEqual([[-5, 0, -3, 5]]);
   });
 
   it("il puntatore sta sulla griglia di Sposta, Alt la toglie, e il gesto si calcola al piu' una volta per fotogramma con l'ultima posizione", async () => {
