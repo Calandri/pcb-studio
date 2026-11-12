@@ -18,6 +18,7 @@ import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
 import { BoardCanvas, type BoardZone, type SelectMode } from "./board/BoardCanvas";
+import { useCollegamentiAperti } from "./board/CollegamentiAperti";
 import { RouteCanvas } from "./board/RouteCanvas";
 import { SchematicView } from "./SchematicView";
 import { SCHEMATIC_NOTES_PATH } from "@/lib/schematic-notes";
@@ -112,6 +113,8 @@ export function Studio({
   const [xray, setXray] = useState(0);
   /** "Sposta" shows the parts of both faces: only when asked for (LeftRail) */
   const [bothSides, setBothSides] = useState(false);
+  /** the open connections of the board on screen, and whether the person asked to see them in every view */
+  const aperti = useCollegamentiAperti(circuitJson);
 
   /*
    * 1, 2, 3...: only that copper layer, in stackup order (1 = Top, the last
@@ -1760,6 +1763,8 @@ export function Studio({
                       layer={layer}
                       xray={xray}
                       markers={drcMarkers}
+                      apertiAccesi={aperti.accesi}
+                      apertoScelto={aperti.scelto}
                       anteprimaVie={anteprimaCucitura}
                       eccedenzaIngombroMm={eccedenzaIngombro}
                       hoveredComponentId={hoverPartId}
@@ -1804,6 +1809,8 @@ export function Studio({
                       layer={layer}
                       xray={xray}
                       markers={drcMarkers}
+                      apertiAccesi={aperti.accesi}
+                      apertoScelto={aperti.scelto}
                       anteprimaVie={anteprimaCucitura}
                       eccedenzaIngombroMm={eccedenzaIngombro}
                       hoveredComponentId={hoverPartId}
@@ -2086,6 +2093,7 @@ export function Studio({
           recompiling={recompiling}
           blocked={boardBusy}
           enclosures={enclosures}
+          aperti={aperti}
           top={
             (tab === "pcb" || tab === "cad") && part && editor.mode === "view" ? (
               <PartCard

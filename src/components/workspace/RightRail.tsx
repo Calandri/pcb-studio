@@ -5,7 +5,9 @@ import { estimateCost, millimetri, type BoardReport, type Severity } from "@/lib
 import { BOARD_THICKNESS_MM } from "@/lib/enclosure-template";
 import { downloadTextFile, meshesToStl } from "@/lib/stl-export";
 import type { EnclosuresApi } from "@/lib/use-enclosures";
+import type { StatoAperti } from "../board/CollegamentiAperti";
 import type { BoardTab } from "./Chrome";
+import { ElencoAperti } from "./ElencoAperti";
 
 export interface ErcSummary {
   violations: Array<{ rule: string; severity: "warn" | "fail"; message: string }>;
@@ -58,6 +60,7 @@ export function RightRail({
   blocked = false,
   enclosures,
   top = null,
+  aperti = null,
 }: {
   tab: BoardTab;
   report: BoardReport;
@@ -74,6 +77,8 @@ export function RightRail({
   enclosures: EnclosuresApi | null;
   /** the card of the clicked part, at the top of the column: never over the board */
   top?: React.ReactNode;
+  /** the open connections of the board on screen: the counter becomes a switch with their list (board tab) */
+  aperti?: StatoAperti | null;
 }) {
   // on the 3D tab DRC and costs are not needed: the mechanical checks are what count
   if (tab === "cad" && enclosures) {
@@ -97,12 +102,14 @@ export function RightRail({
       onRecompile={onRecompile}
       recompiling={recompiling}
       blocked={blocked}
+      aperti={aperti}
     />
   );
 }
 
 function BoardRail({
   top,
+  aperti,
   report,
   erc,
   compiledAgo,
@@ -123,6 +130,7 @@ function BoardRail({
   recompiling: boolean;
   blocked: boolean;
   top?: React.ReactNode;
+  aperti: StatoAperti | null;
 }) {
   const cost = estimateCost(report);
   const [open, setOpen] = useState<string | null>(null);
@@ -361,23 +369,28 @@ function BoardRail({
             label="Struttura confermata"
             value={`${report.layerCount} strati · ${millimetri(report.thicknessMm)} mm`}
           />
-          <PreflightRow
-            ok={report.compiled && report.unrouted === 0}
-            label={
-              !report.compiled
-                ? "Scheda da compilare"
-                : report.unrouted === 0
-                  ? "Collegamenti completi"
-                  : "Collegamenti aperti"
-            }
-            value={
-              !report.compiled
-                ? "-"
-                : report.unrouted === 0
-                  ? `${report.traceCount} piste`
-                  : `${report.unrouted}`
-            }
-          />
+          {tab === "pcb" && report.compiled && aperti && aperti.elenco.collegamenti.length > 0 ? (
+            // the counter is a switch: the open connections on the board, and their list
+            <ElencoAperti aperti={aperti} dichiarati={report.unrouted} />
+          ) : (
+            <PreflightRow
+              ok={report.compiled && report.unrouted === 0}
+              label={
+                !report.compiled
+                  ? "Scheda da compilare"
+                  : report.unrouted === 0
+                    ? "Collegamenti completi"
+                    : "Collegamenti aperti"
+              }
+              value={
+                !report.compiled
+                  ? "-"
+                  : report.unrouted === 0
+                    ? `${report.traceCount} piste`
+                    : `${report.unrouted}`
+              }
+            />
+          )}
         </div>
       </section>
 
