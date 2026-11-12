@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { Fragment, useRef } from "react";
 import { millimetri, type BoardReport } from "@/lib/board-report";
 import type { InspectComponent } from "@/lib/inspect";
 import type { EnclosuresApi } from "@/lib/use-enclosures";
@@ -159,6 +159,56 @@ export function LeftRail({
 
 // ---------------------------------------------------------------- routing
 
+/**
+ * What the depths next to the names are, in words. With the stackup the
+ * project declares (design-rules.json) they are the real ones, and the panel
+ * says so with the total; a total too far from the thickness the board
+ * declares is said in amber, a warning and no more. Without one, or with one
+ * that does not fit this board, they are the board's thickness cut in equal
+ * steps: a number read as the real depth of a plane is worse than no number.
+ */
+function StackupNote({ report }: { report: BoardReport }) {
+  const nota = "px-1 text-[10.5px] leading-[1.4] text-[#5F726C]";
+  const avviso = "px-1 text-[10.5px] leading-[1.4] text-[#E8B23B]";
+  const pila = report.stackup;
+  const passoUguale = `lo spessore della scheda (${millimetri(report.thicknessMm)} mm) diviso in parti uguali`;
+  if (pila.source === "declared") {
+    return (
+      <>
+        <p className={nota}>
+          La pila è quella dichiarata nel progetto: rame e dielettrici fanno in tutto {millimetri(pila.totalMm)} mm. Ogni
+          quota è la profondità della faccia di sopra dello strato, misurata dalla faccia Top.
+        </p>
+        {pila.outOfTolerance && pila.boardThicknessMm !== null && (
+          <p className={avviso}>
+            Attenzione: la pila fa in tutto {millimetri(pila.totalMm)} mm, la scheda dichiara{" "}
+            {millimetri(pila.boardThicknessMm)} mm di spessore. La differenza supera il 10%: uno dei due numeri è da
+            correggere.
+          </p>
+        )}
+      </>
+    );
+  }
+  if (pila.source === "wrong-layers" || pila.source === "invalid") {
+    return (
+      <>
+        <p className={avviso}>
+          {pila.source === "wrong-layers"
+            ? `La pila dichiarata nel progetto ha ${pila.stackupLayers} strati di rame, la scheda ne ha ${pila.boardLayers}: non la uso.`
+            : `La pila dichiarata nel progetto non è valida e non la uso: ${pila.reason}.`}
+        </p>
+        {report.nominalDepths && <p className={nota}>Le quote in mm restano indicative: {passoUguale}.</p>}
+      </>
+    );
+  }
+  if (!report.nominalDepths) return null;
+  return (
+    <p className={nota}>
+      Le quote in mm sono indicative: {passoUguale}. Non sono la pila vera, quella la decide chi fabbrica la scheda.
+    </p>
+  );
+}
+
 function PcbSections({
   report,
   preset,
@@ -239,54 +289,51 @@ function PcbSections({
           {report.layers.map((l) => {
             const active = l.id === layer;
             return (
-              <button
-                key={l.id}
-                type="button"
-                onClick={() => onLayer(l.id)}
-                className={`grid grid-cols-[1fr_46px] items-center gap-2.5 rounded-[9px] px-1 py-[5px] text-left transition-colors ${
-                  active ? "bg-[#141E1B]" : "hover:bg-[#141E1B]"
-                }`}
-              >
-                <span className="flex flex-col gap-[5px]">
-                  <span className="flex items-center gap-2">
-                    <span
-                      className="h-[7px] w-[7px] rounded-[2px]"
-                      style={{ background: l.color }}
-                    />
-                    <span
-                      className={`text-[12px] font-semibold ${active ? "text-brand" : "text-text"}`}
-                    >
-                      {l.name}
+              <Fragment key={l.id}>
+                <button
+                  type="button"
+                  onClick={() => onLayer(l.id)}
+                  className={`grid grid-cols-[1fr_46px] items-center gap-2.5 rounded-[9px] px-1 py-[5px] text-left transition-colors ${
+                    active ? "bg-[#141E1B]" : "hover:bg-[#141E1B]"
+                  }`}
+                >
+                  <span className="flex flex-col gap-[5px]">
+                    <span className="flex items-center gap-2">
+                      <span
+                        className="h-[7px] w-[7px] rounded-[2px]"
+                        style={{ background: l.color }}
+                      />
+                      <span
+                        className={`text-[12px] font-semibold ${active ? "text-brand" : "text-text"}`}
+                      >
+                        {l.name}
+                      </span>
+                      <span className="font-mono text-[9px] text-[#4E625C]">{l.depthMm}</span>
                     </span>
-                    <span className="font-mono text-[9px] text-[#4E625C]">{l.depthMm}</span>
+                    <span
+                      className="rounded-[2px]"
+                      style={{
+                        height: l.id === "top" || l.id === "bottom" ? 7 : 5,
+                        width: `${Math.max(6, l.coverage)}%`,
+                        background: `linear-gradient(90deg, ${l.color}, ${l.color}55)`,
+                        boxShadow: active ? `0 0 10px ${l.color}55` : "none",
+                      }}
+                    />
                   </span>
-                  <span
-                    className="rounded-[2px]"
-                    style={{
-                      height: l.id === "top" || l.id === "bottom" ? 7 : 5,
-                      width: `${Math.max(6, l.coverage)}%`,
-                      background: `linear-gradient(90deg, ${l.color}, ${l.color}55)`,
-                      boxShadow: active ? `0 0 10px ${l.color}55` : "none",
-                    }}
-                  />
-                </span>
-                <span className="text-right font-mono text-[10px] text-faint">
-                  {l.coverage}%
-                </span>
-              </button>
+                  <span className="text-right font-mono text-[10px] text-faint">
+                    {l.coverage}%
+                  </span>
+                </button>
+                {/* what lies between this layer and the next, from the project's stackup: one faint line under the name */}
+                {l.dielectricBelow && (
+                  <span className="-my-[2px] pl-[19px] font-mono text-[9px] leading-none text-[#4E625C]">
+                    {l.dielectricBelow}
+                  </span>
+                )}
+              </Fragment>
             );
           })}
-          {/*
-            The depths next to the names are the board's thickness cut in equal
-            steps: no project declares its stackup, and a number read as the
-            real depth of a plane is worse than no number. Said here, in words.
-          */}
-          {report.nominalDepths && (
-            <p className="px-1 text-[10.5px] leading-[1.4] text-[#5F726C]">
-              Le quote in mm sono indicative: lo spessore della scheda ({millimetri(report.thicknessMm)} mm) diviso in parti
-              uguali. Non sono la pila vera, quella la decide chi fabbrica la scheda.
-            </p>
-          )}
+          <StackupNote report={report} />
           {/*
             Which face's parts "Sposta" shows and lets you grab: the face of
             the chosen layer (bottom on Bottom, top otherwise). Both faces only

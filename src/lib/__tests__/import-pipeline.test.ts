@@ -9,12 +9,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const stato = vi.hoisted(() => ({
   eventi: [] as string[],
   scritti: new Map<string, string>(),
+  /** the files the project already has, for an import over an existing project */
+  esistenti: new Map<string, string>(),
 }));
 
 vi.mock("@/lib/project-store", () => ({
   writeProjectFile: vi.fn(async (id: string, path: string, content: string) => {
     stato.eventi.push(`scrivi ${id} ${path}`);
     stato.scritti.set(path, content);
+  }),
+  // a write over the file as it is: `change` gets what the project has and gives what to write
+  updateProjectFile: vi.fn(async (id: string, path: string, change: (current: string | null) => string | null) => {
+    const content = change(stato.esistenti.get(path) ?? null);
+    if (content !== null) {
+      stato.eventi.push(`scrivi ${id} ${path}`);
+      stato.scritti.set(path, content);
+    }
+    return { written: content !== null, content };
   }),
   getProject: vi.fn(async () => ({})),
   filesHash: vi.fn(() => "h"),
@@ -47,13 +58,16 @@ vi.mock("@/lib/altium-import", async (originale) => {
   };
 });
 
+import { importAltiumProject } from "@/lib/altium-import";
 import { importaAltium } from "@/lib/altium-pipeline";
+import { buildProjectRules, DESIGN_RULES_PATH, serializeDesignRules } from "@/lib/design-rules";
 
 const files = [{ path: "board.PcbDoc", data: new ArrayBuffer(8) }];
 
 beforeEach(() => {
   stato.eventi.length = 0;
   stato.scritti.clear();
+  stato.esistenti.clear();
 });
 
 describe("Altium pipeline", () => {
@@ -115,5 +129,62 @@ describe("Altium pipeline", () => {
     );
     expect(report.codiciLcsc).toBe(1);
     expect(report.warnings.join("\n")).toMatch(/LM358 -> LM358D/);
+  });
+});
+
+/*
+ * An Altium file that states its limits writes design-rules.json anew
+ * (altium-import.ts). Imported over a project that exists, that file replaces
+ * one that may declare the board's stackup: the stackup stays.
+ */
+describe("Altium pipeline over an existing project: the rules are rewritten, the stackup stays", () => {
+  /** st-camera: JLCPCB JLC06161H-3313, as jlcpcb.com/impedance gives it */
+  const ST_CAMERA = {
+    copperMm: [0.035, 0.0152, 0.0152, 0.0152, 0.0152, 0.035],
+    dielectrics: [
+      { mm: 0.0994, er: 4.1, kind: "prepreg", name: "3313" },
+      { mm: 0.55, er: 4.6, kind: "core" },
+      { mm: 0.1164, er: 4.16, kind: "prepreg", name: "2116" },
+      { mm: 0.55, er: 4.6, kind: "core" },
+      { mm: 0.0994, er: 4.1, kind: "prepreg", name: "3313" },
+    ],
+  };
+  /** the rules an Altium board brings, as the reader writes them */
+  const REGOLE_ALTIUM = serializeDesignRules(buildProjectRules("custom", { minClearanceMm: 0.1524, autoPlaneVias: false, autoroute: false }));
+  const conRegole = () =>
+    vi.mocked(importAltiumProject).mockResolvedValueOnce({
+      fsMap: { "main.tsx": "<board />", [DESIGN_RULES_PATH]: REGOLE_ALTIUM },
+      modelli3d: [],
+      identita: new Map(),
+      routes: [],
+      components: 0,
+      traces: 0,
+      nomi: new Map(),
+      warnings: [],
+      stats: {},
+    } as never);
+  const importa = (projectId?: string) =>
+    importaAltium({ files, projectId, conDatasheet: false, conFootprint: false, compila: false, preparaProgetto: async () => {} });
+
+  it("the project declared a stackup: the file written has the Altium rules and that stackup", async () => {
+    stato.esistenti.set(DESIGN_RULES_PATH, JSON.stringify({ preset: "oshpark", stackup: ST_CAMERA }));
+    conRegole();
+    await importa("mio-progetto");
+    const scritto = JSON.parse(stato.scritti.get(DESIGN_RULES_PATH)!) as { preset: string; rules: Record<string, unknown>; stackup: unknown };
+    expect(scritto.preset).toBe("custom");
+    expect(scritto.rules).toMatchObject({ minClearanceMm: 0.1524, autoPlaneVias: false, autoroute: false });
+    expect(scritto.stackup).toEqual(ST_CAMERA);
+  });
+
+  it("no stackup before, or a new project: the rules are written as the reader built them, to the letter", async () => {
+    stato.esistenti.set(DESIGN_RULES_PATH, JSON.stringify({ preset: "oshpark" }));
+    conRegole();
+    await importa("mio-progetto");
+    expect(stato.scritti.get(DESIGN_RULES_PATH)).toBe(REGOLE_ALTIUM);
+    stato.scritti.clear();
+    stato.esistenti.clear();
+    conRegole();
+    await importa();
+    expect(stato.scritti.get(DESIGN_RULES_PATH)).toBe(REGOLE_ALTIUM);
   });
 });

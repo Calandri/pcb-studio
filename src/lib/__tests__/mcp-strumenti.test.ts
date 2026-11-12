@@ -51,7 +51,7 @@ vi.mock("@/lib/compile", async (originale) => ({
 }));
 
 const { POST } = await import("@/app/api/mcp/[transport]/route");
-const { DESIGN_RULES_PATH, MAX_REGOLE_CHARS, resolveDesignRules } = await import("@/lib/design-rules");
+const { DESIGN_RULES_PATH, MAX_REGOLE_CHARS, resolveDesignRules, resolveStackup } = await import("@/lib/design-rules");
 
 /** a tools/call as a client sends it; the answer's text, parsed, and whether it is an error */
 async function chiamaStrumento(name: string, args: Record<string, unknown>): Promise<{ isError: boolean; result: Record<string, unknown> }> {
@@ -160,5 +160,120 @@ describe("write_file of design-rules.json", () => {
     const tsx = await chiamaStrumento("write_file", { projectId: "p", path: "main.tsx", content: "x" });
     expect(tsx.isError).toBe(true);
     expect(stato.files[DESIGN_RULES_PATH]).toBeUndefined();
+  });
+});
+
+/*
+ * The board's stackup, declared in design-rules.json next to preset and rules.
+ * ST_CAMERA is the JLCPCB stack JLC06161H-3313 as jlcpcb.com/impedance gives
+ * it; its total is added up by hand: 2 x 0,035 of outer copper, 4 x 0,0152 of
+ * inner copper, 2 x 0,0994 + 2 x 0,55 + 0,1164 of dielectric
+ * = 0,07 + 0,0608 + 1,4152 = 1,546.
+ */
+describe("write_file of design-rules.json with a stackup", () => {
+  const ST_CAMERA = {
+    copperMm: [0.035, 0.0152, 0.0152, 0.0152, 0.0152, 0.035],
+    dielectrics: [
+      { mm: 0.0994, er: 4.1, kind: "prepreg", name: "3313" },
+      { mm: 0.55, er: 4.6, kind: "core" },
+      { mm: 0.1164, er: 4.16, kind: "prepreg", name: "2116" },
+      { mm: 0.55, er: 4.6, kind: "core" },
+      { mm: 0.0994, er: 4.1, kind: "prepreg", name: "3313" },
+    ],
+  };
+  beforeEach(() => {
+    stato.accesso = "edit";
+    stato.files = { "main.tsx": "export default () => <board />" };
+    compilazioni.n = 0;
+  });
+  const scrivi = (corpo: unknown) =>
+    chiamaStrumento("write_file", { projectId: "p", path: DESIGN_RULES_PATH, content: typeof corpo === "string" ? corpo : JSON.stringify(corpo) });
+  const letto = async () => JSON.parse(((await chiamaStrumento("read_project", { projectId: "p" })).result.files as Record<string, string>)[DESIGN_RULES_PATH]) as Record<string, unknown>;
+
+  it("a valid stackup is accepted with a factory preset and with custom rules, and read back as it was written", async () => {
+    const r = await scrivi({ preset: "jlcpcb_standard", stackup: ST_CAMERA });
+    expect(r.isError).toBe(false);
+    expect(r.result).toMatchObject({ ok: true, path: DESIGN_RULES_PATH, preset: "jlcpcb_standard", stackup: { copperLayers: 6, totalMm: 1.546 } });
+    expect(r.result.stackupRemoved).toBeUndefined();
+    expect(await letto()).toEqual({ preset: "jlcpcb_standard", stackup: ST_CAMERA });
+    expect(resolveStackup(stato.files)).toEqual({ stackup: ST_CAMERA });
+
+    const conRegole = await scrivi({ preset: "custom", rules: { minTraceWidthMm: 0.15, minClearanceMm: 0.15 }, stackup: ST_CAMERA });
+    expect(conRegole.result).toMatchObject({ ok: true, preset: "custom", stackup: { copperLayers: 6, totalMm: 1.546 } });
+    const file = await letto();
+    expect(file.stackup).toEqual(ST_CAMERA);
+    // the rules are the ones written, and the stackup is not one of them
+    const regole = resolveDesignRules(stato.files);
+    expect(regole.warnings).toBeUndefined();
+    expect(regole.rules).toMatchObject({ minTraceWidthMm: 0.15, minClearanceMm: 0.15 });
+    expect("stackup" in regole.rules).toBe(false);
+    expect(compilazioni.n).toBe(0);
+  });
+
+  it("a wrong stackup refuses the whole file with the reason, and nothing is written", async () => {
+    await scrivi({ preset: "oshpark", stackup: ST_CAMERA });
+    const prima = { ...stato.files };
+    const casi: Array<[unknown, RegExp]> = [
+      [{ preset: "oshpark", stackup: { ...ST_CAMERA, dielectrics: ST_CAMERA.dielectrics.slice(1) } }, /stackup\.dielectrics: ne servono 5, uno per ogni spazio fra i 6 strati di rame \(trovati 4\)/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035], dielectrics: [] } }, /stackup\.copperMm: serve un elenco di almeno due spessori in mm/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035, -0.035], dielectrics: [{ mm: 1.5 }] } }, /stackup\.copperMm\[1\]: -0\.035 deve essere maggiore di zero/],
+      [{ preset: "oshpark", stackup: { copperMm: [35, 35], dielectrics: [{ mm: 1.5 }] } }, /stackup\.copperMm\[0\]: 35 oltre il massimo di 10 \(i valori sono in millimetri, non in micron\)/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035, 0.035], dielectrics: [{ er: 4.6 }] } }, /stackup\.dielectrics\[0\]\.mm: manca, lo spessore in millimetri e' obbligatorio/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035, 0.035], dielectrics: [{ mm: 1.5, er: 1 }] } }, /stackup\.dielectrics\[0\]\.er: deve essere un numero maggiore di 1/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035, 0.035], dielectrics: [{ mm: 1.5, kind: "FR4" }] } }, /stackup\.dielectrics\[0\]\.kind: deve essere "prepreg" o "core"/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035, 0.035], dielectrics: [{ mm: 1.5, name: "x".repeat(41) }] } }, /stackup\.dielectrics\[0\]\.name: deve essere un testo da 1 a 40 caratteri/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035, 0.035], dielectrics: [{ mm: 1.5 }], thicknessMm: 1.6 } }, /stackup\.thicknessMm: campo sconosciuto \(ammessi copperMm e dielectrics\)/],
+      [{ preset: "oshpark", stackup: { copperMm: [0.035, 0.035], dielectrics: [{ mm: 1.5, tanD: 0.02 }] } }, /stackup\.dielectrics\[0\]\.tanD: campo sconosciuto \(ammessi mm, er, kind, name\)/],
+      ['{"preset": "oshpark", "stackup": {"copperMm": [1e999, 0.035], "dielectrics": [{"mm": 1.5}]}}', /stackup\.copperMm\[0\]: deve essere un numero di millimetri maggiore di zero/],
+      [{ preset: "custom", rules: { stackup: ST_CAMERA } }, /rules\.stackup: campo sconosciuto/],
+    ];
+    for (const [corpo, atteso] of casi) {
+      const r = await scrivi(corpo);
+      const nome = JSON.stringify(corpo).slice(0, 90);
+      expect(r.isError, nome).toBe(false);
+      expect(r.result.ok, nome).toBeUndefined();
+      expect(String(r.result.error), nome).toMatch(/^design-rules\.json non valido: /);
+      expect(String(r.result.error), nome).toMatch(atteso);
+      // the file that was there, stackup included, is untouched
+      expect(stato.files).toEqual(prima);
+    }
+    expect(compilazioni.n).toBe(0);
+  });
+
+  it("the file is whole: rewriting it with the stackup keeps it, without it removes it and the answer says so", async () => {
+    await scrivi({ preset: "oshpark", stackup: ST_CAMERA });
+    // other rules, the stackup written again: kept
+    const tenuta = await scrivi({ preset: "custom", rules: { minTraceWidthMm: 0.2 }, stackup: ST_CAMERA });
+    expect(tenuta.result.stackupRemoved).toBeUndefined();
+    expect(String(tenuta.result.note)).not.toMatch(/REMOVED/);
+    expect((await letto()).stackup).toEqual(ST_CAMERA);
+    // other rules, no stackup: removed, and said
+    const tolta = await scrivi({ preset: "custom", rules: { minTraceWidthMm: 0.25 } });
+    expect(tolta.result).toMatchObject({ ok: true, stackupRemoved: true });
+    expect(tolta.result.stackup).toBeUndefined();
+    expect(String(tolta.result.note)).toMatch(/The stackup this project declared is REMOVED: the file written carries none/);
+    expect("stackup" in (await letto())).toBe(false);
+    // nothing to remove the second time: nothing is said
+    const dopo = await scrivi({ preset: "oshpark" });
+    expect(dopo.result.stackupRemoved).toBeUndefined();
+    expect(String(dopo.result.note)).not.toMatch(/REMOVED/);
+  });
+
+  it("the tool says how to write a stackup, where an agent reads it", async () => {
+    const r = await POST(
+      new Request("http://localhost/api/mcp/mcp", {
+        method: "POST",
+        headers: { authorization: "Bearer pcbs_prova", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    const corpo = await r.text();
+    const riga = corpo.split("\n").find((l) => l.startsWith("data: ")) ?? corpo;
+    const strumenti = (JSON.parse(riga.replace(/^data: /, "")) as { result: { tools: Array<{ name: string; description: string }> } }).result.tools;
+    const descrizione = strumenti.find((t) => t.name === "write_file")?.description ?? "";
+    expect(descrizione).toContain('"stackup"');
+    expect(descrizione).toContain("copperMm [>0..10, ...] (2+)");
+    expect(descrizione).toContain("dielectrics [{mm >0..10, er >1, kind prepreg/core, name 1..40 chars}, ...] (one fewer than copperMm)");
+    expect(descrizione).toContain("scritto senza stackup toglie la pila che c'era");
   });
 });

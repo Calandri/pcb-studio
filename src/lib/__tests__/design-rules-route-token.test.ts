@@ -53,6 +53,12 @@ vi.mock("@/lib/project-store", async (originale) => {
     writeProjectFile: vi.fn(async (id: string, path: string, content: string) => {
       stato.scritti.push({ id, path, content });
     }),
+    // the route writes over the file as it is at write time (it keeps the stackup): here the project has no file yet
+    updateProjectFile: vi.fn(async (id: string, path: string, change: (current: string | null) => string | null) => {
+      const content = change(null);
+      if (content !== null) stato.scritti.push({ id, path, content });
+      return { written: content !== null, content };
+    }),
   };
 });
 

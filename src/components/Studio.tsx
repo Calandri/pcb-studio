@@ -13,7 +13,7 @@ import { motivoSenzaSchematico, type CompileRun } from "@/lib/compile-run";
 import type { ConflittoSerigrafia } from "@/lib/silkscreen-clearance";
 import type { IngombriDeiPezzi } from "@/lib/component-clearance";
 import { distanzaDeiCorpi } from "@/lib/ingombro";
-import { eccedenzaDellIngombro, resolveDesignRules } from "@/lib/design-rules";
+import { DESIGN_RULES_PATH, eccedenzaDellIngombro, resolveDesignRules, resolveStackup } from "@/lib/design-rules";
 import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
@@ -1069,22 +1069,30 @@ export function Studio({
       );
   }, [projectId, loadCircuit]);
 
+  /** design-rules.json as it is written: the report reads the stackup from it, and is redone only when this file changes */
+  const fileDelleRegole = fsMap?.[DESIGN_RULES_PATH];
   /*
    * Computed here, above every boundary: a throw on an odd Circuit JSON would
    * take the whole studio down, so it degrades to the empty report instead.
    */
   const report = useMemo<BoardReport>(() => {
     try {
-      return buildBoardReport(circuitJson, summary, {
-        saved: circuitSaved,
-        stale: circuitStale,
-        checksStale,
-      });
+      return buildBoardReport(
+        circuitJson,
+        summary,
+        {
+          saved: circuitSaved,
+          stale: circuitStale,
+          checksStale,
+        },
+        // the stackup the project declares: the depths of the "Sezione della scheda" panel
+        resolveStackup(fileDelleRegole ? { [DESIGN_RULES_PATH]: fileDelleRegole } : {}),
+      );
     } catch (err) {
       console.error("resoconto della scheda non calcolato:", err);
       return buildBoardReport(null, null);
     }
-  }, [circuitJson, summary, circuitSaved, circuitStale, checksStale]);
+  }, [circuitJson, summary, circuitSaved, circuitStale, checksStale, fileDelleRegole]);
 
   // enclosure designer: record from the server + compiled meshes for the 3D canvas
   const enclosures = useEnclosures(projectId, report.widthMm, report.heightMm);

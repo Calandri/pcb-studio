@@ -1,13 +1,14 @@
 import { accessoDaRichiesta } from "@/lib/acl";
 import {
   buildProjectRules,
+  conLoStackupDi,
   DESIGN_RULES_PATH,
   FAB_RULESETS,
   resolveDesignRules,
   serializeDesignRules,
   type DesignRules,
 } from "@/lib/design-rules";
-import { getProject, writeProjectFile } from "@/lib/project-store";
+import { getProject, updateProjectFile } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 
@@ -58,6 +59,13 @@ export async function POST(req: Request): Promise<Response> {
   if (!preset) return Response.json({ error: "serve un preset" }, { status: 400 });
 
   const next = buildProjectRules(preset, body.rules as Partial<DesignRules> | undefined);
-  await writeProjectFile(projectId, DESIGN_RULES_PATH, serializeDesignRules(next));
+  /*
+   * The panel saves a preset and its rules, and the file holds more than that:
+   * the stackup the project declares. The file is built anew here, so what it
+   * had under `stackup` is put back as it was (conLoStackupDi), on the file as
+   * it is at write time: a stackup written while the panel was open is kept too.
+   */
+  const nuovo = serializeDesignRules(next);
+  await updateProjectFile(projectId, DESIGN_RULES_PATH, (prima) => conLoStackupDi(prima, nuovo));
   return Response.json({ ok: true, current: next, presets: presets() });
 }

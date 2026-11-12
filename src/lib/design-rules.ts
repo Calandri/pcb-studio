@@ -472,11 +472,16 @@ export function resolveDesignRules(fsMap: Record<string, string>): ProjectRules 
   );
 }
 
-export function serializeDesignRules(projectRules: ProjectRules): string {
+/**
+ * The file as it is written. `stackup` is what the file says about the board's
+ * stackup (see THE STACKUP OF THE BOARD below), written after the rules;
+ * missing, the file carries none.
+ */
+export function serializeDesignRules(projectRules: ProjectRules, stackup?: unknown): string {
   const body = projectRules.isCustom
     ? { preset: "custom", rules: projectRules.rules }
     : { preset: projectRules.preset };
-  return `${JSON.stringify(body, null, 2)}\n`;
+  return `${JSON.stringify(stackup === undefined ? body : { ...body, stackup }, null, 2)}\n`;
 }
 
 /** builds the rules to save from what the user chose */
@@ -524,11 +529,16 @@ export function campiDelleRegole(): string {
  * - preset: one of FAB_RULESETS or "custom"; rules only with "custom";
  * - every field of rules known, of its type and within its limits, and the
  *   fields consistent with each other (what clampRules would correct);
+ * - stackup, with any preset, checked whole too (validaStackup);
  * - nothing of what was sent goes back in a message but short identifiers and
  *   numbers.
  * What is written is the file as the panel writes it (serializeDesignRules).
+ * The file is the WHOLE file: one written without stackup carries none, and
+ * `stackup` in the answer is the one it carries.
  */
-export function validaFileDelleRegole(content: string): { regole: ProjectRules; contenuto: string } | { errori: string[] } {
+export function validaFileDelleRegole(
+  content: string,
+): { regole: ProjectRules; contenuto: string; stackup?: Stackup } | { errori: string[] } {
   if (content.length > MAX_REGOLE_CHARS) return { errori: [`file troppo grande (${content.length} caratteri, massimo ${MAX_REGOLE_CHARS})`] };
   let data: unknown;
   try {
@@ -539,7 +549,15 @@ export function validaFileDelleRegole(content: string): { regole: ProjectRules; 
   if (typeof data !== "object" || data === null || Array.isArray(data)) return { errori: ["serve un oggetto {\"preset\": ..., \"rules\": {...}}"] };
   const obj = data as Record<string, unknown>;
   const errori: string[] = [];
-  for (const k of Object.keys(obj)) if (k !== "preset" && k !== "rules") errori.push(`${nomeSicuro(k)}: campo sconosciuto (ammessi preset e rules)`);
+  for (const k of Object.keys(obj)) {
+    if (k !== "preset" && k !== "rules" && k !== "stackup") errori.push(`${nomeSicuro(k)}: campo sconosciuto (ammessi preset, rules e stackup)`);
+  }
+  let stackup: Stackup | undefined;
+  if ("stackup" in obj) {
+    const esito = validaStackup(obj.stackup);
+    if ("errori" in esito) errori.push(...esito.errori);
+    else stackup = esito.stackup;
+  }
   const ammessi = [...FAB_RULESETS.map((r) => r.key), "custom"];
   if (typeof obj.preset !== "string" || !ammessi.includes(obj.preset)) errori.push(`preset: deve essere uno di ${ammessi.join(", ")}`);
   if (obj.preset !== "custom") {
@@ -578,5 +596,217 @@ export function validaFileDelleRegole(content: string): { regole: ProjectRules; 
   }
   if (errori.length > 0) return { errori };
   const regole = buildProjectRules(obj.preset as string, obj.rules as Partial<DesignRules> | undefined);
-  return { regole, contenuto: serializeDesignRules(regole) };
+  return { regole, contenuto: serializeDesignRules(regole, stackup), ...(stackup ? { stackup } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// THE STACKUP OF THE BOARD
+//
+// A board says how many copper layers it has and how thick it is, no more: the
+// "Sezione della scheda" panel could only cut the thickness in equal steps.
+// st-camera (six layers, 1.6 mm, JLCPCB JLC06161H-3313) has its inner layers
+// 0.134, 0.700, 0.831 and 1.396 mm deep, and was shown 0.32, 0.64, 0.96 and
+// 1.28. A project can now declare its stackup, in design-rules.json next to
+// `preset` and `rules`:
+//
+//   "stackup": {
+//     "copperMm": [0.035, 0.0152, 0.0152, 0.0152, 0.0152, 0.035],
+//     "dielectrics": [
+//       { "mm": 0.0994, "er": 4.1, "kind": "prepreg", "name": "3313" },
+//       { "mm": 0.55, "er": 4.6, "kind": "core" },
+//       ...
+//     ]
+//   }
+//
+// copperMm has one thickness per copper layer, Top first; dielectrics one entry
+// per gap between two layers, top first, so one fewer.
+//
+// It sits at the top of the file and not inside `rules` because it is not a
+// rule: `rules` exists only with preset "custom" and goes whole to the router
+// and the checks, while a board on a factory preset has a stackup too, and no
+// check reads it. resolveDesignRules does not see it: only the panel does
+// (board-report.ts). `er` is kept and nothing is computed from it.
+// ---------------------------------------------------------------------------
+
+export interface StackupDielectric {
+  /** thickness (mm) */
+  mm: number;
+  /** relative permittivity: stored for whoever computes an impedance, read by nothing here */
+  er?: number;
+  kind?: "prepreg" | "core";
+  /** what the fab calls it: "3313", "7628" */
+  name?: string;
+}
+
+export interface Stackup {
+  /** thickness of each copper layer (mm), Top first */
+  copperMm: number[];
+  /** what lies between two copper layers, top first: one fewer than copperMm */
+  dielectrics: StackupDielectric[];
+}
+
+/** what a project says about its stackup: the declared one, or why the declared one cannot be used; neither when it declares none */
+export interface DeclaredStackup {
+  stackup?: Stackup;
+  errori?: string[];
+}
+
+/** above ten millimetres one layer is microns typed as millimetres: no board is that thick */
+const MAX_SPESSORE_STRATO_MM = 10;
+const TIPI_DI_DIELETTRICO = ["prepreg", "core"] as const;
+const CAMPI_DEL_DIELETTRICO = ["mm", "er", "kind", "name"];
+const MAX_NOME_DIELETTRICO = 40;
+
+/** the name of a dielectric: one short line of text, with something in it and no control character */
+const nomeDiDielettrico = (v: unknown): v is string =>
+  typeof v === "string" &&
+  v.trim() !== "" &&
+  v.length <= MAX_NOME_DIELETTRICO &&
+  ![...v].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
+
+/** a thickness: a finite number above zero, within the limit */
+function spessoreValido(v: unknown, dove: string, errori: string[]): void {
+  if (typeof v !== "number" || !Number.isFinite(v)) errori.push(`${dove}: deve essere un numero di millimetri maggiore di zero`);
+  else if (v <= 0) errori.push(`${dove}: ${v} deve essere maggiore di zero`);
+  else if (v > MAX_SPESSORE_STRATO_MM) errori.push(`${dove}: ${v} oltre il massimo di ${MAX_SPESSORE_STRATO_MM} (i valori sono in millimetri, non in micron)`);
+}
+
+/**
+ * The stackup of a design-rules.json, checked whole and strict like the rest of
+ * the file: every field known, every thickness a finite number above zero, one
+ * dielectric per gap. What comes back is rebuilt from the known fields only,
+ * and no message repeats a text that was sent.
+ */
+function validaStackup(v: unknown): { stackup: Stackup } | { errori: string[] } {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    return { errori: ['stackup: serve un oggetto {"copperMm": [...], "dielectrics": [...]}'] };
+  }
+  const obj = v as Record<string, unknown>;
+  const errori: string[] = [];
+  for (const k of Object.keys(obj)) {
+    if (k !== "copperMm" && k !== "dielectrics") errori.push(`stackup.${nomeSicuro(k)}: campo sconosciuto (ammessi copperMm e dielectrics)`);
+  }
+  const rame = obj.copperMm;
+  let strati = 0;
+  if (!Array.isArray(rame) || rame.length < 2) {
+    errori.push("stackup.copperMm: serve un elenco di almeno due spessori in mm, uno per strato di rame, dall'alto (Top) al basso (Bottom)");
+  } else {
+    strati = rame.length;
+    rame.forEach((s, i) => spessoreValido(s, `stackup.copperMm[${i}]`, errori));
+  }
+  const dielettrici = obj.dielectrics;
+  if (!Array.isArray(dielettrici)) {
+    errori.push("stackup.dielectrics: serve un elenco, uno per ogni spazio fra due strati di rame, dall'alto");
+  } else {
+    if (strati >= 2 && dielettrici.length !== strati - 1) {
+      errori.push(`stackup.dielectrics: ne servono ${strati - 1}, uno per ogni spazio fra i ${strati} strati di rame (trovati ${dielettrici.length})`);
+    }
+    dielettrici.forEach((d, i) => {
+      const dove = `stackup.dielectrics[${i}]`;
+      if (typeof d !== "object" || d === null || Array.isArray(d)) {
+        errori.push(`${dove}: serve un oggetto {"mm": ...} (facoltativi er, kind, name)`);
+        return;
+      }
+      const o = d as Record<string, unknown>;
+      for (const k of Object.keys(o)) {
+        if (!CAMPI_DEL_DIELETTRICO.includes(k)) errori.push(`${dove}.${nomeSicuro(k)}: campo sconosciuto (ammessi ${CAMPI_DEL_DIELETTRICO.join(", ")})`);
+      }
+      if (o.mm === undefined) errori.push(`${dove}.mm: manca, lo spessore in millimetri e' obbligatorio`);
+      else spessoreValido(o.mm, `${dove}.mm`, errori);
+      if (o.er !== undefined && (typeof o.er !== "number" || !Number.isFinite(o.er) || o.er <= 1)) errori.push(`${dove}.er: deve essere un numero maggiore di 1`);
+      if (o.kind !== undefined && !(TIPI_DI_DIELETTRICO as readonly unknown[]).includes(o.kind)) errori.push(`${dove}.kind: deve essere "prepreg" o "core"`);
+      if (o.name !== undefined && !nomeDiDielettrico(o.name)) errori.push(`${dove}.name: deve essere un testo da 1 a ${MAX_NOME_DIELETTRICO} caratteri`);
+    });
+  }
+  if (errori.length > 0) return { errori };
+  return {
+    stackup: {
+      copperMm: [...(rame as number[])],
+      dielectrics: (dielettrici as Array<Record<string, unknown>>).map((d) => ({
+        mm: d.mm as number,
+        ...(d.er !== undefined ? { er: d.er as number } : {}),
+        ...(d.kind !== undefined ? { kind: d.kind as "prepreg" | "core" } : {}),
+        ...(d.name !== undefined ? { name: d.name as string } : {}),
+      })),
+    },
+  };
+}
+
+/** what a design-rules.json has under `stackup`, as it is written: undefined when the file has none or cannot be read */
+function stackupScritto(content: string | null | undefined): unknown {
+  if (!content) return undefined;
+  let data: unknown;
+  try {
+    data = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+  return (data as Record<string, unknown>).stackup;
+}
+
+/** whether a design-rules.json says anything about the stackup, right or wrong */
+export function dichiaraUnoStackup(content: string | null | undefined): boolean {
+  return stackupScritto(content) !== undefined;
+}
+
+/**
+ * The stackup a project declares, read from its file map. A file can reach a
+ * project without passing through validaFileDelleRegole (an import, a project
+ * older than a field), so what is there is checked again: a wrong stackup is
+ * not used and the reason is given, never half-read.
+ */
+export function resolveStackup(fsMap: Record<string, string>): DeclaredStackup {
+  const scritto = stackupScritto(fsMap[DESIGN_RULES_PATH]);
+  if (scritto === undefined) return {};
+  const esito = validaStackup(scritto);
+  return "errori" in esito ? { errori: esito.errori } : { stackup: esito.stackup };
+}
+
+/**
+ * THE STACKUP SURVIVES A REWRITE OF THE RULES.
+ *
+ * Whoever rewrites design-rules.json from a preset and its rules (the panel of
+ * the rules, an Altium import over an existing project) builds the file anew
+ * and knows nothing about the stackup: written as built, the file would lose
+ * it, in silence, at the first rule saved. `prima` is the file as it was,
+ * `nuovo` the one just built: what `prima` had under `stackup` goes into
+ * `nuovo` as it was written, right or wrong (a wrong one keeps being said by
+ * the panel instead of vanishing). A `prima` that is not JSON has nothing to
+ * carry over.
+ */
+export function conLoStackupDi(prima: string | null | undefined, nuovo: string): string {
+  const scritto = stackupScritto(prima);
+  if (scritto === undefined) return nuovo;
+  let data: unknown;
+  try {
+    data = JSON.parse(nuovo);
+  } catch {
+    return nuovo;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data) || "stackup" in data) return nuovo;
+  return `${JSON.stringify({ ...data, stackup: scritto }, null, 2)}\n`;
+}
+
+/**
+ * How deep the upper face of each copper layer lies from the Top face (mm),
+ * and the whole thickness: the copper and the dielectrics above a layer, added
+ * up. Top is at zero; the total ends under the Bottom copper.
+ */
+export function quoteDelloStackup(stackup: Stackup): { quoteMm: number[]; totaleMm: number } {
+  const quoteMm: number[] = [];
+  let z = 0;
+  stackup.copperMm.forEach((rame, i) => {
+    quoteMm.push(z);
+    z += rame + (stackup.dielectrics[i]?.mm ?? 0);
+  });
+  return { quoteMm, totaleMm: z };
+}
+
+/** the fields of a stackup with their limits, for whoever writes the file (the tools' descriptions) */
+export function campiDelloStackup(): string {
+  return (
+    `copperMm [>0..${MAX_SPESSORE_STRATO_MM}, ...] (2+); ` +
+    `dielectrics [{mm >0..${MAX_SPESSORE_STRATO_MM}, er >1, kind ${TIPI_DI_DIELETTRICO.join("/")}, name 1..${MAX_NOME_DIELETTRICO} chars}, ...] (one fewer than copperMm)`
+  );
 }

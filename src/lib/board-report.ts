@@ -4,7 +4,8 @@
  * Everything derived from the real compilation data, no made-up values.
  */
 
-import { COLORE_DEL_RAME, nomeDelloStrato, pilaDiRame } from "./strati-rame";
+import { quoteDelloStackup, type DeclaredStackup, type StackupDielectric } from "./design-rules";
+import { COLORE_DEL_RAME, nomeDelloStrato, pilaDiRame, stratiDiRame } from "./strati-rame";
 
 export type Severity = "err" | "warn" | "ok";
 
@@ -21,11 +22,37 @@ export interface CheckRow {
 export interface LayerRow {
   id: string;
   name: string;
-  /** how deep the layer sits from the top face, in mm with a comma: nominal, see BoardReport.nominalDepths */
+  /**
+   * How deep the layer sits from the top face, in mm with a comma. With the
+   * project's stackup (BoardReport.stackup "declared") it is the depth of the
+   * layer's upper face, to the tenth of a micron as the fabs quote a stackup;
+   * otherwise it is nominal, see BoardReport.nominalDepths.
+   */
   depthMm: string;
+  /** what lies between this layer and the one below, from the project's stackup: "prepreg 3313 · 0,0994 mm" */
+  dielectricBelow?: string;
   coverage: number;
   color: string;
 }
+
+/** where the depths of the panel come from, and what it says under the rows */
+export type BoardStackup =
+  /** the project declares no stackup: the thickness in equal steps, as it always was */
+  | { source: "none" }
+  /**
+   * The project's stackup, used. totalMm is all of it, copper and dielectrics;
+   * boardThicknessMm what the board declares (null when it carries none), and
+   * outOfTolerance says the two differ by more than SPESSORE_TOLLERANZA: a
+   * warning in the panel, nothing else.
+   */
+  | { source: "declared"; totalMm: number; boardThicknessMm: number | null; outOfTolerance: boolean }
+  /** the project's stackup is for another number of copper layers: not used */
+  | { source: "wrong-layers"; stackupLayers: number; boardLayers: number }
+  /** the project's stackup is not valid: not used, `reason` is the first thing wrong with it */
+  | { source: "invalid"; reason: string };
+
+/** how far the sum of a declared stackup may be from the thickness the board declares: a tenth of it, either way */
+export const SPESSORE_TOLLERANZA = 0.1;
 
 export interface BoardReport {
   /**
@@ -52,12 +79,14 @@ export interface BoardReport {
    */
   thicknessMm: number;
   /**
-   * The depths of the inner layers are NOT the real stackup: nothing in a
-   * project declares one (a board says how many layers and how thick, no
-   * more), so they are the thickness cut in equal steps. True whenever the
-   * board has inner layers; the panel says it in words.
+   * The depths of the inner layers are NOT the real stackup: they are the
+   * thickness cut in equal steps. True when the board has inner layers and no
+   * stackup of the project is used (it declares none, or one that does not fit
+   * this board: see `stackup`); the panel says it in words.
    */
   nominalDepths: boolean;
+  /** the stackup the project declares in design-rules.json, and whether the depths come from it */
+  stackup: BoardStackup;
   widthMm: number | null;
   heightMm: number | null;
   layerCount: number;
@@ -137,15 +166,31 @@ const LAYER_COLORS: Record<string, string> = { ...COLORE_DEL_RAME, top: "#F2C078
 /** the thickness of a board that carries none (a Circuit JSON made by hand): what the panel always assumed */
 const SPESSORE_DI_SERIE_MM = 1.6;
 
-/** millimetres as a person writes them here: a comma, no zeros at the end (1,6 and not 1.600) */
-export function millimetri(mm: number): string {
-  return String(Math.round(mm * 1000) / 1000).replace(".", ",");
+/**
+ * Millimetres as a person writes them here: a comma, no zeros at the end (1,6
+ * and not 1.600), to the micron. `cifre` 4 for a thickness of a stackup, which
+ * the fabs quote to the tenth of a micron (0,0994).
+ */
+export function millimetri(mm: number, cifre = 3): string {
+  const passo = 10 ** cifre;
+  return String(Math.round(mm * passo) / passo).replace(".", ",");
 }
 
+/** a dielectric as the panel writes it between two layers: its kind and name when it has them, and its thickness */
+function dielettricoInParole(d: StackupDielectric): string {
+  return `${[d.kind, d.name].filter(Boolean).join(" ") || "dielettrico"} · ${millimetri(d.mm, 4)} mm`;
+}
+
+/**
+ * `declared` is what the project says about its stackup (resolveStackup on its
+ * files). It only changes the depths of the "Sezione della scheda" panel and
+ * the words under them: no check, no count and no score reads it.
+ */
 export function buildBoardReport(
   circuitJson: unknown[] | null,
   summary: SummaryLike | null,
   state?: BoardState,
+  declared?: DeclaredStackup,
 ): BoardReport {
   const elements = (circuitJson ?? []) as El[];
   /*
@@ -405,17 +450,58 @@ export function buildBoardReport(
    */
   const layerIds = pilaDiRame(layerCount);
   const suo = board?.thickness;
-  const thickness = typeof suo === "number" && Number.isFinite(suo) && suo > 0 ? suo : SPESSORE_DI_SERIE_MM;
+  const dichiarato = typeof suo === "number" && Number.isFinite(suo) && suo > 0 ? suo : null;
+  const thickness = dichiarato ?? SPESSORE_DI_SERIE_MM;
+
+  /*
+   * THE PROJECT'S STACKUP, when it declares one for this board. Then the depth
+   * of a layer is where its upper face really is: the copper and the
+   * dielectrics above it, added up. A stackup for another number of layers
+   * says nothing about this board and one that is not valid says nothing at
+   * all: neither is used, the depths stay in equal steps and the panel says
+   * why. The sum against the thickness the board declares is a warning in the
+   * panel and no more: nothing is blocked and no check changes.
+   */
+  // every copper layer of the board in stack order, also the ones past the eighth that the panel has no row for
+  const pila = stratiDiRame(layerCount);
+  let stackup: BoardStackup = { source: "none" };
+  let quote: number[] | null = null;
+  if (declared?.errori?.length) {
+    stackup = { source: "invalid", reason: declared.errori[0].slice(0, 200) };
+  } else if (declared?.stackup) {
+    if (declared.stackup.copperMm.length !== pila.length) {
+      stackup = { source: "wrong-layers", stackupLayers: declared.stackup.copperMm.length, boardLayers: pila.length };
+    } else {
+      const { quoteMm, totaleMm } = quoteDelloStackup(declared.stackup);
+      quote = quoteMm;
+      stackup = {
+        source: "declared",
+        totalMm: totaleMm,
+        boardThicknessMm: dichiarato,
+        // a billionth of a millimetre of slack: a sum exactly on the limit is within it, whatever the floats say
+        outOfTolerance: dichiarato !== null && Math.abs(totaleMm - dichiarato) > dichiarato * SPESSORE_TOLLERANZA + 1e-9,
+      };
+    }
+  }
+
   const layers: LayerRow[] = layerIds.map((id, i) => {
     const pour = pours.find((p) => p.layer === id);
     const raw = perLayer.get(id) ?? 0;
+    // the place of this row in the stack: the row index, but for a board with more layers than the panel has rows
+    const k = pila.indexOf(id);
+    // the dielectric under it is said only when the next row is the next layer of the stack
+    const prossimo = layerIds[i + 1];
+    const sotto = quote && prossimo !== undefined && prossimo === pila[k + 1] ? declared?.stackup?.dielectrics[k] : undefined;
     return {
       id,
       name:
         id === "top" || id === "bottom"
           ? nomeDelloStrato(id)
           : `${nomeDelloStrato(id)}${pour ? ` · ${String(pour.connects_to ?? "").replace("net.", "") || "piano"}` : ""}`,
-      depthMm: (i * (thickness / (layerIds.length - 1))).toFixed(3).replace(".", ","),
+      depthMm: quote
+        ? quote[k].toFixed(4).replace(".", ",")
+        : (i * (thickness / (layerIds.length - 1))).toFixed(3).replace(".", ","),
+      ...(sotto ? { dielectricBelow: dielettricoInParole(sotto) } : {}),
       // a copper pour covers almost everything; on the others we scale to the max
       coverage: pour ? 92 : Math.round((raw / maxCount) * 88),
       color: LAYER_COLORS[id] ?? "#F2C078",
@@ -433,7 +519,8 @@ export function buildBoardReport(
     checks,
     layers,
     thicknessMm: thickness,
-    nominalDepths: layerIds.length > 2,
+    nominalDepths: layerIds.length > 2 && stackup.source !== "declared",
+    stackup,
     widthMm,
     heightMm,
     layerCount,

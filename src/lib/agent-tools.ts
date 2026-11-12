@@ -23,7 +23,14 @@ import {
 import { earlyBoardSaver, saveFinishedCompile } from "./compile-save";
 import { runSimulation } from "./simulate";
 import { compileProject } from "./compile";
-import { campiDelleRegole, DESIGN_RULES_PATH, validaFileDelleRegole } from "./design-rules";
+import {
+  campiDelleRegole,
+  campiDelloStackup,
+  DESIGN_RULES_PATH,
+  dichiaraUnoStackup,
+  quoteDelloStackup,
+  validaFileDelleRegole,
+} from "./design-rules";
 import {
   ENCLOSURE_NAME_RE,
   listEnclosures,
@@ -69,7 +76,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "The browser re-renders the circuit immediately after every write. " +
       `${DESIGN_RULES_PATH} sets the project's design rules, checked whole and refused with the reason when a field is unknown or out of its limits: ` +
       `{"preset": "jlcpcb_standard" | "oshpark" | "jlcpcb_enhanced"} or {"preset": "custom", "rules": {"minTraceWidthMm": 0.15, "minClearanceMm": 0.15, "componentCourtyardExcessMm": 0.2}}; ` +
-      `fields of rules (missing ones keep JLCPCB standard): ${campiDelleRegole()}. It does not compile: compile after it.`,
+      `fields of rules (missing ones keep JLCPCB standard): ${campiDelleRegole()}. ` +
+      `Next to preset, with any preset, an optional "stackup" declares the board's real stackup, thicknesses in mm from the top: ` +
+      `{"preset": "jlcpcb_standard", "stackup": {"copperMm": [0.035, 0.035], "dielectrics": [{"mm": 1.5, "er": 4.5, "kind": "core", "name": "FR4"}]}}; fields: ${campiDelloStackup()}. ` +
+      `It gives the "Sezione della scheda" panel its depths and no check reads it; the file is whole, so writing it without "stackup" removes the one that was there. ` +
+      `It does not compile: compile after it.`,
     input_schema: {
       type: "object",
       properties: {
@@ -467,10 +478,16 @@ async function runTool(
        * unknown or out of its limits refuses the file with the reason, nothing
        * is saved half-right (validaFileDelleRegole). Written as the panel
        * writes it; no compile starts: the board reads as one to update.
+       *
+       * The file may also declare the board's stackup, checked the same way.
+       * The content is the WHOLE file, as for every write here: one written
+       * without `stackup` over a file that had one removes it, and the answer
+       * says so, because whoever rewrites the rules may not know it was there.
        */
       if (path === DESIGN_RULES_PATH) {
         const esito = validaFileDelleRegole(content);
         if ("errori" in esito) return { result: { error: `${DESIGN_RULES_PATH} non valido: ${esito.errori.slice(0, 10).join("; ")}` } };
+        const pilaTolta = !esito.stackup && dichiaraUnoStackup(fsMap[DESIGN_RULES_PATH]);
         await writeProjectFile(projectId, path, esito.contenuto);
         return {
           result: {
@@ -479,7 +496,15 @@ async function runTool(
             chars: esito.contenuto.length,
             preset: esito.regole.preset,
             rules: esito.regole.rules,
-            note: "rules saved: the saved board is now older than the files, compile to check it against them",
+            ...(esito.stackup
+              ? { stackup: { copperLayers: esito.stackup.copperMm.length, totalMm: Number(quoteDelloStackup(esito.stackup).totaleMm.toFixed(4)) } }
+              : {}),
+            ...(pilaTolta ? { stackupRemoved: true } : {}),
+            note:
+              "rules saved: the saved board is now older than the files, compile to check it against them" +
+              (pilaTolta
+                ? `. The stackup this project declared is REMOVED: the file written carries none. To keep it, write the file again with "stackup"`
+                : ""),
           },
           fileChanged: { path, content: esito.contenuto },
         };

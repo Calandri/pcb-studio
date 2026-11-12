@@ -8,13 +8,13 @@ import {
   importAltiumProject,
 } from "./altium-import";
 import { codiciLcsc, importDatasheetsForIdentities } from "./altium-datasheets";
-import { resolveDesignRules } from "./design-rules";
+import { conLoStackupDi, DESIGN_RULES_PATH, resolveDesignRules } from "./design-rules";
 import { motoreDaSalvare, nonCertificata } from "./engine-version";
 import { saveLibraryComponent } from "./library-store";
 import { saveProjectModel } from "./model-store";
 import { emptyManualEdits, MANUAL_EDITS_PATH, serializeManualEdits } from "./manual-edits";
 import { jsStr } from "./circuit-json-to-project";
-import { filesHash, getProject, saveCompileCache, writeProjectFile } from "./project-store";
+import { filesHash, getProject, saveCompileCache, updateProjectFile, writeProjectFile } from "./project-store";
 
 /**
  * ONE ALTIUM IMPORT, START TO FINISH.
@@ -182,7 +182,14 @@ export async function importaAltium({
   // the row and its owner first, and the right to write it: then the files
   await preparaProgetto(id, !projectId);
   for (const [path, content] of Object.entries(imported.fsMap)) {
-    await writeProjectFile(id, path, content);
+    /*
+     * The rules are built anew from what the Altium file states. Imported over a
+     * project that exists, that file would replace one that may declare the
+     * board's stackup: what it had under `stackup` is put back (conLoStackupDi).
+     * A file that states no limits writes no rules and leaves the old ones whole.
+     */
+    if (path === DESIGN_RULES_PATH) await updateProjectFile(id, path, (prima) => conLoStackupDi(prima, content));
+    else await writeProjectFile(id, path, content);
   }
   /*
    * The copper goes in as manual edits: the geometry Altium drew replaces the
