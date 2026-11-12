@@ -49,7 +49,7 @@ import { BoardCanvas } from "../board/BoardCanvas";
 import { VIEW_PRESETS } from "../ViewPresets";
 import { EditorBar } from "../workspace/EditorBar";
 import { AUTOSAVE_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
-import { apriFinestra, type Finestra, type Nodo } from "./dom-finto";
+import { apriFinestra, dentro, numeri, type Finestra, type Nodo } from "./dom-finto";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -91,6 +91,30 @@ const MAIN = `export default () => (
 `;
 const FILES: Record<string, string> = { "main.tsx": MAIN, [DESIGN_RULES_PATH]: REGOLE };
 const ALLA_VIA = ".R3 > .pin1 to net.GND";
+/**
+ * A second board, for the push: a trace between two resistors whose long
+ * stretch runs along y = 0, and a lone via of ground 1.5 mm above it. Dragged
+ * down, the via comes too close to the stretch, which is of another net and
+ * can slide: it steps aside.
+ */
+const MAIN_CON_UNA_VICINA = `export default () => (
+  <board width="40mm" height="24mm">
+    <net name="GND" />
+    <resistor name="R1" resistance="1k" footprint="0402" pcbX={-10} pcbY={2} />
+    <resistor name="R2" resistance="1k" footprint="0402" pcbX={10} pcbY={2} />
+    <trace from=".R1 > .pin2" to=".R2 > .pin1" pcbPath={[
+      { x: 2, y: 0 },
+      { x: 4, y: -2 },
+      { x: 16, y: -2 },
+      { x: 18, y: 0 },
+    ]} thickness="0.2mm" />
+    <trace from=".R1 > .pin1" to="net.GND" />
+    <via name="V1" pcbX={0} pcbY={1.5} connectsTo="net.GND" fromLayer="top" toLayer="bottom" />
+  </board>
+)
+`;
+const FILES_CON_UNA_VICINA: Record<string, string> = { "main.tsx": MAIN_CON_UNA_VICINA, [DESIGN_RULES_PATH]: REGOLE };
+const VICINA = ".R1 > .pin2 to .R2 > .pin1";
 const FLAGS = { ...VIEW_PRESETS[0].flags, is_showing_copper_pours: true };
 
 const mm = (v: unknown) => Math.round(Number(v) * 1e4) / 1e4;
@@ -104,8 +128,10 @@ const percorso = (cj: unknown[], connessione: string): string[] => {
 };
 
 let compilata: Awaited<ReturnType<typeof compileProject>>;
+let conUnaVicina: Awaited<ReturnType<typeof compileProject>>;
 beforeAll(async () => {
   compilata = await compileProject(FILES);
+  conUnaVicina = await compileProject(FILES_CON_UNA_VICINA);
 }, 120_000);
 
 let progetto = 0;
@@ -177,6 +203,14 @@ const passa = async (ms: number) => {
 };
 const bersaglio = (presa: string): Nodo => f.contenitore.cerca((n) => n.getAttribute("data-presa") === presa)[0];
 const salvati = async () => parseManualEdits((await getProject(P))[MANUAL_EDITS_PATH]);
+/** the stretches the gesture in hand draws, in millimetres */
+const trattiMossi = () =>
+  f.contenitore.cerca((n) => n.tagName === "line" && dentro(n, "data-rame-in-movimento")).map((n) => numeri(n, "x1", "y1", "x2", "y2"));
+/** the project and its saved board, when a test wants another than the one every test starts with */
+async function conLaScheda(files: Record<string, string>, scheda: unknown[]) {
+  for (const [path, testo] of Object.entries(files)) await writeProjectFile(P, path, testo);
+  stato.riga = { ...stato.riga!, filesHash: filesHash(await getProject(P)), circuitJson: scheda };
+}
 
 let smonta: (() => Promise<void>) | null = null;
 async function apri() {
@@ -291,6 +325,59 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     const file = await salvati();
     expect(file.pcb_vias).toEqual([]);
     expect(file.pcb_routes.map((r) => [r.connection, Boolean(r.replaces)])).toEqual([[ALLA_VIA, true]]);
+  }, 60_000);
+
+  it("una via trascinata contro una pista di un'altra rete la spinge da parte: si vede mentre si trascina, si salva con la via in un salvataggio solo, e Cmd+Z rimette tutte e due", async () => {
+    await conLaScheda(FILES_CON_UNA_VICINA, conUnaVicina.circuitJson);
+    const DEI_FILE = "-9.49;2 > -8;2 > -6;0 > 6;0 > 8;2 > 9.49;2";
+    // the ring of the via is 0.3 across, the trace 0.2 wide, the distance to keep 0.2: with the via at y = 0.3 the stretch goes to y = -0.15
+    const SPINTA = "-9.49;2 > -8;2 > -5.85;-0.15 > 5.85;-0.15 > 8;2 > 9.49;2";
+    expect(percorso(conUnaVicina.circuitJson, VICINA)).toEqual([DEI_FILE]);
+    expect(vie(conUnaVicina.circuitJson)).toEqual(["0;1.5"]);
+    await apri();
+    const via = preseDelRame(conUnaVicina.circuitJson).find((p) => p.tipo === "via")!;
+    const nodo = bersaglio(`via:${via.tipo === "via" ? via.pcbViaId : ""}`);
+    expect(nodo).toBeDefined();
+
+    // in hand, halfway: the via is still far enough, the trace is where the files put it and the gesture does not draw it
+    await f.spara(nodo, "pointerdown", a(0, 1.5));
+    await f.spara(nodo, "pointermove", a(0, 0.9));
+    await f.frame();
+    expect(trattiMossi()).toEqual([]);
+    // further down: the trace steps aside, and the gesture draws it where it was pushed
+    await f.spara(nodo, "pointermove", a(0, 0.3));
+    await f.frame();
+    expect(trattiMossi()).toContainEqual([-5.85, -0.15, 5.85, -0.15]);
+    // back up: the trace is back by itself
+    await f.spara(nodo, "pointermove", a(0, 0.9));
+    await f.frame();
+    expect(trattiMossi()).toEqual([]);
+    // and down again, where it is let go
+    await f.spara(nodo, "pointermove", a(0, 0.3));
+    await f.frame();
+    await f.spara(nodo, "pointerup", a(0, 0.3));
+
+    await passa(AUTOSAVE_MS);
+    // ONE save for the via and for the trace it pushed, taken by the server as it is
+    expect(scritture).toEqual([{ action: "copper", status: 200 }]);
+    expect(fuori.editor.error).toBeNull();
+    const file = await salvati();
+    expect(file.pcb_vias.map((v) => ({ net: v.net, from: v.from, to: v.to }))).toEqual([{ net: "GND", from: { x: 0, y: 1.5 }, to: { x: 0, y: 0.3 } }]);
+    expect(file.pcb_routes.map((r) => [r.connection, Boolean(r.replaces)])).toEqual([[VICINA, true]]);
+    expect(new Set([...file.pcb_vias.map((v) => v.gesto), ...file.pcb_routes.map((r) => r.gesto)]).size).toBe(1);
+    // the board that came back: the via where it was put, the trace pushed aside, one trace for its connection
+    expect(vie(fuori.scheda)).toEqual(["0;0.3"]);
+    expect(percorso(fuori.scheda, VICINA)).toEqual([SPINTA]);
+    expect(idDoppi(fuori.scheda)).toBeNull();
+    expect(fuori.editor.copper).toEqual([]);
+
+    // Cmd+Z: one step takes back the via AND the trace it pushed
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["set", 200]]);
+    expect(vie(fuori.scheda)).toEqual(["0;1.5"]);
+    expect(percorso(fuori.scheda, VICINA)).toEqual([DEI_FILE]);
+    expect((await salvati()).pcb_routes).toEqual([]);
   }, 60_000);
 
   it("una via spinta contro il bordo si ferma prima: il rame arriva fin dove puo', e quello si salva", async () => {

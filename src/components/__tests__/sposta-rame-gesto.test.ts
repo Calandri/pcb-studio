@@ -6,7 +6,7 @@ import { colatePerRete, layerDrawOrder } from "../board/render";
 import { VIEW_PRESETS } from "../ViewPresets";
 import { EditorBar } from "../workspace/EditorBar";
 import { AUTOSAVE_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
-import { apriFinestra, type Finestra, type Nodo } from "./dom-finto";
+import { apriFinestra, dentro, numeri, type Finestra, type Nodo } from "./dom-finto";
 import { BERSAGLI, NASCOSTI, PISTA_A_MANO, SALVATAGGIO, fileDiPartenza, schedaDa, serverFinto, statoConLaViaIn } from "./rame-di-prova";
 
 /*
@@ -105,9 +105,6 @@ const passa = async (ms: number) => {
   await calma();
 };
 
-const dentro = (n: Nodo, attributo: string): boolean =>
-  n.getAttribute(attributo) !== null || (n.parentNode !== null && dentro(n.parentNode, attributo));
-const numeri = (n: Nodo, ...nomi: string[]) => nomi.map((k) => Number(n.getAttribute(k)));
 const bersaglio = (presa: string): Nodo => f.contenitore.cerca((n) => n.getAttribute("data-presa") === presa)[0];
 const bersagli = () => f.contenitore.cerca((n) => n.getAttribute("data-presa") !== null).map((n) => n.getAttribute("data-presa")).sort();
 const maniglia = (): Nodo => f.contenitore.cerca((n) => n.tagName === "rect" && n.style.cursor === "move")[0];

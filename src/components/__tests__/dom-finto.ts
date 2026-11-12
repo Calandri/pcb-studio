@@ -271,5 +271,11 @@ export function apriFinestra(): Finestra {
   };
 }
 
+/** whether a node, or one it is in, carries the attribute: what a drawing is part of */
+export const dentro = (n: Nodo, attributo: string): boolean =>
+  n.getAttribute(attributo) !== null || (n.parentNode !== null && dentro(n.parentNode, attributo));
+/** the attributes of a node as numbers, in the order asked */
+export const numeri = (n: Nodo, ...nomi: string[]) => nomi.map((k) => Number(n.getAttribute(k)));
+
 /** lets the promises already settled run their continuations, inside React's act */
 export const respira = () => act(async () => {});
