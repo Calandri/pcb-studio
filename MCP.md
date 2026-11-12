@@ -18,6 +18,7 @@ mantenere, nessun costo per token lato app.
 | `write_file` | scrive un file (contenuto completo, niente diff) |
 | `compile` | rilegge i file senza instradare ne' piazzare, salva la scheda (prima senza schematico, poi completa), esegue il DRC, restituisce errori e geometria. Da 40 componenti in su risponde appena la scheda senza schematico e' salvata (`schematicoInCorso: true`, `schematicPending`): lo schematico finisce in background entro gli 800 s della funzione e il risultato finale si legge con `inspect_board`. Sulle schede piccole risponde a fine compilazione |
 | `inspect_board` | dall'ultima scheda salvata, senza ricompilare: problemi con posizione + componenti con coordinate e reti, `compiledAt`, `stale`, `profile` (tempi e patch dell'ultimo compile), `schematicPending` (scheda salvata senza schematico) e `compileRun` (compile ancora in corso o interrotto). Il risultato di un `compile` si legge sempre anche da qui |
+| `stitch_ground` | cucitura della massa, solo se la persona la chiede: dalla scheda salvata propone vie di massa a passo regolare (di serie 2,5 mm, lambda/20 fino a circa 2,9 GHz in FR4) dove la massa copre la corona su due strati, con scarti per motivo e isole; `apply: true` scrive `cucitura-massa.tsx` e non compila, `main.tsx` non si tocca. Guardare chiede la vista del progetto, scrivere la modifica |
 | `search_parts` | componenti reali a magazzino su JLCPCB |
 | `import_component_from_lcsc` | footprint e simbolo reali di un part LCSC |
 | `library_list` / `library_read` / `library_save` | componenti riusabili in libreria |

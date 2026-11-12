@@ -34,6 +34,7 @@ import type { ToolDefinition } from "./llm";
 import type { AgentKeyMap } from "./llm-keys";
 import { conRiprova } from "./db-retry";
 import { classeErrore, motivoErrore } from "./error-cause";
+import { DESCRIZIONE_CUCITURA, eseguiCucitura, PARAMETRI_CUCITURA } from "./ground-stitching-tool";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
 const MAX_FILE_CHARS = 200_000;
@@ -214,6 +215,50 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "engineer's eye sees. Use it once after the routing converges, then act on the " +
       "issues with placement edits. Requires a previous compile (uses the cached circuit).",
     input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "stitch_ground",
+    description: DESCRIZIONE_CUCITURA,
+    input_schema: {
+      type: "object",
+      properties: {
+        rete: { type: "string", description: PARAMETRI_CUCITURA.rete },
+        passoMm: { type: "number", description: PARAMETRI_CUCITURA.passoMm },
+        sfalsata: { type: "boolean", description: PARAMETRI_CUCITURA.sfalsata },
+        bordo: { type: "boolean", description: PARAMETRI_CUCITURA.bordo },
+        passoBordoMm: { type: "number", description: PARAMETRI_CUCITURA.passoBordoMm },
+        foroMm: { type: "number", description: PARAMETRI_CUCITURA.foroMm },
+        coronaMm: { type: "number", description: PARAMETRI_CUCITURA.coronaMm },
+        maxVie: { type: "number", description: PARAMETRI_CUCITURA.maxVie },
+        distanzaPisteMm: { type: "number", description: PARAMETRI_CUCITURA.distanzaPisteMm },
+        zoneEscluse: {
+          type: "array",
+          description: PARAMETRI_CUCITURA.zoneEscluse,
+          items: {
+            type: "object",
+            properties: {
+              x: { type: "number" },
+              y: { type: "number" },
+              w: { type: "number" },
+              h: { type: "number" },
+              punti: { type: "array", items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } },
+            },
+          },
+        },
+        retiLontane: {
+          type: "array",
+          description: PARAMETRI_CUCITURA.retiLontane,
+          items: {
+            type: "object",
+            properties: { rete: { type: "string" }, distanzaMm: { type: "number" } },
+            required: ["rete", "distanzaMm"],
+          },
+        },
+        dryRun: { type: "boolean", description: PARAMETRI_CUCITURA.dryRun },
+        apply: { type: "boolean", description: PARAMETRI_CUCITURA.apply },
+      },
+      required: [],
+    },
   },
   {
     name: "enclosure_save",
@@ -672,6 +717,30 @@ async function runTool(
         (summary as unknown as Record<string, unknown>).boardCache = cached;
       }
       return { result: summary };
+    }
+
+    /*
+     * The stitching of the ground (ground-stitching.ts): an explicit action,
+     * never a rule. It reads the saved board, writes cucitura-massa.tsx only
+     * with apply: true, and does not compile.
+     */
+    case "stitch_ground": {
+      const cache = await getCompileCache(projectId).catch(() => null);
+      let schedaVecchia: boolean | null = null;
+      if (cache) {
+        try {
+          schedaVecchia = cache.filesHash !== filesHash(await withLibrary(fsMap));
+        } catch {
+          // the library could not be read: whether the board is older is not known, and not said
+        }
+      }
+      return eseguiCucitura({
+        files: fsMap,
+        args,
+        cache,
+        schedaVecchia,
+        scrivi: (path, content) => writeProjectFile(projectId, path, content),
+      });
     }
 
     case "review_layout": {

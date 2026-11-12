@@ -27,6 +27,7 @@ import {
   TSCIRCUIT_BASICS,
 } from "@/lib/system-prompt";
 import { classeErrore, motivoErrore } from "@/lib/error-cause";
+import { DESCRIZIONE_CUCITURA, PARAMETRI_CUCITURA } from "@/lib/ground-stitching-tool";
 import { inspectSavedBoard } from "@/lib/saved-board";
 import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 import { withSseKeepalive } from "@/lib/sse-keepalive";
@@ -146,6 +147,8 @@ function describeCall(tool: string, args: Record<string, unknown>): string {
       return "rilegge posizioni e problemi della scheda";
     case "read_project":
       return "legge il codice del progetto";
+    case "stitch_ground":
+      return args.apply === true ? "scrive la cucitura della massa" : "propone la cucitura della massa";
     default:
       return tool;
   }
@@ -456,6 +459,52 @@ function buildHandler(viewer: Viewer) {
         }
         const snapshot = await inspectSavedBoard(projectId);
         return snapshot.ok ? text(snapshot.result) : fail(snapshot.error);
+      },
+    );
+
+    server.tool(
+      "stitch_ground",
+      DESCRIZIONE_CUCITURA,
+      {
+        projectId: z.string(),
+        rete: z.string().optional().describe(PARAMETRI_CUCITURA.rete),
+        passoMm: z.number().optional().describe(PARAMETRI_CUCITURA.passoMm),
+        sfalsata: z.boolean().optional().describe(PARAMETRI_CUCITURA.sfalsata),
+        bordo: z.boolean().optional().describe(PARAMETRI_CUCITURA.bordo),
+        passoBordoMm: z.number().optional().describe(PARAMETRI_CUCITURA.passoBordoMm),
+        foroMm: z.number().optional().describe(PARAMETRI_CUCITURA.foroMm),
+        coronaMm: z.number().optional().describe(PARAMETRI_CUCITURA.coronaMm),
+        maxVie: z.number().optional().describe(PARAMETRI_CUCITURA.maxVie),
+        distanzaPisteMm: z.number().optional().describe(PARAMETRI_CUCITURA.distanzaPisteMm),
+        zoneEscluse: z
+          .array(
+            z.union([
+              z.object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() }),
+              z.object({ punti: z.array(z.object({ x: z.number(), y: z.number() })) }),
+            ]),
+          )
+          .optional()
+          .describe(PARAMETRI_CUCITURA.zoneEscluse),
+        retiLontane: z
+          .array(z.object({ rete: z.string(), distanzaMm: z.number() }))
+          .optional()
+          .describe(PARAMETRI_CUCITURA.retiLontane),
+        dryRun: z.boolean().optional().describe(PARAMETRI_CUCITURA.dryRun),
+        apply: z.boolean().optional().describe(PARAMETRI_CUCITURA.apply),
+      },
+      async ({ projectId, ...args }) => {
+        // looking is a read of the saved board, like inspect_board; writing is write_file's
+        const accesso = await projectAccess(projectId, viewer);
+        if (accesso === "none") return denied();
+        if (args.apply === true) {
+          if (accesso !== "edit") return deniedEdit();
+          await claimProject(projectId, viewer, null);
+        }
+        const { result } = await executeTool(projectId, "stitch_ground", args);
+        // an error keeps its candidates (the nets with pours, when the net is ambiguous)
+        return typeof (result as { error?: unknown }).error === "string"
+          ? { isError: true as const, content: [{ type: "text" as const, text: JSON.stringify(result) }] }
+          : text(result);
       },
     );
 
