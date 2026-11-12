@@ -740,18 +740,22 @@ function contornoDellaScheda(board: El | undefined): Punto[] {
 const tre = (v: number): number => Math.round(v * 1000) / 1000;
 
 /**
- * The board without the pcb_via elements standing at these points, to the
- * micron: what a previous run of the tool wrote (see ground-stitching-file.ts).
- * Two vias of the board on one point would be one drill on another, so no other
- * via is taken off with them.
+ * The board without the pcb_via elements of this net standing at these points,
+ * to the micron: what a previous run of the tool wrote (see
+ * ground-stitching-file.ts). Only the vias of the net (`reteId`, its
+ * source_net_id): a via of another net on one of those points is not a
+ * stitching via, and stays the obstacle it is.
  */
-export function senzaLeVieAi(circuitJson: unknown[], punti: Punto[]): unknown[] {
+export function senzaLeVieAi(circuitJson: unknown[], punti: Punto[], reteId: string): unknown[] {
   if (punti.length === 0) return circuitJson;
+  const cj = circuitJson as El[];
   const chiavi = new Set(punti.map((p) => `${tre(p.x)},${tre(p.y)}`));
-  return (circuitJson as El[]).filter((el) => {
+  const g = gruppi(cj);
+  const gruppo = g.chiaveDiRete.get(reteId) ?? `net:${reteId}`;
+  return cj.filter((el) => {
     if (el.type !== "pcb_via") return true;
     const x = num(el.x), y = num(el.y);
-    return x === null || y === null || !chiavi.has(`${tre(x)},${tre(y)}`);
+    return x === null || y === null || !chiavi.has(`${tre(x)},${tre(y)}`) || g.via(el) !== gruppo;
   });
 }
 

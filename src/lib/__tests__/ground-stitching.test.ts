@@ -2,8 +2,8 @@ import { convertSoupToGerberCommands, stringifyGerberCommandLayers } from "circu
 import { describe, expect, it } from "vitest";
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "@/lib/design-rules";
 import { distanzaPuntoForma, pointSegDistance, rameDelPad, runDrcChecks } from "@/lib/drc";
-import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, sceltaDellaRete, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
-import { FILE_CUCITURA, fileDellaCucitura, mainLaUsa, vieComeElementi, vieDelFile } from "@/lib/ground-stitching-file";
+import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, sceltaDellaRete, senzaLeVieAi, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
+import { FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, mainLaUsa, vieComeElementi, vieDelFile } from "@/lib/ground-stitching-file";
 import { eseguiCucitura } from "@/lib/ground-stitching-tool";
 import { conflittiDiSerigrafia } from "@/lib/silkscreen-clearance";
 import { viePassantiSuOgniStrato } from "@/lib/via-layers";
@@ -576,6 +576,95 @@ describe("il file cucitura-massa.tsx", () => {
     const tre = await eseguiCucitura({ files: { ...files, [FILE_CUCITURA]: primo }, args: { apply: true }, cache: { circuitJson: cj() }, schedaVecchia: true, scrivi });
     expect(tre.fileChanged!.content).toBe(primo);
     expect(tre.result.schedaPiuVecchiaDeiFile).toBe(true);
+  });
+
+  describe("un cucitura-massa.tsx che lo strumento non ha scritto", () => {
+    // someone's own file under the tool's name: a signal via and a trace
+    const A_MANO = [
+      "// le mie vie di segnale, scritte a mano",
+      "export const CucituraMassa = () => (",
+      "  <>",
+      '    <via name="VS1" pcbX={2} pcbY={2} connectsTo="net.SIG" fromLayer="top" toLayer="bottom" />',
+      '    <trace from=".R1 > .pin1" to="net.SIG" pcbPath={[{ x: 0, y: 0 }, { x: 2, y: 2 }]} />',
+      "  </>",
+      ")",
+      "",
+    ].join("\n");
+    // the board compiled with it: the signal via is on it, at the point the file says
+    const conLaViaDiSegnale = () => [...cj(), viaEsistente(2, 2, "k_sig")];
+    const main = { ...regole, "main.tsx": 'import { CucituraMassa } from "./cucitura-massa"\nexport default () => <board><CucituraMassa /></board>' };
+
+    it("non si sovrascrive: apply rifiuta dicendo perche', e il file resta com'era", async () => {
+      const files: Record<string, string> = { ...main, [FILE_CUCITURA]: A_MANO };
+      const scritti: string[] = [];
+      const r = await eseguiCucitura({ files, args: { apply: true }, cache: { circuitJson: conLaViaDiSegnale() }, schedaVecchia: false, scrivi: async (path) => void scritti.push(path) });
+      expect(r.result.error).toMatch(/non e' stato scritto da questo strumento/);
+      expect(r.result.error).toMatch(/non comincia con l'intestazione/);
+      expect(r.fileChanged).toBeUndefined();
+      expect(scritti).toEqual([]);
+      expect(files[FILE_CUCITURA]).toBe(A_MANO);
+    });
+
+    it("le sue vie non si tolgono dal calcolo: nessuna via di massa finisce dov'e' la via di segnale", async () => {
+      const guarda = await eseguiCucitura({ files: { ...main, [FILE_CUCITURA]: A_MANO }, args: { passoMm: 1, bordo: false }, cache: { circuitJson: conLaViaDiSegnale() }, schedaVecchia: false, scrivi });
+      expect(guarda.result).toMatchObject({ ok: true, scritto: false, fileEsistente: "non_dello_strumento", scrivibile: false });
+      expect((guarda.result.nonScrivibile as string[])[0]).toMatch(/non si sovrascrive/);
+      const griglia = (guarda.result.coordinate as { griglia: Array<[number, number]> }).griglia;
+      expect(griglia.length).toBeGreaterThan(100);
+      // the signal via (ring 0.45) keeps every ground via the pour's clearance away, as on any board
+      for (const [x, y] of griglia) expect(Math.hypot(x - 2, y - 2) - 0.225 - R).toBeGreaterThanOrEqual(0.2 - 1e-9);
+      expect((guarda.result.scarti as Record<string, number>).via_esistente).toBeGreaterThan(0);
+      expect(vieDelFile(A_MANO)).toEqual([]);
+    });
+
+    it("il file dello strumento si riconosce riga per riga: una riga in piu' o cambiata e non e' piu' suo", async () => {
+      const scrive = await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />" }, args: { apply: true }, cache: { circuitJson: cj() }, schedaVecchia: false, scrivi });
+      const suo = scrive.fileChanged!.content;
+      expect(leggiFileDellaCucitura(undefined)).toEqual({ stato: "manca" });
+      const letto = leggiFileDellaCucitura(suo);
+      expect(letto).toMatchObject({ stato: "dello_strumento", rete: "GND" });
+      expect((letto as { vie: P[] }).vie).toHaveLength(scrive.result.vie as number);
+      expect(leggiFileDellaCucitura(suo.replace(/\n/g, "\r\n"))).toMatchObject({ stato: "dello_strumento" });
+      const righe = suo.split("\n");
+      const conUnaPista = [...righe.slice(0, 6), '    <trace from=".R1 > .pin1" to="net.GND" />', ...righe.slice(6)].join("\n");
+      const altri = [
+        conUnaPista,
+        // a via of another net among the tool's
+        suo.replace('name="VCM2" ', 'name="VCM2" ').replace(/(name="VCM2"[^\n]*connectsTo="net\.)GND/, "$1SIG"),
+        // a via renamed, a via with one prop more, something after the end
+        suo.replace('name="VCM1"', 'name="V1"'),
+        suo.replace(' />\n', ' netIsAssignable />\n'),
+        `${suo}export const Altro = () => <via pcbX={1} pcbY={1} />\n`,
+        suo.replace("// Cucitura della massa", "// cucitura"),
+      ];
+      for (const testo of altri) {
+        expect(leggiFileDellaCucitura(testo).stato, testo.slice(0, 80)).toBe("non_dello_strumento");
+        expect(vieDelFile(testo)).toEqual([]);
+        const r = await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />", [FILE_CUCITURA]: testo }, args: { apply: true }, cache: { circuitJson: cj() }, schedaVecchia: false, scrivi: async () => { throw new Error("non deve scrivere"); } });
+        expect(r.result.error).toMatch(/non si sovrascrive/);
+      }
+    });
+
+    it("il file dello strumento per un'altra rete non si sovrascrive con questa", async () => {
+      const diUnAltra = [
+        "// Cucitura della massa (rete AGND): 1 vie passanti, foro 0.2 mm, corona 0.5 mm, passo 2.5 mm sfalsato.",
+        "export const CucituraMassa = () => (",
+        "  <>",
+        '    <via name="VCM1" pcbX={2} pcbY={2} connectsTo="net.AGND" fromLayer="top" toLayer="bottom" holeDiameter={0.2} outerDiameter={0.5} />',
+        "  </>",
+        ")",
+        "",
+      ].join("\n");
+      expect(leggiFileDellaCucitura(diUnAltra)).toEqual({ stato: "dello_strumento", rete: "AGND", vie: [{ x: 2, y: 2 }] });
+      const r = await eseguiCucitura({ files: { ...regole, "main.tsx": "export default () => <board />", [FILE_CUCITURA]: diUnAltra }, args: { apply: true }, cache: { circuitJson: cj() }, schedaVecchia: false, scrivi: async () => { throw new Error("non deve scrivere"); } });
+      expect(r.result.error).toMatch(/tiene la cucitura della rete AGND e questa chiamata cuce GND/);
+    });
+
+    it("dalla scheda si tolgono solo le vie della rete cucita: una via di un'altra rete sullo stesso punto resta", () => {
+      const scheda = [...cj(), viaEsistente(2, 2, "k_sig"), viaEsistente(4, 4, "k_gnd")];
+      const senza = senzaLeVieAi(scheda, [{ x: 2, y: 2 }, { x: 4, y: 4 }], "source_net_0") as El[];
+      expect(senza.filter((el) => el.type === "pcb_via").map((v) => [v.x, v.y])).toEqual([[-6, -6], [2, 2]]);
+    });
   });
 
   it("main.tsx che lo usa davvero, non in un commento", () => {

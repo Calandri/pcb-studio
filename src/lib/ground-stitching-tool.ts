@@ -23,11 +23,12 @@ import {
   PASSO_DI_SERIE_MM,
   PASSO_MAX_MM,
   PASSO_MIN_MM,
+  sceltaDellaRete,
   senzaLeVieAi,
   type MotivoScarto,
   type TipoVia,
 } from "./ground-stitching";
-import { FILE_CUCITURA, fileDellaCucitura, mainLaUsa, nomiGiaUsati, RIGA_IMPORT, RIGA_USO, vieDelFile } from "./ground-stitching-file";
+import { FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, mainLaUsa, nomiGiaUsati, RIGA_IMPORT, RIGA_USO } from "./ground-stitching-file";
 
 /** what the tool is, for whoever chooses it: the agent's definition and the MCP one */
 export const DESCRIZIONE_CUCITURA =
@@ -97,10 +98,31 @@ export async function eseguiCucitura({
     return { result: { error: "nessuna scheda compilata salvata: compila prima, la cucitura si calcola sulla scheda salvata" } };
   }
   const regole = resolveDesignRules(files).rules;
-  // the vias the file already put on the board are not ground already stitched: see ground-stitching-file.ts
-  const scheda = senzaLeVieAi(circuito, vieDelFile(files[FILE_CUCITURA]));
+  const scelta = sceltaDellaRete(circuito, lettura.opzioni.rete);
+  if ("ok" in scelta) return { result: { error: scelta.errore, ...(scelta.candidate ? { candidate: scelta.candidate } : {}) } };
+  /*
+   * The vias the file already put on the board are not ground already stitched
+   * (see ground-stitching-file.ts): only those of a file this tool wrote, for
+   * this net. Whatever else a cucitura-massa.tsx holds stays on the board as it
+   * is, and the file is not replaced.
+   */
+  const file = leggiFileDellaCucitura(files[FILE_CUCITURA]);
+  const suoPerQuestaRete = file.stato === "dello_strumento" && (file.rete === null || file.rete === scelta.nome);
+  const scheda = suoPerQuestaRete ? senzaLeVieAi(circuito, file.vie, scelta.id) : circuito;
   const esito = cuciLaMassa(scheda, regole, lettura.opzioni);
   if (!esito.ok) return { result: { error: esito.errore, ...(esito.candidate ? { candidate: esito.candidate } : {}) } };
+
+  /** why the file cannot be written as things stand: said in a look, and the write is refused with it */
+  const nonScrivibile: string[] = [];
+  if (file.stato === "non_dello_strumento") {
+    nonScrivibile.push(`${FILE_CUCITURA} c'e' gia' e non e' stato scritto da questo strumento (${file.perche}): non si sovrascrive, e le sue vie restano sulla scheda come sono. Rinominalo o cancellalo, poi rifai l'anteprima`);
+  } else if (file.stato === "dello_strumento" && !suoPerQuestaRete) {
+    nonScrivibile.push(`${FILE_CUCITURA} tiene la cucitura della rete ${String(file.rete).slice(0, 60)} e questa chiamata cuce ${esito.rete.nome}: il file tiene una rete sola e non si sovrascrive con un'altra`);
+  }
+  const altro = nomiGiaUsati(files);
+  if (altro) nonScrivibile.push(`${altro} usa gia' nomi di via VCM<n>: rinominali prima di scrivere la cucitura`);
+  const testo = fileDellaCucitura(esito);
+  if ("errore" in testo) nonScrivibile.push(testo.errore);
 
   const coordinate: Record<TipoVia, Array<[number, number]>> = { isola: [], bordo: [], griglia: [] };
   for (const v of esito.vie) coordinate[v.tipo].push([v.x, v.y]);
@@ -133,6 +155,9 @@ export async function eseguiCucitura({
     avvisi: esito.avvisi,
     tempoMs: esito.tempoMs,
     file: FILE_CUCITURA,
+    fileEsistente: file.stato,
+    scrivibile: nonScrivibile.length === 0,
+    ...(nonScrivibile.length > 0 ? { nonScrivibile } : {}),
     main: usa ? { usaIlFile: true } : { usaIlFile: false, righeDaAggiungere: [RIGA_IMPORT, `${RIGA_USO} dentro <board>`] },
     ...(schedaVecchia ? { schedaPiuVecchiaDeiFile: true } : {}),
   };
@@ -141,14 +166,13 @@ export async function eseguiCucitura({
     return { result: { ...result, nota: `dryRun: niente scritto; apply: true scrive ${FILE_CUCITURA} senza compilare`, coordinate } };
   }
 
-  // --- apply: the file, whole
+  // --- apply: the file, whole, or nothing
+  if (nonScrivibile.length > 0 || "errore" in testo) {
+    return { result: { error: `stitch_ground non ha scritto niente: ${nonScrivibile.join("; ")}` } };
+  }
   if (esito.vie.length === 0 && files[FILE_CUCITURA] === undefined) {
     return { result: { ...result, nota: `nessuna via da scrivere: ${FILE_CUCITURA} non e' stato creato` } };
   }
-  const altro = nomiGiaUsati(files);
-  if (altro) return { result: { error: `${altro} usa gia' nomi di via VCM<n>: rinominali prima di scrivere la cucitura` } };
-  const testo = fileDellaCucitura(esito);
-  if ("errore" in testo) return { result: { error: testo.errore } };
   await scrivi(FILE_CUCITURA, testo.contenuto);
   return {
     result: {

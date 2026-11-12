@@ -16,6 +16,15 @@
  * taken off it (vieDelFile, senzaLeVieAi): otherwise the second run would see
  * the first run's vias as ground already stitched and propose nothing, and the
  * file would not be the same.
+ *
+ * ONLY A FILE THE TOOL WROTE IS READ THAT WAY, AND ONLY SUCH A FILE IS EVER
+ * REPLACED (leggiFileDellaCucitura). A cucitura-massa.tsx someone wrote by hand
+ * (a signal via, a trace) was rewritten whole, losing what it held, and its
+ * signal via was taken off the board as if it were a stitching via, so a ground
+ * via was proposed where it stood (review of 12/11/2026). The tool's file is
+ * recognised by its shape, line by line: its first line, comments, the export,
+ * and nothing but `<via name="VCM<n>" ... connectsTo="net.<one net>">` lines as
+ * the tool writes them. One line more, or one changed, and it is someone's.
  */
 
 import type { EsitoCucitura, Punto } from "./ground-stitching";
@@ -64,14 +73,57 @@ export function fileDellaCucitura(esito: EsitoCucitura): { contenuto: string } |
   return { contenuto };
 }
 
-/** the points of the vias a cucitura-massa.tsx holds */
-export function vieDelFile(contenuto: string | undefined): Punto[] {
-  if (!contenuto) return [];
-  const out: Punto[] = [];
-  for (const m of contenuto.matchAll(/<via\b[^>]*?\bpcbX=\{(-?\d+(?:\.\d+)?)\}[^>]*?\bpcbY=\{(-?\d+(?:\.\d+)?)\}/g)) {
-    out.push({ x: Number(m[1]), y: Number(m[2]) });
+/** how the tool's file begins: the first thing looked at before it is ever replaced */
+const INTESTAZIONE = "// Cucitura della massa (rete ";
+const RIGA_EXPORT = `export const ${COMPONENTE_CUCITURA} = () => (`;
+/** a via line exactly as fileDellaCucitura writes it */
+const RIGA_VIA = new RegExp(
+  `^\\s*<via name="${PREFISSO}\\d+" pcbX=\\{(-?\\d+(?:\\.\\d+)?)\\} pcbY=\\{(-?\\d+(?:\\.\\d+)?)\\} connectsTo="net\\.([A-Za-z_][A-Za-z0-9_]*)" ` +
+    `fromLayer="top" toLayer="bottom" holeDiameter=\\{\\d+(?:\\.\\d+)?\\} outerDiameter=\\{\\d+(?:\\.\\d+)?\\} />$`,
+);
+
+/** what a cucitura-massa.tsx of the project is */
+export type FileCucitura =
+  | { stato: "manca" }
+  /** written by the tool: the net it stitches and where its vias are */
+  | { stato: "dello_strumento"; rete: string | null; vie: Punto[] }
+  /** anything else, with the first thing that is not the tool's */
+  | { stato: "non_dello_strumento"; perche: string };
+
+/**
+ * A cucitura-massa.tsx read as the tool's own file, or told apart from one (see
+ * the top of this file). `rete`: the one net its vias connect to, null when it
+ * holds no via.
+ */
+export function leggiFileDellaCucitura(contenuto: string | undefined): FileCucitura {
+  if (contenuto === undefined) return { stato: "manca" };
+  if (!contenuto.startsWith(INTESTAZIONE)) return { stato: "non_dello_strumento", perche: "non comincia con l'intestazione che lo strumento scrive" };
+  const righe = contenuto.split(/\r?\n/);
+  while (righe.length > 0 && righe[righe.length - 1].trim() === "") righe.pop();
+  let i = 0;
+  while (i < righe.length && righe[i].startsWith("//")) i++;
+  const diversa = (n: number, attesa: string): FileCucitura => ({ stato: "non_dello_strumento", perche: `alla riga ${n + 1} non c'e' ${attesa}` });
+  if (righe[i] !== RIGA_EXPORT) return diversa(i, "la riga export dello strumento");
+  if (righe[i + 1]?.trim() !== "<>") return diversa(i + 1, "l'apertura <> dello strumento");
+  const vie: Punto[] = [];
+  let rete: string | null = null;
+  let k = i + 2;
+  for (; k < righe.length; k++) {
+    const m = RIGA_VIA.exec(righe[k]);
+    if (!m) break;
+    if (rete !== null && m[3] !== rete) return { stato: "non_dello_strumento", perche: `alla riga ${k + 1} c'e' una via di un'altra rete` };
+    rete = m[3];
+    vie.push({ x: Number(m[1]), y: Number(m[2]) });
   }
-  return out;
+  if (righe[k]?.trim() !== "</>") return diversa(k, "una via di cucitura come lo strumento la scrive (VCM<n>, rete, foro e corona)");
+  if (righe[k + 1] !== ")" || righe.length !== k + 2) return diversa(k + 1, "la chiusura dello strumento, e nient'altro dopo");
+  return { stato: "dello_strumento", rete, vie };
+}
+
+/** the points of the vias a cucitura-massa.tsx of the tool holds; none for any other file */
+export function vieDelFile(contenuto: string | undefined): Punto[] {
+  const file = leggiFileDellaCucitura(contenuto);
+  return file.stato === "dello_strumento" ? file.vie : [];
 }
 
 /** whether main.tsx imports the file and places its component */
