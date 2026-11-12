@@ -336,6 +336,12 @@ export function buildBoardReport(
     for (const c of checks) {
       if (c.severity === "err" && c.id !== "routing") missing.push(`${c.name}: ${c.count}`);
     }
+    /*
+     * A check that stopped is a check missing: the board is never ready without
+     * its footprints measured, even with the row in amber (it may still be
+     * exported, as with the other warnings).
+     */
+    if (ingombriNonMisurati && scontri + overlaps.length === 0) missing.push("Ingombri dei pezzi: non misurati");
     if (summary?.schematicPending || schematicMissing(elements)) missing.push("lo schematico non e' ancora calcolato");
     if (state?.checksStale) missing.push("i controlli sono piu' nuovi della verifica: premi Ricontrolla");
   }

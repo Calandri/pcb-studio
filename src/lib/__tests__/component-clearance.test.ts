@@ -485,6 +485,10 @@ describe("D. where it shows: the report", () => {
     expect(ambra.checks.find((c) => c.id === "place")).toMatchObject({ severity: "warn", count: "3 avvisi", detail: "3 pezzi senza ingombro vero" });
     const fermo = buildBoardReport(board, { courtyards: { count: 0, nonMisurati: "boom", detail: "gli ingombri dei pezzi NON sono stati misurati" } });
     expect(fermo.checks.find((c) => c.id === "place")).toMatchObject({ severity: "warn", count: "non misurati" });
+    // a check that stopped is a check missing: never ready, whatever else is green
+    expect(fermo.ready).toBe(false);
+    expect(fermo.missing).toEqual(["Ingombri dei pezzi: non misurati"]);
+    expect(fermo.readiness).toBeLessThan(100);
     expect(buildBoardReport(board, {}).checks.find((c) => c.id === "place")).toMatchObject({ severity: "ok" });
   });
 
