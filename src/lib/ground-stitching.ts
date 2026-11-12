@@ -50,6 +50,9 @@
  *   there declares for itself, see DISTANZA_PROPRIA) touches no copper of
  *   another net: traces, pads, vias, pours; never below the pair rules of the
  *   project (clearanceByPairMm), which the DRC holds the board to;
+ * - but a POUR of another net on a layer where the via joins nothing (no ground
+ *   poured there: a supply plane on an inner layer) is gone through, not kept
+ *   away from, when it holds: see POURS GONE THROUGH below;
  * - from the traces of other nets `distanzaPisteMm` when given, and from the
  *   copper of the nets in `retiLontane` their own distance: there is no way to
  *   recognise a controlled impedance line for sure (a ground via next to a
@@ -80,6 +83,28 @@
  * taken out of has none), and at the position ground covers the whole ring on
  * each of those layers. Every other rule still holds there.
  *
+ * POURS GONE THROUGH. A ground via crosses a plane of another net as any via
+ * does: the next compile pours the plane again and opens it around the via, by
+ * the ring plus the distance that pour keeps (measured on sbb-dongle,
+ * 2026-11-12: 14 ground vias placed by hand across the P3V3 plane of inner2,
+ * the plane open around each, no short; the stitching proposed none, every
+ * position being "too near a pour of another net"). So such a pour does not
+ * refuse the position when, all measured:
+ * - opened there and around every via proposed before, it is still what it
+ *   was: no piece off it, no neck narrower than minTraceWidthMm, the width the
+ *   re-pour cuts necks at (ground-stitching-planes.ts);
+ * - the opening bites no pad, hole, via or trace of the pour's own net on that
+ *   layer, and none of them is left on a piece of its own (a piece split off
+ *   is the first point);
+ * - everything else of the other nets on that layer keeps its distance from
+ *   the via, as on every layer (the rules above, unchanged).
+ * A pad of copper or a small pour the opening would cut in two, swallow or
+ * leave narrower than the minimum stays the obstacle it was, with the same
+ * reason (colata_altra_rete); so does every pour on a layer where the via
+ * stands in ground, every pour of a net named in `retiLontane`, and every pour
+ * when the geometry runtime is not loaded (the tool loads it). The answer says
+ * how many vias go through a pour of another net and which (pianiAttraversati).
+ *
  * GROUND ISLANDS: the pieces of ground pour that are not connected to the rest
  * (through pours, vias, pads, plated holes and traces of the net) get a via
  * FIRST, where one fits and reaches the main plane on another layer: the whole
@@ -96,6 +121,7 @@
 import { distanzaPuntoForma, foroDi, ingombroForma, pointSegDistance, rameDelForo, rameDelPad, TOLLERANZA_MM, type Capsula, type FormaRame } from "./drc";
 import { distanzaDellaSerigrafia, distanzaMinimaFra, eccedenzaDellIngombro, MAX_POUR_CLEARANCE_MM, type DesignRules } from "./design-rules";
 import { distanzaRiquadri, forma as formaDi, leggiIngombri, misuraForme, TOLLERANZA_INGOMBRI_MM, type Forma } from "./ingombro";
+import { MAX_MISURE_SUI_PIANI, tenutaDeiPiani, type TenutaDeiPiani } from "./ground-stitching-planes";
 import { eMassa } from "./net-roles";
 import { dSS } from "./pour-pour";
 import { distanzaPropria } from "./pours";
@@ -361,8 +387,23 @@ export interface EsitoCucitura {
     /** the keepouts that excluded positions, or that hold vias (solo_rame): the ones costing the most first */
     escludono: KeepoutCheEsclude[];
   };
+  /**
+   * The vias proposed that go through a pour of another net, on a layer where
+   * they join nothing (see POURS GONE THROUGH): how many, and through which
+   * pours, by net and layer. The next compile opens each of those pours around
+   * them.
+   */
+  pianiAttraversati: { vie: number; piani: PianoAttraversato[] };
   avvisi: string[];
   tempoMs: number;
+}
+
+export interface PianoAttraversato {
+  /** the net of the pour, by name */
+  rete: string;
+  strato: string;
+  /** the vias that go through it */
+  vie: number;
 }
 
 export interface KeepoutCheEsclude {
@@ -467,6 +508,9 @@ function vicinoAdAnello(a: Anello, x: number, y: number, r: number): boolean {
   return false;
 }
 
+/** the vertices of a ring, as the geometry runtime takes them */
+const puntiDellAnello = (a: Anello): Array<[number, number]> => Array.from({ length: a.n }, (_, i) => [a.xs[i], a.ys[i]] as [number, number]);
+
 const areaDi = (punti: Punto[]): number => {
   let s = 0;
   for (let i = 0, j = punti.length - 1; i < punti.length; j = i++) s += (punti[j].x + punti[i].x) * (punti[j].y - punti[i].y);
@@ -478,6 +522,8 @@ interface Colata {
   id: string;
   /** the connectivity group of its net */
   gruppo: string;
+  /** the name of its net */
+  rete: string;
   layer: string;
   /** what it keeps from the other nets: its own (DISTANZA_PROPRIA) or the project's */
   distanza: number;
@@ -903,6 +949,21 @@ export function cuciLaMassa(
   rules: DesignRules,
   opzioni: OpzioniCucitura = {},
 ): EsitoCucitura | CucituraNonFatta {
+  // the measure of the pours a via goes through: null without the geometry runtime (see ground-stitching-planes.ts)
+  const piani = tenutaDeiPiani(rules.minTraceWidthMm);
+  try {
+    return cucitura(circuitJson, rules, opzioni, piani);
+  } finally {
+    piani?.libera();
+  }
+}
+
+function cucitura(
+  circuitJson: unknown[],
+  rules: DesignRules,
+  opzioni: OpzioniCucitura,
+  piani: TenutaDeiPiani | null,
+): EsitoCucitura | CucituraNonFatta {
   const inizio = performance.now();
   const cj = circuitJson as El[];
   const scelta = sceltaDellaRete(cj, opzioni.rete);
@@ -987,6 +1048,7 @@ export function cuciLaMassa(
       indice: colate.length,
       id: String(el.pcb_copper_pour_id ?? `colata_${colate.length}`),
       gruppo: g.colata(el),
+      rete: g.nomeDiRete.get(String(el.source_net_id ?? "")) ?? String(el.source_net_id ?? ""),
       layer: String(el.layer ?? "top"),
       distanza: distanzaPropria(el) ?? colataProgetto,
       esterno,
@@ -1159,11 +1221,54 @@ export function cuciLaMassa(
   const accettate: Punto[] = [];
   const celleAccettate = new Celle(Math.max(1, passo / 2));
   const distanzaFraNuove = Math.max(Math.min(passo, conBordo ? passoBordo : passo) / 2, corona + viaVia, foro + foroForo);
+  /** a pour was an obstacle only because the geometry runtime is not loaded: said once, at the end */
+  let senzaGeometria = false;
+  /**
+   * The pours of one net on one layer that overlap or touch are one copper, as
+   * the ground's are (see isoleDiMassa): a via that goes through one of them is
+   * measured on all of them together. By the lowest index among them.
+   */
+  const insiemi = new Map<number, { chiave: number; membri: Colata[] }>();
+  const insiemeDi = (c: Colata): { chiave: number; membri: Colata[] } => {
+    const noto = insiemi.get(c.indice);
+    if (noto) return noto;
+    const membri = [c];
+    for (let i = 0; i < membri.length; i++) {
+      for (const q of altrePerStrato.get(c.layer) ?? []) {
+        if (q.gruppo === c.gruppo && !membri.includes(q) && siToccano(membri[i], q)) membri.push(q);
+      }
+    }
+    membri.sort((a, b) => a.indice - b.indice);
+    const insieme = { chiave: membri[0].indice, membri };
+    for (const q of membri) insiemi.set(q.indice, insieme);
+    return insieme;
+  };
+  /** an opening a via asks of the pours of another net it goes through: where it is measured, and how wide */
+  interface Apertura {
+    chiave: number;
+    membri: Colata[];
+    raggio: number;
+  }
+  /** the copper of the pour's own net the opening of a via at (x, y) would bite, on the pour's layer: a pad, a hole, a via, a trace */
+  const mordeIlSuoRame = (c: Colata, x: number, y: number): boolean => {
+    let morde = false;
+    celle.cerca(x, y, R + c.distanza, (i) => {
+      const o = ostacoli[i];
+      if (o.k === "nudo" || o.gruppo !== c.gruppo) return;
+      let d: number;
+      if (o.k === "via") d = Math.hypot(x - o.x, y - o.y) - o.r - R;
+      else if (o.layer !== null && o.layer !== c.layer) return;
+      else if (o.k === "pista") d = pointSegDistance(x, y, o.ax, o.ay, o.bx, o.by) - o.mezza - R;
+      else d = distanzaPuntoForma(o.forma, x, y) - R;
+      if (d < c.distanza) return (morde = true);
+    });
+    return morde;
+  };
   const prova = (
     x: number,
     y: number,
     conLeVietate = true,
-  ): { ok: true; sopra: Map<string, Colata[]> } | { ok: false; motivo: MotivoScarto; vietate?: number[] } => {
+  ): { ok: true; sopra: Map<string, Colata[]>; attraversa: Colata[]; aperture: Apertura[] } | { ok: false; motivo: MotivoScarto; vietate?: number[] } => {
     // the board, its cutouts and its edge
     if (!dentroAnello(anelloScheda, x, y)) return { ok: false, motivo: "fuori_scheda" };
     for (const z of ritagli) if (distanzaDaZona(z, x, y) === 0) return { ok: false, motivo: "fuori_scheda" };
@@ -1245,11 +1350,27 @@ export function cuciLaMassa(
     if (Number.isFinite(peggio)) return { ok: false, motivo: ordine[peggio] };
 
     // the pours of the other nets, layer by layer
+    const attraversa: Colata[] = [];
     for (const s of strati) {
       const vicino = distanzaSu(s);
       for (const c of altrePerStrato.get(s) ?? []) {
         const extra = lontane.get(c.gruppo) ?? 0;
-        if (toccaDisco(c, x, y, R + Math.max(vicino, c.distanza))) return { ok: false, motivo: "colata_altra_rete" };
+        if (toccaDisco(c, x, y, R + Math.max(vicino, c.distanza))) {
+          /*
+           * On a layer where the via joins nothing the pour is gone through
+           * (see POURS GONE THROUGH): not where the via stands in ground, not a
+           * net to keep away from, not when its opening would bite copper of
+           * the pour's own net. Whether the pour holds is measured last, after
+           * the cheap checks below: it is the costly one.
+           */
+          if (sopra.has(s) || lontane.has(c.gruppo) || mordeIlSuoRame(c, x, y)) return { ok: false, motivo: "colata_altra_rete" };
+          if (!piani) {
+            senzaGeometria = true;
+            return { ok: false, motivo: "colata_altra_rete" };
+          }
+          attraversa.push(c);
+          continue;
+        }
         if (extra > 0 && toccaDisco(c, x, y, R + extra)) return { ok: false, motivo: "rete_lontana" };
       }
     }
@@ -1280,7 +1401,26 @@ export function cuciLaMassa(
       if (Math.hypot(accettate[i].x - x, accettate[i].y - y) < distanzaFraNuove - TOLLERANZA_MM) return (vicina = true);
     });
     if (vicina) return { ok: false, motivo: "vicina_a_cucitura" };
-    return { ok: true, sopra };
+
+    // the pours it goes through: each still whole with this opening and the ones of the vias before it
+    const aperture: Apertura[] = [];
+    for (const c of attraversa) {
+      const insieme = insiemeDi(c);
+      const gia = aperture.find((a) => a.chiave === insieme.chiave);
+      // the ring plus the distance that pour keeps: what the re-pour opens (the widest, where pours that are one copper keep different ones)
+      if (gia) gia.raggio = Math.max(gia.raggio, R + c.distanza);
+      else aperture.push({ ...insieme, raggio: R + c.distanza });
+    }
+    for (const a of aperture) {
+      const regge = piani!.regge(
+        a.chiave,
+        () => a.membri.map((q) => [q.esterno, ...q.buchi].map(puntiDellAnello)),
+        x, y, a.raggio,
+        (r) => a.membri.some((q) => copreDisco(q, x, y, r)),
+      );
+      if (!regge) return { ok: false, motivo: "colata_altra_rete" };
+    }
+    return { ok: true, sopra, attraversa, aperture };
   };
 
   const vie: EsitoCucitura["vie"] = [];
@@ -1292,12 +1432,28 @@ export function cuciLaMassa(
     scarti[m] = (scarti[m] ?? 0) + n;
   };
   const isole = isoleDiMassa(cj, g, gruppoMassa, massa, strati);
-  const accetta = (x: number, y: number, tipo: TipoVia, sopra: Map<string, Colata[]>) => {
+  /** the pours of other nets the vias go through, by layer and net, and how many vias go through any */
+  const attraversati = new Map<string, PianoAttraversato>();
+  let vieAttraverso = 0;
+  const accetta = (x: number, y: number, tipo: TipoVia, { sopra, attraversa, aperture }: { sopra: Map<string, Colata[]>; attraversa: Colata[]; aperture: Apertura[] }) => {
     celleAccettate.metti(accettate.length, x, y, x, y);
     accettate.push({ x, y });
     vie.push({ x, y, tipo });
     // a via is one copper with every piece of ground it stands in, on every layer
     isole.lega([...sopra.values()].flat().map((q) => q.indice));
+    // and an opening in every pour of another net it goes through: the vias after it are measured with it
+    if (attraversa.length === 0) return;
+    vieAttraverso++;
+    for (const a of aperture) piani?.apri(a.chiave, x, y, a.raggio, (r) => a.membri.some((q) => copreDisco(q, x, y, r)));
+    const suoi = new Set<string>();
+    for (const c of attraversa) {
+      const k = `${c.layer} ${c.rete}`;
+      if (suoi.has(k)) continue;
+      suoi.add(k);
+      const p = attraversati.get(k) ?? { rete: c.rete, strato: c.layer, vie: 0 };
+      p.vie++;
+      attraversati.set(k, p);
+    }
   };
 
   // --- 1. the islands of ground, first
@@ -1334,7 +1490,7 @@ export function cuciLaMassa(
         quasi.push(p);
         continue;
       }
-      accetta(p.x, p.y, "isola", esito.sopra);
+      accetta(p.x, p.y, "isola", esito);
       return { presa: true };
     }
     const motivo = [...motivi.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]?.[0] ?? "massa_su_meno_di_due_strati";
@@ -1400,7 +1556,7 @@ export function cuciLaMassa(
     const { p, tipo } = candidati[i];
     provate++;
     const esito = prova(p.x, p.y);
-    if (esito.ok) accetta(p.x, p.y, tipo, esito.sopra);
+    if (esito.ok) accetta(p.x, p.y, tipo, esito);
     else {
       scarta(esito.motivo);
       if (esito.vietate) {
@@ -1426,6 +1582,12 @@ export function cuciLaMassa(
   }
   if (passo > 2.7) {
     avvisi.push(`a passo ${passo} mm la cucitura e' lambda/20 solo fino a ${copreFinoGHz} GHz in FR4 (2,7 GHz chiede circa 2,7 mm)`);
+  }
+  if (senzaGeometria) {
+    avvisi.push("il motore geometrico delle colate non e' caricato: non si e' potuto misurare se le colate di altre reti reggono una via che le attraversa, e sono rimaste tutte un ostacolo");
+  }
+  if (piani && piani.nonMisurate() > 0) {
+    avvisi.push(`colate di altre reti: misurate ${MAX_MISURE_SUI_PIANI} posizioni, le ${piani.nonMisurate()} oltre sono state scartate senza misura (colata_altra_rete)`);
   }
 
   const conteggio: Record<TipoVia, number> = { isola: 0, bordo: 0, griglia: 0 };
@@ -1466,6 +1628,10 @@ export function cuciLaMassa(
     isole: { trovate: isole.isole.length, collegate, senzaPosto },
     tetto: { maxVie, raggiunto },
     keepout: { modo: modoKeepout, posizioni: posizioniVietate, conPosto: vietateConPosto, escludono },
+    pianiAttraversati: {
+      vie: vieAttraverso,
+      piani: [...attraversati.values()].sort((a, b) => strati.indexOf(a.strato) - strati.indexOf(b.strato) || (a.rete < b.rete ? -1 : a.rete > b.rete ? 1 : 0)),
+    },
     avvisi,
     tempoMs: Math.round(performance.now() - inizio),
   };

@@ -47,6 +47,7 @@ import {
   type TipoVia,
 } from "./ground-stitching";
 import { chiLaUsa, FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, nomiGiaUsati, RIGA_IMPORT, RIGA_USO } from "./ground-stitching-file";
+import { preparaLaGeometria } from "./ground-stitching-planes";
 
 /** what the tool is, for whoever chooses it: the agent's definition and the MCP one */
 export const DESCRIZIONE_CUCITURA =
@@ -58,6 +59,11 @@ export const DESCRIZIONE_CUCITURA =
   "fuori dagli ingombri dei pezzi su tutte e due le facce e dagli spazi di innesto, fuori dalle piazzole (anche di massa) e " +
   "lontana da fori, vie, bordo, zone vietate e rame di altre reti su ogni strato (distanza della colata, mai sotto le regole a " +
   "coppie), col foro lontano dalla serigrafia delle due facce (minSilkscreenClearanceMm). " +
+  "Una colata di un'altra rete su uno strato dove la massa non e' colata (un piano di alimentazione interno) si attraversa, come fa ogni via: " +
+  "la prossima compilazione la riapre attorno alla via (corona piu' la distanza di quella colata). Solo se, misurato con tutte le vie proposte " +
+  "prima, la colata resta un pezzo solo, senza colli sotto minTraceWidthMm, e l'apertura non tocca piazzole, fori, vie o piste della sua rete; " +
+  "altrimenti resta un ostacolo (colata_altra_rete), come le piazzole di rame e le colate piccole. La risposta dice quante vie attraversano " +
+  "colate di altre reti e quali (pianiAttraversati: rete, strato, vie); una rete messa in retiLontane non viene mai attraversata. " +
   "Prima collega le isole di massa staccate, poi la fila sul bordo, poi la griglia. " +
   "Pratica (guide di fabbricanti e strumenti, non norme: atlaspcb.com, aivon.com, allpcb.com, flux.ai): passo massimo lambda/20 " +
   "con lambda nel materiale = c / (f x radice di er); FR4 (er circa 4,3): circa 2,7 mm a 2,7 GHz (LTE), circa 4,6 mm a 1,575 GHz " +
@@ -87,7 +93,9 @@ export const PARAMETRI_CUCITURA = {
   maxVie: `tetto di vie, 1..${MAX_VIE_LIMITE} (di serie ${MAX_VIE_DI_SERIE})`,
   distanzaPisteMm: "distanza minima dalle piste di altre reti in mm (di serie quella della colata)",
   zoneEscluse: "zone dove non mettere vie: rettangoli {x, y, w, h} (centro e misure, mm) o poligoni {punti: [{x, y}]}",
-  retiLontane: "reti da cui stare piu' lontano (le linee radio): [{rete, distanzaMm}]",
+  retiLontane:
+    "reti da cui stare piu' lontano (le linee radio): [{rete, distanzaMm}]. Una colata di una rete messa qui non viene mai attraversata, " +
+    "nemmeno con distanzaMm 0",
   keepout:
     "quali zone vietate (keepout) della scheda contano: \"tutti\" (di serie) o \"solo_rame\", che non conta una zona dove la massa e' colata sotto " +
     "su tutti i suoi strati (le zone d'altezza di un pezzo, non quelle dove il rame e' stato tolto). Lo decide la persona: la risposta elenca sempre " +
@@ -212,6 +220,8 @@ export async function eseguiCucitura({
       scheda = senzaLeVieAi(circuito, file.vie, scelta.id);
     }
   }
+  // the measure of the pours a via goes through needs the geometry runtime: without it they all stay obstacles, and the answer says so
+  await preparaLaGeometria();
   const esito = cuciLaMassa(scheda, regole, lettura.opzioni);
   if (!esito.ok) return { result: { error: esito.errore, ...(esito.candidate ? { candidate: esito.candidate } : {}) } };
 
@@ -278,6 +288,7 @@ export async function eseguiCucitura({
       zone: esito.keepout.escludono.length,
       escludono: esito.keepout.escludono.slice(0, MAX_KEEPOUT_ELENCATI),
     },
+    pianiAttraversati: esito.pianiAttraversati,
     avvisi: esito.avvisi,
     tempoMs: esito.tempoMs,
     file: FILE_CUCITURA,
