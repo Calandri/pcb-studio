@@ -489,6 +489,7 @@ function buildHandler(viewer: Viewer) {
           .array(z.object({ rete: z.string(), distanzaMm: z.number() }))
           .optional()
           .describe(PARAMETRI_CUCITURA.retiLontane),
+        keepout: z.enum(["tutti", "solo_rame"]).optional().describe(PARAMETRI_CUCITURA.keepout),
         dryRun: z.boolean().optional().describe(PARAMETRI_CUCITURA.dryRun),
         apply: z.boolean().optional().describe(PARAMETRI_CUCITURA.apply),
       },

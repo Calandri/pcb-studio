@@ -33,6 +33,8 @@ interface Risposta {
   scarti?: Record<string, number>;
   perche?: Record<string, string>;
   isole?: { trovate: number; collegate: number; senzaPosto: number };
+  /** the keepouts of the board: how many positions they excluded, and how many of those had a place otherwise */
+  keepout?: { modo: ModoKeepout; posizioni: number; conPosto: number; zone: number };
   avvisi?: string[];
   main?: { usaIlFile: boolean; righeDaAggiungere?: string[] };
   /** false: the file cannot be written as things stand, and why (a board older than the files, a file that is not the tool's) */
@@ -43,6 +45,13 @@ interface Risposta {
 }
 
 const PASSO_DI_SERIE = 2.5;
+
+type ModoKeepout = "tutti" | "solo_rame";
+/** what a proposal was asked with: the write asks the same */
+interface Chiesto {
+  passoMm: number;
+  keepout: ModoKeepout;
+}
 
 /** the colours of the dots, by kind of via */
 const COLORI: Record<TipoViaCucitura, string> = {
@@ -64,9 +73,15 @@ export function CuciMassa({
   onChiudi: () => void;
 }) {
   const [passo, setPasso] = useState(String(PASSO_DI_SERIE));
+  /*
+   * The keepouts of the board all count unless the person says otherwise: a
+   * height zone with ground poured under it is a keepout too, and whether vias
+   * may stand there is theirs to decide (off by default).
+   */
+  const [soloRame, setSoloRame] = useState(false);
   const [risposta, setRisposta] = useState<Risposta | null>(null);
-  /** the pitch the proposal on screen was made with: the one written */
-  const [passoVisto, setPassoVisto] = useState<number | null>(null);
+  /** what the proposal on screen was asked with: what is written */
+  const [visto, setVisto] = useState<Chiesto | null>(null);
   const [lavora, setLavora] = useState<"" | "anteprima" | "scrivo">("");
   const [errore, setErrore] = useState<string | null>(null);
   const [scritto, setScritto] = useState<Risposta | null>(null);
@@ -83,8 +98,13 @@ export function CuciMassa({
   const numero = Number(passo.replace(",", "."));
   const passoValido = Number.isFinite(numero) && numero >= 1 && numero <= 10;
 
-  const chiedi = async (apply: boolean, passoMm: number): Promise<Risposta | null> => {
-    const { data, error } = await postJson("/api/stitch-ground", { projectId, passoMm, ...(apply ? { apply: true } : {}) });
+  const chiedi = async (apply: boolean, chiesto: Chiesto): Promise<Risposta | null> => {
+    const { data, error } = await postJson("/api/stitch-ground", {
+      projectId,
+      passoMm: chiesto.passoMm,
+      ...(chiesto.keepout === "solo_rame" ? { keepout: chiesto.keepout } : {}),
+      ...(apply ? { apply: true } : {}),
+    });
     if (error || !data) {
       setErrore(error ?? "risposta vuota");
       return null;
@@ -98,9 +118,10 @@ export function CuciMassa({
     setErrore(null);
     setScritto(null);
     try {
-      const r = await chiedi(false, numero);
+      const chiesto: Chiesto = { passoMm: numero, keepout: soloRame ? "solo_rame" : "tutti" };
+      const r = await chiedi(false, chiesto);
       setRisposta(r);
-      setPassoVisto(r ? numero : null);
+      setVisto(r ? chiesto : null);
       onAnteprima(
         r?.coordinate && r.via
           ? {
@@ -117,11 +138,11 @@ export function CuciMassa({
   };
 
   const scrivi = async () => {
-    if (passoVisto === null) return;
+    if (visto === null) return;
     setLavora("scrivo");
     setErrore(null);
     try {
-      const r = await chiedi(true, passoVisto);
+      const r = await chiedi(true, visto);
       if (r?.fileChanged) {
         onScritto(r.fileChanged.path, r.fileChanged.content);
         setScritto(r);
@@ -136,6 +157,14 @@ export function CuciMassa({
   const chiudi = () => {
     onAnteprima(null);
     onChiudi();
+  };
+
+  /** the dots on the board are of what was asked before: gone until the next preview */
+  const cambiato = () => {
+    if (!risposta) return;
+    setRisposta(null);
+    setVisto(null);
+    onAnteprima(null);
   };
 
   const scarti = Object.entries(risposta?.scarti ?? {})
@@ -171,12 +200,7 @@ export function CuciMassa({
             value={passo}
             onChange={(e) => {
               setPasso(e.target.value);
-              // the dots on the board are of the other pitch: gone until the next preview
-              if (risposta) {
-                setRisposta(null);
-                setPassoVisto(null);
-                onAnteprima(null);
-              }
+              cambiato();
             }}
             className="w-[72px] rounded-md border border-[#22302C] bg-transparent px-2 py-1 font-mono text-[12px] text-text"
           />
@@ -191,6 +215,23 @@ export function CuciMassa({
           </button>
         </label>
         {!passoValido && <span className="text-[#E8B23B]">il passo va da 1 a 10 mm</span>}
+        <label className="flex items-start gap-2 leading-snug">
+          <input
+            type="checkbox"
+            checked={soloRame}
+            onChange={(e) => {
+              setSoloRame(e.target.checked);
+              cambiato();
+            }}
+            className="mt-0.5"
+          />
+          <span>
+            {risposta?.keepout
+              ? `Zone vietate (keepout): ${risposta.keepout.posizioni} posizioni escluse, ${risposta.keepout.conPosto} avevano posto. `
+              : "Zone vietate (keepout): contano tutte. "}
+            Ignora quelle con la massa colata sotto su tutti i loro strati (zone d&apos;altezza).
+          </span>
+        </label>
         {errore && <span className="text-[#FF6B5A]">{errore}</span>}
 
         {risposta && risposta.vie !== undefined && (
@@ -256,7 +297,7 @@ export function CuciMassa({
           <button
             type="button"
             onClick={() => void scrivi()}
-            disabled={passoVisto === null || !risposta?.vie || risposta.scrivibile === false || lavora !== ""}
+            disabled={visto === null || !risposta?.vie || risposta.scrivibile === false || lavora !== ""}
             title={risposta?.scrivibile === false ? (risposta.nonScrivibile ?? []).join(" ") : undefined}
             className="rounded-lg border border-brand bg-brand px-2.5 py-1.5 text-[12px] font-semibold text-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >

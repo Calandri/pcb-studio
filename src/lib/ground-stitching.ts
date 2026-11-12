@@ -29,7 +29,8 @@
  * its reason, see MOTIVI):
  * - inside the board outline and out of its cutouts, its ring at least
  *   minBoardEdgeClearanceMm from the edge;
- * - out of the excluded zones of the call and out of the board's keepouts;
+ * - out of the excluded zones of the call and out of the board's keepouts, ALL
+ *   of them unless the call says otherwise (see KEEPOUTS below);
  * - ground copper (the pours of the ground net) covers the WHOLE ring on at
  *   least two layers, otherwise it stitches nothing;
  * - on EVERY layer that has ground pours at all, outer or inner, the ground
@@ -65,6 +66,19 @@
  * The distances are the DRC's own pieces (drc.ts: rameDelPad, rameDelForo,
  * foroDi, distanzaPuntoForma; design-rules.ts: distanzaMinimaFra), measured
  * from the copper of each thing, not from its box.
+ *
+ * KEEPOUTS. A `<keepout>` of a board is not always a zone without copper: the
+ * height zones of sbb-dl-principale (the button, the battery) are keepouts on
+ * the top or the bottom only, with ground poured under them on every layer, and
+ * they cost the grid a third of its vias. Whether vias may stand there is the
+ * designer's call, so by default (`keepout: "tutti"`) every keepout is respected,
+ * and the answer lists the ones that excluded positions: which, on which
+ * layers, how many positions, how many of those had a place otherwise, and
+ * whether ground is poured under them. With `keepout: "solo_rame"` a keepout
+ * does not count where ground is poured under it: on each of ITS layers ground
+ * covers at least half of the zone (MASSA_SOTTO_MINIMA: a zone the copper was
+ * taken out of has none), and at the position ground covers the whole ring on
+ * each of those layers. Every other rule still holds there.
  *
  * GROUND ISLANDS: the pieces of ground pour that are not connected to the rest
  * (through pours, vias, pads, plated holes and traces of the net) get a via
@@ -161,7 +175,14 @@ export interface OpzioniCucitura {
   zoneEscluse?: ZonaEsclusa[];
   /** nets to keep farther from (the radio lines), by name, with their distance */
   retiLontane?: Array<{ rete: string; distanzaMm: number }>;
+  /** which keepouts of the board count: all of them (default), or not those with ground poured under them (see KEEPOUTS) */
+  keepout?: ModoKeepout;
 }
+
+export const MODI_KEEPOUT = ["tutti", "solo_rame"] as const;
+export type ModoKeepout = (typeof MODI_KEEPOUT)[number];
+/** ground "is poured under" a keepout when it covers at least this much of the zone, on each of the keepout's layers */
+export const MASSA_SOTTO_MINIMA = 0.5;
 
 /** a name a message may repeat: a short identifier, nothing else of what was sent */
 const NOME_SICURO = /^[A-Za-z0-9_+.\-]{1,60}$/;
@@ -170,7 +191,7 @@ export type LetturaOpzioni = { opzioni: OpzioniCucitura; apply: boolean } | { er
 
 const CAMPI = [
   "rete", "passoMm", "sfalsata", "bordo", "passoBordoMm", "foroMm", "coronaMm", "maxVie",
-  "distanzaPisteMm", "zoneEscluse", "retiLontane", "dryRun", "apply",
+  "distanzaPisteMm", "zoneEscluse", "retiLontane", "keepout", "dryRun", "apply",
 ] as const;
 
 /**
@@ -253,6 +274,10 @@ export function leggiOpzioniCucitura(args: unknown, ignora: readonly string[] = 
       opzioni.retiLontane = reti;
     }
   }
+  if (a.keepout !== undefined) {
+    if (typeof a.keepout !== "string" || !(MODI_KEEPOUT as readonly string[]).includes(a.keepout)) errori.push(`keepout: uno fra ${MODI_KEEPOUT.join(", ")}`);
+    else opzioni.keepout = a.keepout as ModoKeepout;
+  }
   const dryRun = vero("dryRun");
   const apply = vero("apply") ?? false;
   if (apply && dryRun === true) errori.push("dryRun e apply insieme: dryRun true guarda soltanto, apply true scrive il file");
@@ -321,8 +346,34 @@ export interface EsitoCucitura {
     senzaPosto: Array<IsolaDiMassa & { motivo: MotivoScarto }>;
   };
   tetto: { maxVie: number; raggiunto: boolean };
+  keepout: {
+    modo: ModoKeepout;
+    /** positions of the row and the grid a keepout excluded (scarti.zona_vietata), and how many of them had a place otherwise */
+    posizioni: number;
+    conPosto: number;
+    /** the keepouts that excluded positions, or that hold vias (solo_rame): the ones costing the most first */
+    escludono: KeepoutCheEsclude[];
+  };
   avvisi: string[];
   tempoMs: number;
+}
+
+export interface KeepoutCheEsclude {
+  id: string;
+  /** the keepout's own description when it has one, else its shape and size */
+  descrizione: string;
+  /** its middle, to find it on the board */
+  x: number;
+  y: number;
+  strati: string[];
+  /** ground is poured under it on each of its layers (see KEEPOUTS), and how much of the zone it covers on each */
+  massaSotto: boolean;
+  massaPerStrato: Record<string, number>;
+  /** positions of the row and the grid it excluded; of those, the ones with a place otherwise */
+  posizioni: number;
+  conPosto: number;
+  /** vias proposed inside it: only with solo_rame, where it does not count */
+  vie: number;
 }
 
 export interface CucituraNonFatta {
@@ -727,6 +778,34 @@ function distanzaDaZona(z: Zona, x: number, y: number): number {
   return d;
 }
 
+/** the box of a zone */
+function scatolaDiZona(z: Zona): { minX: number; maxX: number; minY: number; maxY: number } {
+  if ("tratti" in z) {
+    const xs = z.tratti.flatMap(([a, b]) => [a.x, b.x]);
+    const ys = z.tratti.flatMap(([a, b]) => [a.y, b.y]);
+    return { minX: Math.min(...xs) - z.r, maxX: Math.max(...xs) + z.r, minY: Math.min(...ys) - z.r, maxY: Math.max(...ys) + z.r };
+  }
+  if ("r" in z) return { minX: z.x - z.r, maxX: z.x + z.r, minY: z.y - z.r, maxY: z.y + z.r };
+  return { minX: z.anello.minX, maxX: z.anello.maxX, minY: z.anello.minY, maxY: z.anello.maxY };
+}
+
+/**
+ * What a keepout is, in words: its own description when the project wrote one
+ * (letters, digits and plain punctuation of it, at most 80), else its shape and
+ * size.
+ */
+function descrizioneDiZona(el: El, z: Zona): string {
+  if (typeof el.description === "string") {
+    const pulita = el.description.replace(/[^\p{L}\p{N} .,;:()_+\-/]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (pulita) return pulita;
+  }
+  const n = (v: number) => String(Math.round(v * 100) / 100);
+  if ("tratti" in z) return `fessura larga ${n(2 * z.r)} mm`;
+  if ("r" in z) return `cerchio di raggio ${n(z.r)} mm`;
+  if (String(el.shape ?? "") === "rect" && num(el.width) !== null && num(el.height) !== null) return `rettangolo ${n(num(el.width)!)} x ${n(num(el.height)!)} mm`;
+  return `poligono di ${z.punti.length} punti`;
+}
+
 /** the board outline: the drawn one when it is one, else the width x height rectangle */
 function contornoDellaScheda(board: El | undefined): Punto[] {
   if (!board) return [];
@@ -863,11 +942,6 @@ export function cuciLaMassa(
     .map(sagomaDiZona)
     .filter((z): z is NonNullable<typeof z> => z !== null)
     .map(conAnello);
-  const vietate = cj
-    .filter((el) => el.type === "pcb_keepout")
-    .map(sagomaDiZona)
-    .filter((z): z is NonNullable<typeof z> => z !== null)
-    .map(conAnello);
   const escluse = (opzioni.zoneEscluse ?? []).map((z) => {
     const punti = "punti" in z ? z.punti : [
       { x: z.x - z.w / 2, y: z.y - z.h / 2 },
@@ -910,6 +984,45 @@ export function cuciLaMassa(
   const altre = colate.filter((c) => c.gruppo !== gruppoMassa);
   const massaPerStrato = new Map<string, Colata[]>(strati.map((s) => [s, massa.filter((c) => c.layer === s)]));
   const altrePerStrato = new Map<string, Colata[]>(strati.map((s) => [s, altre.filter((c) => c.layer === s)]));
+  // --- the keepouts of the board, each with what is poured under it
+  const modoKeepout: ModoKeepout = opzioni.keepout ?? "tutti";
+  const vietate: Array<KeepoutCheEsclude & { zona: Zona }> = [];
+  for (const el of cj) {
+    if (el.type !== "pcb_keepout") continue;
+    const sagoma = sagomaDiZona(el);
+    if (!sagoma) continue;
+    const zona = conAnello(sagoma);
+    const dichiarati = [...new Set(((el.layers as unknown[] | undefined) ?? []).map(String))];
+    // a keepout that names no layer is one of the whole board
+    const suoi = dichiarati.length > 0 ? dichiarati : strati;
+    const box = scatolaDiZona(zona);
+    const passoCampioni = Math.max(0.2, Math.sqrt(((box.maxX - box.minX) * (box.maxY - box.minY)) / 1500));
+    let campioni = 0;
+    const coperti = new Map<string, number>(suoi.map((q) => [q, 0]));
+    for (let y = box.minY + passoCampioni / 2; y < box.maxY; y += passoCampioni) {
+      for (let x = box.minX + passoCampioni / 2; x < box.maxX; x += passoCampioni) {
+        if (distanzaDaZona(zona, x, y) > 0 || !dentroAnello(anelloScheda, x, y)) continue;
+        campioni++;
+        for (const q of suoi) if ((massaPerStrato.get(q) ?? []).some((c) => nelRame(c, x, y))) coperti.set(q, coperti.get(q)! + 1);
+      }
+    }
+    const massaPerStrato2: Record<string, number> = {};
+    for (const q of suoi) massaPerStrato2[q] = campioni > 0 ? Number((coperti.get(q)! / campioni).toFixed(2)) : 0;
+    const id = String(el.pcb_keepout_id ?? "");
+    vietate.push({
+      zona,
+      id: NOME_SICURO.test(id) ? id : `keepout_${vietate.length}`,
+      descrizione: descrizioneDiZona(el, zona),
+      x: tre((box.minX + box.maxX) / 2),
+      y: tre((box.minY + box.maxY) / 2),
+      strati: suoi,
+      massaSotto: campioni > 0 && suoi.every((q) => coperti.get(q)! / campioni >= MASSA_SOTTO_MINIMA),
+      massaPerStrato: massaPerStrato2,
+      posizioni: 0,
+      conPosto: 0,
+      vie: 0,
+    });
+  }
   const esterniConMassa = esterni.filter((s) => (massaPerStrato.get(s) ?? []).length > 0);
   const interniConMassa = strati.filter((s) => !esterni.includes(s) && (massaPerStrato.get(s) ?? []).length > 0);
 
@@ -1025,17 +1138,30 @@ export function cuciLaMassa(
   const accettate: Punto[] = [];
   const celleAccettate = new Celle(Math.max(1, passo / 2));
   const distanzaFraNuove = Math.max(Math.min(passo, conBordo ? passoBordo : passo) / 2, corona + viaVia, foro + foroForo);
-  const prova = (x: number, y: number): { ok: true; sopra: Map<string, Colata[]> } | { ok: false; motivo: MotivoScarto } => {
+  const prova = (
+    x: number,
+    y: number,
+    conLeVietate = true,
+  ): { ok: true; sopra: Map<string, Colata[]> } | { ok: false; motivo: MotivoScarto; vietate?: number[] } => {
     // the board, its cutouts and its edge
     if (!dentroAnello(anelloScheda, x, y)) return { ok: false, motivo: "fuori_scheda" };
     for (const z of ritagli) if (distanzaDaZona(z, x, y) === 0) return { ok: false, motivo: "fuori_scheda" };
     if (vicinoAdAnello(anelloScheda, x, y, R + bordoMin)) return { ok: false, motivo: "bordo" };
     for (const z of ritagli) if (distanzaDaZona(z, x, y) < R + bordoMin) return { ok: false, motivo: "bordo" };
     for (const z of escluse) if (distanzaDaZona(z, x, y) < R) return { ok: false, motivo: "zona_esclusa" };
-    for (const z of vietate) if (distanzaDaZona(z, x, y) < R) return { ok: false, motivo: "zona_vietata" };
+    const sopra = copertura(x, y);
+    if (conLeVietate) {
+      // the keepouts the ring stands in: all of them count, or (solo_rame) not those with ground poured under them, here too
+      const colpite: number[] = [];
+      vietate.forEach((k, i) => {
+        if (distanzaDaZona(k.zona, x, y) >= R) return;
+        if (modoKeepout === "solo_rame" && k.massaSotto && k.strati.every((q) => sopra.has(q))) return;
+        colpite.push(i);
+      });
+      if (colpite.length > 0) return { ok: false, motivo: "zona_vietata", vietate: colpite };
+    }
 
     // the ground under it
-    const sopra = copertura(x, y);
     if (sopra.size < 2) return { ok: false, motivo: "massa_su_meno_di_due_strati" };
     for (const s of esterniConMassa) if (!sopra.has(s)) return { ok: false, motivo: "manca_massa_esterna" };
     for (const s of interniConMassa) if (!sopra.has(s)) return { ok: false, motivo: "manca_massa_interna" };
@@ -1139,6 +1265,8 @@ export function cuciLaMassa(
   const vie: EsitoCucitura["vie"] = [];
   const scarti: Partial<Record<MotivoScarto, number>> = {};
   let provate = 0;
+  let posizioniVietate = 0;
+  let vietateConPosto = 0;
   const scarta = (m: MotivoScarto, n = 1) => {
     scarti[m] = (scarti[m] ?? 0) + n;
   };
@@ -1242,7 +1370,19 @@ export function cuciLaMassa(
     provate++;
     const esito = prova(p.x, p.y);
     if (esito.ok) accetta(p.x, p.y, tipo, esito.sopra);
-    else scarta(esito.motivo);
+    else {
+      scarta(esito.motivo);
+      if (esito.vietate) {
+        // what the keepouts cost: the position, and whether it had a place without them
+        const conPosto = prova(p.x, p.y, false).ok;
+        posizioniVietate++;
+        if (conPosto) vietateConPosto++;
+        for (const k of esito.vietate) {
+          vietate[k].posizioni++;
+          if (conPosto) vietate[k].conPosto++;
+        }
+      }
+    }
   }
   // --- 4. the islands again: the row and the grid may have tied some, or what lies under them
   riguardaLeIsole();
@@ -1256,6 +1396,27 @@ export function cuciLaMassa(
 
   const conteggio: Record<TipoVia, number> = { isola: 0, bordo: 0, griglia: 0 };
   for (const v of vie) conteggio[v.tipo]++;
+  // the vias standing in a keepout: none unless the call asked for the ones with ground under them not to count
+  let dentroVietate = 0;
+  if (modoKeepout === "solo_rame") {
+    for (const v of vie) {
+      let dentro = false;
+      for (const k of vietate) {
+        if (distanzaDaZona(k.zona, v.x, v.y) >= R) continue;
+        k.vie++;
+        dentro = true;
+      }
+      if (dentro) dentroVietate++;
+    }
+    if (dentroVietate > 0) {
+      avvisi.push(`keepout "solo_rame": ${dentroVietate} vie stanno dentro zone vietate con la massa colata sotto (quali, in keepout.escludono)`);
+    }
+  }
+  const escludono = vietate
+    .filter((k) => k.posizioni > 0 || k.vie > 0)
+    .sort((a, b) => b.conPosto - a.conPosto || b.posizioni - a.posizioni || b.vie - a.vie || (a.id < b.id ? -1 : 1))
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    .map(({ zona, ...k }) => k);
   return {
     ok: true,
     rete: scelta,
@@ -1270,6 +1431,7 @@ export function cuciLaMassa(
     scarti,
     isole: { trovate: isole.isole.length, collegate, senzaPosto },
     tetto: { maxVie, raggiunto },
+    keepout: { modo: modoKeepout, posizioni: posizioniVietate, conPosto: vietateConPosto, escludono },
     avvisi,
     tempoMs: Math.round(performance.now() - inizio),
   };

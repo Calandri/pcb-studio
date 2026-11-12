@@ -254,6 +254,95 @@ describe("dove una via puo' stare", () => {
     expect(e.scarti.zona_esclusa).toBeGreaterThan(0);
   });
 
+  describe("le zone vietate (keepout), strato per strato", () => {
+    const zona = (id: string, x: number, y: number, w: number, h: number, layers: string[], extra: Record<string, unknown> = {}): El => ({
+      type: "pcb_keepout", pcb_keepout_id: id, shape: "rect", center: { x, y }, width: w, height: h, layers, ...extra,
+    });
+    const nella = (v: P, x: number, y: number, w: number, h: number) => dentro(v.x, v.y, rett(x - w / 2 - R, y - h / 2 - R, x + w / 2 + R, y + h / 2 + R));
+    /*
+     * Three zones on a board with ground on every layer:
+     *  - "altezza": top only, a part's height zone, the ground whole under it;
+     *  - "antenna": every layer, and the copper taken out of every layer under it;
+     *  - "finestra": top only, the top copper taken out under it, the other layers whole.
+     */
+    const buco = rett(3, -8, 8, -3);
+    const finestra = rett(3, 3, 8, 8);
+    const cj = [
+      ...scheda(),
+      colata("top", rett(-9.7, -9.7, 9.7, 9.7), "source_net_0", [buco, finestra]),
+      ...massaPiena(["inner1", "inner2", "bottom"], 20, 20, [buco]),
+      viaEsistente(9, 0, "k_gnd"),
+      zona("altezza", -5, 0, 6, 8, ["top", "top"], { description: "TASTO H7,6 <b>alto</b>" }),
+      zona("antenna", 5.5, -5.5, 5, 5, ["top", "inner1", "inner2", "bottom"]),
+      zona("finestra", 5.5, 5.5, 5, 5, ["top"]),
+    ];
+
+    it("di serie contano tutte, e la risposta dice quali escludono posizioni, su quali strati, quante, e se sotto c'e' la massa", () => {
+      const e = cuci(cj, { bordo: false, passoMm: 1 });
+      expect(e.vie.length).toBeGreaterThan(100);
+      for (const v of e.vie) {
+        expect(nella(v, -5, 0, 6, 8)).toBe(false);
+        expect(nella(v, 5.5, -5.5, 5, 5)).toBe(false);
+        expect(nella(v, 5.5, 5.5, 5, 5)).toBe(false);
+      }
+      expect(e.keepout.modo).toBe("tutti");
+      expect(e.keepout.posizioni).toBe(e.scarti.zona_vietata);
+      const perId = Object.fromEntries(e.keepout.escludono.map((k) => [k.id, k]));
+      expect(Object.keys(perId).sort()).toEqual(["altezza", "antenna", "finestra"]);
+      // the height zone: ground under it, and most of its positions had a place
+      expect(perId.altezza).toMatchObject({ descrizione: "TASTO H7,6 b alto /b", x: -5, y: 0, strati: ["top"], massaSotto: true, massaPerStrato: { top: 1 }, vie: 0 });
+      expect(perId.altezza.posizioni).toBeGreaterThan(40);
+      expect(perId.altezza.conPosto).toBeGreaterThan(40);
+      // the two where the copper was taken out: no ground under them, and no position there had a place anyway
+      expect(perId.antenna).toMatchObject({ descrizione: "rettangolo 5 x 5 mm", strati: ["top", "inner1", "inner2", "bottom"], massaSotto: false, massaPerStrato: { top: 0, inner1: 0, inner2: 0, bottom: 0 }, conPosto: 0 });
+      expect(perId.finestra).toMatchObject({ strati: ["top"], massaSotto: false, massaPerStrato: { top: 0 }, conPosto: 0 });
+      expect(e.keepout.conPosto).toBe(perId.altezza.conPosto);
+      // the one that costs vias comes first
+      expect(e.keepout.escludono[0].id).toBe("altezza");
+    });
+
+    it("solo_rame: non conta la zona con la massa colata sotto su tutti i suoi strati; quelle dove il rame e' stato tolto contano sempre", () => {
+      const tutti = cuci(cj, { bordo: false, passoMm: 1 });
+      const e = cuci(cj, { bordo: false, passoMm: 1, keepout: "solo_rame" });
+      const nellAltezza = e.vie.filter((v) => dentro(v.x, v.y, rett(-8, -4, -2, 4)));
+      expect(nellAltezza.length).toBeGreaterThan(40);
+      expect(e.vie.length).toBe(tutti.vie.length + tutti.keepout.conPosto);
+      for (const v of e.vie) {
+        expect(nella(v, 5.5, -5.5, 5, 5)).toBe(false);
+        expect(nella(v, 5.5, 5.5, 5, 5)).toBe(false);
+      }
+      const perId = Object.fromEntries(e.keepout.escludono.map((k) => [k.id, k]));
+      expect(perId.altezza).toMatchObject({ massaSotto: true, posizioni: 0 });
+      expect(perId.altezza.vie).toBeGreaterThanOrEqual(nellAltezza.length);
+      expect(perId.antenna.posizioni).toBeGreaterThan(0);
+      expect(e.avvisi.join(" ")).toMatch(/keepout "solo_rame": \d+ vie stanno dentro zone vietate/);
+      // and the board is as clean as before
+      const prima = runDrcChecks(cj, REGOLE).map((v) => `${v.rule}:${v.count ?? 1}`).sort();
+      expect(runDrcChecks([...cj, ...vieComeElementi(e, cj)], REGOLE).map((v) => `${v.rule}:${v.count ?? 1}`).sort()).toEqual(prima);
+    });
+
+    it("solo_rame: una zona con la massa sotto meno di meta', o su uno solo dei suoi strati, conta", () => {
+      // ground under a third of the zone only, on its one layer
+      const poca = [...scheda(), colata("top", rett(-9.7, -9.7, 9.7, 9.7), "source_net_0", [rett(-4, -3, 3, 3)]), ...massaPiena(["inner1", "inner2", "bottom"]), viaEsistente(9, 0, "k_gnd"), zona("z", -1, 0, 9, 6, ["top"])];
+      const a = cuci(poca, { bordo: false, passoMm: 1, keepout: "solo_rame" });
+      expect(a.keepout.escludono[0]).toMatchObject({ id: "z", massaSotto: false });
+      expect(a.keepout.escludono[0].massaPerStrato.top).toBeLessThan(0.5);
+      for (const v of a.vie) expect(nella(v, -1, 0, 9, 6)).toBe(false);
+      // top and bottom named, ground only under the top: the bottom was kept clear
+      const unoSolo = [...scheda(), ...massaPiena(["top", "inner1", "inner2"]), colata("bottom", rett(-9.7, -9.7, 9.7, 9.7), "source_net_0", [rett(-4, -4, 4, 4)]), viaEsistente(9, 0, "k_gnd"), zona("z", 0, 0, 6, 6, ["top", "bottom"])];
+      const b = cuci(unoSolo, { bordo: false, passoMm: 1, keepout: "solo_rame" });
+      expect(b.keepout.escludono[0]).toMatchObject({ id: "z", massaSotto: false, massaPerStrato: { top: 1, bottom: 0 } });
+      for (const v of b.vie) expect(nella(v, 0, 0, 6, 6)).toBe(false);
+      expect(b.vie.length).toBeGreaterThan(100);
+    });
+
+    it("il parametro: tutti o solo_rame, nient'altro", () => {
+      expect(leggiOpzioniCucitura({ keepout: "solo_rame" })).toEqual({ opzioni: { keepout: "solo_rame" }, apply: false });
+      expect(leggiOpzioniCucitura({ keepout: "nessuno" })).toMatchObject({ errori: [expect.stringMatching(/keepout: uno fra tutti, solo_rame/)] });
+      expect(leggiOpzioniCucitura({ keepout: true })).toMatchObject({ errori: [expect.stringMatching(/keepout/)] });
+    });
+  });
+
   it("mai col foro sotto la serigrafia: tratti e testi delle due facce, a minSilkscreenClearanceMm", () => {
     const riga: El = { type: "pcb_silkscreen_path", pcb_silkscreen_path_id: "s1", layer: "top", stroke_width: 0.15, route: [{ x: -9, y: 0.9 }, { x: 9, y: 0.9 }] };
     const testo: El = { type: "pcb_silkscreen_text", pcb_silkscreen_text_id: "t1", layer: "bottom", text: "MASSA", font_size: 1.5, anchor_position: { x: 0, y: -5 }, anchor_alignment: "center" };

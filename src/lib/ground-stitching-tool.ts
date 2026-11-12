@@ -56,6 +56,8 @@ export const DESCRIZIONE_CUCITURA =
   `Di serie passo ${PASSO_DI_SERIE_MM} mm (lambda/20 fino a circa 2,9 GHz in FR4), griglia sfalsata, fila sul bordo, foro ` +
   `${FORO_DI_SERIE_MM} mm e corona ${CORONA_DI_SERIE_MM} mm alzati ai minimi del progetto se servono, al massimo ${MAX_VIE_DI_SERIE} vie. ` +
   "Le linee a impedenza controllata non si riconoscono da sole: mettile in retiLontane o in zoneEscluse. " +
+  "Le zone vietate (keepout) della scheda contano tutte di serie, anche quelle d'altezza con la massa colata sotto: la risposta dice quante " +
+  "posizioni escludono e quali (keepout), e solo se la persona lo decide si passa keepout: \"solo_rame\". " +
   `dryRun (di serie) restituisce vie proposte con le coordinate, scarti per motivo e isole; apply: true scrive ${FILE_CUCITURA} ` +
   "(rilanciato lo riscrive per intero) e NON compila; main.tsx non viene toccato: se non lo usa, la risposta dice le righe da aggiungere. " +
   "apply NON scrive, e dice perche' (nel dryRun: scrivibile false e nonScrivibile), se la scheda salvata e' piu' vecchia dei file del progetto " +
@@ -75,12 +77,18 @@ export const PARAMETRI_CUCITURA = {
   distanzaPisteMm: "distanza minima dalle piste di altre reti in mm (di serie quella della colata)",
   zoneEscluse: "zone dove non mettere vie: rettangoli {x, y, w, h} (centro e misure, mm) o poligoni {punti: [{x, y}]}",
   retiLontane: "reti da cui stare piu' lontano (le linee radio): [{rete, distanzaMm}]",
+  keepout:
+    "quali zone vietate (keepout) della scheda contano: \"tutti\" (di serie) o \"solo_rame\", che non conta una zona dove la massa e' colata sotto " +
+    "su tutti i suoi strati (le zone d'altezza di un pezzo, non quelle dove il rame e' stato tolto). Lo decide la persona: la risposta elenca sempre " +
+    "le zone che escludono posizioni (keepout.escludono: id, descrizione, strati, posizioni, quante avevano posto, massaSotto)",
   dryRun: "true (di serie): guarda soltanto",
   apply: `true: scrive ${FILE_CUCITURA} (stessi permessi di write_file), senza compilare`,
 } as const;
 
 /** an island in a list for a model: at most this many, the rest counted */
 const MAX_ISOLE_ELENCATE = 50;
+/** and the keepouts that exclude positions: the ones costing the most first */
+const MAX_KEEPOUT_ELENCATI = 30;
 
 /**
  * How the saved board stands against the project's files:
@@ -227,6 +235,13 @@ export async function eseguiCucitura({
       elencoSenzaPosto: esito.isole.senzaPosto.slice(0, MAX_ISOLE_ELENCATE),
     },
     tetto: esito.tetto,
+    keepout: {
+      modo: esito.keepout.modo,
+      posizioni: esito.keepout.posizioni,
+      conPosto: esito.keepout.conPosto,
+      zone: esito.keepout.escludono.length,
+      escludono: esito.keepout.escludono.slice(0, MAX_KEEPOUT_ELENCATI),
+    },
     avvisi: esito.avvisi,
     tempoMs: esito.tempoMs,
     file: FILE_CUCITURA,
