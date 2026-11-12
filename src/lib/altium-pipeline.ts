@@ -58,6 +58,8 @@ export interface AltiumImportReport {
     via: number;
     piani: number;
     errori: number;
+    /** pairs of parts that hit each other in assembly (summary.targets.courtyardCollisions): they make ok false too */
+    ingombri: number;
     drc: number;
   } | null;
   warnings: string[];
@@ -341,6 +343,7 @@ export async function importaAltium({
         via: conta("pcb_via"),
         piani: conta("pcb_copper_pour"),
         errori: summary.errors.length,
+        ingombri: summary.targets.courtyardCollisions,
         drc: summary.drcViolations.length,
       };
       // a plane left over a via keeps the board out of the export: the import says it, not only the summary

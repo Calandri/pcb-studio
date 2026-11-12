@@ -2,12 +2,13 @@ import { readCompileRun } from "./activity-store";
 import { withLibrary } from "./agent-tools";
 import type { CompileRun } from "./compile-run";
 import { resolveDesignRules } from "./design-rules";
-import { CHECKS_ENGINE_VERSION } from "./engine-version";
+import { CHECKS_ENGINE_VERSION, ENGINE_INGOMBRI } from "./engine-version";
 import { extractComponents, extractIssues, type InspectComponent, type InspectIssue } from "./inspect";
 import { descriviDistanze, distanzeDelleColate } from "./pours";
 import type { Profile } from "./profile";
 import type { SerigrafiaInConflitto } from "./silkscreen-clearance";
-import type { IngombriDeiPezzi } from "./component-clearance";
+import { cortileAssorbito, cortiliAssorbiti, type IngombriDeiPezzi } from "./component-clearance";
+import { leggiIngombri } from "./ingombro";
 import { filesHash, getCompileCache, getProject, hasBoard } from "./project-store";
 
 const profileOf = (summary: unknown): Profile | undefined => {
@@ -60,6 +61,25 @@ export interface SavedBoardInspection {
   courtyards?: IngombriDeiPezzi;
   issues: InspectIssue[];
   components: InspectComponent[];
+}
+
+/**
+ * The saved board without tscircuit's courtyard errors its compile absorbed
+ * (component-clearance.ts): the problems inspect_board lists are the ones the
+ * summary counts. Only on a board of an engine that absorbs them and whose
+ * check did not stop; the pairs are read again from the board (which parts
+ * have a footprint: geometry, milliseconds), and if that fails nothing is left
+ * out.
+ */
+function senzaCortiliAssorbiti(circuitJson: unknown[], engineVersion: number, ingombri: IngombriDeiPezzi | undefined): unknown[] {
+  if (engineVersion < ENGINE_INGOMBRI || ingombri?.nonMisurati !== undefined) return circuitJson;
+  let assorbiti: string[];
+  try {
+    assorbiti = cortiliAssorbiti(circuitJson as Array<{ type?: unknown; pcb_component_ids?: unknown }>, leggiIngombri(circuitJson, 0));
+  } catch {
+    return circuitJson;
+  }
+  return assorbiti.length === 0 ? circuitJson : circuitJson.filter((el) => !cortileAssorbito(el as { type?: unknown }, assorbiti));
 }
 
 /**
@@ -135,7 +155,7 @@ export async function inspectSavedBoard(
             },
           }
         : {}),
-      issues: extractIssues(cache.circuitJson).slice(0, 60),
+      issues: extractIssues(senzaCortiliAssorbiti(cache.circuitJson as unknown[], cache.engineVersion, ingombri)).slice(0, 60),
       components: extractComponents(cache.circuitJson, files),
     },
   };

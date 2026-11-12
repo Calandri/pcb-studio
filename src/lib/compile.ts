@@ -1620,21 +1620,23 @@ async function compileWithLocalRouter(
       },
     }),
     /*
-     * The courtyard gate does not stop the router: our own check does.
+     * The courtyard gate does not stop the router: our own check judges the
+     * courtyards, after the compile.
      *
      * tscircuit refuses to route when two courtyards interpenetrate, even by a
-     * hundredth. But the courtyard is an ASSEMBLY convention, generous by
-     * design — the one on an 0603 carries 0,7 mm of margin per side — while
-     * what has to be respected is the distance between COPPER. On this board a
-     * decoupling capacitor deliberately hugging the microphone's VDD pin (0,36 mm
-     * of air, almost three times the 0,127 mm minimum) has courtyards
-     * overlapping by 0,48 mm: the gate refused to route, and the result was a
-     * board with 32 open connections and no copper — much worse than the
-     * problem it was protecting against.
+     * hundredth, or only touch. A board stopped there came back with 32 open
+     * connections and no copper, and said nothing useful about the parts: which
+     * pair, by how much, on which face.
      *
-     * Nothing is hidden: the pcb_courtyard_overlap_error elements stay in the
-     * Circuit JSON, and the placement check (placement-quality.ts) measures the
-     * clearance pad against pad, which is the rule the factory actually applies.
+     * Two parts whose footprints overlap ARE an error (component-clearance.ts:
+     * the declared courtyard, or body and pads grown by
+     * componentCourtyardExcessMm), and the board is not ready until they are
+     * moved apart: the compile is not ok, targets.courtyardCollisions counts
+     * them, allGreen stays false. What changes is who says it and when: our
+     * check, on every compile, with the overlap and the point, and two
+     * courtyards that only touch do not hit. The pcb_courtyard_overlap_error
+     * elements stay in the Circuit JSON; the check absorbs them for every pair it
+     * measures and leaves among the errors only those of pairs it could not.
      */
     placementDrcChecksDisabled: true,
     autorouter: PRESET_DI_DIFETTO,
@@ -3151,7 +3153,16 @@ function summarize(
       : [];
   const reportedErrors = [...schematicBlocker, ...errors];
 
-  const ok = reportedErrors.length === 0;
+  /*
+   * TWO PARTS THAT HIT EACH OTHER ARE AN ERROR, like tscircuit's courtyard
+   * errors they absorb (component-clearance.ts). They are counted apart, in
+   * courtyards and targets.courtyardCollisions, not as entries of `errors`; but
+   * a compile with one is not ok, or a board whose only errors were absorbed
+   * courtyards read "Compile OK ... ERRORE ingombri". Everyone who reads `ok`
+   * (the page, the MCP answer, the agent, the Altium import) reads it here.
+   */
+  const scontriDiIngombro = courtyards?.count ?? 0;
+  const ok = reportedErrors.length === 0 && scontriDiIngombro === 0;
   // convergence checklist: the agent's loop targets in one place (Fase 3.h)
   const targets = {
     errors: reportedErrors.length,
@@ -3160,7 +3171,7 @@ function summarize(
     prcViolations: prcTotal(prcViolations),
     schematicOverlaps:
       schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount,
-    courtyardCollisions: courtyards?.count ?? 0,
+    courtyardCollisions: scontriDiIngombro,
     fabClass,
     allGreen:
       reportedErrors.length === 0 &&
@@ -3169,7 +3180,7 @@ function summarize(
       prcTotal(prcViolations) === 0 &&
       schematicQuality.symbolOverlapCount + schematicQuality.labelOverlapCount === 0 &&
       // footprints not measured are not footprints that do not hit
-      (courtyards?.count ?? 0) === 0 &&
+      scontriDiIngombro === 0 &&
       courtyards?.nonMisurati === undefined &&
       fabClass !== null,
   };
@@ -3197,7 +3208,10 @@ function summarize(
           ? ` - schematic in ${schematicQuality.sections.length} sections`
           : " - schematic NOT sectioned"
       }.`
-    : `Compile finished with ${reportedErrors.length} error(s).`;
+    : `Compile finished with ${[
+        ...(reportedErrors.length > 0 || scontriDiIngombro === 0 ? [`${reportedErrors.length} error(s)`] : []),
+        ...(scontriDiIngombro > 0 ? [`${scontriDiIngombro} pair(s) of parts hitting each other in assembly (courtyards)`] : []),
+      ].join(" and ")}.`;
   // a rules file that had to be corrected is said where the agent reads first
   const regoleCorrette = projectRules.warnings?.length
     ? ` ATTENZIONE ${DESIGN_RULES_PATH}: ${projectRules.warnings.join("; ")}.`

@@ -182,7 +182,7 @@ if (p) {
   if (p.compiled) {
     const c = p.compiled;
     console.log(
-      `  compilato    ok=${c.ok} piste=${c.piste} via=${c.via} piani=${c.piani} errori=${c.errori} DRC=${c.drc}`,
+      `  compilato    ok=${c.ok} piste=${c.piste} via=${c.via} piani=${c.piani} errori=${c.errori} ingombri=${c.ingombri ?? "?"} DRC=${c.drc}`,
     );
   }
   const dettagli = Object.entries(dati.stats ?? {}).filter(([, v]) => typeof v === "number");

@@ -620,6 +620,8 @@ async function runTool(
           drcViolations: [prevTargets.drcViolations, summary.targets.drcViolations],
           prcViolations: [prevTargets.prcViolations, summary.targets.prcViolations],
           schematicOverlaps: [prevTargets.schematicOverlaps, summary.targets.schematicOverlaps],
+          // a board of an engine before 11 has no such target: 0 there is "not counted", not "none"
+          courtyardCollisions: [prevTargets.courtyardCollisions ?? null, summary.targets.courtyardCollisions],
           note: "format [previous, now] — going down means converging, flat/oscillating means change strategy, don't repeat the same edit",
         };
       }

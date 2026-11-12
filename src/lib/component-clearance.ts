@@ -32,7 +32,8 @@
  *    JSON). It stays an error only for a pair this check could not measure: a
  *    part with no footprint it can read, or a check that stopped.
  *    It is an error like pad_clearance and like tscircuit's courtyard errors:
- *    the board is not ready (the report's red row, targets.allGreen). Like
+ *    the compile is not ok, the board is not ready (the report's red row,
+ *    targets.courtyardCollisions, targets.allGreen). Like
  *    them it does not stop the export, which refuses only what the screen does
  *    not show (a plane over a via, two pours touching, pours of an old engine):
  *    a collision is on the board for everyone to see, and a prototype with a

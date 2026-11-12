@@ -141,6 +141,30 @@ describe("inspect_board legge la scheda salvata", () => {
     expect(pulita.ok && pulita.result.courtyards).toBeUndefined();
   });
 
+  it("non elenca fra i problemi gli errori di cortile di tscircuit che la compilazione ha assorbito", async () => {
+    /** a part with one pad and a courtyard 2 x 2 at (x, 0) */
+    const pezzo = (id: string, x: number) => [
+      { type: "source_component", source_component_id: `s_${id}`, name: id, ftype: "simple_chip" },
+      { type: "pcb_component", pcb_component_id: id, source_component_id: `s_${id}`, center: { x, y: 0 }, layer: "top", rotation: 0 },
+      { type: "pcb_smtpad", pcb_smtpad_id: `p_${id}`, pcb_component_id: id, shape: "rect", x, y: 0, width: 0.5, height: 0.5, layer: "top" },
+      { type: "pcb_courtyard_rect", pcb_courtyard_rect_id: `c_${id}`, pcb_component_id: id, center: { x, y: 0 }, width: 2, height: 2, layer: "top" },
+    ];
+    const errore = (a: string, b: string) => ({ type: "pcb_courtyard_overlap_error", pcb_error_id: `e_${a}_${b}`, message: `Courtyard of ${a} overlaps with courtyard of ${b}`, pcb_component_ids: [a, b] });
+    // K1 and K2 only touch: absorbed; Z9 is not on the board, so the pair was not measured: it stays
+    const cj = [{ type: "pcb_board", width: 20, height: 20, num_layers: 2 }, ...pezzo("K1", 0), ...pezzo("K2", 2), errore("K1", "K2"), errore("K1", "Z9")];
+    store.cache = { filesHash: filesHash(store.files), circuitJson: cj, summary: {}, createdAt: "2026-11-12T00:00:00Z", engineVersion: 11 };
+    const r = await inspectSavedBoard("p");
+    expect(r.ok && r.result.issues.map((i) => i.message)).toEqual(["Courtyard of K1 overlaps with courtyard of Z9"]);
+    // a board of an engine that did not absorb them lists them as its summary did
+    store.cache = { ...store.cache, engineVersion: 10 };
+    const vecchia = await inspectSavedBoard("p");
+    expect(vecchia.ok && vecchia.result.issues).toHaveLength(2);
+    // and a check that stopped absorbed nothing
+    store.cache = { ...store.cache, engineVersion: 11, summary: { courtyards: { count: 0, nonMisurati: "boom" } } };
+    const ferma = await inspectSavedBoard("p");
+    expect(ferma.ok && ferma.result.issues).toHaveLength(2);
+  });
+
   it("dice quando la scheda salvata e' piu' vecchia dei sorgenti", async () => {
     store.cache = {
       filesHash: "hash-di-prima",

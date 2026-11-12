@@ -203,6 +203,20 @@ describe("A. two parts whose footprints overlap hit each other in assembly", () 
     expect(misuraIngombri([...conCortile("K1", 0, 2, 2), ...conCortile("K2", 1.9995, 2, 2)], 0.2).scontri).toEqual([]);
   });
 
+  it("a board whose only errors are absorbed courtyards, with a pair that hits, is not ok: same rule as every error in allGreen", () => {
+    const s = summarizeCircuit([...conCortile("K1", 0, 2, 2), ...conCortile("K2", 1.99, 2, 2), errore("K1", "K2")]);
+    expect(s.errors).toEqual([]);
+    expect(s.ok).toBe(false);
+    expect(s.targets).toMatchObject({ errors: 0, courtyardCollisions: 1, allGreen: false });
+    expect(s.message).toMatch(/^Compile finished with 1 pair\(s\) of parts hitting each other in assembly \(courtyards\)\./);
+    expect(s.message).not.toMatch(/Compile OK/);
+    // with errors of its own too, both are said
+    const tutti = summarizeCircuit([...conCortile("K1", 0, 2, 2), ...conCortile("K2", 1.99, 2, 2), { type: "pcb_trace_error", message: "una pista" }]);
+    expect(tutti.message).toMatch(/^Compile finished with 1 error\(s\) and 1 pair\(s\) of parts hitting each other/);
+    // touching only: ok
+    expect(summarizeCircuit([...conCortile("K1", 0, 2, 2), ...conCortile("K2", 2, 2, 2), errore("K1", "K2")]).ok).toBe(true);
+  });
+
   it("an overlap of 0,01 hits: an error, red in the viewer", () => {
     const sovrapposti = [...conCortile("K1", 0, 2, 2), ...conCortile("K2", 1.99, 2, 2), errore("K1", "K2")];
     const m = misuraIngombri(sovrapposti, 0.2);

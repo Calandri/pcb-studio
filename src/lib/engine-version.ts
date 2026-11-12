@@ -62,14 +62,22 @@
 // from its standard size) grown by the project's componentCourtyardExcessMm (0.2 mm a side unless design-rules.json
 // says otherwise). Two parts on one face whose footprints overlap hit each other in assembly: an error
 // (CompileSummary.courtyards, targets.courtyardCollisions, allGreen false, the board is not ready), not in the DRC nor
-// in the fab class, and the export goes on; tscircuit's pcb_courtyard_overlap_error of such a pair is not counted a
-// second time. Warnings: parts whose footprint is their pads alone, parts in a connector's mating space, outlines and
+// in the fab class, and the export goes on; a compile with such a pair is not ok. Two footprints that only touch do
+// not hit, and tscircuit's pcb_courtyard_overlap_error of every pair the check measures is absorbed (it says the
+// opposite on a contact); it stays an error only for a pair the check could not measure. Warnings: parts whose footprint is their pads alone, parts in a connector's mating space, outlines and
 // designators written as board drawings. On sbb-dl-principale 26 pairs had pads under 0.30 mm with every check green.
 // And the distance from a segment to a rectangle is taken side against side (it was taken from the corners only, and a
 // short segment running along a pad, its ends in front of the side, came out as far as the corners): trace against pad,
 // silkscreen against pad, a pill pad against a rect pad and the board edge measure true.
 // Copper and pours do not change: a board of engine 10 comes to 11 with a recheck ("Ricontrolla"), no compile
 export const CHECKS_ENGINE_VERSION = 11;
+
+/**
+ * The first engine that measures the footprints of the parts and absorbs
+ * tscircuit's courtyard errors of the pairs it measures (see the note of 11):
+ * a board saved by an older one kept them among its errors.
+ */
+export const ENGINE_INGOMBRI = 11;
 
 /**
  * The first engine whose pours start again from the outlines the files
