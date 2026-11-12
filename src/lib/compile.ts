@@ -74,7 +74,7 @@ import {
 import { descriviDistanze, distanzeDelleColate, type DistanzaInUso } from "./pours";
 import { colateCheSiToccano, colateTroppoVicine, type ColateCheSiToccano } from "./pour-pour";
 import { serigrafiaInConflitto, testoSerigrafia, type SerigrafiaInConflitto } from "./silkscreen-clearance";
-import { giaContato, ingombriDeiPezzi, testoIngombri, type IngombriDeiPezzi } from "./component-clearance";
+import { cortileAssorbito, ingombriDeiPezzi, testoIngombri, type IngombriDeiPezzi } from "./component-clearance";
 import { Profiler, routerPhases, type Profile } from "./profile";
 import { patchedLibraries } from "./engine-patches.mjs";
 
@@ -2720,9 +2720,9 @@ interface ControlliDellaScheda {
   poursTooClose: ReturnType<typeof colateCheSiToccano>;
   /** the silkscreen clashes (see silkscreen-clearance.ts): a check of the board, it reads no schematic */
   silkscreen: SerigrafiaInConflitto | undefined;
-  /** the footprints of the parts (see component-clearance.ts), and tscircuit's courtyard errors they already report */
+  /** the footprints of the parts (see component-clearance.ts), and tscircuit's courtyard errors of the pairs they measured */
   courtyards: IngombriDeiPezzi | undefined;
-  cortiliGiaContati: string[];
+  cortiliAssorbiti: string[];
   prcViolations: PrcViolation[];
   fabClasses: CompileSummary["fabClasses"];
   fabClass: string | null;
@@ -3019,7 +3019,7 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
     poursTooClose,
     silkscreen,
     courtyards: ingombri.riepilogo,
-    cortiliGiaContati: ingombri.cortiliGiaContati,
+    cortiliAssorbiti: ingombri.cortiliAssorbiti,
     prcViolations,
     fabClasses,
     fabClass,
@@ -3047,8 +3047,8 @@ function summarize(
   scheda: ControlliDellaScheda = controlliDellaScheda(circuitJson, sources),
 ): CompileSummary {
   const allErrors = circuitJson
-    // a courtyard overlap of tscircuit's that the footprints check reports already: one report per pair
-    .filter((el) => el.type.endsWith("_error") && !giaContato(el, scheda.cortiliGiaContati))
+    // a courtyard overlap of tscircuit's on a pair the footprints check measured: its word counts (see component-clearance.ts)
+    .filter((el) => el.type.endsWith("_error") && !cortileAssorbito(el, scheda.cortiliAssorbiti))
     .map((el) => ({
       type: el.type,
       message: String(el.message ?? el.error_type ?? JSON.stringify(el)).slice(0, 500),

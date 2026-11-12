@@ -18,12 +18,19 @@
  * each face on its own, on every compile and every "Ricontrolla":
  *
  * A. PARTS THAT HIT (an ERROR): two footprints that overlap on one face, by
- *    more than a micron. No threshold on top of the excess: the excess IS the
- *    distance two parts keep. One report per pair, where they overlap most,
- *    with the overlap and the distance between the two exact envelopes; a
- *    through-hole part meets the other face with its holes. tscircuit's own
- *    pcb_courtyard_overlap_error for a pair reported here is not counted a
- *    second time in the errors (the element stays in the Circuit JSON).
+ *    more than TOLLERANZA_INGOMBRI_MM (ingombro.ts). No threshold on top of the
+ *    excess: the excess IS the distance two parts keep, so two footprints that
+ *    only touch do not hit. One report per pair, where they overlap most, with
+ *    the overlap and the distance between the two exact envelopes; a
+ *    through-hole part meets the other face with its holes.
+ *    tscircuit's own pcb_courtyard_overlap_error says the opposite on a contact
+ *    (two courtyards that touch overlap, for it): on n59 seven pairs stayed
+ *    among the errors and in the report's row while the viewer drew them clear.
+ *    For every pair of parts this check MEASURES (both have a footprint) its
+ *    word is the one that counts, and tscircuit's error is absorbed whether the
+ *    pair hits here or not (cortiliAssorbiti; the element stays in the Circuit
+ *    JSON). It stays an error only for a pair this check could not measure: a
+ *    part with no footprint it can read, or a check that stopped.
  *    It is an error like pad_clearance and like tscircuit's courtyard errors:
  *    the board is not ready (the report's red row, targets.allGreen). Like
  *    them it does not stop the export, which refuses only what the screen does
@@ -65,13 +72,11 @@
  */
 
 import { dalGerber } from "./silkscreen-clearance";
-import { leggiIngombri, misuraFra, scontri, type Faccia, type IngombroDelPezzo, type Punto, type Riquadro } from "./ingombro";
+import { leggiIngombri, misuraFra, scontri, TOLLERANZA_INGOMBRI_MM, type Faccia, type IngombroDelPezzo, type Punto, type Riquadro } from "./ingombro";
 
 type El = Record<string, unknown> & { type: string };
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
-/** the micron of slack of every dimensional comparison (as in drc.ts) */
-const TOLLERANZA_MM = 0.001;
 const tre = (v: number) => Math.round(v * 1000) / 1000;
 
 /** two parts that hit each other in assembly */
@@ -326,8 +331,27 @@ export interface MisuraDegliIngombri {
   /** the board's silkscreen elements, and how many are drawings of the board */
   elementiDiSilkscreen: number;
   elementiDiScheda: number;
-  /** the pairs of tscircuit's pcb_courtyard_overlap_error that A already reports, by chiaveDellaCoppia of their pcb_component_ids */
-  cortiliGiaContati: string[];
+  /**
+   * The pairs of tscircuit's pcb_courtyard_overlap_error that A measured, by
+   * chiaveDellaCoppia of their pcb_component_ids: A's word counts for them,
+   * hit or not (see the top of this file)
+   */
+  cortiliAssorbiti: string[];
+}
+
+/**
+ * The pairs of tscircuit's courtyard errors whose two parts both have a
+ * footprint A measures: their error is absorbed (see the top of this file).
+ */
+export function cortiliAssorbiti(els: Array<{ type?: unknown; pcb_component_ids?: unknown }>, pezzi: Array<Pick<IngombroDelPezzo, "id">>): string[] {
+  const misurati = new Set(pezzi.map((p) => p.id));
+  const out: string[] = [];
+  for (const el of els) {
+    if (el.type !== "pcb_courtyard_overlap_error") continue;
+    const ids = Array.isArray(el.pcb_component_ids) ? el.pcb_component_ids.map(String) : [];
+    if (ids.length === 2 && misurati.has(ids[0]) && misurati.has(ids[1])) out.push(chiaveDellaCoppia(ids[0], ids[1]));
+  }
+  return out;
 }
 
 /** the three checks (see the top of this file); throws on a Circuit JSON it cannot read */
@@ -337,10 +361,8 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
   const pezzi = leggiIngombri(els, e);
 
   // A
-  const coppie = new Set<string>();
   const trovati: PezziCheSiScontrano[] = scontri(pezzi).map((s) => {
     const A = pezzi[s.a], B = pezzi[s.b];
-    coppie.add(chiaveDellaCoppia(A.id, B.id));
     const esatta = misuraFra(s.daiForiA ? A.foriEsatti : [A.involucro], s.daiForiB ? B.foriEsatti : [B.involucro]);
     return {
       a: A.nome,
@@ -356,12 +378,6 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
     };
   });
   trovati.sort((p, q) => q.sovrapposizioneMm - p.sovrapposizioneMm || perNome(p.a, q.a));
-  const cortiliGiaContati: string[] = [];
-  for (const el of els) {
-    if (el.type !== "pcb_courtyard_overlap_error") continue;
-    const ids = Array.isArray(el.pcb_component_ids) ? el.pcb_component_ids.map(String) : [];
-    if (ids.length === 2 && coppie.has(chiaveDellaCoppia(ids[0], ids[1]))) cortiliGiaContati.push(chiaveDellaCoppia(ids[0], ids[1]));
-  }
 
   // B
   const senzaIngombroVero = pezzi
@@ -376,7 +392,7 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
       for (const p of pezzi) {
         if (p === conn || p.faccia !== conn.faccia) continue;
         const m = misuraFra(p.forme, [innesto.forma], 0);
-        if (!m || m.sovrapposizione <= TOLLERANZA_MM) continue;
+        if (!m || m.sovrapposizione <= TOLLERANZA_INGOMBRI_MM) continue;
         nelloSpazioDiInnesto.push({
           pezzo: p.nome,
           connettore: conn.nome,
@@ -400,15 +416,16 @@ export function misuraIngombri(circuitJson: unknown[], eccedenzaMm: number): Mis
     nelloSpazioDiInnesto,
     elementiDiSilkscreen: c.elementi,
     elementiDiScheda: c.diScheda,
-    cortiliGiaContati,
+    cortiliAssorbiti: cortiliAssorbiti(els, pezzi),
   };
 }
 
-/** what the summary says, and what compile.ts needs to leave tscircuit's duplicates out of the errors */
+/** what the summary says, and what compile.ts needs to leave tscircuit's errors A measured out of the errors */
 export interface EsitoDegliIngombri {
   /** absent when there is nothing to say */
   riepilogo: IngombriDeiPezzi | undefined;
-  cortiliGiaContati: string[];
+  /** see MisuraDegliIngombri.cortiliAssorbiti: also when A has nothing to say (two courtyards that only touch) */
+  cortiliAssorbiti: string[];
 }
 
 const elenco = (nomi: string[], quanti = 12) => `${nomi.slice(0, quanti).join(", ")}${nomi.length > quanti ? `, e altri ${nomi.length - quanti}` : ""}`;
@@ -437,14 +454,16 @@ export function ingombriDeiPezzi(circuitJson: unknown[], eccedenzaMm: number): E
         disegniDiScheda: { count: 0, pezzi: [], detail: "" },
         nonMisurati: perche,
       },
-      cortiliGiaContati: [],
+      // nothing measured: every error of tscircuit stays
+      cortiliAssorbiti: [],
     };
   }
   const n = m.scontri.length, b = m.senzaIngombroVero.length, c = m.disegniDiScheda.length, d = m.nelloSpazioDiInnesto.length;
-  if (n === 0 && b === 0 && c === 0 && d === 0) return { riepilogo: undefined, cortiliGiaContati: [] };
+  if (n === 0 && b === 0 && c === 0 && d === 0) return { riepilogo: undefined, cortiliAssorbiti: m.cortiliAssorbiti };
   const primo = m.scontri[0];
   const dettaglioA = primo
-    ? `${n} ${n === 1 ? "coppia di pezzi si scontra" : "coppie di pezzi si scontrano"} in assemblaggio (ingombri sovrapposti sulla stessa faccia, abbondanza ${eccedenzaMm}mm): ` +
+    ? `${n} ${n === 1 ? "coppia di pezzi si scontra" : "coppie di pezzi si scontrano"} in assemblaggio ` +
+      `(ingombri sovrapposti sulla stessa faccia di piu' di ${TOLLERANZA_INGOMBRI_MM}mm, abbondanza ${eccedenzaMm}mm): ` +
       `${primo.a} e ${primo.b} su ${primo.faccia}, ingombri sovrapposti di ${primo.sovrapposizioneMm.toFixed(3)}mm, ` +
       `involucri a ${primo.distanzaInvolucriMm.toFixed(3)}mm, a (${primo.x.toFixed(2)}; ${primo.y.toFixed(2)})`
     : "";
@@ -471,15 +490,15 @@ export function ingombriDeiPezzi(circuitJson: unknown[], eccedenzaMm: number): E
       ...(d > 0 ? { nelloSpazioDiInnesto: { count: d, pezzi: m.nelloSpazioDiInnesto.slice(0, ELENCATI), detail: dettaglioD } } : {}),
       disegniDiScheda: { count: c, pezzi: m.disegniDiScheda.slice(0, ELENCATI), detail: dettaglioC, elementiDiScheda: m.elementiDiScheda, elementi: m.elementiDiSilkscreen },
     },
-    cortiliGiaContati: m.cortiliGiaContati,
+    cortiliAssorbiti: m.cortiliAssorbiti,
   };
 }
 
-/** whether one of tscircuit's errors is a pair A already reports (see EsitoDegliIngombri) */
-export function giaContato(el: { type?: unknown; pcb_component_ids?: unknown }, cortiliGiaContati: readonly string[]): boolean {
-  if (el.type !== "pcb_courtyard_overlap_error" || cortiliGiaContati.length === 0) return false;
+/** whether one of tscircuit's errors is a pair A measured, so its word counts (see EsitoDegliIngombri) */
+export function cortileAssorbito(el: { type?: unknown; pcb_component_ids?: unknown }, assorbiti: readonly string[]): boolean {
+  if (el.type !== "pcb_courtyard_overlap_error" || assorbiti.length === 0) return false;
   const ids = Array.isArray(el.pcb_component_ids) ? el.pcb_component_ids.map(String) : [];
-  return ids.length === 2 && cortiliGiaContati.includes(chiaveDellaCoppia(ids[0], ids[1]));
+  return ids.length === 2 && assorbiti.includes(chiaveDellaCoppia(ids[0], ids[1]));
 }
 
 /** what the compile message says of it */

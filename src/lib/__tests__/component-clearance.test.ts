@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { convertSoupToGerberCommands, stringifyGerberCommandLayers } from "circuit-json-to-gerber";
 import { buildBoardReport } from "@/lib/board-report";
 import { summarizeCircuit } from "@/lib/compile";
-import { giaContato, ingombriDeiPezzi, misuraIngombri, testoIngombri } from "@/lib/component-clearance";
+import { cortileAssorbito, ingombriDeiPezzi, misuraIngombri, testoIngombri } from "@/lib/component-clearance";
 import { DESIGN_RULES_PATH, eccedenzaDellIngombro, INGOMBRO_ECCEDENZA_MM, resolveDesignRules } from "@/lib/design-rules";
 import { CHECKS_ENGINE_VERSION, motoreDaSalvare } from "@/lib/engine-version";
 import { footprintBoxes, footprintParts } from "@/lib/footprint-bounds";
-import { leggiIngombri, misuraFra, type Forma } from "@/lib/ingombro";
+import { leggiIngombri, misuraFra, scontri, TOLLERANZA_INGOMBRI_MM, type Forma } from "@/lib/ingombro";
+import { buildScene } from "@/components/board/render";
 
 /*
  * Niccolo', 11/11/2026: "ogni pezzo ha il suo INGOMBRO ... e non si salda
@@ -148,41 +149,85 @@ describe("A. two parts whose footprints overlap hit each other in assembly", () 
     expect(misuraIngombri([...j1, ...blocco("R1", 1.27, 3, 0.5, 0.3, { layer: "bottom" })], 0.2).scontri).toEqual([]);
   });
 
+  /** tscircuit's courtyard error on two parts */
+  const errore = (a: string, b: string) => ({
+    type: "pcb_courtyard_overlap_error",
+    pcb_courtyard_overlap_error_id: `e_${a}_${b}`,
+    error_type: "pcb_courtyard_overlap_error",
+    message: `Courtyard of ${a} overlaps with courtyard of ${b}`,
+    pcb_component_ids: [a, b],
+  });
+  /** a part with one pad and a declared courtyard w x h at (x, 0) */
+  const conCortile = (id: string, x: number, w: number, h: number, layer: "top" | "bottom" = "top"): El[] => [
+    ...parte(id, { x, layer }),
+    pad(id, x, 0, 0.5, 0.5, { layer }),
+    cortileRect(id, x, 0, w, h, layer),
+  ];
+  /** what the viewer colours red: scontri on the scene's footprints, as BoardCanvas does */
+  const rossi = (cj: El[]) =>
+    scontri(
+      buildScene([{ type: "pcb_board", pcb_board_id: "b", center: { x: 0, y: 0 }, width: 60, height: 20, num_layers: 2 }, ...cj] as never)!.ingombri.map((g) => ({
+        faccia: g.layer,
+        forme: g.forme,
+        fori: g.fori,
+      })),
+    ).length;
+
   it("one report per pair: tscircuit's courtyard error of a pair the check reports is not counted again", () => {
-    const errore = (a: string, b: string) => ({
-      type: "pcb_courtyard_overlap_error",
-      pcb_courtyard_overlap_error_id: `e_${a}_${b}`,
-      error_type: "pcb_courtyard_overlap_error",
-      message: `Courtyard of ${a} overlaps with courtyard of ${b}`,
-      pcb_component_ids: [a, b],
-    });
-    const cj = [
-      ...parte("J2", { x: 0 }),
-      pad("J2", 0, 0, 1, 1),
-      cortileRect("J2", 0, 0, 3, 3),
-      ...parte("C66", { x: 2.4 }),
-      pad("C66", 2.4, 0, 0.5, 0.5),
-      cortileRect("C66", 2.4, 0, 2, 1),
-      errore("J2", "C66"),
-      // a pair the check does not report (two faces) keeps tscircuit's error
-      ...parte("X1", { x: 20 }),
-      pad("X1", 20, 0, 1, 1),
-      cortileRect("X1", 20, 0, 3, 3),
-      ...parte("X2", { x: 20, layer: "bottom" }),
-      pad("X2", 20, 0, 1, 1, { layer: "bottom" }),
-      cortileRect("X2", 20, 0, 3, 3, "bottom"),
-      errore("X1", "X2"),
-    ];
+    const cj = [...conCortile("J2", 0, 3, 3), ...conCortile("C66", 2.4, 2, 1), errore("J2", "C66")];
     const m = misuraIngombri(cj, 0.2);
     expect(m.scontri.map((s) => [s.a, s.b])).toEqual([["J2", "C66"]]);
     expect(m.scontri[0]).toMatchObject({ fonteA: "cortile", fonteB: "cortile" });
     // the declared courtyards as they are: 1,5 + 1 - 2,4 of overlap, no excess on them
     expect(m.scontri[0].sovrapposizioneMm).toBeCloseTo(0.1, 6);
-    expect(giaContato(errore("C66", "J2"), m.cortiliGiaContati)).toBe(true);
-    expect(giaContato(errore("X1", "X2"), m.cortiliGiaContati)).toBe(false);
+    expect(cortileAssorbito(errore("C66", "J2"), m.cortiliAssorbiti)).toBe(true);
     const s = summarizeCircuit(cj);
-    expect(s.errors.map((e) => e.message)).toEqual(["Courtyard of X1 overlaps with courtyard of X2"]);
+    expect(s.errors).toEqual([]);
     expect(s.courtyards?.count).toBe(1);
+  });
+
+  it("two footprints that only touch do not hit: tscircuit's error on them is absorbed, no error, no red", () => {
+    expect(TOLLERANZA_INGOMBRI_MM).toBe(0.001);
+    // courtyards 2 wide at 0 and 2: they share the side x = 1
+    const contatto = [...conCortile("K1", 0, 2, 2), ...conCortile("K2", 2, 2, 2), errore("K1", "K2")];
+    const m = misuraIngombri(contatto, 0.2);
+    expect(m.scontri).toEqual([]);
+    expect(m.cortiliAssorbiti).toEqual(["K1|K2"]);
+    const s = summarizeCircuit(contatto);
+    expect(s.errors).toEqual([]);
+    expect(s.courtyards).toBeUndefined();
+    expect(s.targets).toMatchObject({ errors: 0, courtyardCollisions: 0 });
+    expect(buildBoardReport([{ type: "pcb_board", width: 10, height: 10 }], s).checks.find((c) => c.id === "place")).toMatchObject({ severity: "ok" });
+    expect(rossi(contatto)).toBe(0);
+    // within the tolerance it is still a contact
+    expect(misuraIngombri([...conCortile("K1", 0, 2, 2), ...conCortile("K2", 1.9995, 2, 2)], 0.2).scontri).toEqual([]);
+  });
+
+  it("an overlap of 0,01 hits: an error, red in the viewer", () => {
+    const sovrapposti = [...conCortile("K1", 0, 2, 2), ...conCortile("K2", 1.99, 2, 2), errore("K1", "K2")];
+    const m = misuraIngombri(sovrapposti, 0.2);
+    expect(m.scontri).toHaveLength(1);
+    expect(m.scontri[0].sovrapposizioneMm).toBeCloseTo(0.01, 6);
+    const s = summarizeCircuit(sovrapposti);
+    // one report: ours, not tscircuit's too
+    expect(s.errors).toEqual([]);
+    expect(s.targets.courtyardCollisions).toBe(1);
+    expect(rossi(sovrapposti)).toBe(1);
+  });
+
+  it("tscircuit's error stays for a pair the check could not measure, and for every pair when the check stopped", () => {
+    // two faces: measured, and clear (the parts are on opposite faces), so absorbed
+    const dueFacce = [...conCortile("X1", 20, 3, 3), ...conCortile("X2", 20, 3, 3, "bottom"), errore("X1", "X2")];
+    expect(summarizeCircuit(dueFacce).errors).toEqual([]);
+    // M1 has no footprint the check can read (no pad, no courtyard, no body): not measured
+    const nonMisurato = [
+      ...conCortile("J2", 0, 3, 3),
+      { type: "source_component", source_component_id: "s_M1", name: "M1", ftype: "simple_chip" },
+      { type: "pcb_component", pcb_component_id: "M1", source_component_id: "s_M1", center: { x: 0, y: 0 }, layer: "top", rotation: 0, width: 1, height: 1 },
+      errore("J2", "M1"),
+    ];
+    expect(misuraIngombri(nonMisurato, 0.2).cortiliAssorbiti).toEqual([]);
+    expect(summarizeCircuit(nonMisurato).errors.map((e) => e.message)).toEqual(["Courtyard of J2 overlaps with courtyard of M1"]);
   });
 
   it("a board with parts that hit is filed under today's engine all the same", () => {
@@ -377,7 +422,7 @@ describe("the check never takes the compile down, and nothing reaches the Gerber
     expect(() => misuraIngombri(rotto, 0.2)).toThrow("boom");
     const e = ingombriDeiPezzi(rotto, 0.2);
     expect(e.riepilogo).toMatchObject({ count: 0, nonMisurati: "boom" });
-    expect(e.cortiliGiaContati).toEqual([]);
+    expect(e.cortiliAssorbiti).toEqual([]);
     expect(testoIngombri(e.riepilogo)).toBe(" ATTENZIONE: gli ingombri dei pezzi NON sono stati misurati: il controllo si e' fermato (boom).");
   });
 

@@ -601,13 +601,21 @@ export interface Scontro {
   daiForiB: boolean;
 }
 
-/** the micron of slack of every dimensional comparison (as in drc.ts) */
-const TOLLERANZA_MM = 0.001;
+/**
+ * TWO FOOTPRINTS THAT ONLY TOUCH DO NOT HIT. An overlap no deeper than this
+ * (the micron of slack of every dimensional comparison, as in drc.ts) is a
+ * contact: the distance the two parts must keep is already inside their excess.
+ * The one value of the check (component-clearance.ts), of the viewer, which
+ * colours the same collisions red with scontri, and of the messages that say it.
+ * tscircuit reports two courtyards that touch as overlapping: for every pair
+ * this check measures, its word is this one (see cortiliAssorbiti).
+ */
+export const TOLLERANZA_INGOMBRI_MM = 0.001;
 
 /**
- * Every pair of parts whose footprints overlap on one face, by more than a
- * micron: two footprints that only touch do not hit. The index is the boxes
- * sorted by x and swept, so only parts whose boxes meet are measured.
+ * Every pair of parts whose footprints overlap on one face, by more than
+ * TOLLERANZA_INGOMBRI_MM. The index is the boxes sorted by x and swept, so
+ * only parts whose boxes meet are measured.
  */
 export function scontri(pezzi: Array<Pick<IngombroDelPezzo, "faccia" | "forme" | "fori">>): Scontro[] {
   const out: Scontro[] = [];
@@ -632,7 +640,7 @@ export function scontri(pezzi: Array<Pick<IngombroDelPezzo, "faccia" | "forme" |
         // two through-hole parts meet on their own faces, not hole against hole
         if (v.daiFori && w.daiFori) continue;
         const m = misuraFra(v.forme, w.forme, 0);
-        if (!m || m.sovrapposizione <= TOLLERANZA_MM) continue;
+        if (!m || m.sovrapposizione <= TOLLERANZA_INGOMBRI_MM) continue;
         const [a, b] = v.i < w.i ? [v, w] : [w, v];
         out.push({ a: a.i, b: b.i, faccia, sovrapposizione: m.sovrapposizione, p: m.p, daiForiA: a.daiFori, daiForiB: b.daiFori });
       }
