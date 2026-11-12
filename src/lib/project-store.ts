@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import { createHash } from "node:crypto";
 import { conRiprova } from "./db-retry";
+import { avvisaDegliIdDoppi, idDoppi } from "./duplicate-ids";
 import { SCHEMATIC_NOTES_PATH } from "./schematic-notes";
 
 export type FsMap = Record<string, string>;
@@ -537,6 +538,24 @@ export async function saveCompileCache(
    * traces that no longer exist, and nothing said so (sbb-dl-frontale,
    * 2026-11-09). Only a compile with no board at all is refused, above.
    */
+
+  /*
+   * NOR IS A BOARD WITH A DOUBLED ID SAVED IN SILENCE (see duplicate-ids.ts):
+   * two traces or two vias with one id are something on the board twice, as
+   * the copper of the board before left next to the files' own on
+   * sbb-dl-principale (12/11/2026). It is saved, for the same reason as above:
+   * it is the board there is, and refusing it would leave an older one on
+   * screen; nothing is taken off either, because here nobody knows which of
+   * the two is the one too many. It is said: in the message of the summary
+   * saved with it, which the page, inspect_board and the answer of whoever
+   * compiled read, and as an error in the function log. Here because every
+   * save of a board passes here, whoever made the board.
+   */
+  const doppi = idDoppi(circuitJson);
+  if (doppi) {
+    console.error(`[save ${projectId}] scheda salvata con id doppi: ${doppi.detail}`);
+    avvisaDegliIdDoppi(summary, doppi);
+  }
 
   const json = JSON.stringify(circuitJson);
   const sintesi = JSON.stringify(summary);
