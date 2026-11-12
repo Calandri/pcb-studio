@@ -64,6 +64,9 @@ function payload(edits: ManualEdits, cache?: CompileCache | null, extra: Record<
 /** the conflict-safe write of manual-edits.json: see lib/manual-edits-store.ts */
 const commit = commitManualEdits;
 
+/** what a save says when the library could not be read: saved all the same, and why the board may read as old (see commitManualEdits) */
+const conAvviso = (avviso: string | undefined) => (avviso ? { avviso } : {});
+
 /**
  * A board saved before the base existed (see lib/board-base.ts) gets it here,
  * before the first hand edit turns it from "the board of these files" into
@@ -155,7 +158,7 @@ export async function POST(req: Request): Promise<Response> {
       const meta = await getCompileMeta(projectId);
       await baseBeforeEdit(projectId, meta);
       let before: ReturnType<typeof applyPlacementPatches>["before"] = [];
-      const { edits } = await commit(projectId, meta, (current) => {
+      const { edits, avviso } = await commit(projectId, meta, (current) => {
         // may run again on a conflict: `before` is the one of the run that wrote
         const r = applyPlacementPatches(current, patches, remove);
         before = r.before;
@@ -169,6 +172,7 @@ export async function POST(req: Request): Promise<Response> {
         placements: edits.pcb_placements.filter((p) => names.has(p.selector)),
         before,
         counts: countManualEdits(edits),
+        ...conAvviso(avviso),
       });
     } catch (err) {
       return failure(err);
@@ -195,14 +199,14 @@ export async function POST(req: Request): Promise<Response> {
       await baseBeforeEdit(projectId, meta);
       let replaced: ReturnType<typeof applyRoutePatch>["replaced"] = [];
       let added: ReturnType<typeof applyRoutePatch>["added"] = [];
-      const { edits } = await commit(projectId, meta, (current) => {
+      const { edits, avviso } = await commit(projectId, meta, (current) => {
         const r = applyRoutePatch(current, add, removeKeys);
         replaced = r.replaced;
         added = r.added;
         return r.edits;
       });
       console.log(`[manual-edits ${projectId}] routes +${add.length} -${removeKeys.length}: ${Date.now() - t0} ms`);
-      return Response.json({ ok: true, added, replaced, counts: countManualEdits(edits) });
+      return Response.json({ ok: true, added, replaced, counts: countManualEdits(edits), ...conAvviso(avviso) });
     } catch (err) {
       return failure(err);
     }
@@ -228,14 +232,14 @@ export async function POST(req: Request): Promise<Response> {
        * quietly released every pinned component on the board.
        */
       if (names && names.length > 0) {
-        const { edits } = await rilasciaPezzi(projectId, cache, names, scope);
-        return Response.json(payload(edits, cache));
+        const { edits, avviso } = await rilasciaPezzi(projectId, cache, names, scope);
+        return Response.json(payload(edits, cache, conAvviso(avviso)));
       }
       const name = typeof body.name === "string" && body.name ? body.name : null;
-      const { edits } = await commit(projectId, cache, (current) =>
+      const { edits, avviso } = await commit(projectId, cache, (current) =>
         releaseManualEdits(current, scope, name),
       );
-      return Response.json(payload(edits, cache));
+      return Response.json(payload(edits, cache, conAvviso(avviso)));
     }
 
     /*
@@ -281,7 +285,7 @@ export async function POST(req: Request): Promise<Response> {
         const rotazione = normalizeRotation(el.rotation) ?? undefined;
         posizioni.push({ nome, x, y, ...(rotazione !== undefined ? { rotazione } : {}) });
       }
-      const { edits } = await commit(projectId, cache, (current) => {
+      const { edits, avviso } = await commit(projectId, cache, (current) => {
         const pcb = current.pcb_placements.map((p) => ({ ...p }));
         for (const pos of posizioni) {
           const gia = pcb.find((p) => p.selector === pos.nome);
@@ -304,7 +308,7 @@ export async function POST(req: Request): Promise<Response> {
         }
         return { ...current, pcb_placements: pcb };
       });
-      return Response.json(payload(edits, cache, { fissati: posizioni.length }));
+      return Response.json(payload(edits, cache, { fissati: posizioni.length, ...conAvviso(avviso) }));
     }
 
     // full replacement: this is how the editor restores an undone state
@@ -314,8 +318,8 @@ export async function POST(req: Request): Promise<Response> {
         return Response.json({ error: "modifiche troppo grandi" }, { status: 413 });
       }
       const wanted = parseManualEdits(raw);
-      const { edits } = await commit(projectId, cache, () => wanted);
-      return Response.json(payload(edits, cache));
+      const { edits, avviso } = await commit(projectId, cache, () => wanted);
+      return Response.json(payload(edits, cache, conAvviso(avviso)));
     }
 
     if (Array.isArray(body.events) && body.events.length > EDIT_LIMITS.maxEvents) {
@@ -357,11 +361,11 @@ export async function POST(req: Request): Promise<Response> {
      * them is added next to the first.
      */
     if (events.length === 0) {
-      const { edits } = await commit(projectId, cache, (current) => ({
+      const { edits, avviso } = await commit(projectId, cache, (current) => ({
         ...current,
         pcb_routes: mergeManualRoutes(current.pcb_routes, routes),
       }));
-      return Response.json(payload(edits, cache, { rejectedRoutes }));
+      return Response.json(payload(edits, cache, { rejectedRoutes, ...conAvviso(avviso) }));
     }
 
     /*
@@ -380,7 +384,7 @@ export async function POST(req: Request): Promise<Response> {
     // in the function log: a page still saving moves the old way (opened before the deploy)
     console.log(`[manual-edits ${projectId}] events ${events.length} (vecchia via), piste ${routes.length}`);
     const main = (await getProject(projectId))["main.tsx"] ?? "";
-    const { edits } = await commit(projectId, cache, (current) => {
+    const { edits, avviso } = await commit(projectId, cache, (current) => {
       const moved = applyEditEvents({
         circuitJson: cache.circuitJson as unknown[],
         main,
@@ -389,7 +393,7 @@ export async function POST(req: Request): Promise<Response> {
       });
       return { ...moved, pcb_routes: mergeManualRoutes(moved.pcb_routes, routes) };
     });
-    return Response.json(payload(edits, cache, { rejectedRoutes }));
+    return Response.json(payload(edits, cache, { rejectedRoutes, ...conAvviso(avviso) }));
   } catch (err) {
     return failure(err);
   }
@@ -401,8 +405,8 @@ export async function DELETE(req: Request): Promise<Response> {
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
   try {
     const cache = await getCompileCache(projectId).catch(() => null);
-    const { edits } = await commit(projectId, cache, () => emptyManualEdits());
-    return Response.json(payload(edits, cache));
+    const { edits, avviso } = await commit(projectId, cache, () => emptyManualEdits());
+    return Response.json(payload(edits, cache, conAvviso(avviso)));
   } catch (err) {
     return failure(err);
   }

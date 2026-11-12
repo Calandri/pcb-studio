@@ -45,14 +45,27 @@ async function verdict(
   startedAt: number,
   filesNow: () => Promise<FsMap>,
 ): Promise<Verdict> {
-  const files = await filesNow();
-  const currentHash = filesHash(files);
+  /*
+   * The files as they are now cannot be read (the library failed twice in
+   * withLibrary, or the database): the board just compiled is not thrown away
+   * for it. Without them only the saved row decides, and every save is
+   * conditional on that row staying the one just read (ifUnchangedSince): a
+   * board saved after this compile started, of other files, is still not
+   * overwritten.
+   */
+  let files: FsMap | null = null;
+  try {
+    files = await filesNow();
+  } catch (err) {
+    console.warn(`[compile-save ${projectId}] file attuali non letti, decide la riga salvata: ${err instanceof Error ? err.name : "errore"}`);
+  }
+  const currentHash = files ? filesHash(files) : null;
   if (currentHash === hash) return { kind: "save" };
   const meta = await getCompileMeta(projectId);
   if (!meta) return { kind: "save" };
   const since = { filesHash: meta.filesHash, createdAt: meta.createdAt };
   if (meta.filesHash === hash) return { kind: "save", ifUnchangedSince: since };
-  if (meta.filesHash === currentHash) return { kind: "current", files, currentHash, meta: since };
+  if (files && currentHash !== null && meta.filesHash === currentHash) return { kind: "current", files, currentHash, meta: since };
   if (stampMs(meta.createdAt) < startedAt) return { kind: "save", ifUnchangedSince: since };
   return { kind: "newer" };
 }

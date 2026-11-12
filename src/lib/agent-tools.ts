@@ -748,17 +748,27 @@ export function motivoSenzaSegreti(err: unknown): string {
     .replace(/\b(?:[a-z0-9-]+\.)+(?:neon\.tech|amazonaws\.com|vercel\.app|neon\.build)\b/gi, "<host>");
 }
 
+/** the pause before the second read of the library */
+export const RIPROVA_LIBRERIA_MS = 250;
+
 /**
  * Library components are mounted under `lib/<Name>.tsx` at compile time: they
  * stay shared (one copy in the DB) but the project imports them as local
- * files. Throws LibreriaNonLetta when the library cannot be read.
+ * files. A failed read is tried once more after RIPROVA_LIBRERIA_MS (a passing
+ * error of the database: a dropped socket, a cold start); throws
+ * LibreriaNonLetta when the second fails too.
  */
 export async function withLibrary(fsMap: FsMap): Promise<FsMap> {
   let library: Record<string, string>;
   try {
     library = await getLibraryFsMap();
-  } catch (err) {
-    throw new LibreriaNonLetta(err);
+  } catch {
+    await new Promise((fatto) => setTimeout(fatto, RIPROVA_LIBRERIA_MS));
+    try {
+      library = await getLibraryFsMap();
+    } catch (err) {
+      throw new LibreriaNonLetta(err);
+    }
   }
   return { ...library, ...fsMap };
 }

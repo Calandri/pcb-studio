@@ -1,4 +1,4 @@
-import { withLibrary } from "./agent-tools";
+import { LibreriaNonLetta, withLibrary } from "./agent-tools";
 import { baseHolds, boardBaseOf } from "./board-base";
 import {
   boardFreshness,
@@ -37,9 +37,29 @@ export async function commitManualEdits(
   // only WHICH board is saved matters here, not the board: see getCompileMeta
   cache: Pick<CompileCache, "filesHash"> | null,
   transform: (current: ManualEdits) => ManualEdits | null,
-): Promise<{ edits: ManualEdits; written: boolean }> {
+): Promise<{ edits: ManualEdits; written: boolean; avviso?: string }> {
   const files = await getProject(projectId);
-  const sources = withoutManualEdits(await withLibrary(files));
+  /*
+   * THE LIBRARY IS NOT NEEDED TO SAVE. It serves only the board_base below
+   * (whether the saved board is still the one of these files). When it cannot
+   * be read, even at the second try of withLibrary, the positions are saved all
+   * the same, with the fallback of before LibreriaNonLetta: no base is written,
+   * since the chain cannot be checked without the library. At worst the saved
+   * board reads as one to compile again, never the opposite; and it is said, in
+   * the answer (avviso) and in the log. A COMPILE without the library does not
+   * start and says so (see withLibrary); a write of the user is never lost for it.
+   */
+  let full: FsMap | null;
+  let avviso: string | undefined;
+  try {
+    full = await withLibrary(files);
+  } catch (err) {
+    if (!(err instanceof LibreriaNonLetta)) throw err;
+    full = null;
+    avviso = `${err.message}. Posizioni salvate lo stesso; senza la libreria non si verifica se la scheda salvata e' ancora quella di questi file, alla peggio risultera' da ricompilare`;
+    console.warn(`[manual-edits ${projectId}] ${avviso}`);
+  }
+  const sources = withoutManualEdits(full ?? files);
   const sourcesHash = filesHash(sources);
   const { written, content } = await updateProjectFile(projectId, MANUAL_EDITS_PATH, (current) => {
     const before = parseManualEdits(current);
@@ -49,17 +69,19 @@ export async function commitManualEdits(
     const filesHashBefore = filesHash(
       current === null ? sources : { ...sources, [MANUAL_EDITS_PATH]: current },
     );
-    const base = nextBoardBase({
-      cacheFilesHash: cache?.filesHash,
-      filesHashBefore,
-      sourcesHash,
-      previous: before.board_base,
-    });
+    const base = full
+      ? nextBoardBase({
+          cacheFilesHash: cache?.filesHash,
+          filesHashBefore,
+          sourcesHash,
+          previous: before.board_base,
+        })
+      : undefined;
     const rest: ManualEdits = { ...next };
     delete rest.board_base;
     return serializeManualEdits({ ...rest, ...(base ? { board_base: base } : {}) });
   });
-  return { edits: parseManualEdits(content), written };
+  return { edits: parseManualEdits(content), written, ...(avviso ? { avviso } : {}) };
 }
 
 /** what one release may name: the editor's own limit */
@@ -75,7 +97,7 @@ export async function rilasciaPezzi(
   cache: CompileCache | null,
   names: string[],
   scope: "schematic" | "pcb" | "traces" | "all",
-): Promise<{ edits: ManualEdits; written: boolean }> {
+): Promise<{ edits: ManualEdits; written: boolean; avviso?: string }> {
   const soli = names.filter((n) => typeof n === "string" && n.length > 0 && n.length <= 120).slice(0, MAX_NOMI_RILASCIO);
   if (soli.length === 0) throw new Error("servono i nomi dei pezzi da liberare");
   return commitManualEdits(projectId, cache, (current) => {

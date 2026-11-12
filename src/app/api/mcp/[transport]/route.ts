@@ -2,7 +2,7 @@ import { boardBaseOf } from "@/lib/board-base";
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 import { COMPILE_START, logActivity, recordTool } from "@/lib/activity-store";
-import { executeTool, LibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
+import { executeTool, LibreriaNonLetta, motivoSenzaSegreti, withLibrary } from "@/lib/agent-tools";
 import { resolveApiToken } from "@/lib/api-tokens";
 import { compileProject } from "@/lib/compile";
 import { compileBudgetMs, rigaDiFine } from "@/lib/compile-run";
@@ -26,7 +26,7 @@ import {
   SCHEMATIC_RULES,
   TSCIRCUIT_BASICS,
 } from "@/lib/system-prompt";
-import { motivoErrore } from "@/lib/error-cause";
+import { classeErrore, motivoErrore } from "@/lib/error-cause";
 import { inspectSavedBoard } from "@/lib/saved-board";
 import { earlyBoardSaver, saveFinishedCompile } from "@/lib/compile-save";
 import { withSseKeepalive } from "@/lib/sse-keepalive";
@@ -499,7 +499,15 @@ function buildHandler(viewer: Viewer) {
           return deniedEdit();
         }
         const cache = await getCompileCache(projectId).catch(() => null);
-        const { edits, written } = await rilasciaPezzi(projectId, cache, names, scope ?? "pcb");
+        let esito: Awaited<ReturnType<typeof rilasciaPezzi>>;
+        try {
+          esito = await rilasciaPezzi(projectId, cache, names, scope ?? "pcb");
+        } catch (err) {
+          // a clear answer, not an exception out of the tool; the driver's own words stay in the log
+          console.error(`[mcp release_manual_edits ${projectId}] ${motivoSenzaSegreti(err)}`);
+          return fail(`posizioni a mano NON liberate (${classeErrore(err)}): riprova tra poco; se continua, liberale dalla pagina`);
+        }
+        const { edits, written, avviso } = esito;
         return text({
           ok: true,
           written,
@@ -507,6 +515,7 @@ function buildHandler(viewer: Viewer) {
             pcb: edits.pcb_placements.map((p) => p.selector),
             schematic: edits.schematic_placements.map((p) => p.selector),
           },
+          ...(avviso ? { avviso } : {}),
         });
       },
     );
