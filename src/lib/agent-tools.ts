@@ -35,9 +35,9 @@ import type { AgentKeyMap } from "./llm-keys";
 import { conRiprova } from "./db-retry";
 import { classeErrore, motivoErrore } from "./error-cause";
 import { DESCRIZIONE_CUCITURA, eseguiCucitura, PARAMETRI_CUCITURA, statoDellaScheda, type StatoScheda } from "./ground-stitching-tool";
+import { MAX_FILE_CHARS } from "./project-file-limits";
 
 const FILE_PATH_RE = /^[\w-]+(\/[\w-]+)*\.tsx$/;
-const MAX_FILE_CHARS = 200_000;
 /** a datasheet read without `search` returns at most this much text */
 const DATASHEET_CHARS = 25_000;
 

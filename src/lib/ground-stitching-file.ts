@@ -7,6 +7,17 @@
  * not decide them. A new run replaces the whole file (the same board and
  * options give the same file, byte for byte: no date in it).
  *
+ * THE VIAS ARE LITERAL TAGS, one `<via ... />` per line, not a list of points
+ * run through `.map`. The compile reads the sources with a JSX scanner and the
+ * key of the schematic (soloCioCheLeggeLoSchematico, compile.ts) takes out the
+ * `<via>` tags written out, whole: a file with a hundred vias more reads the
+ * same to the schematic, which is then reused instead of drawn again (minutes
+ * on a big board). A list of coordinates in an expression is not a tag: it
+ * would stay in the key and every new stitching would draw the schematic again.
+ * The price is the length: about 150 characters a via, so the file is measured
+ * against the limit of a project file before it is written (fileDellaCucitura)
+ * and the cap of vias is chosen to stay under it (MAX_VIE_DI_SERIE).
+ *
  * main.tsx is NEVER touched: many projects generate it from a script
  * (sbb-dl-principale: genera_tsx.py, "non modificare a mano"), and a line added
  * there would be lost at the next generation or would break it. When main.tsx
@@ -28,6 +39,7 @@
  */
 
 import type { EsitoCucitura, Punto } from "./ground-stitching";
+import { MAX_FILE_CHARS } from "./project-file-limits";
 import { stratiDiRame } from "./via-layers";
 
 type El = { type: string; [key: string]: unknown };
@@ -70,6 +82,13 @@ export function fileDellaCucitura(esito: EsitoCucitura): { contenuto: string } |
     ")",
     "",
   ].join("\n");
+  if (contenuto.length > MAX_FILE_CHARS) {
+    return {
+      errore:
+        `${esito.vie.length} vie fanno un file di ${contenuto.length} caratteri, oltre i ${MAX_FILE_CHARS} che un file del progetto puo' avere ` +
+        "(non si potrebbe piu' leggere per intero ne' riscrivere): abbassa maxVie o allarga il passo",
+    };
+  }
   return { contenuto };
 }
 

@@ -1,10 +1,12 @@
 import { convertSoupToGerberCommands, stringifyGerberCommandLayers } from "circuit-json-to-gerber";
 import { describe, expect, it } from "vitest";
+import { soloCioCheLeggeLoSchematico } from "@/lib/compile";
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "@/lib/design-rules";
 import { distanzaPuntoForma, pointSegDistance, rameDelPad, runDrcChecks } from "@/lib/drc";
-import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, sceltaDellaRete, senzaLeVieAi, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
+import { cuciLaMassa, frequenzaCoperta, leggiOpzioniCucitura, MAX_VIE_DI_SERIE, MAX_VIE_LIMITE, sceltaDellaRete, senzaLeVieAi, type EsitoCucitura, type OpzioniCucitura } from "@/lib/ground-stitching";
 import { chiLaUsa, FILE_CUCITURA, fileDellaCucitura, leggiFileDellaCucitura, mainLaUsa, vieComeElementi, vieDelFile } from "@/lib/ground-stitching-file";
 import { eseguiCucitura, statoDellaScheda } from "@/lib/ground-stitching-tool";
+import { MAX_FILE_CHARS } from "@/lib/project-file-limits";
 import { conflittiDiSerigrafia } from "@/lib/silkscreen-clearance";
 import { viePassantiSuOgniStrato } from "@/lib/via-layers";
 
@@ -530,7 +532,7 @@ describe("i parametri", () => {
     expect("errori" in r).toBe(true);
     const testo = (r as { errori: string[] }).errori.join(" | ");
     expect(testo).toMatch(/passoMm: 0.5 fuori dai limiti 1..10/);
-    expect(testo).toMatch(/maxVie: 5000 fuori dai limiti 1..3000/);
+    expect(testo).toMatch(/maxVie: 5000 fuori dai limiti 1..1200/);
     expect(testo).toMatch(/foroMm: deve essere un numero/);
     expect(testo).toMatch(/boh: campo sconosciuto/);
     expect(testo).not.toMatch(/drop table/);
@@ -764,6 +766,75 @@ describe("il file cucitura-massa.tsx", () => {
       const griglia = (r.result.coordinate as { griglia: Array<[number, number]> }).griglia;
       expect(griglia.length).toBeGreaterThan(5);
       expect(griglia.some(([x, y]) => x === p.x && y === p.y)).toBe(false);
+    });
+  });
+
+  describe("il tetto di vie e la lunghezza del file", () => {
+    /** as many vias as asked, each written as long as a real one gets: four digits in the name, a sign and three decimals in the coordinates, the smallest via of a project */
+    const lunghe = (quante: number, rete = "GND"): EsitoCucitura => ({
+      ...cuci([...scheda(), ...massaPiena()]),
+      rete: { id: "source_net_0", nome: rete },
+      via: { foroMm: 0.15, coronaMm: 0.45 },
+      vie: Array.from({ length: quante }, () => ({ x: -123.456, y: -123.456, tipo: "griglia" as const })),
+    });
+    const lunghezza = (e: EsitoCucitura) => {
+      const f = fileDellaCucitura(e);
+      if ("errore" in f) throw new Error(f.errore);
+      return f.contenuto.length;
+    };
+
+    it("al tetto di serie il file sta sotto il limite di un file di progetto con un quarto di margine, e al massimo che una chiamata puo' chiedere ci sta ancora", () => {
+      expect(MAX_VIE_DI_SERIE).toBe(1000);
+      expect(lunghezza(lunghe(MAX_VIE_DI_SERIE))).toBeLessThan(MAX_FILE_CHARS * 0.8);
+      expect(lunghezza(lunghe(MAX_VIE_LIMITE))).toBeLessThan(MAX_FILE_CHARS * 0.95);
+      // the 1500 of before did not fit: that is why the cap came down
+      expect(fileDellaCucitura(lunghe(1500))).toMatchObject({ errore: expect.stringMatching(/1500 vie fanno un file di \d+ caratteri, oltre i 200000/) });
+      expect(leggiOpzioniCucitura({ maxVie: MAX_VIE_LIMITE })).toMatchObject({ opzioni: { maxVie: MAX_VIE_LIMITE } });
+      expect(leggiOpzioniCucitura({ maxVie: MAX_VIE_LIMITE + 1 })).toMatchObject({ errori: [expect.stringMatching(/maxVie: 1201 fuori dai limiti 1..1200/)] });
+    });
+
+    it("una scheda che ne chiederebbe di piu' si ferma al tetto di serie, e il file scritto e' sotto il limite", async () => {
+      const grande = [...scheda(100, 100), ...massaPiena(["top", "bottom"], 100, 100), viaEsistente(-48, -48, "k_gnd")];
+      let scritto = "";
+      const r = await eseguiCucitura({
+        files: { ...regole, "main.tsx": "export default () => <board />" },
+        args: { apply: true, passoMm: 2 },
+        cache: { circuitJson: grande },
+        scheda: "aggiornata",
+        scrivi: async (_path, content) => void (scritto = content),
+      });
+      expect(r.result).toMatchObject({ ok: true, scritto: true, vie: MAX_VIE_DI_SERIE, tetto: { maxVie: MAX_VIE_DI_SERIE, raggiunto: true } });
+      expect(vieDelFile(scritto)).toHaveLength(MAX_VIE_DI_SERIE);
+      expect(scritto.length).toBe(r.result.chars);
+      expect(scritto.length).toBeLessThan(MAX_FILE_CHARS * 0.8);
+    });
+
+    it("un file che non ci starebbe non si scrive: l'anteprima lo dice, apply rifiuta", async () => {
+      // a net with a long name makes long lines: 1200 vias of it do not fit
+      const nome = `GND_${"A".repeat(56)}`;
+      expect(fileDellaCucitura(lunghe(MAX_VIE_LIMITE, nome))).toMatchObject({ errore: expect.stringMatching(/oltre i 200000 che un file del progetto puo' avere/) });
+      const grande = [
+        { type: "pcb_board", pcb_board_id: "b", width: 100, height: 100, center: { x: 0, y: 0 }, num_layers: 2 },
+        { type: "source_net", source_net_id: "source_net_0", name: nome, subcircuit_connectivity_map_key: "k_gnd", subcircuit_id: "s" },
+        ...massaPiena(["top", "bottom"], 100, 100),
+        viaEsistente(-48, -48, "k_gnd"),
+      ];
+      const files = { ...regole, "main.tsx": "export default () => <board />" };
+      const guarda = await eseguiCucitura({ files, args: { passoMm: 2, maxVie: MAX_VIE_LIMITE }, cache: { circuitJson: grande }, scheda: "aggiornata", scrivi });
+      expect(guarda.result).toMatchObject({ ok: true, vie: MAX_VIE_LIMITE, scrivibile: false });
+      expect((guarda.result.nonScrivibile as string[]).join(" ")).toMatch(/abbassa maxVie o allarga il passo/);
+      const scrive = await eseguiCucitura({ files, args: { apply: true, passoMm: 2, maxVie: MAX_VIE_LIMITE }, cache: { circuitJson: grande }, scheda: "aggiornata", scrivi: async () => { throw new Error("non deve scrivere"); } });
+      expect(scrive.result.error).toMatch(/oltre i 200000/);
+    });
+
+    it("le vie sono tag scritti per esteso: la chiave dello schematico le toglie tutte, un elenco passato a .map resterebbe nella chiave", () => {
+      const f = fileDellaCucitura(cuci([...scheda(), ...massaPiena(), viaEsistente(-6, -6, "k_gnd")], { passoMm: 2 }));
+      if ("errore" in f) throw new Error(f.errore);
+      expect(f.contenuto).toMatch(/pcbX=\{/);
+      const perLoSchematico = soloCioCheLeggeLoSchematico(f.contenuto);
+      expect(perLoSchematico).not.toMatch(/<via|pcbX|pcbY/);
+      const conMap = 'export const CucituraMassa = () => (\n  <>\n    {[[1.25, 2.5], [3.75, 2.5]].map(([x, y], i) => (\n      <via name={`VCM${i + 1}`} pcbX={x} pcbY={y} connectsTo="net.GND" />\n    ))}\n  </>\n)\n';
+      expect(soloCioCheLeggeLoSchematico(conMap)).toMatch(/3\.75/);
     });
   });
 

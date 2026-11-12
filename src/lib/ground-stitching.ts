@@ -112,9 +112,18 @@ export const CORONA_MIN_MM = 0.2;
 export const CORONA_MAX_MM = 2;
 /** at least five hundredths of copper around the hole per side, as clampRules asks of the project's vias */
 const ANELLO_MINIMO_MM = 0.1;
-export const MAX_VIE_DI_SERIE = 1500;
-/** a cap above which the file is no longer something a person reviews: 3000 lines of vias */
-export const MAX_VIE_LIMITE = 3000;
+/**
+ * THE CAP, and the most a call may ask. The vias are written one per line, as
+ * literal `<via>` tags (see ground-stitching-file.ts for why not a loop over a
+ * list), about 150 characters each, and a project file holds at most
+ * MAX_FILE_CHARS (200 000): 1500 vias made a file of 216 607 characters, past
+ * what write_file accepts and what a read returns. So the default cap is 1000
+ * (about 150 000 characters, a quarter of the room left) and no call may ask
+ * for more than 1200 (about 185 000). The file is measured before it is written
+ * all the same: a longer net name makes longer lines.
+ */
+export const MAX_VIE_DI_SERIE = 1000;
+export const MAX_VIE_LIMITE = 1200;
 export const MAX_ZONE = 50;
 export const MAX_PUNTI_ZONA = 200;
 export const MAX_RETI_LONTANE = 20;

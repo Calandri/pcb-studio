@@ -157,7 +157,7 @@ describe("stitch_ground over MCP", () => {
     expect(r.isError).toBe(true);
     const e = String(r.result.error);
     expect(e).toMatch(/passoMm: 0.2 fuori dai limiti 1..10/);
-    expect(e).toMatch(/maxVie: 99999 fuori dai limiti 1..3000/);
+    expect(e).toMatch(/maxVie: 99999 fuori dai limiti 1..1200/);
     expect(e).toMatch(/retiLontane\[0\]/);
     expect(e).not.toMatch(/script/);
     expect(stato.files[FILE_CUCITURA]).toBeUndefined();
