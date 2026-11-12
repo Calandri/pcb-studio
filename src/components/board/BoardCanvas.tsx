@@ -1692,6 +1692,11 @@ export function BoardCanvas({
             />
           )}
 
+          {/* the copper that can never move: under the handles, so a press on a part stays the part's (see BersagliDelRame) */}
+          {rame.bersagli.length > 0 && (
+            <BersagliDelRame bersagli={rame.bersagli} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
+          )}
+
           {/* invisible rectangles over the components: they provide the hover,
               and in move mode they are the handle to drag them */}
           {scene.components.filter((c) => !nascosti.has(c.id)).map((c) => {
@@ -1801,7 +1806,7 @@ export function BoardCanvas({
             );
           })}
 
-          {/* what can be grabbed of the copper: over the handles of the parts, see BersagliDelRame */}
+          {/* the copper that can move: over the handles of the parts, see BersagliDelRame */}
           {rame.bersagli.length > 0 && (
             <BersagliDelRame bersagli={rame.bersagli} scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
           )}

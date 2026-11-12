@@ -97,8 +97,27 @@ describe("Sposta: cosa si puo' prendere del rame", () => {
     expect(maniglie(sposta({ layer: "top", bothSides: true }))).toHaveLength(2);
     // the same count with no copper to grab at all
     expect(maniglie(sposta({ layer: "top", regole: undefined }))).toHaveLength(1);
-    // the targets come after the handles: copper under a part is grabbed, the part anywhere else on its footprint
-    expect(svg.indexOf("data-bersagli-del-rame")).toBeGreaterThan(svg.lastIndexOf(maniglie(svg)[0] ?? "nessuna maniglia"));
+    // the targets of the copper that can move come after the handles: copper under a part is grabbed, the part anywhere else on its footprint
+    expect(svg.indexOf('data-bersagli-del-rame="mobili"')).toBeGreaterThan(svg.lastIndexOf(maniglie(svg)[0] ?? "nessuna maniglia"));
+  });
+
+  it("il rame che non si muovera' mai ha il bersaglio SOTTO le maniglie dei pezzi: premere su un pezzo prende il pezzo, come sempre", () => {
+    // the stretch of the top leaves a pad: the solver says so before anyone touches it
+    gesto.preseDelRame.mockReturnValue(BERSAGLI.map((b) => (b.tipo === "tratto" && b.pcbTraceId === "tr_top" ? { ...b, fermo: "bloccato: il tratto esce da C1.1 e scivolerebbe di lato" } : b)));
+    const svg = sposta({ layer: "top" });
+    const maniglia = maniglie(svg)[0] ?? "nessuna maniglia";
+    const fermi = svg.indexOf('data-bersagli-del-rame="fermi"');
+    const mobili = svg.indexOf('data-bersagli-del-rame="mobili"');
+    // the order of the drawing is the order of who takes the press: still copper, then the parts, then the copper that moves
+    expect(fermi).toBeGreaterThan(-1);
+    expect(fermi).toBeLessThan(svg.indexOf(maniglia));
+    expect(mobili).toBeGreaterThan(svg.lastIndexOf(maniglia));
+    // the stretch that cannot move is in the first go only, everything else in the second only
+    const gruppo = (da: number, a: number) => (svg.slice(da, a).match(/data-presa="([^"]+)"/g) ?? []).map((x) => x.slice(12, -1)).sort();
+    expect(gruppo(fermi, svg.indexOf(maniglia))).toEqual(["tratto:tr_top:0"]);
+    expect(gruppo(mobili, svg.length)).toEqual(["via:via_a", "via:via_b"]);
+    // and it can still be pressed, away from the parts: that is where its sentence is said
+    expect(bersagli(svg)).toEqual(["tratto:tr_top:0", "via:via_a", "via:via_b"]);
   });
 });
 

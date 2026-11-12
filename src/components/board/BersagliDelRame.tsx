@@ -13,11 +13,17 @@ import { stratoDiRame, stratoVisibile, type StratoScelto } from "./strati-visibi
  * layer.
  *
  * Circles and lines, never rectangles: the transparent rectangles of the
- * canvas are the handles of the parts. Drawn after them, so copper under a
- * part can be grabbed (the vias under a chip), and the part is grabbed
- * anywhere else on its footprint. A target is the copper itself, with a
- * minimum of a few pixels so that a thin trace can be hit: no more, or from
- * far away the targets would cover the parts.
+ * canvas are the handles of the parts. Drawn in TWO goes around them:
+ *   - the copper that can move (`fermi` false) after the handles, so copper
+ *     under a part can be grabbed (the vias under a chip), and the part is
+ *     grabbed anywhere else on its footprint;
+ *   - the copper that can never start a gesture (a stretch that leaves a pad,
+ *     one that ends on a via: BersaglioDelRame.fermo) BEFORE the handles: a
+ *     press on a part is the part's, as it always was, and only away from the
+ *     parts does such copper take the press, to say why it does not move.
+ * A target is the copper itself, with a minimum of a few pixels so that a thin
+ * trace can be hit: no more, or from far away the targets would cover the
+ * parts.
  *
  * Memoized: the canvas is drawn again at every hover and at every frame of a
  * dragged part, and hundreds of targets have nothing to do with that.
@@ -27,18 +33,22 @@ import { stratoDiRame, stratoVisibile, type StratoScelto } from "./strati-visibi
 const PRESA_MINIMA_PX = 5;
 
 export const BersagliDelRame = memo(function BersagliDelRame({
-  bersagli,
+  bersagli: tutti,
+  fermi = false,
   scelto,
   xray,
   mmPerPx,
   onPrendi,
 }: {
   bersagli: readonly BersaglioDelRame[];
+  /** which go of the two: the copper that can never move (under the handles of the parts), or the copper that can */
+  fermi?: boolean;
   scelto: StratoScelto;
   xray: number;
   mmPerPx: number;
   onPrendi: (bersaglio: BersaglioDelRame, e: PuntatoreGiu) => void;
 }) {
+  const bersagli = tutti.filter((b) => (b.fermo !== undefined) === fermi);
   const minimo = mmPerPx * PRESA_MINIMA_PX;
   const tratto = (b: Extract<BersaglioDelRame, { tipo: "tratto" }>) => (
     <line
@@ -63,7 +73,7 @@ export const BersagliDelRame = memo(function BersagliDelRame({
     return l !== undefined && stratoVisibile(l, scelto, xray);
   });
   return (
-    <g data-bersagli-del-rame="">
+    <g data-bersagli-del-rame={fermi ? "fermi" : "mobili"}>
       {/* the stretches of the chosen layer over the ones that show through, and the vias over every stretch */}
       {tratti.filter((b) => b.layer !== scelto).map(tratto)}
       {tratti.filter((b) => b.layer === scelto).map(tratto)}
