@@ -80,18 +80,13 @@ describe("il pannello: il contatore e' un interruttore, sotto c'e' l'elenco", ()
     expect(facceDelTratto({ da: { strato: null }, a: { strato: "bottom" } } as never)).toBe("passante → Bottom");
   });
 
-  it("dice perche' il controllo ne conta di meno: le reti con una colata", () => {
+  it("il controllo conta le stesse reti: se quello salvato ne dice un altro numero, va ricontrollato", () => {
     const tratti = apertiDellaScheda(DUE_RETI).collegamenti;
-    // il controllo conta le reti: due reti aperte, tre tratti. Niente da spiegare
+    // due reti aperte, tre tratti: il controllo ne conta due. Niente da dire
     expect(riassuntoAperti(tratti, 2)).toEqual(["3 in 2 reti"]);
-    // GND con una colata: il controllo la da' per unita e ne conta una sola
-    const conColata = tratti.map((c) => (c.nome === "GND" ? { ...c, conColata: true } : c));
-    expect(riassuntoAperti(conColata, 1)).toEqual([
-      "3 in 2 reti",
-      "1 rete ha una colata: il controllo la dà per unita, qui si misura il rame",
-    ]);
-    // un riepilogo che non torna con la scheda: si dice il suo numero, senza inventare il perche'
-    expect(riassuntoAperti(tratti, 5)).toEqual(["3 in 2 reti", "Il controllo conta 5 reti aperte"]);
+    // un controllo salvato prima che le colate si misurassero, o di un'altra scheda
+    expect(riassuntoAperti(tratti, 1)).toEqual(["3 in 2 reti", "Il controllo salvato conta 1 rete aperta: ricontrolla la scheda"]);
+    expect(riassuntoAperti(tratti, 5)).toEqual(["3 in 2 reti", "Il controllo salvato conta 5 reti aperte: ricontrolla la scheda"]);
     expect(riassuntoAperti(tratti.slice(0, 1), 1)).toEqual(["1"]);
   });
 });

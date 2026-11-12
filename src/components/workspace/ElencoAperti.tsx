@@ -12,8 +12,6 @@ export interface VoceDiRete {
   /** the net's name, or its two pins when it has none */
   titolo: string;
   tratti: CollegamentoAperto[];
-  /** the net has poured copper: the check takes it as joined, see CollegamentoAperto.conColata */
-  conColata: boolean;
 }
 
 /**
@@ -31,7 +29,6 @@ export function vociPerRete(collegamenti: CollegamentoAperto[]): VoceDiRete[] {
         rete: c.rete,
         titolo: c.nome || `${c.da.piedino} > ${c.a.piedino}`,
         tratti: [c],
-        conColata: c.conColata,
       });
     }
   }
@@ -48,25 +45,17 @@ export function facceDelTratto(c: Pick<CollegamentoAperto, "da" | "a">): string 
 
 /**
  * What the panel says about them. The first line is how many, in how many
- * nets ("87 in 5 reti"), under the words "Collegamenti aperti"; the others,
- * when there is something to say, why the check counts fewer: it counts nets,
- * and takes a net with a pour as joined.
+ * nets ("87 in 5 reti"), under the words "Collegamenti aperti". The check
+ * counts the same nets from the same segments (route-score.ts): when its saved
+ * number is another, the saved check is not of this board or was made before
+ * the pours were measured, and a second line says so.
  */
 export function riassuntoAperti(collegamenti: CollegamentoAperto[], dichiarati: number): string[] {
   const voci = vociPerRete(collegamenti);
   const n = collegamenti.length;
   const righe = [n === 1 ? "1" : `${n} in ${voci.length} ${voci.length === 1 ? "rete" : "reti"}`];
-  const conColata = voci.filter((v) => v.conColata).length;
-  if (conColata > 0) {
-    righe.push(
-      conColata === 1
-        ? "1 rete ha una colata: il controllo la dà per unita, qui si misura il rame"
-        : `${conColata} reti hanno una colata: il controllo le dà per unite, qui si misura il rame`,
-    );
-  }
-  // the check counts nets, and only the ones with no plane
-  if (dichiarati !== voci.length - conColata) {
-    righe.push(`Il controllo conta ${dichiarati} ${dichiarati === 1 ? "rete aperta" : "reti aperte"}`);
+  if (dichiarati !== voci.length) {
+    righe.push(`Il controllo salvato conta ${dichiarati} ${dichiarati === 1 ? "rete aperta" : "reti aperte"}: ricontrolla la scheda`);
   }
   return righe;
 }

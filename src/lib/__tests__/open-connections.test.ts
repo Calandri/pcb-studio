@@ -36,7 +36,6 @@ describe("i collegamenti aperti veri", () => {
       da: { piedino: "R3.1", x: 12, y: 0, strato: "top", componente: "pc_R3", porta: "pp_R3_1" },
       a: { piedino: "R2.1", x: 5, y: 0, strato: "top" },
       lunghezzaMm: 7,
-      conColata: false,
     });
   });
 
@@ -73,9 +72,9 @@ describe("i collegamenti aperti veri", () => {
     // la colata prende C1 e C2; C3 resta fuori
     const conColata = collegamentiAperti([...base, colata("gnd", 1, "top", -2, -2, 10, 2)]).collegamenti;
     expect(conColata).toHaveLength(1);
-    expect(conColata[0]).toMatchObject({ da: { piedino: "C3.2" }, conColata: true });
-    // il conteggio del compile da' la rete per unita dal piano, senza guardare
-    expect(unroutedGroups([...base, colata("gnd", 1, "top", -2, -2, 10, 2)]).size).toBe(0);
+    expect(conColata[0]).toMatchObject({ da: { piedino: "C3.2" } });
+    // e il conteggio del compile e' lo stesso: una rete aperta, con quel tratto
+    expect(unroutedGroups([...base, colata("gnd", 1, "top", -2, -2, 10, 2)]).get("chiave_1")?.tratti).toEqual(conColata);
   });
 
   it("unione attraverso un foro passante su due facce", () => {
@@ -147,9 +146,11 @@ describe("il caso del dongle", () => {
     expect(rame.diPorta("pp_J1_A9")).toBe(rame.diPorta("pp_J1_B4"));
   });
 
-  it("il riepilogo del compile indica invece l'altro gruppo: i due gruppi sono pari e vince il primo nominato", () => {
-    // le porte fuori dall'isola piu' grande: a pari piedini la piu' grande e' quella di J1.A9, nominata per prima
-    expect(unroutedGroups(dongle).get("chiave_7")).toEqual(["pp_J1_B9", "pp_FB1_1"]);
+  it("il riepilogo del compile dice lo stesso tratto, col nome del piedino rimasto fuori", () => {
+    // prima dava le porte fuori dall'isola piu' grande: a pari piedini, J1.B9 e FB1.1
+    const gruppo = unroutedGroups(dongle).get("chiave_7")!;
+    expect(gruppo.tratti).toEqual(collegamentiAperti(dongle).collegamenti);
+    expect([".J1 > .A9 to net.VBUS", ".J1 > .B4 to net.VBUS"]).toContain(gruppo.nome);
   });
 });
 

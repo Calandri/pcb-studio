@@ -10,8 +10,8 @@
  */
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
 import { runDrcChecks } from "./drc";
-import { isoleDiRame } from "./gruppi-di-rame";
-import { planeServedSourcePorts, readPours } from "./pours";
+import { gruppiDiRame } from "./gruppi-di-rame";
+import { collegamentiApertiDelRame, type CollegamentoAperto } from "./open-connections";
 
 export interface CircuitElement {
   type: string;
@@ -134,43 +134,73 @@ function totalWireLengthMm(circuitJson: CircuitElement[]): number {
  * its traces existed. On a five-pad net with a single leg drawn the board said
  * "zero open connections" and the checklist went green, with four pads hanging
  * in the air. Now every pad of the group must sit on the same island of copper
- * — traces, vias, the pads themselves — or the group is open.
+ * or the group is open.
  *
- * Nets with a poured plane keep the plane rule: their pads are connected by
- * the copper they sit in, which this function does not model (pour pieces,
- * thermals, the holes around other nets). Whether each of their pads really
- * reaches the plane is the DRC's `plane_stitch_missing`, which measures it.
+ * ONE SOURCE: the open connections of open-connections.ts, the ones the viewer
+ * draws. The count used to have islands of its own, of traces, vias and pads
+ * only, and took a net with a poured plane as joined by the plane without
+ * looking. On sbb-dl-principale (12/11/2026) a pad 0.70 mm away from the pour
+ * of its net and a ground pad in a piece of pour cut off from the rest were
+ * both "connected": the summary said 1 open where there were 3. Now a pour
+ * joins what its copper touches, like any other copper, and a group is open
+ * when one of those missing stretches runs between two of its pads.
  */
 export function computeUnroutedGroupKeys(circuitJson: CircuitElement[]): Set<string> {
   return new Set(unroutedGroups(circuitJson).keys());
 }
 
+/** one open group, as the summary of the compile tells it */
+export interface GruppoAperto {
+  /**
+   * The declared connection that is not made, by the name the compile lists it
+   * with: the source trace of the pin the first missing stretch leaves out
+   * (".R16 > .2 to net.P3V3_SD"). It used to be the first trace the group
+   * declares, whichever pin that named, joined or not.
+   */
+  nome: string;
+  /**
+   * The stretches still missing between the pads of the group, each with its
+   * two ends: N islands, N - 1 stretches, the same ones the viewer draws.
+   */
+  tratti: CollegamentoAperto[];
+}
+
+/** a source trace by the name the compile lists the declared connections with (compile.ts, traceLabel) */
+const nomeDellaTraccia = (el: CircuitElement) => String(el.display_name ?? el.source_trace_id ?? "trace");
+
 /**
- * The same verdict with its evidence: for every open group, the pcb ports that
- * are NOT on the group's largest island — the pads still waiting for copper.
+ * The same verdict with its evidence: for every open group, the stretches of
+ * copper it still misses.
+ *
+ * A group is the pins the source traces of one connectivity key name (with no
+ * key, the pins of one trace). The missing stretches of a net are a tree over
+ * its islands of copper; the ones of a group are the part of that tree that
+ * runs between the islands its own pins are on. With a key the group is the
+ * whole net and has all of them.
  */
-export function unroutedGroups(circuitJson: CircuitElement[]): Map<string, string[]> {
-  const out = new Map<string, string[]>();
+export function unroutedGroups(circuitJson: CircuitElement[]): Map<string, GruppoAperto> {
+  const out = new Map<string, GruppoAperto>();
   const sourceTraceEls = circuitJson.filter((el) => el.type === "source_trace");
   if (sourceTraceEls.length === 0) return out;
-  const groupKey = (el: CircuitElement) =>
-    String(el.subcircuit_connectivity_map_key ?? el.source_trace_id ?? "");
+  const rame = gruppiDiRame(circuitJson);
+  const { collegamenti } = collegamentiApertiDelRame(circuitJson, rame);
+  if (collegamenti.length === 0) return out;
 
-  /*
-   * A connection whose ends are ALL on a poured net is routed by the plane:
-   * there is no trace and there must not be one. Without this, removing the
-   * ground wires — which is the point of having a plane — made the board report
-   * open connections that were not open, and "close the missing ones" would put
-   * the wires straight back.
-   */
-  const pours = readPours(circuitJson);
-  const servedByPlane = pours.length > 0 ? planeServedSourcePorts(circuitJson, pours) : new Map();
-  const planeGroups = new Set<string>();
-  if (servedByPlane.size > 0) {
-    for (const el of sourceTraceEls) {
-      const ports = ((el.connected_source_port_ids as unknown[] | undefined) ?? []).map(String);
-      if (ports.length === 0) continue;
-      if (ports.every((p) => servedByPlane.has(p))) planeGroups.add(groupKey(el));
+  /** net by net, the tree its missing stretches make over its islands */
+  type Ramo = { verso: number; tratto: CollegamentoAperto };
+  const alberi = new Map<string, Map<number, Ramo[]>>();
+  for (const tratto of collegamenti) {
+    let albero = alberi.get(tratto.rete);
+    if (!albero) alberi.set(tratto.rete, (albero = new Map()));
+    const a = rame.diPorta(tratto.da.porta);
+    const b = rame.diPorta(tratto.a.porta);
+    for (const [da, verso] of [
+      [a, b],
+      [b, a],
+    ]) {
+      const rami = albero.get(da);
+      if (rami) rami.push({ verso, tratto });
+      else albero.set(da, [{ verso, tratto }]);
     }
   }
 
@@ -181,52 +211,51 @@ export function unroutedGroups(circuitJson: CircuitElement[]): Map<string, strin
     list.push(String(el.pcb_port_id));
     pcbPortsOfSource.set(String(el.source_port_id), list);
   }
-  const portsOfGroup = new Map<string, Set<string>>();
+  /** group by group, its pins and the declared connection that names each */
+  const gruppi = new Map<string, Map<string, CircuitElement>>();
   for (const el of sourceTraceEls) {
-    const key = groupKey(el);
-    if (!key || planeGroups.has(key)) continue;
-    const set = portsOfGroup.get(key) ?? new Set<string>();
+    const key = String(el.subcircuit_connectivity_map_key ?? el.source_trace_id ?? "");
+    if (!key) continue;
+    let porte = gruppi.get(key);
+    if (!porte) gruppi.set(key, (porte = new Map()));
     for (const sp of (el.connected_source_port_ids as unknown[] | undefined) ?? []) {
-      // the first pcb port of a source port is enough: the others are the same pin
-      const pcb = pcbPortsOfSource.get(String(sp))?.[0];
-      if (pcb) set.add(pcb);
+      for (const pcb of pcbPortsOfSource.get(String(sp)) ?? []) if (!porte.has(pcb)) porte.set(pcb, el);
     }
-    portsOfGroup.set(key, set);
   }
-  // a group with fewer than two placed pads has nothing to connect
-  const daControllare = [...portsOfGroup].filter(([, ports]) => ports.size >= 2);
-  if (daControllare.length === 0) return out;
 
-  const isola = copperIslands(circuitJson);
-  for (const [key, ports] of daControllare) {
-    const perIsola = new Map<number, string[]>();
-    for (const p of ports) {
-      const root = isola(p);
-      const list = perIsola.get(root) ?? [];
-      list.push(p);
-      perIsola.set(root, list);
+  for (const [key, porte] of gruppi) {
+    let albero: Map<number, Ramo[]> | undefined;
+    const isole = new Set<number>();
+    for (const porta of porte.keys()) {
+      albero ??= alberi.get(rame.reti.diPorta.get(porta) ?? "");
+      const isola = rame.diPorta(porta);
+      if (albero?.has(isola)) isole.add(isola);
     }
-    if (perIsola.size <= 1) continue;
-    const isole = [...perIsola.values()].sort((a, b) => b.length - a.length);
-    out.set(key, isole.slice(1).flat());
+    // all its pins on one island: whatever else the net misses is not its own
+    if (!albero || isole.size < 2) continue;
+
+    // from one of its islands to the others, along the tree
+    const [radice] = isole;
+    const versoRadice = new Map<number, Ramo | null>([[radice, null]]);
+    const coda = [radice];
+    for (let i = 0; i < coda.length; i++) {
+      for (const ramo of albero.get(coda[i]) ?? []) {
+        if (versoRadice.has(ramo.verso)) continue;
+        versoRadice.set(ramo.verso, { verso: coda[i], tratto: ramo.tratto });
+        coda.push(ramo.verso);
+      }
+    }
+    const suoi = new Set<CollegamentoAperto>();
+    for (const isola of isole) {
+      for (let ramo = versoRadice.get(isola); ramo && !suoi.has(ramo.tratto); ramo = versoRadice.get(ramo.verso)) {
+        suoi.add(ramo.tratto);
+      }
+    }
+    const tratti = collegamenti.filter((c) => suoi.has(c));
+    if (tratti.length === 0) continue;
+    const dichiarata =
+      porte.get(tratti[0].da.porta) ?? porte.get(tratti[0].a.porta) ?? porte.values().next().value;
+    out.set(key, { nome: dichiarata ? nomeDellaTraccia(dichiarata) : key, tratti });
   }
   return out;
-}
-
-/**
- * Which island of copper each pcb port sits on.
- *
- * The islands are built from what the Gerber will draw: every trace is one
- * piece of copper (its route is continuous, via points included); a trace
- * touches a pad when one of its segments reaches the pad's copper on the same
- * layer; two traces touch when the end of one lands on the other (that is how
- * a router's T-junctions are written); a via touches what reaches its ring.
- * Pads of the same port, and ports the part connects internally, are one node.
- *
- * The geometry lives in gruppi-di-rame.ts, shared with whoever needs the same
- * islands with their traces and vias (the viewer's open connections): here it
- * is asked for the islands of the count, with no poured copper.
- */
-export function copperIslands(circuitJson: CircuitElement[]): (pcbPortId: string) => number {
-  return isoleDiRame(circuitJson);
 }

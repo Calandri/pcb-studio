@@ -57,8 +57,9 @@ describe("unrouted is judged pad by pad", () => {
     const circuit = [...threePadNet, trace("t1", [wire(0, 0), wire(5, 0)])];
     // the old per-group verdict said routed: one of its traces existed
     expect(computeUnroutedGroupKeys(circuit).has("N")).toBe(true);
-    // and the pad waiting for copper is the one named
-    expect(unroutedGroups(circuit).get("N")).toEqual(["pp_c"]);
+    // and the stretch still missing is the one named: from the pad left out to the nearest joined one
+    const [tratto] = unroutedGroups(circuit).get("N")!.tratti;
+    expect([tratto.da.porta, tratto.a.porta]).toEqual(["pp_c", "pp_b"]);
   });
 
   it("a T-junction landing on another trace closes it", () => {
@@ -112,7 +113,7 @@ describe("unrouted is judged pad by pad", () => {
     expect(computeUnroutedGroupKeys(circuit).size).toBe(0);
   });
 
-  it("a net with a poured plane keeps the plane rule", () => {
+  it("a net with a poured plane is joined only where its copper touches", () => {
     const circuit = [
       ...threePadNet.map((el) =>
         el.type === "source_trace" ? { ...el, connected_source_net_ids: ["source_net_0"] } : el,
@@ -135,7 +136,12 @@ describe("unrouted is judged pad by pad", () => {
         },
       },
     ];
-    expect(computeUnroutedGroupKeys(circuit).size).toBe(0);
+    // the pads are on the top, the plane on the bottom and no via goes down: the plane joins nothing.
+    // It used to count as routed by rule, without looking (the plane rule)
+    expect(computeUnroutedGroupKeys(circuit)).toEqual(new Set(["N"]));
+    // the same plane on the face of the pads takes all three
+    const sulTop = circuit.map((el) => (el.type === "pcb_copper_pour" ? { ...el, layer: "top" } : el));
+    expect(computeUnroutedGroupKeys(sulTop).size).toBe(0);
   });
 
   it("a single-pad net has nothing to connect", () => {

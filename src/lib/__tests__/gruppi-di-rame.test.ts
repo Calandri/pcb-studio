@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gruppiDiRame, isoleDiRame, retiDelCircuito } from "@/lib/gruppi-di-rame";
+import { gruppiDiRame, retiDelCircuito } from "@/lib/gruppi-di-rame";
 import { colata, rete, scheda, trace, wire, type El } from "./scheda-di-prova";
 
 const board = scheda();
@@ -247,42 +247,5 @@ describe("i gruppi di rame", () => {
     const rame = gruppiDiRame(circuito);
     const g = rame.gruppi[rame.diPorta("pp_c")];
     expect(g.reti.map((r) => rame.reti.nome(r))).toEqual(["SDA", "SCL"]);
-  });
-});
-
-describe("le isole come le conta il compile", () => {
-  it("non guardano le colate: due piazzole nella stessa colata restano due isole", () => {
-    const circuito: El[] = [
-      board,
-      ...pin("a", 0, 0),
-      ...pin("b", 8, 0),
-      ...rete(1, "GND", ["a", "b"]),
-      colata("gnd_top", 1, "top", -2, -2, 10, 2),
-    ];
-    const isola = isoleDiRame(circuito);
-    expect(isola("pp_a")).not.toBe(isola("pp_b"));
-    expect(gruppiDiRame(circuito).diPorta("pp_a")).toBe(gruppiDiRame(circuito).diPorta("pp_b"));
-  });
-
-  it("e non uniscono due piazzole sovrapposte", () => {
-    const circuito: El[] = [board, ...pin("a", 0, 0), ...pin("b", 0.4, 0), ...rete(1, "TP", ["a", "b"])];
-    const isola = isoleDiRame(circuito);
-    expect(isola("pp_a")).not.toBe(isola("pp_b"));
-  });
-
-  it("piste, vie e piazzole si': la stessa isola del conteggio", () => {
-    const circuito: El[] = [
-      board,
-      ...pin("a", 0, 0),
-      ...pin("b", 6, 0, "bottom"),
-      ...rete(1, "SDA", ["a", "b"]),
-      trace("t1", "st_SDA_0", [wire(0, 0), wire(3, 0)]),
-      trace("t2", "st_SDA_1", [wire(3, 0, "bottom"), wire(6, 0, "bottom")]),
-      via("v", 3, 0),
-    ];
-    const isola = isoleDiRame(circuito);
-    expect(isola("pp_a")).toBe(isola("pp_b"));
-    // una porta che non c'e' e' un'isola a se', ogni volta
-    expect(isola("mai_vista")).not.toBe(isola("mai_vista"));
   });
 });

@@ -3,15 +3,21 @@
  * pins are not all on one piece of copper, the shortest straight lines that
  * would join its islands, each between two pads.
  *
- * It reads the saved board and nothing else. The compile's summary has a count
- * (`unroutedTotal`: how many NETS have something open) and, for the first ten,
- * the pads outside the largest island (`unroutedDetail.points`), which is one
- * side of the gap and not the gap. Here the islands are the copper's
+ * It reads the saved board and nothing else. The islands are the copper's
  * (gruppi-di-rame.ts): traces, vias, plated holes, pours, pads lying on each
  * other. A net in N islands has N - 1 segments, the cheapest tree over them,
  * so two islands are never joined twice.
  *
- * Nothing here routes or places: these are lines on the screen.
+ * ONE SOURCE for whoever says what is open: the viewer draws these segments,
+ * and the summary of the compile counts and lists them (route-score.ts,
+ * unroutedGroups: `unroutedTotal` is how many nets have at least one,
+ * `unroutedDetail.points` the two ends of each). The summary used to count on
+ * its own, a net with a pour as joined without looking, and to give as points
+ * the pads outside the island with the most pins: one side of the gap, not the
+ * gap.
+ *
+ * Nothing here routes or places: these are lines on the screen and numbers in
+ * a report.
  */
 import { gruppiDiRame, type GruppiDiRame } from "./gruppi-di-rame";
 
@@ -48,12 +54,6 @@ export interface CollegamentoAperto {
   da: CapoAperto;
   a: CapoAperto;
   lunghezzaMm: number;
-  /**
-   * The net has poured copper. The compile's count takes such a net as joined
-   * by its plane without looking (route-score.ts, the plane rule), so this
-   * segment is one it does not count.
-   */
-  conColata: boolean;
 }
 
 export interface CollegamentiAperti {
@@ -156,8 +156,6 @@ export function collegamentiApertiDelRame(circuitJson: unknown[], rame: GruppiDi
     }
   }
 
-  const conColata = new Set<string>();
-  for (const g of rame.gruppi) for (const c of g.colate) if (c.rete) conColata.add(c.rete);
   /** how big the island of a pin is: its pins of that net first, then its copper */
   const taglia = (rete: string, porta: string): [number, number] => {
     const g = rame.gruppi[rame.diPorta(porta)];
@@ -181,7 +179,6 @@ export function collegamentiApertiDelRame(circuitJson: unknown[], rame: GruppiDi
         da: gira ? s.a : s.da,
         a: gira ? s.da : s.a,
         lunghezzaMm: Math.sqrt(s.d2),
-        conColata: conColata.has(rete),
       });
     });
   }

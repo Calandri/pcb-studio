@@ -15,11 +15,11 @@
  *   the same layer; two traces touch where the end of one lands on the other;
  *   a via and a plated hole join every layer; a pour joins what stands in it.
  *
- * The islands are the ones the compile counts the open connections with
- * (route-score.ts, unroutedGroups): that code is here now, and it reads it
- * from here with `isoleDiRame`, which joins exactly what it always joined.
- * `gruppiDiRame` joins what that count leaves out as well: the poured copper,
- * two pads lying on each other, a via written inside a route sitting in a pad.
+ * ONE COPPER FOR EVERYBODY. The compile used to count the open connections on
+ * islands of its own, of traces, vias and pads only, and took a net with a
+ * poured plane as joined without looking. Now the viewer's lines and the
+ * summary's count (open-connections.ts, route-score.ts) read the same islands,
+ * these, where a pour joins what its copper touches.
  *
  * Still on their own: `groupOfTrace` in drc.ts, `gruppi` in
  * ground-stitching.ts and the port maps of house-rules.ts name the net of a
@@ -368,12 +368,9 @@ interface Unioni {
  * layer; two traces touch when the end of one lands on the other (that is how
  * a router's T-junctions are written); a via touches what reaches its ring.
  * Pads of the same port, and ports the part connects internally, are one node.
- *
- * `reti` null: only that, which is what the open connections of the compile
- * are counted on. With the nets in hand, the rest of the copper as well (see
- * unisciIlResto).
+ * Then the copper that is not a trace: see unisciIlResto.
  */
-function unioniDelRame(circuitJson: El[], reti: RetiDelCircuito | null): Unioni {
+function unioniDelRame(circuitJson: El[], reti: RetiDelCircuito): Unioni {
   const isole = new Isole();
   const nodoDiPorta = new Map<string, number>();
   const nodoDiSorgente = new Map<string, number>();
@@ -544,39 +541,24 @@ function unioniDelRame(circuitJson: El[], reti: RetiDelCircuito | null): Unioni 
       }
     }
   }
-  // vias sitting on a pad: via-in-pad, or the ring touching it
-  const sulPad = reti ? [...vie, ...viePunto] : vie;
-  let grigliaPad: Griglia<Pad> | null = null;
-  if (sulPad.length > 0 || reti) {
-    grigliaPad = new Griglia<Pad>();
-    for (const pad of pads) {
-      const b = ingombroForma(pad.forma);
-      grigliaPad.aggiungi(b.minX, b.minY, b.maxX, b.maxY, pad);
-    }
-    for (const via of sulPad) {
-      for (const pad of grigliaPad.vicini(via.x - via.r, via.y - via.r, via.x + via.r, via.y + via.r)) {
-        if (isole.radice(pad.nodo) === isole.radice(via.nodo)) continue;
-        if (distanzaPuntoForma(pad.forma, via.x, via.y) <= via.r + CONTATTO_MM) {
-          isole.unisci(pad.nodo, via.nodo);
-        }
+  // vias sitting on a pad: via-in-pad, or the ring touching it. The via points of a route as well
+  const unioni: Unioni = { isole, nodoDiPorta, pads, tracce, tratti, vie: [...vie, ...viePunto], colate: [] };
+  const grigliaPad = new Griglia<Pad>();
+  for (const pad of pads) {
+    const b = ingombroForma(pad.forma);
+    grigliaPad.aggiungi(b.minX, b.minY, b.maxX, b.maxY, pad);
+  }
+  for (const via of unioni.vie) {
+    for (const pad of grigliaPad.vicini(via.x - via.r, via.y - via.r, via.x + via.r, via.y + via.r)) {
+      if (isole.radice(pad.nodo) === isole.radice(via.nodo)) continue;
+      if (distanzaPuntoForma(pad.forma, via.x, via.y) <= via.r + CONTATTO_MM) {
+        isole.unisci(pad.nodo, via.nodo);
       }
     }
   }
 
-  const unioni: Unioni = { isole, nodoDiPorta, pads, tracce, tratti, vie: [...vie, ...viePunto], colate: [] };
-  if (reti && grigliaPad) unisciIlResto(circuitJson, reti, unioni, grigliaPad);
+  unisciIlResto(circuitJson, reti, unioni, grigliaPad);
   return unioni;
-}
-
-/**
- * The islands of copper AS THE COMPILE COUNTS THEM (route-score.ts): traces,
- * vias, pads, the pins a part joins inside itself. No poured copper: a net
- * with a plane is judged there by the plane rule. A port with no copper at
- * all is an island of its own.
- */
-export function isoleDiRame(circuitJson: unknown[]): (pcbPortId: string) => number {
-  const { isole, nodoDiPorta } = unioniDelRame(circuitJson as El[], null);
-  return (pcbPortId: string) => isole.radice(nodoDiPorta.get(pcbPortId) ?? isole.nuovo());
 }
 
 /** the corners of a rectangle of copper, turned as it is */
@@ -719,7 +701,7 @@ class Lati {
 }
 
 /**
- * THE COPPER THE COUNT OF THE COMPILE LEAVES OUT.
+ * THE COPPER THAT IS NOT A TRACE OR A VIA.
  *
  * - Two pads lying on each other on one layer are one piece of copper.
  * - A pour joins what stands in it or reaches its edge, on its layer: the pads
@@ -1013,7 +995,7 @@ export function gruppiDiRame(circuitJson: unknown[]): GruppiDiRame {
     if (pad.porta) perPorta.set(pad.porta, g.indice);
     if (pad.id) perPiazzola.set(pad.id, g.indice);
   }
-  // a port with no copper and no position: an island of its own, as the compile counts it
+  // a port with no copper and no position: an island of its own, with nothing in it
   for (const [porta, nodo] of u.nodoDiPorta) {
     if (!perPorta.has(porta)) perPorta.set(porta, gruppoDi(nodo, null).indice);
   }

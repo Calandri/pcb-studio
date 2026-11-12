@@ -2886,32 +2886,28 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
   const unroutedConnections: string[] = [];
   const unroutedDetail: UnroutedDetail[] = [];
   for (const [key, info] of groupInfo) {
-    if (info.routed || unroutedGroupSeen.has(key)) continue;
+    const aperto = unrouted.get(key);
+    if (!aperto || unroutedGroupSeen.has(key)) continue;
     unroutedGroupSeen.add(key);
-    unroutedConnections.push(info.label);
+    // by the connection of the pin left out, not by the first one the group declares
+    unroutedConnections.push(aperto.nome);
     if (unroutedDetail.length < 10) {
       /*
-       * The pads still waiting for copper, when the group is half routed:
-       * pointing at all of them would send whoever reads it to pads that are
-       * already connected.
+       * THE TWO ENDS OF EVERY STRETCH STILL MISSING, in pairs (the first with
+       * the second, the third with the fourth), the same stretches the viewer
+       * draws (open-connections.ts): the pad left out, and the nearest pad of
+       * the copper it has to reach. They used to be the pads outside the island
+       * with the most pins: one side of the gap, and with as many pins on both
+       * sides the wrong one (sbb-dongle, 12/11/2026). `layer` null is a through
+       * hole, on every layer.
        */
-      const inAttesa: Point[] = [];
-      for (const id of unrouted.get(key) ?? []) {
-        const port = pcbPortById.get(id);
-        const x = num(port?.x);
-        const y = num(port?.y);
-        if (!port || x === null || y === null) continue;
-        const layers = (port.layers as string[] | undefined) ?? [];
-        inAttesa.push({ x, y, layer: layers[0] ?? null });
-      }
       unroutedDetail.push({
-        name: info.label,
+        name: aperto.nome,
         nets: [...info.nets].slice(0, 4),
-        points: (inAttesa.length > 0 ? inAttesa : info.points).slice(0, 8).map((p) => ({
-          x: round2(p.x),
-          y: round2(p.y),
-          layer: p.layer,
-        })),
+        points: aperto.tratti
+          .flatMap((t) => [t.da, t.a])
+          .slice(0, 8)
+          .map((capo) => ({ x: round2(capo.x), y: round2(capo.y), layer: capo.strato })),
       });
     }
     if (unroutedConnections.length >= 40) break;
