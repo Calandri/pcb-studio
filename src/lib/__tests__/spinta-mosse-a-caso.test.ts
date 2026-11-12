@@ -8,8 +8,9 @@ import { describe, expect, it } from "vitest";
  * The moves are drawn from a seed, so the same thousand every run.
  *
  * Every move is made twice over: in one leap (the elementary move of mosse.ts,
- * straight to the place asked) and as the gesture makes it (gesto.ts: in short
- * steps from the start, stopping at the last good one). Whenever either moves
+ * straight to the place asked, nothing pushed) and as the gesture makes it
+ * (gesto.ts: in short steps from the start, the traces in its way pushed aside,
+ * stopping at the last good step). Whenever either moves
  * any copper:
  *   - every stretch it gives is at 0, 45 or 90 degrees ON WHOLE UNITS, the
  *     check `dx == 0 || dy == 0 || |dx| == |dy|` with no tolerance, and hand
@@ -32,148 +33,19 @@ import { describe, expect, it } from "vitest";
  * sources of a real board write them: such a stretch is left as it is until a
  * move touches it, and what the move writes in its place is exact.
  */
-import { runDrcChecks } from "@/lib/drc";
-import { idDoppi } from "@/lib/duplicate-ids";
-import { applyCopperPatch, emptyManualEdits, type ManualEdits } from "@/lib/manual-edits";
-import { applyManualRoutes, manualRouteKey, percorsoDellaPista, type ManualRoutePoint } from "@/lib/manual-routes";
+import { emptyManualEdits } from "@/lib/manual-edits";
+import type { ManualRoutePoint } from "@/lib/manual-routes";
 import { direzioneEsatta, inUnita } from "@/lib/spinta/geometria";
 import { chiudiGesto, iniziaGesto, muoviGesto } from "@/lib/spinta/gesto";
-import type { PresaDelRame, SalvataggioDelGesto } from "@/lib/spinta/gesto-tipi";
+import type { PresaDelRame } from "@/lib/spinta/gesto-tipi";
 import { capiDelTratto, leggiModello } from "@/lib/spinta/modello";
 import { spostaVia, traslaTratto, type MotivoDelBlocco } from "@/lib/spinta/mosse";
 import { correzioniDellaMossa, riscritteDellaMossa } from "@/lib/spinta/salvataggio";
-import { leggiRame, trattiStorti, verificaRame } from "@/lib/spinta/verifica";
-import type { El } from "./scheda-di-prova";
+import { comeDetto, comeTratti, direzioniEsatte, GUARDATE, posto, salva, stretti, trattiDellaScheda, violazioni, type Stato } from "./spinta-prove";
 import { casuale, fermiComeIRifiuti, rameQuasiEsatto, REGOLE, schedaAMano, schedaDiSpinta } from "./spinta-scheda";
 
 const MOSSE = 1000;
 const PASSI_PER_GIRO = 8;
-const LIMITI = { maxRoutes: 200, maxPoints: 2000, maxVias: 500 };
-const QUANDO = "2026-11-12T10:00:00.000Z";
-
-/** the checks a move must not make worse: the distances, the angles, the exits from the pads */
-const GUARDATE = ["pad_clearance", "trace_pad_clearance", "trace_trace_clearance", "board_edge_clearance", "hole_to_hole", "trace_angle", "pin_escape"];
-const violazioni = (cj: unknown[]): Record<string, number> => {
-  const out: Record<string, number> = Object.fromEntries(GUARDATE.map((r) => [r, 0]));
-  for (const v of runDrcChecks(cj as never, REGOLE)) if (v.rule in out) out[v.rule] += v.count ?? 1;
-  return out;
-};
-
-const piste = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_trace");
-const vie = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_via");
-const larghezzaDi = (e: El): number => Number((e.route as Array<Record<string, unknown>>).find((p) => p.route_type === "wire")?.width);
-/** the stretches of some paths, as text, in no order */
-const comeTratti = (percorsi: Array<{ punti: ManualRoutePoint[]; larga: number }>): string[] =>
-  percorsi.flatMap(({ punti, larga }) =>
-    punti.slice(1).flatMap((b, i) => (punti[i].layer === b.layer ? [JSON.stringify({ x1: punti[i].x, y1: punti[i].y, x2: b.x, y2: b.y, layer: b.layer, width: larga })] : [])),
-  );
-const trattiDellaScheda = (cj: unknown[], senza: ReadonlySet<string>): string[] =>
-  comeTratti(piste(cj).filter((e) => !senza.has(String(e.pcb_trace_id))).map((e) => ({ punti: percorsoDellaPista(e), larga: larghezzaDi(e) })));
-const posto = (v: object): string => `${Number((v as { x?: unknown }).x)};${Number((v as { y?: unknown }).y)}`;
-
-/** the stretches of a path, each as text the same whichever way it is read */
-const stretti = (punti: readonly ManualRoutePoint[]): Set<string> => {
-  const out = new Set<string>();
-  for (let k = 1; k < punti.length; k++) {
-    const [a, b] = [punti[k - 1], punti[k]];
-    if (a.layer !== b.layer) continue;
-    out.add(`${a.x},${a.y}>${b.x},${b.y}@${a.layer}`);
-    out.add(`${b.x},${b.y}>${a.x},${a.y}@${a.layer}`);
-  }
-  return out;
-};
-
-/**
- * A path a move gives: every stretch THE MOVE WROTE at 0, 45 or 90 degrees on
- * whole units, a change of layer in one place; on whole microns for hand
- * copper. The stretches the path had before (`prima`) are a given: a stretch
- * the sources wrote off its direction by a hair stays as it is until a move
- * touches it.
- */
-function direzioniEsatte(punti: readonly ManualRoutePoint[], griglia: number, dove: string, prima: readonly ManualRoutePoint[]): void {
-  const dati = stretti(prima);
-  for (const q of punti) {
-    expect([Math.abs(inUnita(q.x)) % griglia, Math.abs(inUnita(q.y)) % griglia], `${dove}: ${JSON.stringify(q)} fuori griglia`).toEqual([0, 0]);
-    // the number written is the number of the grid: nothing left for a rounding to move
-    expect([q.x, q.y], dove).toEqual([inUnita(q.x) / 1e4, inUnita(q.y) / 1e4]);
-  }
-  for (let k = 1; k < punti.length; k++) {
-    const dx = inUnita(punti[k].x) - inUnita(punti[k - 1].x);
-    const dy = inUnita(punti[k].y) - inUnita(punti[k - 1].y);
-    if (punti[k].layer !== punti[k - 1].layer) expect([dx, dy], `${dove}: cambio di strato fra due posti`).toEqual([0, 0]);
-    else if (!dati.has(`${punti[k - 1].x},${punti[k - 1].y}>${punti[k].x},${punti[k].y}@${punti[k].layer}`)) {
-      expect(direzioneEsatta(dx, dy), `${dove}: tratto ${k} di ${JSON.stringify(punti)}`).toBe(true);
-    }
-  }
-}
-
-/** a board and the file of hand edits that lays its copper */
-interface Stato {
-  scheda: El[];
-  edits: ManualEdits;
-}
-
-/**
- * What a move asks to be saved, taken the way a save takes it, on the board
- * the move started from: the board and the file it leaves.
- */
-function salva(stato: Stato, s: SalvataggioDelGesto, dove: string): Stato {
-  let edits = stato.edits;
-  if (s.riscritte.length > 0) {
-    // the server: the route of that key, with its new path and nothing else changed
-    const nuove = new Map(s.riscritte.map((r) => [r.chiave, r.points]));
-    expect(nuove.size, dove).toBe(s.riscritte.length);
-    for (const k of nuove.keys()) expect(edits.pcb_routes.filter((r) => manualRouteKey(r) === k), `${dove}: ${k}`).toHaveLength(1);
-    for (const r of s.riscritte) direzioniEsatte(r.points, 10, `${dove}, riscritta ${r.chiave}`, edits.pcb_routes.find((x) => manualRouteKey(x) === r.chiave)!.points);
-    edits = { ...edits, pcb_routes: edits.pcb_routes.map((r) => (nuove.has(manualRouteKey(r)) ? { ...r, points: nuove.get(manualRouteKey(r))! } : r)) };
-  }
-  if (s.routes.length > 0 || s.vias.length > 0) {
-    for (const r of s.routes) {
-      direzioniEsatte(r.points, 1, `${dove}, ${r.connection}`, r.replaces!.original);
-      // the check the server makes of the same thing
-      expect(trattiStorti(r), dove).toBeNull();
-    }
-    const letto = leggiRame({ routes: s.routes, vias: s.vias, gesto: "g" }, LIMITI, QUANDO);
-    if ("errore" in letto) throw new Error(`${dove}: non letto: ${letto.errore}`);
-    expect(verificaRame({ circuitJson: stato.scheda, regole: REGOLE, correnti: edits, rame: letto.rame }), dove).toEqual({ ok: true });
-    edits = applyCopperPatch(edits, letto.rame).edits;
-  }
-  const posata = applyManualRoutes({
-    circuitJson: stato.scheda,
-    routes: edits.pcb_routes,
-    vias: edits.pcb_vias,
-    viaDiameter: REGOLE.minViaDiameterMm,
-    viaHoleDiameter: REGOLE.minViaHoleMm,
-  });
-  expect(posata.rame, dove).toEqual({ orfane: { routes: [], vias: [] }, assorbite: { routes: [], vias: [] } });
-  expect(posata.unknown, dove).toEqual([]);
-  return { scheda: posata.circuitJson as El[], edits };
-}
-
-/**
- * The board after a move against what the move said: the stretches of the
- * traces it touched and the places of the vias it touched are the ones it
- * gave, and every other piece of copper is where it was.
- */
-function comeDetto(
-  prima: El[],
-  dopo: El[],
-  toccato: { piste: ReadonlySet<string>; vie: ReadonlySet<string> },
-  detto: { tratti: string[]; vie: string[] },
-  dove: string,
-): void {
-  expect(trattiDellaScheda(dopo, new Set()).sort(), `${dove}: le piste`).toEqual([...trattiDellaScheda(prima, toccato.piste), ...detto.tratti].sort());
-  expect(vie(dopo).map(posto).sort(), `${dove}: le vie`).toEqual(
-    [
-      ...vie(prima)
-        .filter((v) => !toccato.vie.has(String(v.pcb_via_id)))
-        .map(posto),
-      ...detto.vie,
-    ].sort(),
-  );
-  expect(idDoppi(dopo), dove).toBeNull();
-}
-
 describe("spinta, mosse a caso", () => {
   it(`${MOSSE} moves that move copper, in one leap and as a gesture: every stretch at 0, 45 or 90 degrees on whole units, the board as the move said, and no check worse than before`, () => {
     const rng = casuale(20261112);
@@ -182,7 +54,7 @@ describe("spinta, mosse a caso", () => {
       // a few under the grid, most within a millimetre, some across the board
       return r < 0.12 ? rng() * 0.004 : r < 0.72 ? 0.02 + rng() * 1.2 : 1 + rng() * 6;
     };
-    const conta = { balzi: 0, gesti: 0, gestiFermati: 0, vie: 0, tratti: 0, deiFile: 0, aMano: 0, misti: 0, rifiuti: 0, raddrizzati: 0 };
+    const conta = { balzi: 0, gesti: 0, gestiFermati: 0, vie: 0, tratti: 0, deiFile: 0, aMano: 0, misti: 0, rifiuti: 0, raddrizzati: 0, spinti: 0 };
     /** whether a move wrote exact copper in the place of a stretch that was off its direction by a hair */
     const raddrizza = (prima: readonly ManualRoutePoint[], dopo: readonly ManualRoutePoint[]): boolean => {
       const restano = stretti(dopo);
@@ -282,7 +154,9 @@ describe("spinta, mosse a caso", () => {
       }
       const fine = muoviGesto(inizio.gesto, verso);
       if (tentativi % 25 === 0) expect(JSON.stringify(muoviGesto(inizio.gesto, verso)), dove).toBe(JSON.stringify(fine));
-      expect(fine.nascosti, dove).toBe(inizio.stato.nascosti);
+      // the gesture pushes aside the traces in its way (risolutore.ts), the leap does not: they are compared when nothing was pushed
+      const spinto = fine.nascosti !== inizio.stato.nascosti;
+      expect(fine.nascosti.pcbTraceIds.slice(0, inizio.stato.nascosti.pcbTraceIds.length), dove).toEqual(inizio.stato.nascosti.pcbTraceIds);
       // what the gesture draws: the stretches that were there as they were, every other one exact
       const cherano = new Set(trattiDellaScheda(stato.scheda, new Set()));
       for (const t of fine.tratti) {
@@ -290,7 +164,7 @@ describe("spinta, mosse a caso", () => {
         expect(direzioneEsatta(inUnita(t.x2) - inUnita(t.x1), inUnita(t.y2) - inUnita(t.y1)), `${dove}, gesto: ${JSON.stringify(t)}`).toBe(true);
       }
       // a via that meets nothing on its way stands where the leap puts it
-      if (diVia && fine.blocco === null) {
+      if (diVia && fine.blocco === null && !spinto) {
         expect(balzo.ok, dove).toBe(true);
         if (balzo.ok && balzo.vie.length > 0) expect(fine.posizione, dove).toEqual(balzo.vie[0].a);
       }
@@ -299,6 +173,7 @@ describe("spinta, mosse a caso", () => {
       if (!salvataggio) continue;
       conta.gesti++;
       if (fine.blocco) conta.gestiFermati++;
+      if (spinto) conta.spinti++;
       if (diVia) conta.vie++;
       else conta.tratti++;
       const aMano = salvataggio.riscritte.length > 0;

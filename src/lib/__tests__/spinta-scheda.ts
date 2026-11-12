@@ -183,6 +183,113 @@ export function schedaAMano(quasi = false): { scheda: El[]; edits: ManualEdits }
 }
 
 /**
+ * A DENSE BOARD, FOR THE PUSH: traces side by side that can step aside.
+ *
+ *   - `quante` traces S0, S1... on the top, each of its own net, from a pad on
+ *     the left to a pad on the right: straight out of the pad, down a stretch
+ *     at 45 degrees, a long middle stretch, and up again. The middle stretches
+ *     run side by side half a millimetre apart (0.3 mm of air: the project
+ *     draws at 0.2), S0 the lowest at y = -(quante - 1) / 4; the pads are
+ *     spread out above them. A middle stretch and a diagonal can slide, the
+ *     stretch that leaves a pad cannot;
+ *   - `via`: a lone via of GND above the bundle, at (0; top + 1.5), and one
+ *     below it, at (4; bottom - 1.6);
+ *   - `tratto`: a trace of the net T above everything, with a middle stretch
+ *     along y = top + 3.2 that can be dragged down onto the bundle;
+ *   - `sotto`: two traces B0 and B1 on the BOTTOM whose middle stretches run
+ *     under the two highest of the top, so that a via pushes both layers;
+ *   - `padDietro`: a pad of the net AUX under the middle of the bundle, 0.2 mm
+ *     further than the distance to keep from the lowest trace: the chain has
+ *     that much room and no more;
+ *   - `aMano`: the traces are hand routes of manual-edits.json, written as an
+ *     import writes a net (pieces chained end to end), not traces of the files.
+ */
+export interface OpzioniFitta {
+  quante?: number;
+  via?: boolean;
+  tratto?: boolean;
+  sotto?: boolean;
+  padDietro?: boolean;
+  aMano?: boolean;
+}
+/** where the middle stretch of the trace `i` of a bundle of `quante` runs */
+export const mezzoDi = (i: number, quante: number): number => (i - (quante - 1) / 2) * 0.5;
+export function schedaFitta(opzioni: OpzioniFitta = {}): { scheda: El[]; edits: ManualEdits } {
+  const quante = opzioni.quante ?? 5;
+  const cima = mezzoDi(quante - 1, quante);
+  const fondo = mezzoDi(0, quante);
+  const els: El[] = [{ ...scheda(2), width: 40, height: 30 }];
+  /** the paths of the traces, by net: laid as traces of the files, or as hand routes */
+  const percorsi: Array<{ rete: string; sorgente: string; punti: ManualRoutePoint[] }> = [];
+  let n = 1;
+  const conDuePiedini = (rete_: string, a: [number, number], b: [number, number], strato = "top") => {
+    els.push(...pezzo(`${rete_}a`, [["1", a[0], a[1], strato]]), ...pezzo(`${rete_}b`, [["1", b[0], b[1], strato]]), ...rete(n++, rete_, [`${rete_}a_1`, `${rete_}b_1`]));
+  };
+  /** from a pad at (-16; yp) straight out, down or up at 45 degrees to the height ym, along it, and back to the pad at (16; yp) */
+  const aPonte = (rete_: string, yp: number, ym: number, strato: "top" | "bottom" = "top") => {
+    const salto = Math.abs(yp - ym);
+    conDuePiedini(rete_, [-16, yp], [16, yp], strato);
+    const q = (x: number, y: number): ManualRoutePoint => ({ x: Math.round(x * 1e4) / 1e4, y: Math.round(y * 1e4) / 1e4, layer: strato });
+    percorsi.push({ rete: rete_, sorgente: `st_${rete_}_0`, punti: [q(-16, yp), q(-14, yp), q(-14 + salto, ym), q(14 - salto, ym), q(14, yp), q(16, yp)] });
+  };
+  for (let i = 0; i < quante; i++) aPonte(`S${i}`, cima + 2 + i * 1.6 - (quante - 1) * 0.5, mezzoDi(i, quante));
+  if (opzioni.sotto) {
+    aPonte("B0", fondo - 5.2, cima + 0.2, "bottom");
+    aPonte("B1", fondo - 6.8, cima - 0.3, "bottom");
+  }
+  if (opzioni.tratto) {
+    conDuePiedini("T", [-12, cima + 8], [12, cima + 8]);
+    percorsi.push({ rete: "T", sorgente: "st_T_0", punti: [su(-12, cima + 8), su(-12, cima + 5.2), su(-10, cima + 3.2), su(10, cima + 3.2), su(12, cima + 5.2), su(12, cima + 8)] });
+  }
+  if (opzioni.via ?? true) {
+    conDuePiedini("GND", [0, 12], [0, -12]);
+    els.push(viaDi("v_su", 0, cima + 1.5, n - 1), viaDi("v_giu", 4, fondo - 1.6, n - 1));
+  }
+  if (opzioni.padDietro) conDuePiedini("AUX", [0, fondo - 0.8], [18, -13]);
+
+  if (!opzioni.aMano) {
+    for (const p of percorsi) els.push(trace(`t_${p.rete.toLowerCase()}`, p.sorgente, p.punti.map((q) => wire(q.x, q.y, q.layer))));
+    return { scheda: els, edits: emptyManualEdits() };
+  }
+  // as an import writes a net: the stretch out of the pad, the diagonal, the middle, and the last two together
+  const edits = {
+    ...emptyManualEdits(),
+    pcb_routes: parseManualRoutes(
+      percorsi.flatMap((p) =>
+        [p.punti.slice(0, 2), p.punti.slice(1, 3), p.punti.slice(2, 4), p.punti.slice(3)].map((points) => ({ connection: `net.${p.rete}`, net: p.rete, width: 0.2, points })),
+      ),
+    ),
+  };
+  const posata = applyManualRoutes({ circuitJson: els, routes: edits.pcb_routes, vias: [], viaDiameter: REGOLE.minViaDiameterMm, viaHoleDiameter: REGOLE.minViaHoleMm });
+  return { scheda: posata.circuitJson as El[], edits };
+}
+
+/**
+ * A BOARD OF ABOUT 300 TRACES AND 300 VIAS, for the times: thirty rows of ten
+ * cells, in each a trace of its own net with a middle stretch one millimetre
+ * above its pads, and a lone via of GND above the middle of it, which pushes
+ * that stretch when it is dragged down.
+ */
+export function schedaGrande(): El[] {
+  const els: El[] = [{ ...scheda(2), width: 110, height: 90 }, ...pezzo("G1", [["1", -53, 43]]), ...pezzo("G2", [["1", 53, 43]]), ...rete(1, "GND", ["G1_1", "G2_1"])];
+  let k = 0;
+  for (let riga = 0; riga < 30; riga++) {
+    for (let colonna = 0; colonna < 10; colonna++, k++) {
+      const x = -48 + colonna * 9.6;
+      const y = -38 + riga * 2.6;
+      els.push(
+        ...pezzo(`A${k}`, [["1", x, y]]),
+        ...pezzo(`B${k}`, [["1", x + 8.5, y]]),
+        ...rete(k + 2, `N${k}`, [`A${k}_1`, `B${k}_1`]),
+        trace(`t_${k}`, `st_N${k}_0`, [wire(x, y), wire(x + 1, y), wire(x + 2, y + 1), wire(x + 6.5, y + 1), wire(x + 7.5, y), wire(x + 8.5, y)]),
+        viaDi(`v_${k}`, x + 4.25, y + 1.9, 1),
+      );
+    }
+  }
+  return els;
+}
+
+/**
  * THE TARGETS THAT CAN NEVER MOVE ARE EXACTLY THE ONES A GESTURE REFUSES, with
  * the same sentence: for every target preseDelRame lists on a board, `fermo` is
  * there when and only when iniziaGesto answers a refusal, and says the same.
