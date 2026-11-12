@@ -109,7 +109,17 @@
 // refused by the export, which measures the board about to go as it does for a plane over a via: "Aggiorna" pours
 // again around that copper. A board whose pours come from a compile has no such violation, so no answer of it
 // changes: a board of engine 12 comes to 13 with a recheck ("Ricontrolla"), no compile. A recheck does not pour again
-// for this: a board with copper in a pour still needs "Aggiorna" after it
+// for this: a board with copper in a pour still needs "Aggiorna" after it.
+// With 13 the open connections of the summary also come from the copper: collegamentiAperti (open-connections.ts),
+// the source of the viewer's "Collegamenti mancanti", on the islands of gruppi-di-rame.ts. Until 12 a net with a pour
+// was given as joined by its plane without looking, and the points of the detail were one side of the gap. Now a pour
+// joins what its copper touches, like any other copper. unroutedTotal keeps its meaning (the nets with at least one
+// missing stretch) but the number goes up on a board with an open connection on a net with a pour (sbb-dl-principale
+// n89, 2026-11-12: from 1 to 3); unroutedConnections names the declared connection of the pin left out;
+// unroutedDetail.points are the two ends of every missing stretch, in pairs, with layer null for a through hole. A pad
+// beside a via of its own net with no copper between the two is open, and is counted. And the export refuses a board
+// with open connections (aperti-export.ts: how many, on how many nets, which pins are out), measured on the board
+// about to go like the rest: until 12 such a board answered 200 (decided by Niccolo' on 2026-11-12, "blocco")
 export const CHECKS_ENGINE_VERSION = 13;
 
 /**
