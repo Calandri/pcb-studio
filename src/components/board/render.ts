@@ -9,6 +9,7 @@
 
 import { courtyardShape, footprintBoxes, type CourtyardShape } from "@/lib/footprint-bounds";
 import { INGOMBRO_ECCEDENZA_MM } from "@/lib/design-rules";
+import { retiDelCircuito } from "@/lib/gruppi-di-rame";
 import { leggiIngombri, type Forma } from "@/lib/ingombro";
 import { COLORE_DEL_RAME, eStratoDiRame, pilaDiRame, type StratoDiRame } from "@/lib/strati-rame";
 
@@ -436,42 +437,15 @@ export function buildScene(
    * which pin - the information that someone moving a part needs more than
    * any other, and that the drawing alone does not carry: on copper a pad is
    * a rectangle like any other.
-   */
-  const pinOfPort = new Map<string, string>();
-  const netOfPort = new Map<string, string>();
-  const portNameBySourceId = new Map<string, string>();
-  for (const raw of elements) {
-    const el = raw as Record<string, unknown>;
-    if (el.type === "source_port" && el.source_port_id) {
-      portNameBySourceId.set(String(el.source_port_id), String(el.name ?? ""));
-    }
-  }
-  /*
-   * Which connection every pad belongs to.
    *
-   * It is NOT read from the pad: pcb_ports carry no connectivity key
-   * (verified: 212 ports, zero keys), so using it meant giving every pad
-   * a net of its own and never drawing anything. Connectivity lives in the
-   * SCHEMATIC traces: a trace joins two pins, or hangs them on a named net.
-   * Here the pins a trace puts together are joined, and propagation runs
-   * until the groups stop growing - so ten parts all hanging on P3V3 turn
-   * out connected even if no trace joins them pairwise.
+   * Which pins are one connection is read from the schematic traces, in
+   * gruppi-di-rame.ts (retiDelCircuito): the same nets the open connections
+   * and the groups of copper are counted by.
    */
-  const padre = new Map<string, string>();
-  const radice = (a: string): string => {
-    let r = a;
-    while (padre.get(r) && padre.get(r) !== r) r = padre.get(r)!;
-    padre.set(a, r);
-    return r;
-  };
-  const unisci = (a: string, b: string) => {
-    if (!a || !b) return;
-    if (!padre.has(a)) padre.set(a, a);
-    if (!padre.has(b)) padre.set(b, b);
-    const ra = radice(a);
-    const rb = radice(b);
-    if (ra !== rb) padre.set(ra, rb);
-  };
+  const reti = retiDelCircuito(elements);
+  const pinOfPort = reti.pinDiPorta;
+  const netOfPort = reti.diPorta;
+  const netNameOfPort = reti.nomeDiPorta;
   /** the real footprint of every part: see footprint-bounds.ts */
   const ingombri = footprintBoxes(elements);
   const nomeComponente = new Map<string, string>();
@@ -480,47 +454,6 @@ export function buildScene(
       nomeComponente.set(String(el.source_component_id), String(el.name ?? ""));
     }
   }
-  const nomeDiRete = new Map<string, string>();
-  for (const raw of elements) {
-    const el = raw as Record<string, unknown>;
-    if (el.type === "source_net" && el.source_net_id) {
-      nomeDiRete.set(String(el.source_net_id), String(el.name ?? ""));
-    }
-  }
-  for (const raw of elements) {
-    const el = raw as Record<string, unknown>;
-    if (el.type !== "source_trace") continue;
-    const porte = ((el.connected_source_port_ids as string[] | undefined) ?? []).map(String);
-    for (let i = 1; i < porte.length; i++) unisci(porte[0], porte[i]);
-    for (const netId of (el.connected_source_net_ids as string[] | undefined) ?? []) {
-      const etichetta = `net:${nomeDiRete.get(String(netId)) ?? netId}`;
-      for (const porta of porte) unisci(porta, etichetta);
-    }
-  }
-
-  /*
-   * The net name of every group, when it has one. A pad on GND or on
-   * a power rail must not be connected to some neighbor: it must be DECLARED,
-   * and the name is the only thing worth knowing about it.
-   */
-  const nomeDelGruppo = new Map<string, string>();
-  for (const chiave of [...padre.keys()]) {
-    if (!chiave.startsWith("net:")) continue;
-    nomeDelGruppo.set(radice(chiave), chiave.slice(4));
-  }
-
-  const netNameOfPort = new Map<string, string>();
-  for (const raw of elements) {
-    const el = raw as Record<string, unknown>;
-    if (el.type !== "pcb_port" || !el.pcb_port_id) continue;
-    const id = String(el.pcb_port_id);
-    const sorgente = String(el.source_port_id ?? "");
-    const gruppo = padre.has(sorgente) ? radice(sorgente) : sorgente;
-    pinOfPort.set(id, portNameBySourceId.get(sorgente) ?? "");
-    netOfPort.set(id, gruppo);
-    netNameOfPort.set(id, nomeDelGruppo.get(gruppo) ?? "");
-  }
-
   const scene: BoardScene = {
     board,
     pours: [],
