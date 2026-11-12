@@ -4,7 +4,7 @@ import {
   type DesignRules,
   type TipoRame,
 } from "./design-rules";
-import type { PianiSuVie } from "./engine-version";
+import type { ColateSuRame, PianiSuVie } from "./engine-version";
 import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 import { netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
 
@@ -423,18 +423,51 @@ export interface ViaVicinaAUnPiano {
   rameProprioMm?: number;
 }
 
+/** one trace or one pad next to the pour of another net: what check 9 measures */
+export interface RameVicinoAUnaColata {
+  /** which pair rules judge it where the pour's own pad or via is its edge: a trace's, or a pad's */
+  tipo: "trace" | "pad";
+  /** the id of the element: pcb_trace_id, pcb_smtpad_id, pcb_plated_hole_id */
+  id: string;
+  /** the name a person knows it by: the connection of the trace, part and pin of the pad */
+  nome: string;
+  /** where: the point of the trace nearest to the copper of the pour, the centre of the pad */
+  x: number;
+  y: number;
+  /** the net of the pour, by name */
+  rete: string;
+  layer: string;
+  /** from the copper of the trace or of the pad to the copper of the pour: 0 when they touch or overlap */
+  distanzaMm: number;
+  /** the clearance the pour declares for itself, when it does (PourShape.clearanceMm) */
+  propriaMm?: number;
+  /**
+   * To the nearest via or pad of the pour's own net on that layer, the copper
+   * the pour holds whole (see abbracciaRamePropio); absent when the net has
+   * none. When that is as near as the pour, the gap is to that via or pad,
+   * which the pair rules judge, not to the poured copper (see sulSuoRame).
+   */
+  rameProprioMm?: number;
+  /**
+   * Set when it touches such a via or pad AND some point of it lies in the
+   * copper of the pour off every one of them: it is in the poured copper too.
+   */
+  nelRameColato?: boolean;
+}
+
 /**
  * WHAT A DRC RUN MEASURED THAT DOES NOT DEPEND ON THE RULES.
  *
  * The summary runs the DRC once for the project's rules and once more for each
  * fab class, on the same board: three or four runs on every compile, fast
- * update, trace edit and recheck. The distance from each via to each plane is
- * the same in all of them, only the minimum it is compared with changes. Hand
- * the same object to every run on one board and it is measured in the first
- * and read in the others. Never keep it across two boards.
+ * update, trace edit and recheck. The distance from each via, trace and pad to
+ * each plane is the same in all of them, only the minimum it is compared with
+ * changes. Hand the same object to every run on one board and it is measured
+ * in the first and read in the others. Never keep it across two boards.
  */
 export interface MisureDrc {
   viaPiani?: { portataMm: number; righe: ViaVicinaAUnPiano[] };
+  rameColate?: { portataMm: number; righe: RameVicinoAUnaColata[] };
 }
 
 /**
@@ -478,6 +511,8 @@ interface IndiceDiColata {
   visto: Int32Array;
   giro: number;
   dispari: Uint8Array;
+  /** the edge the last distanzaSagomaColata found nearest, -1 when its shape starts in the copper */
+  vicino: number;
 }
 
 function indiceDiColata(esterno: Array<{ x: number; y: number }>, buchi: Array<Array<{ x: number; y: number }>>): IndiceDiColata {
@@ -560,6 +595,7 @@ function indiceDiColata(esterno: Array<{ x: number; y: number }>, buchi: Array<A
     visto: new Int32Array(n),
     giro: 0,
     dispari: new Uint8Array(anelli.length),
+    vicino: -1,
   };
 }
 
@@ -619,6 +655,118 @@ function distanzaCerchioColata(ix: IndiceDiColata, x: number, y: number, raggio:
     }
   }
   return Math.max(0, d - raggio);
+}
+
+/**
+ * How far a piece of copper is from the copper of a pour, for the copper that
+ * is not a circle: a trace segment, a pill, a rectangle, a polygon. The shape
+ * is given as boxDistance reduces it (see sagomaDi): its core, which is one
+ * point, the two ends of a segment or the corners of a polygon, and the radius
+ * around it. 0 when the shape touches the copper or lies in it, Infinity when
+ * the pour is farther than `portata` from the shape.
+ *
+ * The same grid as distanzaCerchioColata: only the cells the box of the shape
+ * and its reach touch are asked, and each edge once however many of them it
+ * lies in. The shape is in the copper when its first point is; otherwise an
+ * edge of the pour crosses it or lies inside it (distance 0), or the nearest
+ * edge says how far it is. `ix.vicino` is left on that edge.
+ */
+function distanzaSagomaColata(ix: IndiceDiColata, punti: Array<{ x: number; y: number }>, raggio: number, portata: number): number {
+  const n = punti.length;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const p = punti[i];
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const m = raggio + portata;
+  ix.vicino = -1;
+  if (maxX + m < ix.minX || minX - m > ix.maxX || maxY + m < ix.minY || minY - m > ix.maxY) return Infinity;
+  if (nelRameDellaColata(ix, punti[0].x, punti[0].y)) return 0;
+  const giro = ++ix.giro;
+  let d = Infinity;
+  const c0 = colonnaDi(ix, minX - m);
+  const c1 = colonnaDi(ix, maxX + m);
+  const r1 = rigaDi(ix, maxY + m);
+  for (let r = rigaDi(ix, minY - m); r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const cella = r * ix.colonne + c;
+      for (let t = ix.inizio[cella]; t < ix.inizio[cella + 1]; t++) {
+        const k = ix.inCella[t];
+        if (ix.visto[k] === giro) continue;
+        ix.visto[k] = giro;
+        const px = ix.px[k];
+        const py = ix.py[k];
+        const qx = ix.qx[k];
+        const qy = ix.qy[k];
+        // the box of the edge farther from the box of the shape than the nearest edge so far: it cannot be nearer
+        const lontano = d < m ? d : m;
+        if ((px < qx ? px : qx) > maxX + lontano || (px > qx ? px : qx) < minX - lontano || (py < qy ? py : qy) > maxY + lontano || (py > qy ? py : qy) < minY - lontano) continue;
+        let e: number;
+        if (n === 1) e = pointSegDistance(punti[0].x, punti[0].y, px, py, qx, qy);
+        else if (n === 2) e = segSegDistanceRaw(punti[0].x, punti[0].y, punti[1].x, punti[1].y, px, py, qx, qy);
+        else if (dentroPoligono(qx, qy, punti)) e = 0; // the copper of the pour reaches into the polygon
+        else {
+          e = Infinity;
+          for (let i = 0, j = n - 1; i < n && e > 0; j = i++) {
+            const lato = segSegDistanceRaw(punti[j].x, punti[j].y, punti[i].x, punti[i].y, px, py, qx, qy);
+            if (lato < e) e = lato;
+          }
+        }
+        if (e < d) {
+          d = e;
+          ix.vicino = k;
+          if (d <= raggio) return 0;
+        }
+      }
+    }
+  }
+  return Math.max(0, d - raggio);
+}
+
+/**
+ * The point of the segment a-b nearest to the segment c-d: where they cross,
+ * when they do. It is where a trace comes nearest to an edge of a pour, so the
+ * dot of the violation sits there and not in the middle of a long segment.
+ */
+function puntoVicinoAlLato(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number,
+  dx: number,
+  dy: number,
+): { x: number; y: number } {
+  const d3 = crossSign(cx, cy, dx, dy, ax, ay);
+  const d4 = crossSign(cx, cy, dx, dy, bx, by);
+  if (segSegDistanceRaw(ax, ay, bx, by, cx, cy, dx, dy) === 0 && d3 !== d4) {
+    const t = Math.max(0, Math.min(1, d3 / (d3 - d4)));
+    return { x: ax + t * (bx - ax), y: ay + t * (by - ay) };
+  }
+  // an end of c-d brought onto a-b, or an end of a-b itself: whichever is nearest to the other segment
+  const vx = bx - ax;
+  const vy = by - ay;
+  const lungo = vx * vx + vy * vy;
+  const sul = (x: number, y: number) => {
+    const t = lungo < 1e-12 ? 0 : Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / lungo));
+    return { x: ax + t * vx, y: ay + t * vy };
+  };
+  let meglio = { x: ax, y: ay };
+  let minimo = pointSegDistance(ax, ay, cx, cy, dx, dy);
+  const prova = (p: { x: number; y: number }, d: number) => {
+    if (d < minimo) {
+      minimo = d;
+      meglio = p;
+    }
+  };
+  prova({ x: bx, y: by }, pointSegDistance(bx, by, cx, cy, dx, dy));
+  prova(sul(cx, cy), pointSegDistance(cx, cy, ax, ay, bx, by));
+  prova(sul(dx, dy), pointSegDistance(dx, dy, ax, ay, bx, by));
+  return meglio;
 }
 
 /** the centre of a box, without needing the whole helper */
@@ -987,26 +1135,28 @@ export function runDrcChecks(
 
   // --- bbox of pads and holes for board edge + clearances
   const boxes: Box[] = [];
+  /** the pads among them with the element each comes from, for the check against the pours (9) */
+  const piazzole: Array<{ box: Box; el: El }> = [];
   for (const el of circuitJson) {
     if (el.type === "pcb_smtpad") {
       // polygonal pads do not declare a center: it is derived from the
       // vertices, otherwise the clearance check does not see them at all
       const forma = rameDelPad(el);
       if (!forma) continue;
-      boxes.push(
-        boxDaForma(forma, {
-          layer: el.layer ? String(el.layer) : null,
-          label: String(el.pcb_smtpad_id ?? "pad"),
-          group: groupOfPcbPort(el.pcb_port_id),
-          kind: "pad",
-        }),
-      );
+      const box = boxDaForma(forma, {
+        layer: el.layer ? String(el.layer) : null,
+        label: String(el.pcb_smtpad_id ?? "pad"),
+        group: groupOfPcbPort(el.pcb_port_id),
+        kind: "pad",
+      });
+      boxes.push(box);
+      piazzole.push({ box, el });
     } else if (el.type === "pcb_plated_hole") {
       // the copper as ITS shape declares it: see rameDelForo
       const forma = rameDelForo(el);
       if (!forma) continue;
       const foro = foroDi(el);
-      boxes.push({
+      const box: Box = {
         ...boxDaForma(forma, {
           layer: null, // spans all layers
           label: String(el.pcb_plated_hole_id ?? el.type),
@@ -1019,7 +1169,9 @@ export function runDrcChecks(
           kind: "pad",
         }),
         ...(foro ? { foro } : {}),
-      });
+      };
+      boxes.push(box);
+      piazzole.push({ box, el });
     } else if (el.type === "pcb_via") {
       const x = num(el.x);
       const y = num(el.y);
@@ -1382,6 +1534,8 @@ export function runDrcChecks(
     halfW: number;
     group: string | null;
     label: string;
+    /** the trace it is a piece of */
+    el: El;
   }
   const segs: WireSeg[] = [];
   for (const el of circuitJson) {
@@ -1407,6 +1561,7 @@ export function runDrcChecks(
         halfW: (num(b.width) ?? num(a.width) ?? rules.minTraceWidthMm) / 2,
         group,
         label: String(el.pcb_trace_id ?? "trace"),
+        el,
       });
     }
   }
@@ -1610,14 +1765,11 @@ export function runDrcChecks(
       }
       return suo;
     };
-    /*
-     * Measured once per board and not once per ruleset (see MisureDrc): every
-     * via against every plane of another net, exact up to `portataMm` from the
-     * pad. The nets are told apart here, where the groups are known, and that
-     * does not depend on the rules either.
-     */
-    const misura = (portataMm: number): ViaVicinaAUnPiano[] => {
-      const reti = new Map<string, { nome: string; gruppi: Set<string> }>();
+    /* the nets of the board by every name they go by, and its pours each with its index: made once, for checks 8 and 9 */
+    let retiNote: Map<string, { nome: string; gruppi: Set<string> }> | null = null;
+    const retiDellaScheda = () => {
+      if (retiNote) return retiNote;
+      retiNote = new Map();
       for (const el of circuitJson) {
         if (el.type !== "source_net" || !el.source_net_id) continue;
         const id = String(el.source_net_id);
@@ -1626,10 +1778,22 @@ export function runDrcChecks(
         const gruppi = new Set<string>([`net:${id}`]);
         if (chiave) gruppi.add(chiave);
         for (const g of [risolviChiave(chiave), gruppoDiRete.get(id)]) if (g) gruppi.add(g);
-        reti.set(id, { nome: String(el.name ?? id), gruppi });
+        retiNote.set(id, { nome: String(el.name ?? id), gruppi });
       }
-      // the index of a pour is built when the first via comes near it: most pours are islands no via goes by
-      const piani = colate.map((c) => ({ colata: c, indice: null as IndiceDiColata | null }));
+      return retiNote;
+    };
+    // the index of a pour is built when the first via, trace or pad comes near it
+    let pianiNoti: Array<{ colata: (typeof colate)[number]; indice: IndiceDiColata | null }> | null = null;
+    const pianiDellaScheda = () => (pianiNoti ??= colate.map((c) => ({ colata: c, indice: null })));
+    /*
+     * Measured once per board and not once per ruleset (see MisureDrc): every
+     * via against every plane of another net, exact up to `portataMm` from the
+     * pad. The nets are told apart here, where the groups are known, and that
+     * does not depend on the rules either.
+     */
+    const misura = (portataMm: number): ViaVicinaAUnPiano[] => {
+      const reti = retiDellaScheda();
+      const piani = pianiDellaScheda();
       const righe: ViaVicinaAUnPiano[] = [];
       for (const el of circuitJson) {
         if (el.type !== "pcb_via") continue;
@@ -1683,6 +1847,300 @@ export function runDrcChecks(
         `${r.via} <-> ${r.rete} pour on ${r.layer}: ${r.distanzaMm.toFixed(3)}mm < min ${minimo}mm${propria !== undefined && minimo === propria ? " (the pour's own clearance)" : ""}${r.distanzaMm === 0 ? " (the plane does not open around the hole)" : ""}`,
         { x: r.x, y: r.y },
         // the via goes through, the plane that did not open around it is on one layer
+        r.layer,
+      );
+    }
+
+    /*
+     * --- 9. THE POURS AGAINST THE TRACES AND THE PADS OF THE OTHER NETS.
+     *
+     * Check 8 knows the vias. A trace or a pad of another net in the copper of
+     * a pour was seen by nothing: the pair checks know pads, traces and vias but
+     * not poured copper, and the pours were trusted to open around what was on
+     * the board when they were poured. The fast update never pours: a trace
+     * drawn in Instrada across the ground pour, or a part moved in Sposta whose
+     * pads land in the old pour of another net, stayed in that copper with zero
+     * errors, was filed under today's engine and went to the Gerber (measured
+     * on a compiled board, 2026-11-12: spinta-misure.test.ts). It is a short.
+     *
+     * Every wire segment of a trace with its width, every SMD pad on its layer
+     * and the copper of every plated hole on every layer, against every pour of
+     * another net on that layer: 0 when it touches the copper or lies in it.
+     * Under the pour's clearance, its own when it declares one and the
+     * project's otherwise, with the tolerance of check 8, it is reported.
+     *
+     * THE COPPER MEASURED IS THE POURED ONE. A pour holds whole the pads and the
+     * vias of its own net that it reaches (abbracciaRamePropio), and the project
+     * lets those nearer to a trace or a pad than it lets a pour. Where one of
+     * them is as near as the pour, the gap is between that pad or via and the
+     * copper of the other net: checks 4 and 6 judge it by the pair rules, and
+     * the row is not reported here. Unless that copper is IN the poured copper
+     * as well: some point of it lies in the pour and off every pad and via of
+     * the pour's net (looked for along the trace and around the pad, see
+     * campioniDiRame). Without this, on a board just compiled, a trace that
+     * crosses a ground pad (a "trace over pad" of check 6) was in the ground
+     * pour too, because the pour holds that pad. With it a board whose pours
+     * come from a compile has no row to report: its pours are poured around all
+     * the copper of the other nets with these clearances.
+     *
+     * The copper of the pour's own net is where the pour belongs, as for the
+     * vias: ground pads in the ground pour, the pads a declared strip joins, the
+     * two vias a strip takes. A trace or a pad with no known net is not an
+     * electrical node and is left out, as in the pair checks, and so is a net
+     * tie against the pours of the nets it joins. One row per trace and pour:
+     * on the segment nearest to the poured copper, with the point where it is.
+     */
+    const regolaColata = rules.pourClearanceMm ?? rules.minClearanceMm;
+    let portataRame = regolaColata;
+    if (proprie) for (const c of colate) if (c.clearanceMm !== undefined && c.clearanceMm > portataRame) portataRame = c.clearanceMm;
+    const misuraIlRame = (portataMm: number): RameVicinoAUnaColata[] => {
+      const reti = retiDellaScheda();
+      const piani = pianiDellaScheda();
+      type Piano = (typeof piani)[number];
+      type Rete = ReturnType<typeof reti.get>;
+      // a trace and an SMD pad are asked only about the pours of their own layer, a through hole about all of them
+      const perStrato = new Map<string, Piano[]>();
+      for (const piano of piani) {
+        const suoi = perStrato.get(piano.colata.layer);
+        if (suoi) suoi.push(piano);
+        else perStrato.set(piano.colata.layer, [piano]);
+      }
+      // the names a person knows the copper by, read when the first row needs one
+      let nomi: { piedino: Map<string, string>; connessione: Map<string, string> } | null = null;
+      const nomiDellaScheda = () => {
+        if (nomi) return nomi;
+        const pezzo = new Map<string, string>();
+        const porta = new Map<string, El>();
+        const connessione = new Map<string, string>();
+        for (const el of circuitJson) {
+          if (el.type === "source_component") pezzo.set(String(el.source_component_id ?? ""), String(el.name ?? ""));
+          else if (el.type === "source_port") porta.set(String(el.source_port_id ?? ""), el);
+          else if (el.type === "source_trace" && typeof el.display_name === "string" && el.display_name) {
+            connessione.set(String(el.source_trace_id ?? ""), el.display_name);
+          }
+        }
+        // part and pin, as the ERC writes them: R46.1, IC6.E1
+        const piedino = new Map<string, string>();
+        for (const [pcbPort, sourcePort] of pcbPortToSource) {
+          const p = porta.get(sourcePort);
+          const nome = p ? pezzo.get(String(p.source_component_id ?? "")) : undefined;
+          if (p && nome) piedino.set(pcbPort, `${nome}.${String(p.name ?? "pin")}`);
+        }
+        return (nomi = { piedino, connessione });
+      };
+      /* the circle around each pad and via of a net (x, y, radius): the far ones are left out without being measured */
+      const cerchiDi = new Map<Box[], Float64Array>();
+      const cerchiDei = (propri: Box[]): Float64Array => {
+        let cerchi = cerchiDi.get(propri);
+        if (!cerchi) {
+          cerchi = new Float64Array(propri.length * 3);
+          for (let i = 0; i < propri.length; i++) {
+            cerchi[3 * i] = (propri[i].minX + propri[i].maxX) / 2;
+            cerchi[3 * i + 1] = (propri[i].minY + propri[i].maxY) / 2;
+            cerchi[3 * i + 2] = raggioEsterno(propri[i]);
+          }
+          cerchiDi.set(propri, cerchi);
+        }
+        return cerchi;
+      };
+      /** from a piece of copper inside the circle (x, y, raggio) to the nearest of `propri`, each measured by `misura`: Infinity with none */
+      const alSuoRame = (propri: Box[], x: number, y: number, raggio: number, misura: (b: Box) => number): number => {
+        const cerchi = cerchiDei(propri);
+        let vicino = Infinity;
+        for (let i = 0; i < propri.length && vicino > 0; i++) {
+          if (Math.hypot(cerchi[3 * i] - x, cerchi[3 * i + 1] - y) - cerchi[3 * i + 2] - raggio >= vicino) continue;
+          const d = misura(propri[i]);
+          if (d < vicino) vicino = d;
+        }
+        return vicino;
+      };
+      /** whether one of the points lies in the copper of the pour and off every pad and via of its own net: in the POURED copper */
+      const punto: Box = { minX: 0, maxX: 0, minY: 0, maxY: 0, layer: null, label: "", group: null, kind: "pad", raggio: 0 };
+      const nelColato = (indice: IndiceDiColata, campioni: Array<{ x: number; y: number }>, propri: Box[]): boolean => {
+        const cerchi = cerchiDei(propri);
+        for (const p of campioni) {
+          if (!nelRameDellaColata(indice, p.x, p.y)) continue;
+          punto.minX = punto.maxX = p.x;
+          punto.minY = punto.maxY = p.y;
+          let suo = false;
+          for (let i = 0; i < propri.length && !suo; i++) {
+            if (Math.hypot(cerchi[3 * i] - p.x, cerchi[3 * i + 1] - p.y) - cerchi[3 * i + 2] > TOLLERANZA_COLATA_MM) continue;
+            suo = boxDistance(punto, propri[i]) <= TOLLERANZA_COLATA_MM;
+          }
+          if (!suo) return true;
+        }
+        return false;
+      };
+      /**
+       * One shape against one pour: how far from its copper (`d`, on the edge
+       * `k` of its index), how far from the nearest pad or via of the pour's own
+       * net (`suo`), and whether, touching one of those, it is in the poured
+       * copper as well (`colato`). null when the pour is out of reach.
+       */
+      const misuraSagoma = (
+        piano: Piano,
+        rete: Rete,
+        punti: Array<{ x: number; y: number }>,
+        r: number,
+        cx: number,
+        cy: number,
+        raggio: number,
+        alRame: (b: Box) => number,
+      ): { d: number; k: number; suo: number; colato: boolean } | null => {
+        const c = piano.colata;
+        const indice = (piano.indice ??= indiceDiColata(c.outer, c.holes));
+        const d = distanzaSagomaColata(indice, punti, r, portataMm);
+        if (d >= portataMm) return null;
+        const k = indice.vicino;
+        const propri = rete ? rameDellaRete(c.net, rete.gruppi, c.layer) : [];
+        const suo = alSuoRame(propri, cx, cy, raggio, alRame);
+        const colato = d === 0 && suo <= TOLLERANZA_COLATA_MM && nelColato(indice, campioniDiRame(punti, r), propri);
+        return { d, k, suo, colato };
+      };
+      const righe: RameVicinoAUnaColata[] = [];
+
+      // --- the pads
+      for (const { box, el } of piazzole) {
+        if (box.group === null) continue;
+        const passante = el.type === "pcb_plated_hole";
+        const candidati = passante ? piani : box.layer ? perStrato.get(box.layer) : undefined;
+        if (!candidati || candidati.length === 0) continue;
+        const raggio = raggioEsterno(box);
+        // a pad of size zero has no copper to be in a pour (a file can declare one: see padsOffPlane)
+        if (raggio < 0.0005) continue;
+        const sagoma = sagomaDelPad(box, el);
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const p of sagoma.punti) {
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        }
+        const margine = sagoma.r + portataMm;
+        const centro = centroDi(box);
+        for (const piano of candidati) {
+          const c = piano.colata;
+          if (maxX + margine < c.minX || minX - margine > c.maxX || maxY + margine < c.minY || minY - margine > c.maxY) continue;
+          const rete = reti.get(c.net);
+          // the pad of the pour's own net is where the pour belongs
+          if (rete && rete.gruppi.has(box.group)) continue;
+          const m = misuraSagoma(piano, rete, sagoma.punti, sagoma.r, centro.x, centro.y, raggio, (b) => boxDistance(box, b));
+          if (!m) continue;
+          righe.push({
+            tipo: "pad",
+            id: box.label,
+            nome: nomiDellaScheda().piedino.get(String(el.pcb_port_id ?? "")) ?? box.label,
+            x: centro.x,
+            y: centro.y,
+            rete: rete?.nome ?? (c.net || "?"),
+            layer: c.layer,
+            distanzaMm: m.d,
+            ...(c.clearanceMm !== undefined ? { propriaMm: c.clearanceMm } : {}),
+            ...(Number.isFinite(m.suo) ? { rameProprioMm: m.suo } : {}),
+            ...(m.colato ? { nelRameColato: true } : {}),
+          });
+        }
+      }
+
+      // --- the traces: the segments of one trace follow one another in `segs`
+      const tratto = [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+      for (let inizio = 0, fine = 0; inizio < segs.length; inizio = fine) {
+        const el = segs[inizio].el;
+        while (fine < segs.length && segs[fine].el === el) fine++;
+        const gruppo = segs[inizio].group;
+        if (!gruppo) continue;
+        const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+        const ponte = el.netTie === true ? ponti.find((p) => p.id === segs[inizio].label) : undefined;
+        const strati = new Set<string>();
+        for (let s = inizio; s < fine; s++) {
+          const strato = segs[s].layer;
+          if (strato) strati.add(strato);
+        }
+        for (const strato of strati) {
+          for (const piano of perStrato.get(strato) ?? []) {
+            const c = piano.colata;
+            const rete = reti.get(c.net);
+            let stessa: boolean | null = null;
+            // the segment nearest to the poured copper; with none, the one nearest to a pad or a via of the pour's net
+            let scelto: { seg: WireSeg; m: NonNullable<ReturnType<typeof misuraSagoma>>; suo: boolean } | null = null;
+            for (let s = inizio; s < fine; s++) {
+              const seg = segs[s];
+              if (seg.layer !== strato) continue;
+              const margine = seg.halfW + portataMm;
+              if (
+                Math.max(seg.ax, seg.bx) + margine < c.minX ||
+                Math.min(seg.ax, seg.bx) - margine > c.maxX ||
+                Math.max(seg.ay, seg.by) + margine < c.minY ||
+                Math.min(seg.ay, seg.by) - margine > c.maxY
+              ) {
+                continue;
+              }
+              // the trace of the pour's own net is where the pour belongs; a net tie joins the nets it lands on
+              stessa ??=
+                !!rete &&
+                (rete.gruppi.has(gruppo) || (chiave !== "" && rete.gruppi.has(chiave)) || (!!ponte && [...ponte.gruppi].some((g) => rete.gruppi.has(g))));
+              if (stessa) break;
+              tratto[0].x = seg.ax;
+              tratto[0].y = seg.ay;
+              tratto[1].x = seg.bx;
+              tratto[1].y = seg.by;
+              const m = misuraSagoma(
+                piano,
+                rete,
+                tratto,
+                seg.halfW,
+                (seg.ax + seg.bx) / 2,
+                (seg.ay + seg.by) / 2,
+                Math.hypot(seg.bx - seg.ax, seg.by - seg.ay) / 2 + seg.halfW,
+                (b) => Math.max(0, segToBoxDistance(seg, b) - seg.halfW),
+              );
+              if (!m) continue;
+              const suo = !m.colato && m.suo <= m.d + TOLLERANZA_COLATA_MM;
+              if (scelto && (scelto.suo === suo ? m.d >= scelto.m.d : suo)) continue;
+              scelto = { seg, m, suo };
+              if (!suo && m.d === 0) break;
+            }
+            if (!scelto || !piano.indice) continue;
+            const { seg, m } = scelto;
+            const lato = piano.indice;
+            const dove =
+              m.k < 0
+                ? { x: seg.ax, y: seg.ay }
+                : puntoVicinoAlLato(seg.ax, seg.ay, seg.bx, seg.by, lato.px[m.k], lato.py[m.k], lato.qx[m.k], lato.qy[m.k]);
+            righe.push({
+              tipo: "trace",
+              id: seg.label,
+              nome: nomiDellaScheda().connessione.get(String(el.source_trace_id ?? "")) ?? seg.label,
+              x: dove.x,
+              y: dove.y,
+              rete: rete?.nome ?? (c.net || "?"),
+              layer: c.layer,
+              distanzaMm: m.d,
+              ...(c.clearanceMm !== undefined ? { propriaMm: c.clearanceMm } : {}),
+              ...(Number.isFinite(m.suo) ? { rameProprioMm: m.suo } : {}),
+              ...(m.colato ? { nelRameColato: true } : {}),
+            });
+          }
+        }
+      }
+      return righe;
+    };
+    let rameColate = misure?.rameColate;
+    if (!rameColate || rameColate.portataMm < portataRame) {
+      const portataMm = Math.max(portataRame, PORTATA_PIANI_MM);
+      rameColate = { portataMm, righe: misuraIlRame(portataMm) };
+      if (misure) misure.rameColate = rameColate;
+    }
+    for (const r of rameColate.righe) {
+      const propria = proprie ? r.propriaMm : undefined;
+      const minimo = propria ?? regolaColata;
+      // near a pad or a via of the pour's own net and not in the poured copper: checks 4 and 6 judge that gap
+      if (r.distanzaMm >= minimo - TOLLERANZA_COLATA_MM || sulSuoRame(r)) continue;
+      push(
+        "pour_clearance",
+        `${r.id}${r.nome !== r.id ? ` (${r.nome})` : ""} <-> ${r.rete} pour on ${r.layer}: ${r.distanzaMm.toFixed(3)}mm < min ${minimo}mm${propria !== undefined ? " (the pour's own clearance)" : ""}${r.distanzaMm === 0 ? ` (the ${r.tipo} is in the copper of the pour: a short)` : ""}`,
+        { x: r.x, y: r.y },
+        // the layer of the pour: a through hole is in the copper of one layer, and the dot goes there
         r.layer,
       );
     }
@@ -1741,6 +2199,138 @@ export function pianiSopraLeVie(circuitJson: El[], misure: MisureDrc = {}): Pian
       `${vie} ${vie === 1 ? "via ha" : "vie hanno"} la piazzola nel rame di un piano di un'altra rete ` +
       `(${coperte[0].via} nel piano ${coperte[0].rete} su ${coperte[0].layer}${altri}): il piano non si e' aperto attorno al foro`,
   };
+}
+
+/**
+ * THE TRACES AND THE PADS IN THE COPPER OF A POUR OF ANOTHER NET: they touch
+ * its poured copper or lie in it, a short. It is what copper laid on a board
+ * that is not poured again looks like (the fast update never pours): a trace
+ * drawn across a pour, a part moved onto one. Like a plane over a via it is
+ * said apart from the DRC list, counted and in words
+ * (CompileSummary.poursOverCopper), each by the name a person knows it by and
+ * with its layer, and the export refuses the board. Copper that is only NEAR a
+ * pour is a violation of the DRC and no more, as a via near a plane is; and
+ * copper that touches the pour only on a pad or a via of the pour's own net is
+ * a short between those two, which checks 4 and 6 report (see sulSuoRame).
+ *
+ * Read from what a DRC run on this board measured (`misure`), or measured here
+ * when nobody has, as pianiSopraLeVie does and with the same object when the
+ * caller asks both: the export asks the board it is about to hand over. A
+ * distance of zero is the same under every ruleset; a board with no pour is
+ * not measured.
+ */
+export function colateSopraIlRame(circuitJson: El[], misure: MisureDrc = {}): ColateSuRame | undefined {
+  if (!misure.rameColate) {
+    if (!circuitJson.some((el) => el.type === "pcb_copper_pour")) return undefined;
+    runDrcChecks(circuitJson, DEFAULT_DESIGN_RULES, misure);
+  }
+  // one trace can be in two pours, a through pad in the pours of two layers: each is said once, where it was found first
+  const coperti = new Map<string, RameVicinoAUnaColata>();
+  for (const r of misure.rameColate?.righe ?? []) {
+    // on a pad or a via of the pour's own net and nowhere else in the pour: a short between two pieces of copper, not a pour to make again
+    if (r.distanzaMm > 0 || sulSuoRame(r)) continue;
+    const chi = `${r.tipo}:${r.id}`;
+    if (!coperti.has(chi)) coperti.set(chi, r);
+  }
+  if (coperti.size === 0) return undefined;
+  const tutti = [...coperti.values()];
+  const piste = tutti.filter((r) => r.tipo === "trace").length;
+  const piazzole = tutti.length - piste;
+  const quante = [
+    ...(piste > 0 ? [`${piste} ${piste === 1 ? "pista" : "piste"}`] : []),
+    ...(piazzole > 0 ? [`${piazzole} ${piazzole === 1 ? "piazzola" : "piazzole"}`] : []),
+  ].join(" e ");
+  const prime = tutti.slice(0, PRIME_NEL_RAME).map((r) => `${r.tipo === "trace" ? "la pista" : "la piazzola"} ${r.nome} nella colata ${r.rete} su ${r.layer}`);
+  const altre = tutti.length - prime.length;
+  return {
+    count: tutti.length,
+    detail:
+      `${quante} ${tutti.length === 1 ? "sta" : "stanno"} nel rame di una colata di un'altra rete ` +
+      `(${prime.join(", ")}${altre === 1 ? " e un'altra" : altre > 1 ? ` e altre ${altre}` : ""}): e' un corto`,
+  };
+}
+
+/** how many of them colateSopraIlRame names before "e altre N" */
+const PRIME_NEL_RAME = 3;
+
+/**
+ * Whether what a row of check 9 measures is a pad or a via of the pour's own
+ * net and not its poured copper: one of them is as near as the pour, and the
+ * copper of the other net is not in the poured copper as well. That gap is
+ * between two pieces of copper the pair rules know, and checks 4 and 6 judge
+ * it; a trace across a ground pad is a "trace over pad", on a board poured a
+ * moment ago too.
+ */
+const sulSuoRame = (r: RameVicinoAUnaColata): boolean =>
+  r.nelRameColato !== true && (r.rameProprioMm ?? Infinity) <= r.distanzaMm + TOLLERANZA_COLATA_MM;
+
+/** how far apart the points of campioniDiRame are along a trace or a side */
+const PASSO_CAMPIONI_MM = 0.1;
+
+/**
+ * THE POINTS OF A PIECE OF COPPER WHERE THE POURED COPPER IS LOOKED FOR, when
+ * it touches a pad or a via of the pour's own net (see check 9): along its
+ * core every tenth of a millimetre and, for a shape with a radius, along its
+ * two edges and at its ends; the centre and eight points of the rim for a
+ * circle; the middle of a polygon too. A sample, not a proof: copper that
+ * reaches the poured copper between two of these points and nowhere else is
+ * not seen, and stays a "trace over pad" of check 6.
+ */
+function campioniDiRame(punti: Array<{ x: number; y: number }>, r: number): Array<{ x: number; y: number }> {
+  const n = punti.length;
+  const fuori: Array<{ x: number; y: number }> = [];
+  if (n === 1) {
+    fuori.push({ x: punti[0].x, y: punti[0].y });
+    for (let i = 0; i < 8 && r > 0; i++) fuori.push({ x: punti[0].x + r * Math.cos((i * Math.PI) / 4), y: punti[0].y + r * Math.sin((i * Math.PI) / 4) });
+    return fuori;
+  }
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < (n === 2 ? 1 : n); i++) {
+    const a = punti[i];
+    const b = punti[(i + 1) % n];
+    sx += a.x;
+    sy += a.y;
+    const lungo = Math.hypot(b.x - a.x, b.y - a.y);
+    const ux = lungo > 1e-9 ? (b.x - a.x) / lungo : 1;
+    const uy = lungo > 1e-9 ? (b.y - a.y) / lungo : 0;
+    const passi = Math.min(400, Math.max(1, Math.ceil(lungo / PASSO_CAMPIONI_MM)));
+    for (let k = 0; k <= passi; k++) {
+      const x = a.x + ((b.x - a.x) * k) / passi;
+      const y = a.y + ((b.y - a.y) * k) / passi;
+      fuori.push({ x, y });
+      if (r > 0) fuori.push({ x: x - uy * r, y: y + ux * r }, { x: x + uy * r, y: y - ux * r });
+    }
+    if (r > 0) fuori.push({ x: a.x - ux * r, y: a.y - uy * r }, { x: b.x + ux * r, y: b.y + uy * r });
+  }
+  if (n >= 3) fuori.push({ x: sx / n, y: sy / n });
+  return fuori;
+}
+
+/**
+ * The shape of a pad for the check against the pours: as boxDistance reduces
+ * it (see sagomaDi), but a through pad drawn as a polygon by its outline, which
+ * is what the pour opens around (padRuotati in pours-recompute.ts). Its box,
+ * which is all rameDelForo keeps of it, reaches past the outline at the
+ * corners and would come out nearer to the pour than the copper is.
+ */
+function sagomaDelPad(b: Box, el: El): { punti: Array<{ x: number; y: number }>; r: number } {
+  const x = num(el.x);
+  const y = num(el.y);
+  if (el.type === "pcb_plated_hole" && el.shape === "hole_with_polygon_pad" && Array.isArray(el.pad_outline) && x !== null && y !== null) {
+    const rad = ((num(el.ccw_rotation) ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const punti: Array<{ x: number; y: number }> = [];
+    for (const p of el.pad_outline as Array<{ x?: unknown; y?: unknown }>) {
+      const px = num(p?.x);
+      const py = num(p?.y);
+      // the outline is relative to the hole's position
+      if (px !== null && py !== null) punti.push({ x: x + px * cos - py * sin, y: y + px * sin + py * cos });
+    }
+    if (punti.length >= 3) return { punti, r: 0 };
+  }
+  return sagomaDi(b);
 }
 
 /** occurrences kept with their message and point, per rule; the count goes on */

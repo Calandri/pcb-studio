@@ -269,8 +269,8 @@ describe("A. two parts whose footprints overlap hit each other in assembly", () 
   });
 
   it("a board with parts that hit is filed under today's engine all the same", () => {
-    expect(CHECKS_ENGINE_VERSION).toBe(12);
-    expect(motoreDaSalvare({ courtyards: { count: 24, detail: "24 coppie" } }, 10)).toBe(12);
+    expect(CHECKS_ENGINE_VERSION).toBe(13);
+    expect(motoreDaSalvare({ courtyards: { count: 24, detail: "24 coppie" } }, 10)).toBe(13);
   });
 });
 

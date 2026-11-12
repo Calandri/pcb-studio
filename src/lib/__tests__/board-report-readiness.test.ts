@@ -104,3 +104,30 @@ describe("scheda senza schematico riscritta da un altro percorso", () => {
     expect(buildBoardReport(withSchematic, cleanSummary, { saved: true }).ready).toBe(true);
   });
 });
+
+describe("rame di un'altra rete dentro una colata", () => {
+  // what the summary carries after a fast update that laid a trace across the old ground pour (CompileSummary.poursOverCopper)
+  const detail =
+    "1 pista sta nel rame di una colata di un'altra rete (la pista .R1 > .pin2 to .R2 > .pin1 nella colata GND su top): e' un corto";
+  const conIlCorto = {
+    ...cleanSummary,
+    drcViolations: [{ rule: "pour_clearance", message: "pcb_trace_manual_0 (.R1 > .pin2 to .R2 > .pin1) <-> GND pour on top: 0.000mm < min 0.2mm (the trace is in the copper of the pour: a short)" }],
+    poursOverCopper: { count: 1, detail },
+  };
+
+  it("non e' pronta, lo dice per primo e in italiano, con la pista, lo strato e cosa fare", () => {
+    const r = buildBoardReport([board], conIlCorto, { saved: true });
+    expect(r.ready).toBe(false);
+    expect(r.readiness).toBeLessThan(100);
+    expect(r.missing[0]).toBe("c'e' rame di un'altra rete dentro una colata (un corto): premi Aggiorna per rifare le colate");
+    const distanze = r.checks.find((c) => c.id === "clear")!;
+    expect(distanze).toMatchObject({ severity: "err", count: "1 segnalazione", detail: `${detail}. Premi Aggiorna per rifare le colate.` });
+  });
+
+  it("senza quella voce la riga delle distanze dice quello che diceva", () => {
+    const r = buildBoardReport([board], { ...conIlCorto, poursOverCopper: undefined }, { saved: true });
+    expect(r.checks.find((c) => c.id === "clear")).toMatchObject({ severity: "err", count: "1 segnalazione", detail: conIlCorto.drcViolations[0].message.slice(0, 130) });
+    expect(r.missing).toEqual(["Distanze minime: 1 segnalazione"]);
+    expect(buildBoardReport([board], cleanSummary, { saved: true }).checks.find((c) => c.id === "clear")).toMatchObject({ severity: "ok", count: "ok" });
+  });
+});

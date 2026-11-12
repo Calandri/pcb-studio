@@ -92,7 +92,25 @@
 // on an 8-layer board, where a pour on inner5 or inner6 holds a via of its net whole, the other pour standing at its
 // own clearance from that via was reported as "pour_pour_clearance"; the same for a pour written on inner5 or inner6
 // of a board with fewer layers). The other checks already read the layer as it is written
-export const CHECKS_ENGINE_VERSION = 12;
+// 13 (2026-11-12): the pours are measured against the traces and the pads of the other nets, not only against the vias
+// (drc.ts, check 9). The fast update never pours: a trace drawn in Instrada across the pour of another net, or a part
+// moved in Sposta whose pads land in the old pour of another net, stayed in that copper, a short, with every check
+// green, under today's engine, and the Gerber export answered 200 (measured on a compiled board: spinta-misure.test.ts).
+// Now every wire segment of a trace with its width, every SMD pad on its layer and the copper of every plated hole on
+// every layer is measured against every pour of another net on that layer: under the pour's clearance (its own when
+// it declares one, the project's otherwise, with the tolerance of the vias) it is a "pour_clearance" violation with
+// its point and its layer. The copper measured is the poured one: where a pad or a via of the pour's own net, which
+// the pour holds whole, is as near as the pour, the gap is theirs and the pair checks judge it (a trace across a
+// ground pad is a "trace over pad", on a board just compiled too), unless that copper lies in the poured copper as
+// well. Copper of the pour's own net is never a violation (ground pads in the ground pour, the pads and the vias a
+// declared strip joins), nor a net tie against the nets it joins, nor copper with no known net. And a board where a
+// trace or a pad touches the poured copper of another net or lies in it says so in its summary
+// (CompileSummary.poursOverCopper: which trace or pad, by connection or by part and pin, and on which layer) and is
+// refused by the export, which measures the board about to go as it does for a plane over a via: "Aggiorna" pours
+// again around that copper. A board whose pours come from a compile has no such violation, so no answer of it
+// changes: a board of engine 12 comes to 13 with a recheck ("Ricontrolla"), no compile. A recheck does not pour again
+// for this: a board with copper in a pour still needs "Aggiorna" after it
+export const CHECKS_ENGINE_VERSION = 13;
 
 /**
  * The first engine that measures the footprints of the parts and absorbs
@@ -128,6 +146,22 @@ export interface PianiSuVie {
 const pianiSuVieDi = (summary: unknown): PianiSuVie | null => {
   const p = (summary as { planesOverVias?: Partial<PianiSuVie> } | null | undefined)?.planesOverVias;
   return p && typeof p.count === "number" && p.count > 0 ? { count: p.count, detail: String(p.detail ?? "") } : null;
+};
+
+/**
+ * what the summary says when a trace or a pad is in the copper of another net's pour (see
+ * CompileSummary.poursOverCopper, measured by colateSopraIlRame in drc.ts)
+ */
+export interface ColateSuRame {
+  /** how many traces and pads touch the copper of a pour of another net or lie in it */
+  count: number;
+  /** the fact in words: the first of them by the name a person knows them by, each with its pour and its layer */
+  detail: string;
+}
+
+const colateSuRameDi = (summary: unknown): ColateSuRame | null => {
+  const r = (summary as { poursOverCopper?: Partial<ColateSuRame> } | null | undefined)?.poursOverCopper;
+  return r && typeof r.count === "number" && r.count > 0 ? { count: r.count, detail: String(r.detail ?? "") } : null;
 };
 
 /**
@@ -211,6 +245,11 @@ export function colateDiUnMotoreDiPrima(circuitJson: unknown, engineVersion: num
  * covers a via. The planes are poured again by a compile ("Aggiorna") and by a
  * recheck ("Ricontrolla") of a board in this state; when they come back over
  * the hole all the same, it is the via or the plane that has to move.
+ *
+ * The same words say why the export refuses a board for what it measures on
+ * the board itself, each with its own way out: a trace or a pad in the copper
+ * of another net's pour, two pours too close, pours of an older engine, an id
+ * that two elements share.
  */
 export function nonCertificata(summary: unknown): string | null {
   const p = pianiSuVieDi(summary);
@@ -220,6 +259,20 @@ export function nonCertificata(summary: unknown): string | null {
     perche.push(
       `${p.detail}. La scheda NON e' certificata per l'export finche' un piano copre una via: ` +
         `premi Aggiorna o Ricontrolla per rifare le colate, e se il piano resta sulla via sposta la via o il piano`,
+    );
+  }
+  /*
+   * And a board where a trace or a pad is in the copper of another net's pour:
+   * the trace drawn across a pour and the part moved onto one, which the fast
+   * update lays without pouring (see check 9 in drc.ts). Only a compile pours
+   * around them: a recheck pours again for a plane over a via and for nothing
+   * else, so "Ricontrolla" is not offered here.
+   */
+  const r = colateSuRameDi(summary);
+  if (r) {
+    perche.push(
+      `${r.detail}. La scheda NON e' certificata per l'export finche' una colata copre il rame di un'altra rete: ` +
+        `premi Aggiorna per rifare le colate, e se quel rame resta nella colata sposta lui o la colata`,
     );
   }
   if (c) {

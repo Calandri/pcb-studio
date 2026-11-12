@@ -3,18 +3,22 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 /*
  * MEASURES FOR "SPINGI E SPOSTA" (dragging vias and traces in Sposta, phase 0).
  *
- * No new behaviour is tested here: every case pins a fact of the engine AS IT
- * IS TODAY (origin/main 3affe7c, v0.31.0) that the feature will stand on. They
- * were read on boards compiled for real, not deduced from the code:
+ * Measures 1 to 3 test no new behaviour: every case pins a fact of the engine
+ * AS IT WAS on origin/main 3affe7c (v0.31.0) that the feature will stand on.
+ * They were read on boards compiled for real, not deduced from the code:
  *  1. what a compiled via carries, and how its net NAME is found;
  *  2. what a hand route of manual-edits.json does to a trace the files draw:
  *     it replaces it, it is added next to it, or it is not laid at all;
- *  3. a file trace taken off in the viewer comes back with a compile;
- *  6. a trace laid by the fast update inside the old pour of another net is
- *     seen by no check and goes to the export.
- * Where today's behaviour is a defect a later phase corrects, the test says
- * what happens today and a `// FASE n:` comment says what it has to say then:
- * that is the line to change when the phase lands.
+ *  3. a file trace taken off in the viewer comes back with a compile.
+ * Where that behaviour is a defect a later phase corrects, the test says what
+ * happens today and a `// FASE n:` comment says what it has to say then: that
+ * is the line to change when the phase lands.
+ *
+ * Measure 6 was such a defect and is corrected (phase 0b, engine 13): a trace
+ * or a pad laid by the fast update inside the old pour of another net was seen
+ * by no check and went to the export. Its cases now say what happens: the DRC
+ * reports it, the summary says it, the export answers 409 until a compile
+ * pours again. The geometry of that check is in pours-rame.test.ts.
  *
  * The fixtures lean on one more measured fact: the points of a `pcbPath` are
  * relative to the PART of the anchor pin (the first pin, or the one named by
@@ -51,9 +55,9 @@ import { POST as aggiornaVeloce } from "@/app/api/reroute-local/route";
 import { boardBaseOf } from "@/lib/board-base";
 import { compileProject } from "@/lib/compile";
 import { DESIGN_RULES_PATH, resolveDesignRules } from "@/lib/design-rules";
-import { runDrcChecks } from "@/lib/drc";
+import { colateSopraIlRame, runDrcChecks } from "@/lib/drc";
 import { idDoppi } from "@/lib/duplicate-ids";
-import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
+import { CHECKS_ENGINE_VERSION, nonCertificata } from "@/lib/engine-version";
 import { planFastUpdate } from "@/lib/fast-update";
 import { MANUAL_EDITS_PATH, serializeManualEdits } from "@/lib/manual-edits";
 import { filesHash } from "@/lib/project-store";
@@ -350,81 +354,215 @@ describe("spinta, misura 3: a file trace taken off in the viewer", () => {
   }, 120_000);
 });
 
-describe("spinta, misura 6: a trace laid by the fast update inside the old pour of another net", () => {
+describe("spinta, misura 6: copper laid by the fast update inside the old pour of another net", () => {
+  /*
+   * A ground pour over the whole top face and a strip of VBUS drawn by hand
+   * between R3.pin2 and R4.pin1. The pads are 0402: 0.54 x 0.64 mm, at 0.51 mm
+   * either side of the part. R1.pin1 is ground; R1.pin2 and R2.pin1 are one
+   * connection with no copper yet; R2.pin2 is on SIG.
+   */
   const CON_COLATA = `export default () => (
   <board width="30mm" height="16mm">
     <net name="GND" />
+    <net name="VBUS" />
+    <net name="SIG" />
     <copperpour layer="top" connectsTo="net.GND" />
+    <copperpour layer="top" connectsTo="net.VBUS" outline={[{ x: -2.6, y: 4.75 }, { x: 2.6, y: 4.75 }, { x: 2.6, y: 5.25 }, { x: -2.6, y: 5.25 }]} />
     <resistor name="R1" resistance="1k" footprint="0402" pcbX={-8} pcbY={0} />
     <resistor name="R2" resistance="1k" footprint="0402" pcbX={8} pcbY={0} />
+    <resistor name="R3" resistance="1k" footprint="0402" pcbX={-3} pcbY={5} />
+    <resistor name="R4" resistance="1k" footprint="0402" pcbX={3} pcbY={5} />
     <trace from=".R1 > .pin1" to="net.GND" />
     <trace from=".R1 > .pin2" to=".R2 > .pin1" />
+    <trace from=".R2 > .pin2" to="net.SIG" />
+    <trace from=".R3 > .pin2" to="net.VBUS" />
+    <trace from=".R4 > .pin1" to="net.VBUS" />
   </board>
 )
 `;
+  const files: Record<string, string> = { "main.tsx": CON_COLATA, [DESIGN_RULES_PATH]: REGOLE };
   const dentro = (x: number, y: number, a: Punto[]) => {
     let d = false;
     for (let i = 0, j = a.length - 1; i < a.length; j = i++) if (a[i].y > y !== a[j].y > y && x < ((a[j].x - a[i].x) * (y - a[i].y)) / (a[j].y - a[i].y) + a[i].x) d = !d;
     return d;
   };
   const colate = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_copper_pour");
-  /** whether a point of the top face is in the copper of a pour */
-  const nelRame = (cj: unknown[], x: number, y: number) =>
-    colate(cj).some((c) => {
+  /** whether a point of the top face is in the copper of a pour of that net */
+  const nelRame = (cj: unknown[], rete: string, x: number, y: number) => {
+    const net = (cj as El[]).find((e) => e.type === "source_net" && e.name === rete)!;
+    return colate(cj).some((c) => {
       const b = c.brep_shape as { outer_ring: { vertices: Punto[] }; inner_rings?: Array<{ vertices: Punto[] }> };
-      return c.layer === "top" && dentro(x, y, b.outer_ring.vertices) && !(b.inner_rings ?? []).some((r) => dentro(x, y, r.vertices));
+      return c.layer === "top" && c.source_net_id === net.source_net_id && dentro(x, y, b.outer_ring.vertices) && !(b.inner_rings ?? []).some((r) => dentro(x, y, r.vertices));
     });
+  };
+  const delleColate = (drc: Array<{ rule: string }>) => drc.filter((d) => /pour|plane/.test(d.rule));
+  type Riepilogo = { drcViolations: Array<{ rule: string; message: string; points?: Array<{ x: number; y: number; layer?: string }> }>; planesOverVias?: unknown; poursTooClose?: unknown; poursOverCopper?: { count: number; detail: string } };
+  const riga = (hash: string, circuitJson: unknown[], summary: unknown, engine: number, deiFile: Record<string, string>) => ({
+    filesHash: hash,
+    circuitJson,
+    summary,
+    createdAt: "2026-11-12T10:00:00.000Z",
+    engineVersion: engine,
+    base: boardBaseOf(deiFile),
+  });
+  const esportaCome = (kind: string) => esporta(new Request(`http://x/api/export?projectId=p&kind=${kind}`));
+  /** the fast update of the saved board `prima` after the hand edits changed: what it saved */
+  const conLAggiornamentoVeloce = async (edits: string) => {
+    const conLeModifiche = { ...files, [MANUAL_EDITS_PATH]: edits };
+    db.files = conLeModifiche;
+    db.saves = [];
+    db.row = riga(filesHash(files), prima.circuitJson, prima.summary, CHECKS_ENGINE_VERSION, files);
+    const risposta = (await (await aggiornaVeloce(new Request("http://x/api/reroute-local", { method: "POST", body: JSON.stringify({ projectId: "p" }) }))).json()) as {
+      ok: boolean;
+      manualRoutes?: number;
+      summary: Riepilogo;
+    };
+    const [salvata] = db.saves;
+    // filed under today's engine, as the board of these files
+    expect(salvata.engine).toBe(CHECKS_ENGINE_VERSION);
+    expect(salvata.hash).toBe(filesHash(conLeModifiche));
+    // the pours are the ones of before: the fast update never pours
+    expect(colate(salvata.circuitJson)).toEqual(colate(prima.circuitJson));
+    return { conLeModifiche, risposta, salvata, riepilogo: salvata.summary as Riepilogo };
+  };
+  const PERCHE = "La scheda NON e' certificata per l'export finche' una colata copre il rame di un'altra rete: premi Aggiorna per rifare le colate, e se quel rame resta nella colata sposta lui o la colata";
 
-  it("no check says it and the Gerber export answers 200: only a compile pours the ground again around the trace", async () => {
-    const files: Record<string, string> = { "main.tsx": CON_COLATA, [DESIGN_RULES_PATH]: REGOLE };
-    const prima = await compileProject(files);
+  let prima: Awaited<ReturnType<typeof compileProject>>;
+  beforeAll(async () => {
+    prima = await compileProject(files);
+  }, 120_000);
+
+  it("a board just compiled has nothing to say: a ground pad in the ground pour and the pads a declared strip joins are where the pour belongs", async () => {
     const gnd = (prima.circuitJson as El[]).find((e) => e.type === "source_net" && e.name === "GND")!;
-    expect(colate(prima.circuitJson).map((c) => [c.layer, c.source_net_id])).toEqual([["top", gnd.source_net_id]]);
-    expect(nelRame(prima.circuitJson, 0, 0)).toBe(true);
+    const vbus = (prima.circuitJson as El[]).find((e) => e.type === "source_net" && e.name === "VBUS")!;
+    expect(colate(prima.circuitJson).map((c) => [c.layer, c.source_net_id])).toEqual([["top", gnd.source_net_id], ["top", vbus.source_net_id]]);
+    // R1.pin1 (-8.51; 0), a ground pad, is IN the copper of the ground pour: its own net
+    expect(nelRame(prima.circuitJson, "GND", -8.51, 0)).toBe(true);
+    // R3.pin2 (-2.49; 5) and R4.pin1 (2.49; 5), the pads of VBUS, are IN the copper of the VBUS strip that joins them
+    expect(nelRame(prima.circuitJson, "VBUS", -2.49, 5)).toBe(true);
+    expect(nelRame(prima.circuitJson, "VBUS", 2.49, 5)).toBe(true);
+    // and the ground pour opened around everything of the other nets: nothing to report, nothing to refuse
+    expect(delleColate(runDrcChecks(prima.circuitJson as never, resolveDesignRules(files).rules))).toEqual([]);
+    expect(delleColate(prima.summary.drcViolations)).toEqual([]);
+    expect(prima.summary.poursOverCopper).toBeUndefined();
+    expect(colateSopraIlRame(prima.circuitJson as never)).toBeUndefined();
+    expect(nonCertificata(prima.summary)).toBeNull();
+    db.files = files;
+    db.row = riga(filesHash(files), prima.circuitJson, prima.summary, CHECKS_ENGINE_VERSION, files);
+    expect((await esportaCome("gerber")).status).toBe(200);
+  }, 120_000);
 
+  it("a trace drawn across the ground pour: the DRC says it, the summary says it, the export answers 409 with the trace and the layer, and 200 again after a compile", async () => {
+    expect(nelRame(prima.circuitJson, "GND", 0, 0)).toBe(true);
     // the trace between R1.pin2 and R2.pin1 (not ground), drawn by hand straight across the ground pour
     const edits = conLeRoute([
       { connection: FRA_PIEDINI, from: ".R1 > .pin2", to: ".R2 > .pin1", width: 0.2, points: [{ x: -7.49, y: 0, layer: "top" }, { x: 7.49, y: 0, layer: "top" }] },
     ]);
-    const conLaPista = { ...files, [MANUAL_EDITS_PATH]: edits };
-    db.files = conLaPista;
-    db.saves = [];
-    db.row = { filesHash: filesHash(files), circuitJson: prima.circuitJson, summary: prima.summary, createdAt: "2026-11-12T10:00:00.000Z", engineVersion: CHECKS_ENGINE_VERSION, base: boardBaseOf(files) };
-    const risposta = await aggiornaVeloce(new Request("http://x/api/reroute-local", { method: "POST", body: JSON.stringify({ projectId: "p" }) }));
-    expect(await risposta.json()).toMatchObject({ ok: true, manualRoutes: 1 });
-    const [salvata] = db.saves;
+    const { conLeModifiche: conLaPista, risposta, salvata, riepilogo } = await conLAggiornamentoVeloce(edits);
+    expect(risposta).toMatchObject({ ok: true, manualRoutes: 1 });
 
-    // the trace is on the board, the pour is the one of before, and the trace runs in its copper: a short
+    // the trace is on the board and runs in the copper of the old ground pour: a short
     expect(pisteDi(salvata.circuitJson, FRA_PIEDINI).map(percorso)).toEqual(["top -7.49;0 > top 7.49;0"]);
-    expect(colate(salvata.circuitJson)).toEqual(colate(prima.circuitJson));
-    expect(nelRame(salvata.circuitJson, 0, 0)).toBe(true);
-    expect(nelRame(salvata.circuitJson, 3, 0)).toBe(true);
-    // filed under today's engine, as the board of these files
-    expect(salvata.engine).toBe(CHECKS_ENGINE_VERSION);
-    expect(salvata.hash).toBe(filesHash(conLaPista));
+    expect(nelRame(salvata.circuitJson, "GND", 0, 0)).toBe(true);
+    expect(nelRame(salvata.circuitJson, "GND", 3, 0)).toBe(true);
 
-    // no check of the board names a pour
-    const drc = runDrcChecks(salvata.circuitJson as never, resolveDesignRules(conLaPista).rules);
-    expect(drc.filter((d) => /pour|plane/.test(d.rule))).toEqual([]);
-    const riepilogo = salvata.summary as { drcViolations: Array<{ rule: string }>; planesOverVias?: unknown; poursTooClose?: unknown };
-    expect(riepilogo.drcViolations.filter((d) => /pour|plane/.test(d.rule))).toEqual([]);
+    // the DRC names the trace by its connection, the pour and the layer. The dot is where the trace enters the copper:
+    // it leaves the pad of R1.pin2 (centre -7.49, half as wide as 0.54) and the pour starts 0.2 mm after the pad,
+    // -7.49 + 0.27 + 0.2 = -7.02, on the top face
+    const drc = delleColate(runDrcChecks(salvata.circuitJson as never, resolveDesignRules(conLaPista).rules)) as Riepilogo["drcViolations"];
+    expect(drc).toHaveLength(1);
+    expect(drc[0].rule).toBe("pour_clearance");
+    expect(drc[0].message).toMatch(/^pcb_trace\S+ \(\.R1 > \.pin2 to \.R2 > \.pin1\) <-> GND pour on top: 0\.000mm < min 0\.2mm \(the trace is in the copper of the pour: a short\)$/);
+    expect(drc[0].points).toHaveLength(1);
+    expect(drc[0].points![0].x).toBeCloseTo(-7.02, 3);
+    expect(drc[0].points![0].y).toBeCloseTo(0, 6);
+    expect(drc[0].points![0].layer).toBe("top");
+    expect(delleColate(riepilogo.drcViolations)).toEqual(drc);
+
+    // the summary says it apart, in words, and so does the answer of the fast update
+    const detto = {
+      count: 1,
+      detail:
+        "1 pista sta nel rame di una colata di un'altra rete (la pista .R1 > .pin2 to .R2 > .pin1 nella colata GND su top): e' un corto",
+    };
+    expect(riepilogo.poursOverCopper).toEqual(detto);
+    expect(risposta.summary.poursOverCopper).toEqual(detto);
+    expect(colateSopraIlRame(salvata.circuitJson as never)).toEqual(detto);
     expect(riepilogo.planesOverVias).toBeUndefined();
     expect(riepilogo.poursTooClose).toBeUndefined();
-    // FASE 3: the summary of this board says that the pours are to be made again (a trace in the copper of
-    // another net's pour, or closer than the pour's distance).
+    expect(nonCertificata(riepilogo)).toBe(`${detto.detail}. ${PERCHE}`);
 
-    // and the board goes to the factory
-    db.row = { filesHash: salvata.hash, circuitJson: salvata.circuitJson, summary: salvata.summary, createdAt: "2026-11-12T10:01:00.000Z", engineVersion: salvata.engine, base: boardBaseOf(conLaPista) };
-    const gerber = await esporta(new Request("http://x/api/export?projectId=p&kind=gerber"));
-    expect(gerber.status).toBe(200);
-    expect((await JSZip.loadAsync(await gerber.arrayBuffer())).file("F_Cu.gbr")).not.toBeNull();
-    expect((await esporta(new Request("http://x/api/export?projectId=p&kind=pnp"))).status).toBe(200);
-    // FASE 3: 409 for gerber and pnp, with the reason and "premi Aggiorna"; 200 again after the compile below.
+    // and the board does not go to the factory: the export measures the board itself and says which trace, where and what to do
+    db.row = riga(salvata.hash, salvata.circuitJson, salvata.summary, salvata.engine, conLaPista);
+    for (const kind of ["gerber", "pnp"]) {
+      const rifiuto = await esportaCome(kind);
+      expect(rifiuto.status, kind).toBe(409);
+      const { error, reason } = (await rifiuto.json()) as { error: string; reason: string };
+      expect(reason).toBe(`${detto.detail}. ${PERCHE}`);
+      expect(error).toBe(`ricompila la scheda prima di esportare: ${reason}`);
+    }
+    // a summary that does not say it changes nothing: the board is measured, the summary is not asked
+    db.row = riga(salvata.hash, salvata.circuitJson, prima.summary, salvata.engine, conLaPista);
+    expect((await esportaCome("gerber")).status).toBe(409);
+    // the bill of materials reads the parts, not the copper: it goes on
+    expect((await esportaCome("bom")).status).toBe(200);
 
-    // "Aggiorna": the ground is poured again and keeps away from the trace
+    // "Aggiorna": the ground is poured again and keeps away from the trace, and the board goes
     const aggiornata = await compileProject(conLaPista);
     expect(pisteDi(aggiornata.circuitJson, FRA_PIEDINI).map(percorso)).toEqual(["top -7.49;0 > top 7.49;0"]);
-    expect(nelRame(aggiornata.circuitJson, 0, 0)).toBe(false);
-    expect(nelRame(aggiornata.circuitJson, 3, 0)).toBe(false);
+    expect(nelRame(aggiornata.circuitJson, "GND", 0, 0)).toBe(false);
+    expect(nelRame(aggiornata.circuitJson, "GND", 3, 0)).toBe(false);
+    expect(delleColate(aggiornata.summary.drcViolations)).toEqual([]);
+    expect(aggiornata.summary.poursOverCopper).toBeUndefined();
+    db.row = riga(filesHash(conLaPista), aggiornata.circuitJson, aggiornata.summary, CHECKS_ENGINE_VERSION, conLaPista);
+    const gerber = await esportaCome("gerber");
+    expect(gerber.status).toBe(200);
+    expect((await JSZip.loadAsync(await gerber.arrayBuffer())).file("F_Cu.gbr")).not.toBeNull();
+    expect((await esportaCome("pnp")).status).toBe(200);
+  }, 120_000);
+
+  it("a part moved in Sposta: its pads land in the old ground pour, the DRC and the summary name them by part and pin, the export answers 409, and 200 again after a compile", async () => {
+    // where R2 goes, (8; -4), the old ground pour is whole
+    for (const x of [7.49, 8.51]) expect(nelRame(prima.circuitJson, "GND", x, -4)).toBe(true);
+    const edits = JSON.stringify({ schematic_placements: [], pcb_placements: [{ selector: "R2", center: { x: 8, y: -4 } }], manual_trace_hints: [], pcb_routes: [] });
+    const { conLeModifiche: conLoSpostamento, risposta, salvata, riepilogo } = await conLAggiornamentoVeloce(edits);
+    expect(risposta.ok).toBe(true);
+    // the two pads of R2 are where the part went, 0.51 mm either side of it: (7.49; -4) and (8.51; -4), in the copper
+    const piazzole = (salvata.circuitJson as El[]).filter((e) => e.type === "pcb_smtpad" && Number(e.x) > 0 && Number(e.y) < 0);
+    expect(piazzole.map(posto).sort()).toEqual(["7.49;-4", "8.51;-4"]);
+    for (const p of piazzole) expect(nelRame(salvata.circuitJson, "GND", Number(p.x), Number(p.y))).toBe(true);
+
+    // one violation per pad, with its dot in the middle of the pad, on the face of the pad and of the pour
+    const drc = delleColate(riepilogo.drcViolations) as Riepilogo["drcViolations"];
+    expect(drc.map((d) => [d.rule, d.message.replace(/^pcb_smtpad_\d+ /, ""), d.points])).toEqual([
+      ["pour_clearance", "(R2.pin1) <-> GND pour on top: 0.000mm < min 0.2mm (the pad is in the copper of the pour: a short)", [{ x: 7.49, y: -4, layer: "top" }]],
+      ["pour_clearance", "(R2.pin2) <-> GND pour on top: 0.000mm < min 0.2mm (the pad is in the copper of the pour: a short)", [{ x: 8.51, y: -4, layer: "top" }]],
+    ]);
+    const detto = {
+      count: 2,
+      detail:
+        "2 piazzole stanno nel rame di una colata di un'altra rete (la piazzola R2.pin1 nella colata GND su top, la piazzola R2.pin2 nella colata GND su top): e' un corto",
+    };
+    expect(riepilogo.poursOverCopper).toEqual(detto);
+
+    db.row = riga(salvata.hash, salvata.circuitJson, salvata.summary, salvata.engine, conLoSpostamento);
+    for (const kind of ["gerber", "pnp"]) {
+      const rifiuto = await esportaCome(kind);
+      expect(rifiuto.status, kind).toBe(409);
+      expect(((await rifiuto.json()) as { reason: string }).reason).toBe(`${detto.detail}. ${PERCHE}`);
+    }
+    expect((await esportaCome("bom")).status).toBe(200);
+
+    // "Aggiorna": the ground opens around R2 where it is now and closes where it was
+    const aggiornata = await compileProject(conLoSpostamento);
+    for (const x of [7.49, 8.51]) {
+      expect(nelRame(aggiornata.circuitJson, "GND", x, -4)).toBe(false);
+      expect(nelRame(aggiornata.circuitJson, "GND", x, 0)).toBe(true);
+    }
+    expect(delleColate(aggiornata.summary.drcViolations)).toEqual([]);
+    expect(aggiornata.summary.poursOverCopper).toBeUndefined();
+    db.row = riga(filesHash(conLoSpostamento), aggiornata.circuitJson, aggiornata.summary, CHECKS_ENGINE_VERSION, conLoSpostamento);
+    expect((await esportaCome("gerber")).status).toBe(200);
+    expect((await esportaCome("pnp")).status).toBe(200);
   }, 120_000);
 });

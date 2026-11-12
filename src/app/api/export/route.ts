@@ -13,7 +13,7 @@ import { idDoppi } from "@/lib/duplicate-ids";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
-import { pianiSopraLeVie } from "@/lib/drc";
+import { colateSopraIlRame, pianiSopraLeVie, type MisureDrc } from "@/lib/drc";
 import { colateCheSiToccano } from "@/lib/pour-pour";
 import { colateInOrdinePerIlGerber } from "@/lib/pours-recompute";
 import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
@@ -114,10 +114,20 @@ export async function GET(req: Request): Promise<Response> {
    * keeps such a board under its engine (see colateDiUnMotoreDiPrima), and
    * "older checks" told nobody that only a compile makes the pours again.
    */
+  /*
+   * Nor one where a trace or a pad is in the copper of another net's pour: a
+   * trace drawn in Instrada across a pour, a part moved in Sposta onto one. The
+   * fast update lays them without pouring and files the board under today's
+   * engine, with no check saying it: a short went to the Gerber with 200
+   * (spinta-misure.test.ts). Measured here, on the board about to go, in the
+   * same run that measures the vias (`misure`).
+   */
+  const misure: MisureDrc = {};
   const coperta =
     fabrication && cache && hasBoard(cache.circuitJson)
       ? nonCertificata({
-          planesOverVias: pianiSopraLeVie(cache.circuitJson as never),
+          planesOverVias: pianiSopraLeVie(cache.circuitJson as never, misure),
+          poursOverCopper: colateSopraIlRame(cache.circuitJson as never, misure),
           poursTooClose: colateCheSiToccano(cache.circuitJson as never, regolaDelleColate(fsMap)),
           poursFromOlderEngine: colateDiUnMotoreDiPrima(cache.circuitJson, cache.engineVersion),
           // nor one with something on it twice: old copper next to the new one has the new one's id (duplicate-ids.ts)

@@ -115,6 +115,8 @@ interface SummaryLike {
   /** the board was saved before its schematic: the schematic checks are not done */
   schematicPending?: string;
   components?: Array<{ name: string }>;
+  /** traces and pads in the copper of another net's pour: a short, the export refuses the board (see colateSopraIlRame in drc.ts) */
+  poursOverCopper?: { count?: number; detail?: string };
   /** silkscreen clashes, a warning apart from the DRC (see silkscreen-clearance.ts) */
   silkscreen?: { count?: number; detail?: string; nonMisurata?: string };
   /** the footprints of the parts (see component-clearance.ts): pairs that hit are an error, the rest warnings */
@@ -159,6 +161,9 @@ export function schematicMissing(circuitJson: unknown[] | null | undefined): boo
     !elements.some((e) => e?.type === "schematic_component")
   );
 }
+
+/** what the panel says when a trace or a pad is in the copper of another net's pour (SummaryLike.poursOverCopper) */
+const RAME_NELLE_COLATE = "c'e' rame di un'altra rete dentro una colata (un corto)";
 
 /** the colour of each row of the panel: the copper colours of the viewer, with the top a shade lighter as it always was here */
 const LAYER_COLORS: Record<string, string> = { ...COLORE_DEL_RAME, top: "#F2C078" };
@@ -267,6 +272,13 @@ export function buildBoardReport(
   const prc = summary?.prcViolations ?? [];
   const lunghezze = prc.filter((v) => /matched_length/i.test(v.rule ?? ""));
   const elettrici = prc.filter((v) => !/matched_length/i.test(v.rule ?? ""));
+  /*
+   * COPPER OF ANOTHER NET IN A POUR, said in words in the row of the distances
+   * and first among what is missing: it is a short, the export refuses the
+   * board, and the way out is one button. The DRC line it comes with is in
+   * English and names an id; the summary names the trace or the part and pin.
+   */
+  const rameNelleColate = typeof summary?.poursOverCopper?.count === "number" ? summary.poursOverCopper.count : 0;
   // the silkscreen: a warning, the export goes on; the list stops at the nearest, the count does not
   const serigrafia = typeof summary?.silkscreen?.count === "number" ? summary.silkscreen.count : 0;
   // the check stopped: said as a warning, never shown as a clear silkscreen
@@ -290,7 +302,16 @@ export function buildBoardReport(
 
   checks.push(
     row("via", "Fori e anelli delle via", viaRules, "Via entro i minimi di fabbrica.", "interference", "warn"),
-    row("clear", "Distanze minime", clearanceRules, "Nessun rame troppo ravvicinato.", "interference"),
+    {
+      ...row("clear", "Distanze minime", clearanceRules, "Nessun rame troppo ravvicinato.", "interference"),
+      ...(rameNelleColate > 0
+        ? {
+            count: `${Math.max(clearanceRules.length, 1)} ${clearanceRules.length > 1 ? "segnalazioni" : "segnalazione"}`,
+            severity: "err" as const,
+            detail: `${String(summary?.poursOverCopper?.detail ?? "") || RAME_NELLE_COLATE}. Premi Aggiorna per rifare le colate.`,
+          }
+        : {}),
+    },
     row("width", "Larghezza piste", widthRules, "Tutte le piste sopra la larghezza minima.", "copper"),
     row("edge", "Margine dal bordo", edgeRules, "Rame a distanza di sicurezza dal bordo.", "fabrication"),
     {
@@ -396,6 +417,7 @@ export function buildBoardReport(
     );
   } else {
     if (state?.stale) missing.push("i sorgenti sono cambiati dopo l'ultima compilazione: premi Ricompila");
+    if (rameNelleColate > 0) missing.push(`${RAME_NELLE_COLATE}: premi Aggiorna per rifare le colate`);
     if (unroutedCount > 0) {
       missing.push(`${unroutedCount} ${unroutedCount === 1 ? "rete non instradata" : "reti non instradate"}`);
     }

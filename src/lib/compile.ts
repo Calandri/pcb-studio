@@ -1,11 +1,11 @@
-import { CHECKS_ENGINE_VERSION, nonCertificata, type ColateDiPrima, type PianiSuVie } from "./engine-version";
+import { CHECKS_ENGINE_VERSION, nonCertificata, type ColateDiPrima, type ColateSuRame, type PianiSuVie } from "./engine-version";
 import { EARLY_REPLY_MIN_COMPONENTS } from "./compile-early-reply";
 import { COMPILE_BUDGET_PIENO_MS, SCHEMATICO_NON_INNESTATO, SCHEMATICO_NON_PARTITO } from "./compile-run";
 import { filesHash } from "./project-store";
 import { CircuitRunner, runTscircuitCode } from "@tscircuit/eval";
 import { getPlatformConfig } from "@tscircuit/eval/platform-config";
 import { AutoroutingPipelineSolver } from "@tscircuit/capacity-autorouter";
-import { distanzaPuntoForma, ingombroForma, pianiSopraLeVie, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame, type MisureDrc } from "./drc";
+import { colateSopraIlRame, distanzaPuntoForma, ingombroForma, pianiSopraLeVie, rameDelForo, rameDelPad, runDrcChecks, type DrcViolation, type FormaRame, type MisureDrc } from "./drc";
 import { stessoStrato, stratoDelPad } from "./pcb-route-model";
 import {
   controllaLunghezze,
@@ -341,6 +341,15 @@ export interface CompileSummary {
    * (see motoreDaSalvare). Absent when no via is in that state.
    */
   planesOverVias?: PianiSuVie;
+  /**
+   * TRACES AND PADS IN THE COPPER OF ANOTHER NET'S POUR: a short. It is what a
+   * trace drawn across a pour, or a part moved onto one, looks like on a board
+   * that was not poured again (the fast update never pours), each by the name
+   * a person knows it by and with its layer (see colateSopraIlRame in drc.ts).
+   * The export refuses the board while it is so, and a compile pours around
+   * that copper. Absent when no trace and no pad is in that state.
+   */
+  poursOverCopper?: ColateSuRame;
   /**
    * The pours on the board were made by an engine before the one that pours
    * from the declared outlines, and a recheck does not make them again: only a
@@ -2806,6 +2815,7 @@ interface ControlliDellaScheda {
   erc: ErcReport;
   placement: PlacementQuality;
   planesOverVias: ReturnType<typeof pianiSopraLeVie>;
+  poursOverCopper: ReturnType<typeof colateSopraIlRame>;
   pourClearances: CompileSummary["pourClearances"];
   /** the pours' clearances and corrections, as summarize appends them to the message */
   messaggioColate: string;
@@ -3058,6 +3068,8 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
 
   // the vias a plane of another net covers, from what the DRC runs above measured: see pianiSopraLeVie
   const planesOverVias = pianiSopraLeVie(circuitJson, misure);
+  // and the traces and the pads in the copper of another net's pour, from the same measures: see colateSopraIlRame
+  const poursOverCopper = colateSopraIlRame(circuitJson, misure);
 
   /*
    * The clearances the pours keep, and what was wrong in the ones declared:
@@ -3103,6 +3115,7 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
     erc,
     placement,
     planesOverVias,
+    poursOverCopper,
     pourClearances,
     messaggioColate: colateProprie + colateCorrette,
   };
@@ -3199,6 +3212,7 @@ function summarize(
     erc,
     placement,
     planesOverVias,
+    poursOverCopper,
     pourClearances,
   } = scheda;
   const schematicQuality = analyzeSchematic(circuitJson, sources);
@@ -3326,6 +3340,7 @@ function summarize(
     footprintProvenance,
     targets,
     ...(planesOverVias ? { planesOverVias } : {}),
+    ...(poursOverCopper ? { poursOverCopper } : {}),
     ...(poursTooClose ? { poursTooClose } : {}),
     ...(silkscreen ? { silkscreen } : {}),
     ...(courtyards ? { courtyards } : {}),
