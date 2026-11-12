@@ -36,6 +36,7 @@ import {
 } from "../manual-routes";
 import { isValidSelector } from "../schematic-connect";
 import { eStratoDiRame } from "../strati-rame";
+import { inUnita } from "./geometria";
 
 type El = Record<string, unknown>;
 
@@ -90,13 +91,13 @@ function punti(v: unknown, alMicron = false): ManualRoutePoint[] | string {
   return out;
 }
 
-const larghezza = (v: unknown): number | string =>
+export const larghezza = (v: unknown): number | string =>
   finito(v) && v >= ROUTE_LIMITS.minWidthMm && v <= ROUTE_LIMITS.maxWidthMm
     ? v
     : `la larghezza deve stare fra ${ROUTE_LIMITS.minWidthMm} e ${ROUTE_LIMITS.maxWidthMm} mm`;
 
 /** the ring and the hole of a via, or why they are not ones */
-function misureDellaVia(corona: unknown, foro: unknown): { corona: number; foro: number } | string {
+export function misureDellaVia(corona: unknown, foro: unknown): { corona: number; foro: number } | string {
   if (!finito(corona) || corona < ROUTE_LIMITS.minViaMm || corona > ROUTE_LIMITS.maxViaMm) {
     return `il diametro della via deve stare fra ${ROUTE_LIMITS.minViaMm} e ${ROUTE_LIMITS.maxViaMm} mm`;
   }
@@ -107,7 +108,7 @@ function misureDellaVia(corona: unknown, foro: unknown): { corona: number; foro:
 }
 
 /** ".U9 > .pin1 to .USB1 > .pin35", ".R1 > .pin1 to net.GND": two selectors, by part and pin or by net, never an id */
-function connessioneScritta(v: unknown): v is string {
+export function connessioneScritta(v: unknown): v is string {
   if (typeof v !== "string" || v.length > 300) return false;
   const capi = v.split(" to ");
   return capi.length === 2 && capi.every((c) => c === c.trim() && isValidSelector(c));
@@ -247,7 +248,7 @@ export function leggiRame(
 }
 
 /** a tenth of a micron, as a whole number: the direction of a stretch is judged on these, with no rounding left to argue */
-const intero = (v: number): number => Math.round(v * 1e4);
+const intero = inUnita;
 const posto = (p: { x: number; y: number }): string => `(${round4(p.x)}; ${round4(p.y)})`;
 
 /** one step of a path, between two points in a row: the same whichever way it is walked */

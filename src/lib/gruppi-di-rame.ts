@@ -227,7 +227,7 @@ export function retiDelCircuito(circuitJson: unknown[]): RetiDelCircuito {
  * rounded, and two pieces of copper that meet on paper must not come out apart
  * by a rounding.
  */
-const CONTATTO_MM = 0.01;
+export const CONTATTO_MM = 0.01;
 /** cell of the spatial index, in mm: small enough to keep the lists short */
 const CELLA_MM = 1;
 /** cell of the index of the pours' sides: they are short, a few hundredths on every arc */
@@ -258,7 +258,7 @@ class Isole {
 }
 
 /** a uniform grid over the board: what is near a point, without walking everything */
-class Griglia<T> {
+export class Griglia<T> {
   private celle = new Map<string, T[]>();
   /** the few things too big for cells (a trace across the whole board): always looked at */
   private grandi: T[] = [];

@@ -2337,7 +2337,7 @@ function sagomaDelPad(b: Box, el: El): { punti: Array<{ x: number; y: number }>;
 const MAX_PER_REGOLA = 200;
 
 /** the board outline: the declared polygon, or the rectangle of the board */
-function contornoScheda(board: El | undefined): Array<{ x: number; y: number }> {
+export function contornoScheda(board: El | undefined): Array<{ x: number; y: number }> {
   if (!board) return [];
   if (Array.isArray(board.outline)) {
     const punti: Array<{ x: number; y: number }> = [];
@@ -2363,7 +2363,7 @@ function contornoScheda(board: El | undefined): Array<{ x: number; y: number }> 
 }
 
 /** point inside a polygon, ray casting */
-function dentroPoligono(x: number, y: number, poligono: Array<{ x: number; y: number }>): boolean {
+export function dentroPoligono(x: number, y: number, poligono: Array<{ x: number; y: number }>): boolean {
   let dentro = false;
   for (let i = 0, j = poligono.length - 1; i < poligono.length; j = i++) {
     const a = poligono[i];
@@ -2479,7 +2479,7 @@ function segToBoxDistance(
 }
 
 /** distance between two segments (0 if they cross) */
-function segSegDistanceRaw(
+export function segSegDistanceRaw(
   ax: number,
   ay: number,
   bx: number,

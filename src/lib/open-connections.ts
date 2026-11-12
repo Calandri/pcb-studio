@@ -19,7 +19,7 @@
  * Nothing here routes or places: these are lines on the screen and numbers in
  * a report.
  */
-import { gruppiDiRame, type GruppiDiRame } from "./gruppi-di-rame";
+import { gruppiDiRame, type GruppiDiRame, type RetiDelCircuito } from "./gruppi-di-rame";
 
 interface El {
   type: string;
@@ -109,8 +109,11 @@ function alberoFraIsole(isole: CapoAperto[][]): Array<{ da: CapoAperto; a: CapoA
   return out;
 }
 
-/** the open connections, from the groups of copper already in hand */
-export function collegamentiApertiDelRame(circuitJson: unknown[], rame: GruppiDiRame): CollegamentiAperti {
+/**
+ * The name a person knows a pin by, from its pcb port: the part and its pin as
+ * on the board, "J1.A9", "R32.1". The port itself when the board names neither.
+ */
+export function nomiDeiPiedini(circuitJson: unknown[], reti: RetiDelCircuito): (porta: string) => string {
   const els = circuitJson as El[];
   const nomeDelPezzo = new Map<string, string>();
   const pezzoDellaSorgente = new Map<string, string>();
@@ -129,11 +132,16 @@ export function collegamentiApertiDelRame(circuitJson: unknown[], rame: GruppiDi
       nomeDelPezzo.get(pezzoDellaSorgente.get(String(el.source_port_id ?? "")) ?? "") ?? "",
     );
   }
-  const piedino = (porta: string): string => {
+  return (porta: string): string => {
     const pezzo = pezzoDellaPorta.get(porta) ?? "";
-    const pin = (rame.reti.pinDiPorta.get(porta) ?? "").replace(/^pin(\d+)$/i, "$1");
+    const pin = (reti.pinDiPorta.get(porta) ?? "").replace(/^pin(\d+)$/i, "$1");
     return pezzo && pin ? `${pezzo}.${pin}` : pezzo || pin || porta;
   };
+}
+
+/** the open connections, from the groups of copper already in hand */
+export function collegamentiApertiDelRame(circuitJson: unknown[], rame: GruppiDiRame): CollegamentiAperti {
+  const piedino = nomiDeiPiedini(circuitJson, rame.reti);
 
   /** net -> island -> its pads of that net */
   const perRete = new Map<string, Map<number, CapoAperto[]>>();
