@@ -437,7 +437,8 @@ describe("spinta, gesto: blocked", () => {
     // the via in the path of the trace toward ground, asked to go back along its stretch past the corner before it
     const { gesto, stato: fermo } = inizia(via("-12;-3"));
     const stato = muoviGesto(gesto, { x: -12, y: 2 });
-    expect(stato.blocco?.motivo).toBe(`bloccato: un tratto della pista ${VERSO_MASSA} sparirebbe`);
+    // which stretch is short, how long it was and how short it may get
+    expect(stato.blocco?.motivo).toBe("bloccato: il tratto che arriva alla via e' lungo 3 mm e non si accorcia sotto 0,2 mm");
     // it went as far as its stretch stays as long as the trace is wide
     expect(stato.posizione.x).toBe(-12);
     expect(stato.posizione.y).toBeLessThanOrEqual(-0.2);

@@ -520,12 +520,24 @@ const pezzoDiPista = (pista: PistaDelModello, strato: string, nuovo: Segmento, p
   ...(tratto === undefined ? {} : { tratto }),
 });
 
+/** a stretch this long is a stretch still, however wide its trace: what a wide trace is asked to keep of a corner */
+export const TRATTO_CORTO_MM = 0.2;
+
 /**
- * How short a stretch may become: never shorter than the trace is wide, and a
- * stretch that already was may not shrink further. Below that it is a stub
- * hidden under its own corners, which is a stretch gone.
+ * How short a stretch may become: as short as the trace is wide, and no trace
+ * is asked to keep more than TRATTO_CORTO_MM of it; a stretch that already was
+ * shorter may not shrink further. Below that it is a stub hidden under its own
+ * corners, which is a stretch gone.
+ *
+ * It used to be the width alone. A power trace is wider than its corners are
+ * long (VBAT of sbb-dl-principale, 2026-11-13: 0.8 mm wide, a corner stretch
+ * of 0.57 mm), so every move that shortened a corner stopped before it began,
+ * and the trace could not be moved at all.
  */
-const lunghezzaMinima = (pista: PistaDelModello, prima: number): number => Math.min(prima, pista.larghezza);
+const lunghezzaMinima = (pista: PistaDelModello, prima: number): number => Math.min(prima, pista.larghezza, TRATTO_CORTO_MM);
+
+/** a length as the block says it: millimetres, a comma, two digits at most */
+const millimetri = (v: number): string => String(Math.round(v * 100) / 100).replace(".", ",");
 
 /** a stretch next to the one that slides: it gets longer or shorter, and its far end stays */
 interface Vicino {
@@ -731,15 +743,20 @@ export function geometriaDelTratto(
     { pista: vn.pista, tratto: vn.tratto, d: vn.verso, passi: passiLungo(N, ib, vn.verso), erano: passiLungo(N, B, vn.verso), acuto: prodotto(ds, opposta(vn.verso)) > 0 || vn.piega, dove: N },
   ];
   for (const l of lunghi) {
-    if (l.passi * passoMm(l.d) >= lunghezzaMinima(l.pista, l.erano * passoMm(l.d)) - EPS_MM) continue;
+    const era = l.erano * passoMm(l.d);
+    const minima = lunghezzaMinima(l.pista, era);
+    if (l.passi * passoMm(l.d) >= minima - EPS_MM) continue;
     const piegata = l.passi < 0 && l.acuto;
+    // which stretch is too short, how long it is and how short it may get: "a stretch would vanish" said neither
+    const corto =
+      l.tratto === tratto && l.pista === pista
+        ? `bloccato: questo tratto e' lungo ${millimetri(era)} mm e non si accorcia sotto ${millimetri(minima)} mm`
+        : `bloccato: il tratto accanto e' lungo ${millimetri(era)} mm e non si accorcia sotto ${millimetri(minima)} mm`;
     return bloccato({
       motivo: piegata ? "angolo_acuto" : "tratto_sparirebbe",
       cosa: cosaPista(l.pista, l.tratto.indice),
       dove: { ...mm(l.dove), layer: tratto.strato },
-      messaggio: piegata
-        ? `bloccato: la pista ${nomeDellaPista(l.pista)} tornerebbe indietro con un angolo acuto`
-        : `bloccato: un tratto della pista ${nomeDellaPista(l.pista)} sparirebbe`,
+      messaggio: piegata ? `bloccato: la pista ${nomeDellaPista(l.pista)} tornerebbe indietro con un angolo acuto` : corto,
     });
   }
 
@@ -907,7 +924,8 @@ export function geometriaDellaVia(modello: Modello, quale: number, a: { x: numbe
       const verso = fisso < k ? tratto.direzione : opposta(tratto.direzione);
       const g = gambe(P, V, verso);
       const era = passiLungo(P, C, verso) * passoMm(verso);
-      if (g.a * passoMm(verso) < lunghezzaMinima(pista, era) - EPS_MM) {
+      const minima = lunghezzaMinima(pista, era);
+      if (g.a * passoMm(verso) < minima - EPS_MM) {
         const piegata = g.a < 0;
         return {
           blocco: {
@@ -916,7 +934,7 @@ export function geometriaDellaVia(modello: Modello, quale: number, a: { x: numbe
             dove: { x: lontano.x, y: lontano.y, layer: tratto.strato },
             messaggio: piegata
               ? `bloccato: la pista ${nomeDellaPista(pista)} tornerebbe indietro con un angolo acuto`
-              : `bloccato: un tratto della pista ${nomeDellaPista(pista)} sparirebbe`,
+              : `bloccato: il tratto che arriva alla via e' lungo ${millimetri(era)} mm e non si accorcia sotto ${millimetri(minima)} mm`,
           },
         };
       }
