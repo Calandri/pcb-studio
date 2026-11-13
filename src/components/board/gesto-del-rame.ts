@@ -232,9 +232,16 @@ export function useGestoDelRame({
        * the ids of hand copper change at every save: a gesture begun on the
        * board of before would be refused by the server as "board changed".
        * The press is taken all the same, so it does not become the drag of a
-       * part that happens to be under the copper.
+       * part that happens to be under the copper. And it is said: the wait is
+       * seconds on a big board, and a press that did nothing looked like copper
+       * that could not be moved.
        */
-      if (inMano.current || inAttesa.length > 0) return;
+      if (inMano.current) return;
+      const dove = bersaglio.tipo === "via" ? { x: bersaglio.x, y: bersaglio.y } : { x: (bersaglio.x1 + bersaglio.x2) / 2, y: (bersaglio.y1 + bersaglio.y2) / 2 };
+      if (inAttesa.length > 0) {
+        dici("un momento: la scheda sta ancora seguendo lo spostamento di prima", dove);
+        return;
+      }
       zittisci();
       const esito = iniziaGesto({
         circuitJson,
@@ -245,12 +252,7 @@ export function useGestoDelRame({
             : { tipo: "tratto", pcbTraceId: bersaglio.pcbTraceId, indice: bersaglio.indice },
       });
       if ("rifiuto" in esito) {
-        dici(
-          esito.rifiuto,
-          bersaglio.tipo === "via"
-            ? { x: bersaglio.x, y: bersaglio.y }
-            : { x: (bersaglio.x1 + bersaglio.x2) / 2, y: (bersaglio.y1 + bersaglio.y2) / 2 },
-        );
+        dici(esito.rifiuto, dove);
         return;
       }
       const el = e.currentTarget;

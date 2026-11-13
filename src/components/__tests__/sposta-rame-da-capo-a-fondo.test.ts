@@ -141,11 +141,14 @@ let f: Finestra;
 /** every write the page asked of the server, and what the server answered */
 let scritture: Array<{ action: unknown; status: number; error?: unknown }> = [];
 const fuori = {} as { editor: ManualEditor; scheda: unknown[] };
+/** when set, a `copper` save waits for it before it reaches the server: a save that takes seconds, as on a big board */
+let cancello: Promise<void> | null = null;
 
 /** the server: the real routes of /api/manual-edits */
 const server = async (url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<Response> => {
   if (!url.startsWith("/api/manual-edits")) return Response.json({ error: "non c'e'" }, { status: 404 });
   if ((init?.method ?? "GET") === "GET") return GET(new Request(`http://x${url}`));
+  if (cancello && (JSON.parse(init?.body ?? "{}") as Record<string, unknown>).action === "copper") await cancello;
   const risposta = await POST(new Request(`http://x${url}`, { method: "POST", headers: { "content-type": "application/json" }, body: init?.body }));
   const corpo = (await risposta.clone().json()) as Record<string, unknown>;
   scritture.push({ action: (JSON.parse(init?.body ?? "{}") as Record<string, unknown>).action, status: risposta.status, ...(corpo.error ? { error: corpo.error } : {}) });
@@ -325,6 +328,82 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     const file = await salvati();
     expect(file.pcb_vias).toEqual([]);
     expect(file.pcb_routes.map((r) => [r.connection, Boolean(r.replaces)])).toEqual([[ALLA_VIA, true]]);
+  }, 60_000);
+
+  it("un tratto trascinato e Cmd+Z: la pista torna sul percorso dei file", async () => {
+    await apri();
+    const tratto = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
+    await trascina(tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "", [-6, -8], [-6, -9]);
+    await passa(AUTOSAVE_MS);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-6"]);
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["set", 200]]);
+    expect(fuori.editor.error).toBeNull();
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-6"]);
+    expect((await salvati()).pcb_routes).toEqual([]);
+  }, 60_000);
+
+  it("due spostamenti di fila dello stesso tratto e due Cmd+Z, il secondo con Ctrl: un passo indietro alla volta", async () => {
+    await apri();
+    const primo = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
+    await trascina(primo.tipo === "tratto" ? `tratto:${primo.pcbTraceId}:${primo.indice}` : "", [-6, -8], [-6, -9]);
+    await passa(AUTOSAVE_MS);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-6"]);
+    // the trace is now a correction laid on the board: its stretch is found again where the first gesture left it
+    const secondo = preseDelRame(fuori.scheda).find((p) => p.tipo === "tratto" && p.y1 === -9 && p.y2 === -9)!;
+    await trascina(secondo.tipo === "tratto" ? `tratto:${secondo.pcbTraceId}:${secondo.indice}` : "", [-6, -9], [-6, -10]);
+    await passa(AUTOSAVE_MS);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-10 > 0;-10 > 0;-6"]);
+
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-6"]);
+    await f.tasto("z", { ctrlKey: true });
+    await calma();
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-6"]);
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["copper", 200], ["set", 200], ["set", 200]]);
+    expect(fuori.editor.error).toBeNull();
+    expect((await salvati()).pcb_routes).toEqual([]);
+  }, 60_000);
+
+  it("un salvataggio che dura secondi: la barra dice che salva, un'altra presa dice di aspettare, e Cmd+Z premuto intanto annulla appena il salvataggio e' finito", async () => {
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    const tratto = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
+    let apriIlCancello!: () => void;
+    cancello = new Promise<void>((ok) => {
+      apriIlCancello = ok;
+    });
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
+    await passa(AUTOSAVE_MS);
+    // the save is on its way and does not come back: the gesture waits on screen
+    expect(fuori.editor.saveState).toBe("salvo");
+    expect(fuori.editor.copper).toHaveLength(1);
+    expect(scritture).toEqual([]);
+
+    // a press on other copper meanwhile starts nothing, and says why on the board
+    const nodo = bersaglio(tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "");
+    await f.spara(nodo, "pointerdown", a(-6, -8));
+    await f.spara(nodo, "pointerup", a(-6, -8));
+    expect(f.contenitore.textContent).toContain("un momento: la scheda sta ancora seguendo lo spostamento di prima");
+    expect(fuori.editor.copper).toHaveLength(1);
+
+    // Cmd+Z while it saves: it waits its turn behind the save
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect(scritture).toEqual([]);
+    apriIlCancello();
+    cancello = null;
+    await calma();
+    await calma();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["set", 200]]);
+    expect(fuori.editor.error).toBeNull();
+    // the file and the board are the ones of before, and nothing is left waiting on screen
+    expect((await salvati()).pcb_vias).toEqual([]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(fuori.editor.copper).toEqual([]);
+    expect(fuori.editor.canRedo).toBe(true);
   }, 60_000);
 
   it("una via trascinata contro una pista di un'altra rete la spinge da parte: si vede mentre si trascina, si salva con la via in un salvataggio solo, e Cmd+Z rimette tutte e due", async () => {

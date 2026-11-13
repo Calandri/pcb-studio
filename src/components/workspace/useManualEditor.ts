@@ -1157,13 +1157,24 @@ export function useManualEditor({
     saving,
     /**
      * For the bar, never blocking: "attesa" a move waits its AUTOSAVE_MS,
-     * "salvo" it is being written, "salvato" the last one is on the server.
+     * "salvo" it is being written, "segue" it is written and the board on
+     * screen has not shown it yet, "salvato" the last one is on the server and
+     * on the board.
+     *
+     * "segue" is said because a copper gesture cannot start until the board
+     * has followed the one before, and on a big board that takes seconds
+     * (sbb-dl-principale, 2026-11-13: 4 to save, 12 for the board): the bar
+     * said "salvato" all that time, and a press on a via did nothing.
      */
-    saveState: (saving ? "salvo" : unsentMoves + unsentCopper > 0 ? "attesa" : lastSaveOk && !error ? "salvato" : null) as
-      | "attesa"
-      | "salvo"
-      | "salvato"
-      | null,
+    saveState: (saving
+      ? "salvo"
+      : unsentMoves + unsentCopper > 0
+        ? "attesa"
+        : copper.length > 0 || syncing
+          ? "segue"
+          : lastSaveOk && !error
+            ? "salvato"
+            : null) as "attesa" | "salvo" | "segue" | "salvato" | null,
     /** a board arrived (a sync, a recompile, a compile from elsewhere): the overrides it shows go */
     dropAgreed,
     /** the copper gestures let go in Sposta and not on the saved board yet: the canvas draws them */
