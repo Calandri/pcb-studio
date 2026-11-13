@@ -25,7 +25,7 @@ import {
 import { mergeManualRoutes, parseManualRoutes } from "@/lib/manual-routes";
 import { parseLength } from "@/lib/pcb-route-model";
 import { portaCorrezioni, rameCheEntra, rameRifiutato, SCHEDA_RISALVATA, seAncoraQuella, SENZA_SCHEDA, SOLO_CON_COPPER } from "@/lib/spinta/porte";
-import { leggiRame, verificaRame, type EsitoDelRame } from "@/lib/spinta/verifica";
+import { conLaPartenzaDeiFile, leggiRame, verificaRame, type EsitoDelRame } from "@/lib/spinta/verifica";
 import {
   getCompileCache,
   getCompileMeta,
@@ -268,9 +268,11 @@ export async function POST(req: Request): Promise<Response> {
          * save (see senzaAssorbite): the board in hand is the one that says so.
          */
         const correnti = senzaAssorbite(current, scheda.circuitJson);
-        esito = verificaRame({ circuitJson: scheda.circuitJson, regole, correnti, rame });
+        // the start of every correction is the copper of the files, even when the page read a board behind the file
+        const daiFile = conLaPartenzaDeiFile(scheda.circuitJson, correnti, rame);
+        esito = verificaRame({ circuitJson: scheda.circuitJson, regole, correnti, rame: daiFile });
         if (!esito.ok) return null;
-        scritto = applyCopperPatch(correnti, rame);
+        scritto = applyCopperPatch(correnti, daiFile);
         return scritto.edits;
       });
       const rifiutato = esito as EsitoDelRame;

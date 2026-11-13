@@ -3,7 +3,7 @@ import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { planFastUpdate } from "@/lib/fast-update";
-import { getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
+import { filesHash, getCompileCache, getProject, saveCompileCache } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -77,6 +77,32 @@ export async function POST(req: Request): Promise<Response> {
      * and so do its measure and the note that it is still being drawn.
      */
     const summary = riportaLoSchematico(summarizeCircuit(plan.board as unknown[], fsMap), cached.summary);
+    /*
+     * The board is the one of the files READ ABOVE, and the work since took
+     * seconds on a big board. A save in that time (a gesture, an undo) makes it
+     * the board of files that are no longer there: filed as current and shown,
+     * it put back on screen copper an undo had just taken out, and the gesture
+     * made on it was saved from a start no file had (sbb-dl-principale,
+     * 2026-11-13: twelve seconds of update, the undo three seconds in). So the
+     * files are read again before the save, and a board that fell behind is
+     * not saved: the page asks again, on the files of now (`retry`).
+     */
+    let ancoraQuelli = true;
+    try {
+      ancoraQuelli = filesHash(await withLibrary(await getProject(projectId))) === plan.hash;
+    } catch {
+      // files that cannot be read again now: the board of the ones read is not vouched for
+      ancoraQuelli = false;
+    }
+    if (!ancoraQuelli) {
+      return Response.json({
+        ...plan.result,
+        ok: false,
+        retry: true,
+        reason: "i file sono cambiati mentre aggiornavo la scheda: riprovo su quelli di adesso",
+        ms: Date.now() - t0,
+      });
+    }
     /*
      * Saved only over the row that was read: a compile that finished in the
      * meantime is newer and is not overwritten. The check and the write are one
