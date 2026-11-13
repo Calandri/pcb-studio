@@ -24,8 +24,12 @@
  * each pushed trace in the order it was first pushed, the nearest to what
  * pushes before the ones behind it. Between two pieces that are too close the
  * earlier turn pushes and the later gives way, and the hand never does. A
- * stretch pushed one way in a solve is only ever pushed further that way:
- * asked to go back, it is squeezed, and that is a block. And three limits (how
+ * stretch pushed one way in a solve is only ever pushed further that way.
+ * Asked to go back by a stretch of another trace, it stays and that one gives
+ * way in its place (a trace that goes around another is on both sides of it,
+ * and its far stretch is pushed BY the one in between, whatever the turns
+ * say); asked to go back by the hand, or by a stretch that cannot go back
+ * either, it is squeezed, and that is a block. And three limits (how
  * deep the chain, counted in ranks: the hand 0, what it pushes 1, what that
  * pushes 2; how many pushes; how long) end any solve that does not end by
  * itself, with a block that names the trace it stopped on.
@@ -347,7 +351,7 @@ export class Risolutore {
    * that cannot give way. Null when it is done (or was not needed any more),
    * else the block.
    */
-  private spingi(r: Risoluzione, nomeDiChi: string, pista: number, tratto: number): Blocco | null {
+  private spingi(r: Risoluzione, nomeDiChi: string, pista: number, tratto: number, alPosto = false): Blocco | null {
     const chi = r.inMoto.get(nomeDiChi);
     if (!chi) return null;
     const { modello, limiti } = this;
@@ -384,7 +388,20 @@ export class Risolutore {
     const k = chiaveDi(pista, tratto);
     const gia = r.segno.get(k);
     if (lato === 0) return senzaSpazio("stretta");
-    if (gia !== undefined && gia !== lato) return { motivo: "stretta", cosa, dove, messaggio: `bloccato: la pista ${nome} e' stretta fra due spinte opposte` };
+    if (gia !== undefined && gia !== lato) {
+      const stretta: Blocco = { motivo: "stretta", cosa, dove, messaggio: `bloccato: la pista ${nome} e' stretta fra due spinte opposte` };
+      // It cannot go back. What asks it to is the copper in hand, which never gives way, or a
+      // stretch of a trace: then THAT one gives way in its place, if it can. A trace that goes
+      // around another has a stretch on either side of it: the near one pushed this stretch, this
+      // one pushed the far one, and the far one (of the earlier turn, measured along the way it
+      // came) finds this stretch where it stood itself. It is not squeezed: the far one moves on.
+      if (alPosto || chi.pista === undefined || chi.tratto === undefined || r.manoPiste.has(chi.pista)) return stretta;
+      const io = r.inMoto.get(`t${k}`);
+      if (!io) return stretta;
+      const altro = this.spingi(r, io.nome, chi.pista, chi.tratto, true);
+      // neither of the two can go back: squeezed for good
+      return altro && altro.motivo === "stretta" ? stretta : altro;
+    }
 
     // the least it takes: further by what is missing, until nothing is
     let quanto = 0;
