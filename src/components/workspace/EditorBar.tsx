@@ -275,7 +275,9 @@ export function EditorBar({
                   className="text-[11px] text-brand"
                   title={
                     mode === "move"
-                      ? "Trascina un componente per spostarlo. R lo ruota, le frecce lo muovono di un passo"
+                      ? scope === "pcb"
+                        ? "Trascina un componente per spostarlo: R lo ruota, le frecce lo muovono di un passo. Sulla scheda si trascinano anche una via (con le sue piste) e un tratto dritto di pista: Esc annulla"
+                        : "Trascina un componente per spostarlo. R lo ruota, le frecce lo muovono di un passo"
                       : mode === "link"
                         ? "Clicca due piedini per collegarli, clicca un filo per toglierlo"
                         : "Clicca un pad, poi clicca dove far passare la pista"

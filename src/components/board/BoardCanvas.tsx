@@ -2038,6 +2038,7 @@ export function BoardCanvas({
         onGrid={setGridMm}
         pxPerMm={Math.round(view.k)}
         strati={usedLayers.length}
+        rameSiSposta={rame.bersagli.length > 0}
       />
     </div>
   );
@@ -2102,6 +2103,7 @@ function BarraSotto({
   onGrid,
   pxPerMm,
   strati,
+  rameSiSposta,
 }: {
   gruppo: string[];
   info: (DescrizionePezzo & { name: string }) | null;
@@ -2113,6 +2115,8 @@ function BarraSotto({
   onGrid: (g: number) => void;
   pxPerMm: number;
   strati: number;
+  /** in move mode vias and straight stretches of trace can be dragged too: the hint says so */
+  rameSiSposta: boolean;
 }) {
   const [aperta, setAperta] = useState(false);
   const descrizione = info ? [info.titolo, info.testo].filter(Boolean).join(" · ") : "";
@@ -2147,7 +2151,11 @@ function BarraSotto({
           </>
         ) : (
           <span className="text-faint">
-            {mode === "move" ? "Trascina un componente per spostarlo." : "Passa sopra un componente per sapere cos'e' e dove vanno le sue reti."}
+            {mode === "move"
+              ? rameSiSposta
+                ? "Trascina un componente, una via o un tratto dritto di pista per spostarlo. Esc annulla, Cmd+Z torna indietro."
+                : "Trascina un componente per spostarlo."
+              : "Passa sopra un componente per sapere cos'e' e dove vanno le sue reti."}
           </span>
         )}
         {mode === "move" && (pickedId || gruppo.length > 0) && (
