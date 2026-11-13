@@ -483,6 +483,74 @@ export function verificaRame(args: {
 }
 
 /**
+ * A CORRECTION STARTS FROM THE COPPER OF THE FILES, whatever the page read.
+ *
+ * The page sends as the start what it has on screen, and a correction moved
+ * again takes the start of the one before it when the file holds that one
+ * (applyCopperPatch). It does not when the file no longer holds it: an undo
+ * took the correction out while a board laid with it was still on screen
+ * (sbb-dl-principale, 2026-11-13: the fast update that started before the undo
+ * ended after it, and its board came back with the copper moved). The gesture
+ * made on that board started from copper no file describes, and was written
+ * with that as its start: letting it go would have put back a path the files
+ * never drew.
+ *
+ * The board itself knows better: the copper a correction laid remembers the
+ * path of the files it stands for (partenzaRicordata), and a via it moved the
+ * place the files put it (`moved_from`). Where the start sent is such copper
+ * and the file holds no correction that ends there, the start written is the
+ * one of the files.
+ */
+export function conLaPartenzaDeiFile(scheda: unknown[], correnti: ManualEdits, rame: CopperPatch): CopperPatch {
+  const els = (Array.isArray(scheda) ? scheda : []).filter((e): e is El => typeof e === "object" && e !== null);
+  // the save as it came when nothing in it starts from such copper
+  let cambiato = false;
+  let routes = rame.routes;
+  if (routes.some((r) => r.replaces)) {
+    const nome = new Map<string, string>();
+    for (const e of els) {
+      if (e.type === "source_trace" && typeof e.source_trace_id === "string" && typeof e.display_name === "string") {
+        nome.set(e.source_trace_id, e.display_name);
+      }
+    }
+    const piste = els.filter((e) => e.type === "pcb_trace");
+    routes = routes.map((route) => {
+      if (!route.replaces) return route;
+      const da = route.replaces.original;
+      // the file holds the correction that ends here: the new one takes its start (applyCopperPatch)
+      if (correnti.pcb_routes.some((r) => r.replaces && r.connection === route.connection && stessoPercorso(r.points, da))) return route;
+      for (const e of piste) {
+        if (nome.get(String(e.source_trace_id ?? "")) !== route.connection) continue;
+        const ricordata = partenzaRicordata(e);
+        if (ricordata === null || stessoPercorso(ricordata, da) || !stessoPercorso(percorsoDellaPista(e), da)) continue;
+        cambiato = true;
+        return { ...route, replaces: { ...route.replaces, original: ricordata } };
+      }
+      return route;
+    });
+  }
+  let vias = rame.vias;
+  if (vias.length > 0) {
+    const reti = retiDelCircuito(els as never);
+    const vie = els.filter((e) => e.type === "pcb_via");
+    vias = vias.map((via) => {
+      if (correnti.pcb_vias.some((v) => v.net === via.net && v.to.x === via.from.x && v.to.y === via.from.y)) return via;
+      for (const e of vie) {
+        if (!finito(e.x) || !finito(e.y) || round4(e.x) !== via.from.x || round4(e.y) !== via.from.y) continue;
+        const era = (typeof e.moved_from === "object" && e.moved_from !== null ? e.moved_from : null) as Record<string, unknown> | null;
+        if (!era || !finito(era.x) || !finito(era.y)) continue;
+        const rete = reti.diVia(e as never);
+        if (rete === null || reti.nome(rete) !== via.net) continue;
+        cambiato = true;
+        return { ...via, from: { x: round4(era.x), y: round4(era.y) } };
+      }
+      return via;
+    });
+  }
+  return cambiato ? { ...rame, routes, vias } : rame;
+}
+
+/**
  * The first correction whose start is not on the saved board, in words; null
  * when every one of them starts from something that is there. The start can
  * be the copper of the files, the copper an earlier correction laid (the
