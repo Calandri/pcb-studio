@@ -121,6 +121,34 @@ describe("Sposta: cosa si puo' prendere del rame", () => {
   });
 });
 
+describe("Sposta, una cosa alla volta: i componenti, le piste o le vie", () => {
+  it("scelta una cosa nella barra, prende la pressione solo quella; senza scelta si prende tutto, come prima", () => {
+    const tutto = sposta({ layer: "top" });
+    const pezzi = sposta({ layer: "top", cosaSiSposta: "pezzi" });
+    const piste = sposta({ layer: "top", cosaSiSposta: "piste" });
+    const vie = sposta({ layer: "top", cosaSiSposta: "vie" });
+    expect(maniglie(tutto).length).toBeGreaterThan(0);
+    expect(bersagli(tutto).some((b) => b?.startsWith("via:"))).toBe(true);
+    expect(bersagli(tutto).some((b) => b?.startsWith("tratto:"))).toBe(true);
+
+    // the parts alone: every handle, and no copper to grab
+    expect(maniglie(pezzi)).toHaveLength(maniglie(tutto).length);
+    expect(bersagli(pezzi)).toEqual([]);
+    expect(pezzi).toContain("Trascina un componente per spostarlo.");
+
+    // the traces alone: the stretches, no via, and no part is there for the pointer
+    expect(bersagli(piste)).toEqual(bersagli(tutto).filter((b) => b?.startsWith("tratto:")));
+    expect(maniglie(piste)).toEqual([]);
+    expect(piste).toMatch(/<rect[^>]*style="cursor:move;pointer-events:none"/);
+    expect(piste).toContain("Trascina un tratto dritto di pista: scorre di lato.");
+
+    // the vias alone
+    expect(bersagli(vie)).toEqual(bersagli(tutto).filter((b) => b?.startsWith("via:")));
+    expect(maniglie(vie)).toEqual([]);
+    expect(vie).toContain("Trascina una via: le sue piste la seguono.");
+  });
+});
+
 describe("il rame di un gesto: cosa disegna RameInMovimento", () => {
   const drawOrder = ["bottom", "inner2", "inner1", "top"];
   /** a gesture in hand whose copper is on three layers: the via pushed a trace of the bottom and one of an inner plane */

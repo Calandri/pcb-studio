@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { COSE_CHE_SI_SPOSTANO, type CosaSiSposta } from "../board/cosa-si-sposta";
 import { isTypingTarget } from "../keyboard";
 import type { ManualEditor } from "./useManualEditor";
 
@@ -20,6 +21,8 @@ export function EditorBar({
   recompileBusy = false,
   warning = null,
   compilingElsewhere = null,
+  cosaSiSposta,
+  onCosaSiSposta,
 }: {
   editor: ManualEditor;
   /** on the schematic you only move things: traces are a copper affair */
@@ -46,6 +49,9 @@ export function EditorBar({
    * that died without a word.
    */
   compilingElsewhere?: string | null;
+  /** on the board, what Sposta moves: the parts, the traces or the vias (cosa-si-sposta.ts). With `onCosaSiSposta` the bar lets it be chosen */
+  cosaSiSposta?: CosaSiSposta;
+  onCosaSiSposta?: (cosa: CosaSiSposta) => void;
 }) {
   const { mode, setMode, counts, busy, saveState, canUndo, canRedo, error, dirty, links, unlinks } =
     editor;
@@ -274,7 +280,25 @@ export function EditorBar({
                   {saveState === "salvato" ? "salvato" : saveState === "segue" ? "aggiorno la scheda..." : "salvataggio..."}
                 </span>
               )}
-              {mode !== "view" && (
+              {mode === "move" && scope === "pcb" && cosaSiSposta && onCosaSiSposta ? (
+                // one kind at a time: what is not chosen does not take the press
+                <span className="flex items-center gap-0.5" data-cosa-si-sposta={cosaSiSposta}>
+                  {COSE_CHE_SI_SPOSTANO.map(({ cosa, nome, aiuto }) => (
+                    <button
+                      key={cosa}
+                      type="button"
+                      title={aiuto}
+                      aria-pressed={cosa === cosaSiSposta}
+                      onClick={() => onCosaSiSposta(cosa)}
+                      className={`rounded-[6px] px-1.5 py-0.5 text-[11px] ${
+                        cosa === cosaSiSposta ? "bg-[rgba(59,232,176,0.14)] text-brand" : "text-[#5F726C] hover:text-brand"
+                      }`}
+                    >
+                      {nome}
+                    </button>
+                  ))}
+                </span>
+              ) : mode !== "view" && (
                 <span
                   className="text-[11px] text-brand"
                   title={

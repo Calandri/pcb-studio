@@ -19,6 +19,7 @@ import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
 import { BoardCanvas, type BoardZone, type SelectMode } from "./board/BoardCanvas";
 import { useCollegamentiAperti } from "./board/CollegamentiAperti";
+import type { CosaSiSposta } from "./board/cosa-si-sposta";
 import { RouteCanvas } from "./board/RouteCanvas";
 import { SchematicView } from "./SchematicView";
 import { SCHEMATIC_NOTES_PATH } from "@/lib/schematic-notes";
@@ -83,6 +84,8 @@ export function Studio({
    */
   const [circuitSaved, setCircuitSaved] = useState(false);
   const [circuitStale, setCircuitStale] = useState(false);
+  /** on the board, what Sposta moves: one kind at a time, so that a press never has to choose (cosa-si-sposta.ts) */
+  const [cosaSiSposta, setCosaSiSposta] = useState<CosaSiSposta>("pezzi");
   /** a compile running (or cut off) anywhere, from the project's log */
   const [compileRun, setCompileRun] = useState<CompileRun | null>(null);
   /** why the last compile from this page ended without a board, if it did */
@@ -1837,6 +1840,8 @@ export function Studio({
                       regole={regole}
                       rameInAttesa={editor.copper}
                       onGestoDelRame={editor.addCopper}
+                      // one kind of thing at a time, chosen in the bar: parts, traces or vias
+                      cosaSiSposta={cosaSiSposta}
                       // only what a PERSON is holding: the placer's own saved
                       // positions are a starting point, not a constraint
                       pinnedNames={editor.saved.pcb_placements
@@ -2018,6 +2023,8 @@ export function Studio({
               editor={editor}
               scope={tab === "pcb" ? "pcb" : "schematic"}
               stale={circuitStale}
+              cosaSiSposta={cosaSiSposta}
+              onCosaSiSposta={setCosaSiSposta}
               onRecompile={() => void recompile()}
               recompileBusy={boardBusy}
               compilingElsewhere={!recompiling && compileRun?.state === "running" ? compileRun.step : null}

@@ -46,6 +46,7 @@ import { filesHash, getProject, writeProjectFile } from "@/lib/project-store";
 import { rerouteLocal } from "@/lib/reroute-local";
 import { preseDelRame } from "@/lib/spinta/gesto";
 import { BoardCanvas } from "../board/BoardCanvas";
+import type { CosaSiSposta } from "../board/cosa-si-sposta";
 import { VIEW_PRESETS } from "../ViewPresets";
 import { EditorBar } from "../workspace/EditorBar";
 import { AUTOSAVE_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
@@ -163,8 +164,13 @@ const aggiornaVeloce = async (): Promise<unknown[]> => {
   return circuitJson;
 };
 
+/** when set, the page has the choice of what Sposta moves, as Studio has: the parts to begin with */
+let conLaScelta = false;
+
 /** the editor and the canvas of Sposta wired as Studio wires them */
 function Pagina() {
+  const [cosa, setCosa] = useState<CosaSiSposta>("pezzi");
+  const scelta = conLaScelta ? { cosaSiSposta: cosa } : {};
   const [circuitJson, setCircuitJson] = useState(() => stato.riga!.circuitJson);
   const onApplied = useCallback(async () => {
     setCircuitJson(await aggiornaVeloce());
@@ -180,7 +186,7 @@ function Pagina() {
   return createElement(
     Fragment,
     null,
-    createElement(EditorBar, { editor, scope: "pcb" }),
+    createElement(EditorBar, { editor, scope: "pcb", ...scelta, ...(conLaScelta ? { onCosaSiSposta: setCosa } : {}) }),
     createElement(BoardCanvas, {
       circuitJson,
       flags: FLAGS,
@@ -191,6 +197,7 @@ function Pagina() {
       onGestoDelRame: editor.addCopper,
       onMoveComponent: () => {},
       onPickComponent: () => {},
+      ...scelta,
     } as never),
   );
 }
@@ -242,6 +249,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  conLaScelta = false;
+  cancello = null;
   await smonta?.();
   smonta = null;
   vi.unstubAllGlobals();
@@ -404,6 +413,45 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
     expect(fuori.editor.copper).toEqual([]);
     expect(fuori.editor.canRedo).toBe(true);
+  }, 60_000);
+
+  it("la barra sceglie cosa si sposta: coi componenti il rame non si prende, con le vie si trascina la via, con le piste il tratto", async () => {
+    conLaScelta = true;
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    const tratto = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
+    const presaVia = `via:${via.tipo === "via" ? via.pcbViaId : ""}`;
+    const presaTratto = tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "";
+    const bottone = (nome: string) => f.contenitore.cerca((n) => n.tagName === "BUTTON" && n.textContent === nome)[0];
+    const scelto = () => f.contenitore.cerca((n) => n.getAttribute("data-cosa-si-sposta") !== null)[0]?.getAttribute("data-cosa-si-sposta");
+
+    // the parts to begin with, as Sposta always was: no copper under the pointer
+    expect(scelto()).toBe("pezzi");
+    expect(bersaglio(presaVia)).toBeUndefined();
+    expect(bersaglio(presaTratto)).toBeUndefined();
+
+    // the vias: the via is there, the stretch is not
+    await f.spara(bottone("vie"), "click");
+    expect(scelto()).toBe("vie");
+    expect(bersaglio(presaVia)).toBeDefined();
+    expect(bersaglio(presaTratto)).toBeUndefined();
+    await trascina(presaVia, [0, -6], [0, -5]);
+    await passa(AUTOSAVE_MS);
+    expect(scritture).toEqual([{ action: "copper", status: 200 }]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+
+    // the traces: the stretch is there, no via is
+    await f.spara(bottone("piste"), "click");
+    expect(scelto()).toBe("piste");
+    expect(f.contenitore.cerca((n) => (n.getAttribute("data-presa") ?? "").startsWith("via:"))).toEqual([]);
+    const ora = preseDelRame(fuori.scheda).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
+    const presaOra = ora.tipo === "tratto" ? `tratto:${ora.pcbTraceId}:${ora.indice}` : "";
+    expect(bersaglio(presaOra)).toBeDefined();
+    await trascina(presaOra, [-6, -8], [-6, -9]);
+    await passa(AUTOSAVE_MS);
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["copper", 200]]);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-5"]);
+    expect(fuori.editor.error).toBeNull();
   }, 60_000);
 
   it("una via trascinata contro una pista di un'altra rete la spinge da parte: si vede mentre si trascina, si salva con la via in un salvataggio solo, e Cmd+Z rimette tutte e due", async () => {

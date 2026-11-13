@@ -14,6 +14,7 @@ import {
 } from "./CollegamentiAperti";
 import { opacitaStrato, stratoScelto } from "./strati-visibili";
 import { BersagliDelRame } from "./BersagliDelRame";
+import { comeSiSposta, type CosaSiSposta } from "./cosa-si-sposta";
 import { AvvisoDelGesto, RameInMovimento } from "./RameInMovimento";
 import { NESSUN_RAME, useGestoDelRame, type RameInAttesa, type RameNascosto } from "./gesto-del-rame";
 import { GRID_DEFAULT, GRID_OPTIONS, ascoltaGriglia, grigliaSalvata, salvaGriglia } from "./griglia";
@@ -170,6 +171,7 @@ export function BoardCanvas({
   regole,
   rameInAttesa = NESSUN_RAME,
   onGestoDelRame,
+  cosaSiSposta,
 }: {
   circuitJson: unknown[] | null;
   flags: ViewFlags;
@@ -248,6 +250,8 @@ export function BoardCanvas({
   rameInAttesa?: readonly RameInAttesa[];
   /** a copper gesture was let go and moved something: what to save, and what to keep on screen */
   onGestoDelRame?: (gesto: RameInAttesa) => void;
+  /** in move mode, the one kind of thing a press takes (cosa-si-sposta.ts); left out, everything moves */
+  cosaSiSposta?: CosaSiSposta;
 }) {
   const scene = useMemo(() => buildScene(circuitJson, { eccedenzaIngombroMm }), [circuitJson, eccedenzaIngombroMm]);
   /** the board's real outline as an SVG path; null when it is a plain rectangle */
@@ -286,12 +290,19 @@ export function BoardCanvas({
   } | null>(null);
   /** copper in hand: next to the parts' drag, with its own targets and its own state (gesto-del-rame.ts) */
   const rame = useGestoDelRame({
-    attivo: mode === "move" && selectMode === "off" && regole !== undefined && onGestoDelRame !== undefined,
+    attivo: mode === "move" && selectMode === "off" && regole !== undefined && onGestoDelRame !== undefined && cosaSiSposta !== "pezzi",
     circuitJson,
     regole,
     inAttesa: rameInAttesa,
     onGesto: onGestoDelRame,
   });
+  /** the parts take the press: always, unless the bar chose the traces or the vias alone */
+  const spostaPezzi = cosaSiSposta === undefined || cosaSiSposta === "pezzi";
+  /** the copper targets of the kind chosen: the stretches, the vias, or both when nothing is chosen */
+  const bersagliDelRame = useMemo(
+    () => (cosaSiSposta === undefined ? rame.bersagli : rame.bersagli.filter((b) => (cosaSiSposta === "vie" ? b.tipo === "via" : b.tipo === "tratto"))),
+    [rame.bersagli, cosaSiSposta],
+  );
   /** the part under the start of a Shift box: a Shift click on it adds or removes it */
   const marqueeSu = useRef<string | null>(null);
   /** box being drawn, in screen coordinates relative to the container */
@@ -1128,7 +1139,7 @@ export function BoardCanvas({
          * In Sposta, Shift + drag draws the box too (empty area or over parts);
          * plain drag still pans, Alt still means "no snap" on a part.
          */
-        const boxInSposta = mode === "move" && e.shiftKey;
+        const boxInSposta = mode === "move" && e.shiftKey && spostaPezzi;
         if ((selectMode !== "off" || boxInSposta) && rect && !e.altKey) {
           marqueeAdd.current = e.shiftKey;
           const x = e.clientX - rect.left;
@@ -1693,8 +1704,8 @@ export function BoardCanvas({
           )}
 
           {/* the copper that can never move: under the handles, so a press on a part stays the part's (see BersagliDelRame) */}
-          {rame.bersagli.length > 0 && (
-            <BersagliDelRame bersagli={rame.bersagli} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
+          {bersagliDelRame.length > 0 && (
+            <BersagliDelRame bersagli={bersagliDelRame} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
           )}
 
           {/* invisible rectangles over the components: they provide the hover,
@@ -1745,7 +1756,7 @@ export function BoardCanvas({
                 strokeWidth={mmPerPx * (isSelected ? 2 : 1.5)}
                 strokeDasharray={isMoved && !isSelected && !isHovered ? `${mmPerPx * 4} ${mmPerPx * 3}` : undefined}
                 onPointerDown={(e) => {
-                  if (mode !== "move" || e.button !== 0 || selectMode !== "off") return;
+                  if (mode !== "move" || e.button !== 0 || selectMode !== "off" || !spostaPezzi) return;
                   // Shift: the box (or the Shift click) belongs to the board, see above
                   if (e.shiftKey) return;
                   // the component is grabbed here: the view must NOT start
@@ -1801,14 +1812,19 @@ export function BoardCanvas({
                   }
                   onPickComponent?.(c.id);
                 }}
-                style={{ cursor: mode === "move" ? "move" : "pointer" }}
+                /*
+                 * With the traces or the vias alone chosen, a part is not there
+                 * for the pointer at all: the press goes to the copper under it
+                 * (the stretch that says why it cannot move), or to the board.
+                 */
+                style={{ cursor: mode === "move" ? "move" : "pointer", ...(mode === "move" && !spostaPezzi ? { pointerEvents: "none" as const } : {}) }}
               />
             );
           })}
 
           {/* the copper that can move: over the handles of the parts, see BersagliDelRame */}
-          {rame.bersagli.length > 0 && (
-            <BersagliDelRame bersagli={rame.bersagli} scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
+          {bersagliDelRame.length > 0 && (
+            <BersagliDelRame bersagli={bersagliDelRame} scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
           )}
 
           {/* automatic-check markers, where they really are */}
@@ -2038,7 +2054,7 @@ export function BoardCanvas({
         onGrid={setGridMm}
         pxPerMm={Math.round(view.k)}
         strati={usedLayers.length}
-        rameSiSposta={rame.bersagli.length > 0}
+        comeSposta={rame.bersagli.length > 0 || cosaSiSposta === "pezzi" ? comeSiSposta(cosaSiSposta) : comeSiSposta("pezzi")}
       />
     </div>
   );
@@ -2103,7 +2119,7 @@ function BarraSotto({
   onGrid,
   pxPerMm,
   strati,
-  rameSiSposta,
+  comeSposta,
 }: {
   gruppo: string[];
   info: (DescrizionePezzo & { name: string }) | null;
@@ -2115,8 +2131,8 @@ function BarraSotto({
   onGrid: (g: number) => void;
   pxPerMm: number;
   strati: number;
-  /** in move mode vias and straight stretches of trace can be dragged too: the hint says so */
-  rameSiSposta: boolean;
+  /** in move mode, what to drag: the parts, and the copper too where it can be dragged (comeSiSposta) */
+  comeSposta: string;
 }) {
   const [aperta, setAperta] = useState(false);
   const descrizione = info ? [info.titolo, info.testo].filter(Boolean).join(" · ") : "";
@@ -2151,11 +2167,7 @@ function BarraSotto({
           </>
         ) : (
           <span className="text-faint">
-            {mode === "move"
-              ? rameSiSposta
-                ? "Trascina un componente, una via o un tratto dritto di pista per spostarlo. Esc annulla, Cmd+Z torna indietro."
-                : "Trascina un componente per spostarlo."
-              : "Passa sopra un componente per sapere cos'e' e dove vanno le sue reti."}
+            {mode === "move" ? comeSposta : "Passa sopra un componente per sapere cos'e' e dove vanno le sue reti."}
           </span>
         )}
         {mode === "move" && (pickedId || gruppo.length > 0) && (
