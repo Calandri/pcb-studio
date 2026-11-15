@@ -132,6 +132,15 @@
 // (the smaller), two outlines that touch (a short, always); of an edge that runs along a pad and on past it only the
 // part on the pad is left out. Under minClearanceMm the error stays, and it is the pads'. Copper and pours do not
 // change: a board of engine 13 comes to 14 with a recheck ("Ricontrolla"), no compile
+// Still 14 (2026-11-15): a point of a <trace pcbPath> may carry the width of the trace from there on (patches of
+// @tscircuit/core and @tscircuit/props: the route writes the point twice where the width changes), and the pours are
+// carved around every segment at its own width (pisteAUnaLarghezza in pours-recompute.ts). A board whose files write
+// no width on a point compiles to the same board, byte for byte (sbb-dl-principale as on the server at n130): no
+// check changes its answer, nothing to recheck. Two boards change at their next compile, both for the better: one
+// that already wrote a width on a point (props dropped the key, so it was compiled without it), and one whose copper
+// already changes width along a trace (a routed board that carries the copper of a compile before), whose pours are
+// now carved around each width instead of the first one. A correction of Sposta whose trace of the files changes
+// width is not laid (an orphan: it would erase the necks), and Sposta holds such a trace still
 export const CHECKS_ENGINE_VERSION = 14;
 
 /**

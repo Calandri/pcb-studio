@@ -107,7 +107,9 @@
       }
     },
     "patchedDependencies": {
+      "@tscircuit/core@0.0.1512": "patches/@tscircuit__core@0.0.1512.patch",
       "@tscircuit/pcb-viewer": "patches/@tscircuit__pcb-viewer.patch",
+      "@tscircuit/props@0.0.592": "patches/@tscircuit__props@0.0.592.patch",
       "@tscircuit/schematic-trace-solver": "patches/@tscircuit__schematic-trace-solver.patch",
       "calculate-cell-boundaries": "patches/calculate-cell-boundaries.patch",
       "circuit-json-to-gerber": "patches/circuit-json-to-gerber.patch"

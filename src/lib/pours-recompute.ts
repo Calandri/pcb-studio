@@ -1492,6 +1492,67 @@ export async function colateInOrdinePerIlGerber<T extends Record<string, unknown
   return circuitJson.map((el) => (el.type === "pcb_copper_pour" ? ordinate[k++] : el));
 }
 
+/**
+ * THE TRACES AS THE SOLVER READS THEM: ONE WIDTH EACH.
+ *
+ * The converter of the copper-pour-solver (convertCircuitJsonToInputProblem)
+ * takes the width of a trace from its first wire on the layer and keeps it for
+ * the whole run up to the next via. A trace whose width changes along its path
+ * (a width written on a point of its pcbPath: a neck into a fine-pitch pin, 50
+ * ohm in between) was carved at the width it starts with, and the pour came as
+ * close to its wide part as to its neck.
+ *
+ * Here such a trace is handed over in pieces, one per width, under its own id
+ * (the solver finds its net by the id): a piece ends where the width changes,
+ * and the next one starts there. The change is a point written twice by the
+ * compile, once with each width, so the pieces meet with no gap. A segment
+ * whose two ends say two widths is a piece of its own at the wider one: it is
+ * copper, and carved too narrow it would be copper in the pour.
+ *
+ * A board whose traces each have one width gets back the array it gave.
+ */
+export function pisteAUnaLarghezza(circuitJson: El[]): El[] {
+  const larghezza = (p: Record<string, unknown> | undefined): number | null =>
+    p?.route_type === "wire" ? num(p.width) : null;
+  const cambia = (a: Record<string, unknown>, b: Record<string, unknown>): boolean => {
+    const wa = larghezza(a);
+    const wb = larghezza(b);
+    return wa !== null && wb !== null && wa !== wb;
+  };
+  const varia = (el: El): boolean => {
+    if (el.type !== "pcb_trace" || !Array.isArray(el.route)) return false;
+    const route = el.route as Array<Record<string, unknown>>;
+    return route.some((p, i) => i > 0 && cambia(route[i - 1], p));
+  };
+  if (!circuitJson.some(varia)) return circuitJson;
+  const out: El[] = [];
+  for (const el of circuitJson) {
+    if (!varia(el)) {
+      out.push(el);
+      continue;
+    }
+    const route = el.route as Array<Record<string, unknown>>;
+    let pezzo: Array<Record<string, unknown>> = [route[0]];
+    for (let i = 1; i < route.length; i++) {
+      const a = route[i - 1];
+      const b = route[i];
+      if (!cambia(a, b)) {
+        pezzo.push(b);
+        continue;
+      }
+      out.push({ ...el, route: pezzo });
+      const lungo = num(a.x) !== num(b.x) || num(a.y) !== num(b.y);
+      if (lungo) {
+        const w = Math.max(larghezza(a)!, larghezza(b)!);
+        out.push({ ...el, route: [{ ...a, width: w }, { ...b, width: w }] });
+      }
+      pezzo = [b];
+    }
+    out.push({ ...el, route: pezzo });
+  }
+  return out;
+}
+
 export async function ricolaPiani({
   circuitJson,
   clearanceMm,
@@ -1527,6 +1588,8 @@ export async function ricolaPiani({
   await initializeManifoldGeometry();
   const scheda = contornoScheda(circuitJson);
   const serviti = planeServedPorts(circuitJson, readPours(circuitJson));
+  /* the traces whose width changes, in pieces of one width: see pisteAUnaLarghezza */
+  const perIlSolutore = pisteAUnaLarghezza(circuitJson);
   const punti = ancore(circuitJson, serviti);
   /** which net every via is on, read from the key the element carries */
   const netDiVia = new Map<string, string>();
@@ -1575,7 +1638,7 @@ export async function ricolaPiani({
      * keep away from — and this time the imported copper is in the room.
      */
     const problema = convertCircuitJsonToInputProblem(
-      circuitJson as never,
+      perIlSolutore as never,
       {
         layer: String(pour.layer) as never,
         source_net_id: String(pour.source_net_id ?? ""),

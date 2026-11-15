@@ -643,6 +643,17 @@ export function percorsoDellaPista(pcbTrace: Record<string, unknown>): ManualRou
   return out;
 }
 
+/** whether the wires of a trace say more than one width: a trace with necks, drawn by the widths on the points of its pcbPath */
+export function cambiaLarghezza(pcbTrace: Record<string, unknown>): boolean {
+  let prima: number | null = null;
+  for (const p of (Array.isArray(pcbTrace.route) ? pcbTrace.route : []) as El[]) {
+    if (p.route_type !== "wire" || !finite(p.width)) continue;
+    if (prima !== null && p.width !== prima) return true;
+    prima = p.width;
+  }
+  return false;
+}
+
 /**
  * The path the files drew where the copper of a correction now is: what that
  * copper remembers (see Sostituita), null for any other trace. Whoever moves
@@ -939,6 +950,18 @@ function leggiIlRame(
     for (const e of deiFile.slice(1)) {
       const d = distanzaFraPercorsi(percorsoDellaPista(e), route.replaces!.original);
       if (d < distanza) [vicina, distanza] = [e, d];
+    }
+    /*
+     * A trace whose width changes along its path (a width on a point of its
+     * pcbPath) is not replaced: a correction is copper of one width, and laid
+     * in its place it would erase the necks the files draw, with nobody told.
+     * No gesture makes such a correction (Sposta holds the trace still), so
+     * this one was made on the trace before the files gave it its widths: the
+     * copper it started from is gone, it is an orphan, and the files win.
+     */
+    if (cambiaLarghezza(vicina)) {
+      stato.orfane.routes.push(chiave);
+      continue;
     }
     prese.add(vicina);
     letto.sostituite.set(vicina, route);

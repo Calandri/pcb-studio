@@ -1,0 +1,78 @@
+diff --git a/dist/index.js b/dist/index.js
+index d7fe851..4d4441e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -4082,10 +4082,27 @@ function Trace_doInitialPcbManualTraceRender(trace) {
+   });
+   const transform = subcircuit._isInflatedFromCircuitJson ? trace._computePcbGlobalTransformBeforeLayout() : anchorPort?._computePcbGlobalTransformBeforeLayout?.() || identity2();
+   const pcbPath = props.pcbPath;
++  /* patched (pcb-studio, PCB_STUDIO_SEGMENT_WIDTHS): a point of pcbPath may say
++     `width`, the width of the trace from that point on, until a later point
++     says another; before the first such point the trace has its thickness.
++     Where the width changes the point is written twice, once with the width
++     before and once with the width after: every segment of the route then has
++     the same width at both ends, and whoever reads a segment's width from its
++     start (Gerber, SVG, tscircuit's checks) or from its end (pcb-viewer) reads
++     the same. The second copy is written only when the route goes on from
++     there, so a route never ends on it. A path with no width on its points
++     gives the route it always gave. */
++  let pcbStudioSegmentWidth = width;
++  let pcbStudioStep = null;
++  const pcbStudioTakeStep = () => {
++    if (pcbStudioStep) route.push(pcbStudioStep);
++    pcbStudioStep = null;
++  };
+   for (const pt of pcbPath) {
+     let coordinates;
+     let isGlobalPosition = false;
+     const isViaPoint2 = typeof pt !== "string" && pt.via;
++    const pcbStudioPointWidth = typeof pt !== "string" && typeof pt.width === "number" && Number.isFinite(pt.width) && pt.width > 0 ? pt.width : void 0;
+     let viaFromLayer;
+     let viaToLayer;
+     if (typeof pt === "string") {
+@@ -4128,6 +4145,7 @@ function Trace_doInitialPcbManualTraceRender(trace) {
+     }
+     const finalCoordinates = isGlobalPosition ? coordinates : applyToPoint2(transform, coordinates);
+     if (isViaPoint2) {
++      pcbStudioTakeStep();
+       route.push({
+         route_type: "via",
+         x: finalCoordinates.x,
+@@ -4136,22 +4154,35 @@ function Trace_doInitialPcbManualTraceRender(trace) {
+         to_layer: viaToLayer ?? currentLayer
+       });
+       currentLayer = viaToLayer ?? currentLayer;
++      if (pcbStudioPointWidth !== void 0) pcbStudioSegmentWidth = pcbStudioPointWidth;
+     } else {
++      pcbStudioTakeStep();
+       route.push({
+         route_type: "wire",
+         x: finalCoordinates.x,
+         y: finalCoordinates.y,
+-        width,
++        width: pcbStudioSegmentWidth,
+         layer: currentLayer
+       });
++      if (pcbStudioPointWidth !== void 0 && pcbStudioPointWidth !== pcbStudioSegmentWidth) {
++        pcbStudioSegmentWidth = pcbStudioPointWidth;
++        pcbStudioStep = {
++          route_type: "wire",
++          x: finalCoordinates.x,
++          y: finalCoordinates.y,
++          width: pcbStudioSegmentWidth,
++          layer: currentLayer
++        };
++      }
+     }
+   }
+   if (otherPort && otherPos) {
++    pcbStudioTakeStep();
+     route.push({
+       route_type: "wire",
+       x: otherPos.x,
+       y: otherPos.y,
+-      width,
++      width: pcbStudioSegmentWidth,
+       layer: currentLayer,
+       end_pcb_port_id: otherPort.pcb_port_id
+     });

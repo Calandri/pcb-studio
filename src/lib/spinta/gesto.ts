@@ -125,7 +125,7 @@ export function preseDelRame(circuitJson: unknown[]): BersaglioDelRame[] {
         x2: b.x,
         y2: b.y,
         layer: tratto.strato,
-        width: pista.larghezza,
+        width: tratto.larghezza,
         ...fermo(provaDelTratto(modello, pista.indice, tratto.indice)),
       });
     }

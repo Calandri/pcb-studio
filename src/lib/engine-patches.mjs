@@ -16,6 +16,12 @@
  * build with an unpatched copy fails) and at every compile, whose summary
  * carries the result read on the machine that compiled.
  *
+ * Core itself and its @tscircuit/props are patched too, for the widths on the
+ * points of a <trace pcbPath> (each point may say the width of the trace from
+ * there on): props keeps the `width` its schema used to drop, core writes it on
+ * the route. Core is found from its own folder like the others (its package is
+ * the first node_modules/@tscircuit/core up the tree).
+ *
  * Plain .mjs so the build script can run it with node, without a compiler.
  */
 
@@ -26,6 +32,8 @@ import path from "node:path";
 export const PATCHED_LIBRARIES = [
   { name: "calculate-cell-boundaries", marker: "PCB_STUDIO_EXACT_MAX_CELLS" },
   { name: "@tscircuit/schematic-trace-solver", marker: "pcbStudioSegmentGrids" },
+  { name: "@tscircuit/core", marker: "PCB_STUDIO_SEGMENT_WIDTHS" },
+  { name: "@tscircuit/props", marker: "PCB_STUDIO_SEGMENT_WIDTHS" },
 ];
 
 /** a package as Node finds it from a folder: node_modules/<name>, walking up */

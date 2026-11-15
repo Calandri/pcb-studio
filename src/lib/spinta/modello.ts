@@ -104,6 +104,15 @@ export interface TrattoDelModello {
   da: number;
   /** the index, in the `route` of its pcb_trace, of the point it starts from (it ends at the next): how the viewer names a stretch */
   indiceDiRoute: number;
+  /**
+   * mm: the width of its own copper, read on the point of the route it starts
+   * from (where the width changes the route writes the point twice, and that
+   * point is the second). The trace's on a trace of one width; on a trace whose
+   * width changes along its path (a width on a point of its pcbPath, which
+   * holds it still: see `ferma`) the target the viewer draws on the stretch is
+   * as wide as its copper. The moves measure every trace at its widest.
+   */
+  larghezza: number;
   strato: ManualRoutePoint["layer"];
   /**
    * From `punti[da]` to `punti[da + 1]`: the direction it has, exactly or within
@@ -515,6 +524,7 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
         indice: pista.tratti.length,
         da: k,
         indiceDiRoute: inRoute[k] ?? k,
+        larghezza: num(route[inRoute[k] ?? k]?.width) ?? larga,
         strato: a.layer,
         direzione,
         capi: [{ tipo: "libero" }, { tipo: "libero" }],

@@ -1,0 +1,18 @@
+diff --git a/dist/index.js b/dist/index.js
+index 502f410..11c33a9 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -17282,7 +17282,12 @@ var portRef = z68.union([
+ var pcbPathPoint = point.extend({
+   via: z68.boolean().optional(),
+   fromLayer: layer_ref4.optional(),
+-  toLayer: layer_ref4.optional()
++  toLayer: layer_ref4.optional(),
++  /* patched (pcb-studio, PCB_STUDIO_SEGMENT_WIDTHS): the width of the trace
++     from this point on; @tscircuit/core reads it (Trace_doInitialPcbManualTraceRender) */
++  width: distance19.refine((w) => Number.isFinite(w) && w > 0 && w <= 10, {
++    message: "width must be a positive length, at most 10mm"
++  }).optional()
+ }).superRefine((value, ctx) => {
+   if (value.via) {
+     if (!value.toLayer) {
