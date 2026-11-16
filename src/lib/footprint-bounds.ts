@@ -240,6 +240,17 @@ export function corpoDelPezzo(cad: El, opts: { dalModello?: boolean } = {}): Cor
   return { x: x + d.x, y: y + d.y, w: s.w, h: s.h, rot: giacitura.angolo };
 }
 
+/**
+ * How far the box of a part's jscad model sits from the part's origin, on the
+ * board (mm), laid as corpoDelPezzo lays it. null when the model is not a box
+ * or is stood on a side.
+ */
+export function scostamentoDelModello(cad: El): { x: number; y: number } | null {
+  const giacitura = modelloSullaScheda(cad.rotation);
+  const s = scatolaDelModello(cad.model_jscad);
+  return giacitura && s ? giacitura.porta(s.dx, s.dy) : null;
+}
+
 /** the body of the part on the board, when its size is known */
 function bodyBounds(cad: El, dalModello: boolean): Bounds | null {
   const c = corpoDelPezzo(cad, { dalModello });

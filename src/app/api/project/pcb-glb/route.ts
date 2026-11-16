@@ -2,6 +2,7 @@ import { compileGeometryOnly } from "@/lib/compile";
 import { convertCircuitJsonToGltf } from "circuit-json-to-gltf";
 import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
+import { raddrizzaPezziJscad } from "@/lib/glb-jscad";
 import { getProjectModel } from "@/lib/model-store";
 import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
 
@@ -156,7 +157,8 @@ export async function GET(req: Request): Promise<Response> {
       format: "glb",
       boardDrillQuality: "fast",
     });
-    const bytes = toArrayBuffer(gltf);
+    // the converter draws cadModel={{ jscad }} parts inside out and grey: see glb-jscad
+    const bytes = raddrizzaPezziJscad(toArrayBuffer(gltf), circuitJson);
     // keeps at most the most recent models: the lambda stays warm only briefly
     if (glbCache.size >= 8) glbCache.delete(glbCache.keys().next().value!);
     glbCache.set(cacheKey, bytes);

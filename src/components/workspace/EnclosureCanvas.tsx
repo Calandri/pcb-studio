@@ -73,7 +73,11 @@ export function EnclosureCanvas({
     key.position.set(60, 90, 40);
     const fill = new THREE.DirectionalLight(0x9fd8c4, 0.5);
     fill.position.set(-70, 30, -50);
-    scene.add(hemi, key, fill);
+    // the bottom face carries parts too: with every light above, turning the
+    // board over showed it black
+    const under = new THREE.DirectionalLight(0xffffff, 0.9);
+    under.position.set(-40, -80, 30);
+    scene.add(hemi, key, fill, under);
 
     const boardGroup = new THREE.Group();
     const enclosureGroup = new THREE.Group();
