@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ClassiRame } from "@/lib/classi-rame";
-import { COPPIE, INGOMBRO_ECCEDENZA_MM, SERIGRAFIA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
+import { COPPIE, INGOMBRO_ECCEDENZA_MM, SERIGRAFIA_DISTANZA_MM, VIA_APERTURA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
 
 /**
  * Board fabrication rules.
@@ -68,6 +68,13 @@ const FIELDS: Array<{
     hint: "per lato, attorno a corpo e piazzole di un pezzo senza cortile: due ingombri che si sovrappongono si scontrano in montaggio e la scheda non e' pronta",
     puoEsserVuoto: true,
     diSerie: INGOMBRO_ECCEDENZA_MM,
+  },
+  {
+    key: "minViaToPadOpeningMm",
+    label: "Via dall'apertura",
+    hint: "fra la corona di una via e l'apertura della maschera di una piazzola, anche della stessa rete: sotto, il ponte di maschera non tiene",
+    puoEsserVuoto: true,
+    diSerie: VIA_APERTURA_DISTANZA_MM,
   },
 ];
 

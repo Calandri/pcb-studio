@@ -137,6 +137,27 @@ export interface DesignRules {
    * INGOMBRO_ECCEDENZA_MM. A declared courtyard is taken as it is.
    */
   componentCourtyardExcessMm?: number;
+  /**
+   * HOW FAR THE RING OF A VIA STAYS FROM THE OPENING OF AN SMD PAD, edge to
+   * edge, whatever net the two are on (see check 4.c in drc.ts). The opening is
+   * the pad grown by its soldermask_margin, or its paste opening where that is
+   * larger. Under it the strip of mask between the two is too thin to hold, and
+   * the solder of the pad runs into the via. Missing: VIA_APERTURA_DISTANZA_MM.
+   */
+  minViaToPadOpeningMm?: number;
+}
+
+/**
+ * The distance a via keeps from a pad's opening in a project that writes none
+ * (Niccolo', 2026-11-16: the ground via next to the ball E5 of IC6 on
+ * sbb-dl-principale, its ring 0,026 mm from the opening).
+ */
+export const VIA_APERTURA_DISTANZA_MM = 0.05;
+
+/** the distance from a via to a pad's opening the project asks, or the default */
+export function distanzaViaApertura(rules: DesignRules): number {
+  const v = rules.minViaToPadOpeningMm;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : VIA_APERTURA_DISTANZA_MM;
 }
 
 /**
@@ -305,6 +326,7 @@ const LIMITS: Record<
       | "pasteExpansionMm"
       | "minSilkscreenClearanceMm"
       | "componentCourtyardExcessMm"
+      | "minViaToPadOpeningMm"
       | "autoPlaneVias"
       | "pasteOnPlatedHoles"
       | "autoroute"
@@ -312,7 +334,8 @@ const LIMITS: Record<
   | "pourClearanceMm"
   | "pasteExpansionMm"
   | "minSilkscreenClearanceMm"
-  | "componentCourtyardExcessMm",
+  | "componentCourtyardExcessMm"
+  | "minViaToPadOpeningMm",
   { min: number; max: number }
 > = {
   minTraceWidthMm: { min: 0.05, max: 2 },
@@ -334,6 +357,8 @@ const LIMITS: Record<
   minSilkscreenClearanceMm: { min: 0, max: 1 },
   // zero: the exact envelopes, touching allowed; beyond a millimetre a side it is a typo
   componentCourtyardExcessMm: { min: 0, max: 1 },
+  // zero: only a ring that touches or enters the opening counts; beyond a millimetre it is a typo
+  minViaToPadOpeningMm: { min: 0, max: 1 },
 };
 
 /** the limits of one pair's own distance (clearanceByPairMm): under ten microns a mangled file */

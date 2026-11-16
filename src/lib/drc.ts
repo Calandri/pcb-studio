@@ -1,6 +1,7 @@
 import {
   DEFAULT_DESIGN_RULES,
   distanzaMinimaFra,
+  distanzaViaApertura,
   type DesignRules,
   type TipoRame,
 } from "./design-rules";
@@ -292,6 +293,133 @@ export function rameDelPad(el: El): FormaRame | null {
   }
   const r = num(el.radius);
   return r !== null ? { tipo: "cerchio", x, y, r } : null;
+}
+
+/**
+ * THE POINT OF A SHAPE'S OUTLINE NEAREST TO (px, py), and how far it is from
+ * it: NEGATIVE when the point is inside, which the distances above cannot say
+ * (they stop at 0). `oltre` grows the outline by that much on every side (the
+ * mask margin of a polygon, see aperturaDelPad): the distance drops by it and
+ * the point moves out with it. A polygon is measured on its own vertices.
+ */
+export function bordoVicino(f: FormaRame, px: number, py: number, oltre = 0): { x: number; y: number; d: number } {
+  let q: { x: number; y: number; d: number };
+  if (f.tipo === "cerchio" || f.tipo === "capsula") {
+    // the nearest point of the core (the centre, or the foot on the segment), then out by the radius
+    let cx = f.x;
+    let cy = f.y;
+    let r = 0;
+    // the way out for a point right on the core: across the stadium
+    let ux = 1;
+    let uy = 0;
+    if (f.tipo === "cerchio") r = f.r;
+    else {
+      const c = f.capsula;
+      const vx = c.bx - c.ax;
+      const vy = c.by - c.ay;
+      const l2 = vx * vx + vy * vy;
+      const t = l2 < 1e-18 ? 0 : Math.max(0, Math.min(1, ((px - c.ax) * vx + (py - c.ay) * vy) / l2));
+      cx = c.ax + t * vx;
+      cy = c.ay + t * vy;
+      r = c.r;
+      if (l2 >= 1e-18) {
+        const l = Math.sqrt(l2);
+        ux = -vy / l;
+        uy = vx / l;
+      }
+    }
+    const dx = px - cx;
+    const dy = py - cy;
+    const l = Math.hypot(dx, dy);
+    if (l > 1e-12) {
+      ux = dx / l;
+      uy = dy / l;
+    }
+    q = { x: cx + ux * r, y: cy + uy * r, d: l - r };
+  } else if (f.punti && f.punti.length >= 3) {
+    const p = f.punti;
+    let best = Infinity;
+    let bx = p[0].x;
+    let by = p[0].y;
+    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+      const ax = p[j].x;
+      const ay = p[j].y;
+      const vx = p[i].x - ax;
+      const vy = p[i].y - ay;
+      const l2 = vx * vx + vy * vy;
+      const t = l2 < 1e-18 ? 0 : Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / l2));
+      const qx = ax + t * vx;
+      const qy = ay + t * vy;
+      const d = Math.hypot(px - qx, py - qy);
+      if (d < best) {
+        best = d;
+        bx = qx;
+        by = qy;
+      }
+    }
+    q = { x: bx, y: by, d: dentroPoligono(px, py, p) ? -best : best };
+  } else {
+    // into the rectangle's own frame, where it is straight, and back
+    const rad = ((f.rot ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const dx = px - f.x;
+    const dy = py - f.y;
+    const lx = dx * cos + dy * sin;
+    const ly = -dx * sin + dy * cos;
+    const hw = f.w / 2;
+    const hh = f.h / 2;
+    const fx = Math.abs(lx) - hw;
+    const fy = Math.abs(ly) - hh;
+    let qx: number;
+    let qy: number;
+    let d: number;
+    if (fx > 0 || fy > 0) {
+      qx = Math.max(-hw, Math.min(hw, lx));
+      qy = Math.max(-hh, Math.min(hh, ly));
+      d = Math.hypot(Math.max(fx, 0), Math.max(fy, 0));
+    } else if (fx > fy) {
+      // inside, nearer to a side across x
+      qx = lx >= 0 ? hw : -hw;
+      qy = ly;
+      d = fx;
+    } else {
+      qx = lx;
+      qy = ly >= 0 ? hh : -hh;
+      d = fy;
+    }
+    q = { x: f.x + qx * cos - qy * sin, y: f.y + qx * sin + qy * cos, d };
+  }
+  if (oltre !== 0) {
+    const vx = q.d >= 0 ? px - q.x : q.x - px;
+    const vy = q.d >= 0 ? py - q.y : q.y - py;
+    const l = Math.hypot(vx, vy);
+    if (l > 1e-12) q = { x: q.x + (vx / l) * oltre, y: q.y + (vy / l) * oltre, d: q.d - oltre };
+    else q = { ...q, d: q.d - oltre };
+  }
+  return q;
+}
+
+/**
+ * THE MASK OPENING OF AN SMD PAD, as the Gerber opens it (circuit-json-to-gerber):
+ * the pad grown by its soldermask_margin on every side, a rectangle with square
+ * corners, a circle or a stadium with its radius grown. A negative margin
+ * shrinks it (a pad defined by the mask), and when nothing is left there is no
+ * opening. A polygon is opened as it is drawn whatever margin it writes: a
+ * margin that grows it is taken anyway (`oltre`), the cautious reading. null:
+ * a pad under the mask, or one with no shape.
+ */
+export function aperturaDelPad(el: El): { forma: FormaRame; oltre: number } | null {
+  if (el.is_covered_with_solder_mask === true) return null;
+  const f = rameDelPad(el);
+  if (!f) return null;
+  const m = num(el.soldermask_margin) ?? 0;
+  if (f.tipo === "cerchio") return f.r + m > 0 ? { forma: { ...f, r: f.r + m }, oltre: 0 } : null;
+  if (f.tipo === "capsula") {
+    return f.capsula.r + m > 0 ? { forma: { ...f, capsula: { ...f.capsula, r: f.capsula.r + m } }, oltre: 0 } : null;
+  }
+  if (f.punti) return { forma: f, oltre: Math.max(0, m) };
+  return f.w + 2 * m > 0 && f.h + 2 * m > 0 ? { forma: { ...f, w: f.w + 2 * m, h: f.h + 2 * m }, oltre: 0 } : null;
 }
 
 /**
@@ -1388,6 +1516,187 @@ export function runDrcChecks(
       );
     }
   }
+
+  /*
+   * --- 4.c THE RING OF A VIA AGAINST THE OPENING OF AN SMD PAD (Niccolo',
+   * 2026-11-16: "segnalami il problema con un cerchio rosso, altrimenti me lo
+   * sogno").
+   *
+   * The pair rules measure copper against copper and leave a pad's own net
+   * alone. Between a via and a pad there is the MASK too: a strip of it has to
+   * stay between the ring and the opening, or it is too thin to hold and the
+   * solder of the pad runs down the hole. On sbb-dl-principale a ground via sat
+   * with its ring 0,026 mm from the opening of the ball E5 of the PSRAM IC6, on
+   * the same net and 0,076 mm of copper away: every check was green.
+   *
+   * Every via against every SMD pad of the two faces (a via goes through the
+   * board, its ring is on both), whatever their nets: from the edge of the ring
+   * to the edge of the opening (aperturaDelPad), or of the pad's paste opening
+   * where that comes nearer (the larger of the two wins). Under the project's
+   * minViaToPadOpeningMm it is reported, and always when the ring touches or
+   * enters the opening. A via whose centre lies on the copper of a pad of its own
+   * net is a via in the pad, made on purpose: it does not count against that pad
+   * (no project declares one in any other way), it does against the others. The
+   * dot is in the middle of the gap, on the face of the pad; the nearest first.
+   */
+  const sogliaApertura = distanzaViaApertura(rules);
+  interface PiazzolaAperta {
+    el: El;
+    rame: FormaRame;
+    layer: string;
+    group: string | null;
+    aperture: Array<{ forma: FormaRame; oltre: number; pasta: boolean }>;
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+  }
+  const piazzoleAperte: PiazzolaAperta[] = [];
+  const apertaDi = new Map<string, PiazzolaAperta>();
+  const aperteDelPezzo = new Map<string, PiazzolaAperta[]>();
+  const allarga = (p: PiazzolaAperta, f: FormaRame, oltre: number) => {
+    const b = ingombroForma(f);
+    p.minX = Math.min(p.minX, b.minX - oltre);
+    p.maxX = Math.max(p.maxX, b.maxX + oltre);
+    p.minY = Math.min(p.minY, b.minY - oltre);
+    p.maxY = Math.max(p.maxY, b.maxY + oltre);
+  };
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_smtpad" || (el.layer !== "top" && el.layer !== "bottom")) continue;
+    const rame = rameDelPad(el);
+    const apertura = aperturaDelPad(el);
+    if (!rame || !apertura) continue;
+    const p: PiazzolaAperta = {
+      el,
+      rame,
+      layer: String(el.layer),
+      group: groupOfPcbPort(el.pcb_port_id),
+      aperture: [{ ...apertura, pasta: false }],
+      minX: Infinity,
+      maxX: -Infinity,
+      minY: Infinity,
+      maxY: -Infinity,
+    };
+    allarga(p, apertura.forma, apertura.oltre);
+    piazzoleAperte.push(p);
+    if (typeof el.pcb_smtpad_id === "string") apertaDi.set(el.pcb_smtpad_id, p);
+    if (typeof el.pcb_component_id === "string") {
+      const suoi = aperteDelPezzo.get(el.pcb_component_id);
+      if (suoi) suoi.push(p);
+      else aperteDelPezzo.set(el.pcb_component_id, [p]);
+    }
+  }
+  /*
+   * The paste openings: the pad's own, and those a part draws for itself
+   * (stencil.json, no pad named), given to the pad of that part they lie on.
+   */
+  for (const el of piazzoleAperte.length > 0 ? circuitJson : []) {
+    if (el.type !== "pcb_solder_paste") continue;
+    const forma = rameDelPad(el);
+    if (!forma) continue;
+    let p: PiazzolaAperta | undefined;
+    if (typeof el.pcb_smtpad_id === "string") p = apertaDi.get(el.pcb_smtpad_id);
+    else if (typeof el.pcb_component_id === "string") {
+      const pasta = boxDaForma(forma, { layer: null, label: "", group: null, kind: "pad" });
+      let vicino = Infinity;
+      for (const q of aperteDelPezzo.get(el.pcb_component_id) ?? []) {
+        if (q.layer !== el.layer) continue;
+        const d = boxDistance(pasta, boxDaForma(q.rame, { layer: null, label: "", group: null, kind: "pad" }));
+        if (d <= TOLLERANZA_MM && d < vicino) {
+          vicino = d;
+          p = q;
+        }
+      }
+    }
+    if (!p || p.layer !== el.layer) continue;
+    p.aperture.push({ forma, oltre: 0, pasta: true });
+    allarga(p, forma, 0);
+  }
+  // the names a person knows them by, read when the first one is reported
+  let nomiAperture: { piedino: (el: El) => string; rete: (gruppo: string | null) => string | null } | null = null;
+  const nomiDelleAperture = () => {
+    if (nomiAperture) return nomiAperture;
+    const pezzo = new Map<string, string>();
+    const porta = new Map<string, El>();
+    const reteDi = new Map<string, string>();
+    for (const el of circuitJson) {
+      if (el.type === "source_component") pezzo.set(String(el.source_component_id ?? ""), String(el.name ?? ""));
+      else if (el.type === "source_port") porta.set(String(el.source_port_id ?? ""), el);
+      else if (el.type === "source_net" && el.source_net_id) {
+        const nome = String(el.name ?? el.source_net_id);
+        const chiave = String(el.subcircuit_connectivity_map_key ?? "");
+        for (const g of [chiave, risolviChiave(chiave), gruppoDiRete.get(String(el.source_net_id)), `net:${String(el.source_net_id)}`]) {
+          if (g && !reteDi.has(g)) reteDi.set(g, nome);
+        }
+      }
+    }
+    const pezzoPcb = new Map<string, string>();
+    for (const el of circuitJson) {
+      if (el.type === "pcb_component") pezzoPcb.set(String(el.pcb_component_id ?? ""), pezzo.get(String(el.source_component_id ?? "")) ?? "");
+    }
+    return (nomiAperture = {
+      // part and pin, as the ERC writes them: IC6.E5
+      piedino: (el) => {
+        const p = porta.get(pcbPortToSource.get(String(el.pcb_port_id ?? "")) ?? "");
+        const nome = p ? pezzo.get(String(p.source_component_id ?? "")) : undefined;
+        if (p && nome) return `${nome}.${String(p.name ?? "pin")}`;
+        const suo = pezzoPcb.get(String(el.pcb_component_id ?? ""));
+        const hint = (el.port_hints as unknown[] | undefined)?.find((h) => typeof h === "string");
+        if (suo && hint) return `${suo}.${String(hint)}`;
+        return String(el.pcb_smtpad_id ?? "pad");
+      },
+      rete: (gruppo) => (gruppo ? (reteDi.get(gruppo) ?? null) : null),
+    });
+  };
+  const viaVicine: Array<{ gap: number; message: string; punto: { x: number; y: number }; layer: string }> = [];
+  for (const el of piazzoleAperte.length > 0 ? circuitJson : []) {
+    if (el.type !== "pcb_via") continue;
+    const x = num(el.x);
+    const y = num(el.y);
+    const diametro = num(el.outer_diameter) ?? num(el.hole_diameter);
+    if (x === null || y === null || diametro === null || diametro <= 0) continue;
+    const r = diametro / 2;
+    // beyond this the gap is larger than the threshold: nothing to measure
+    const portata = r + Math.max(sogliaApertura, 0) + TOLLERANZA_MM;
+    let gruppo: string | null | undefined;
+    for (const p of piazzoleAperte) {
+      if (x + portata < p.minX || x - portata > p.maxX || y + portata < p.minY || y - portata > p.maxY) continue;
+      let bordo: { x: number; y: number; d: number; pasta: boolean } | null = null;
+      for (const a of p.aperture) {
+        const q = bordoVicino(a.forma, x, y, a.oltre);
+        if (!bordo || q.d < bordo.d) bordo = { ...q, pasta: a.pasta };
+      }
+      if (!bordo) continue;
+      const gap = bordo.d - r;
+      if (gap > TOLLERANZA_MM && gap >= sogliaApertura - TOLLERANZA_MM) continue;
+      if (gruppo === undefined) gruppo = groupOfVia(el);
+      // a via in the pad, of the pad's net: made on purpose
+      if (bordoVicino(p.rame, x, y).d <= 0 && (gruppo === null || p.group === null || gruppo === p.group)) continue;
+      // in the middle of the gap: between the edge of the opening and the ring, on the line to the centre
+      const lx = bordo.x - x;
+      const ly = bordo.y - y;
+      const l = Math.hypot(lx, ly);
+      const punto =
+        l > 1e-12 ? { x: (bordo.x + x + (lx / l) * r) / 2, y: (bordo.y + y + (ly / l) * r) / 2 } : { x: bordo.x, y: bordo.y };
+      const nomi = nomiDelleAperture();
+      const reteVia = nomi.rete(gruppo);
+      const retePad = nomi.rete(p.group);
+      const misura = (Math.abs(gap) < 0.0005 ? 0 : gap).toFixed(3);
+      viaVicine.push({
+        gap,
+        punto,
+        layer: p.layer,
+        message:
+          `via ${String(el.pcb_via_id ?? "via")}${reteVia ? ` (${reteVia})` : ""} in (${x.toFixed(3)}, ${y.toFixed(3)}): ` +
+          `corona a ${misura}mm dall'apertura${bordo.pasta ? " della pasta" : ""} di ${nomi.piedino(p.el)} ` +
+          `(${retePad ? `${retePad}, ` : ""}${p.layer})` +
+          `${gap < -TOLLERANZA_MM ? ", la corona entra nell'apertura" : gap <= TOLLERANZA_MM ? ", la corona tocca l'apertura" : ""}` +
+          ` < min ${sogliaApertura}mm`,
+      });
+    }
+  }
+  viaVicine.sort((a, b) => a.gap - b.gap);
+  for (const v of viaVicine) push("pad_opening_clearance", v.message, v.punto, v.layer);
 
   /*
    * --- 5.a trace angles (house rule, Niccolo' 2026-07-26)

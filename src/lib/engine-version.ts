@@ -141,7 +141,14 @@
 // already changes width along a trace (a routed board that carries the copper of a compile before), whose pours are
 // now carved around each width instead of the first one. A correction of Sposta whose trace of the files changes
 // width is not laid (an orphan: it would erase the necks), and Sposta holds such a trace still
-export const CHECKS_ENGINE_VERSION = 14;
+// 15 (2026-11-16): the ring of every via is measured against the mask opening of every SMD pad, whatever the two
+// nets (drc.ts, check 4.c): the pad grown by its soldermask_margin, or its paste opening where that is larger. Under
+// the project's minViaToPadOpeningMm (0.05 mm unless design-rules.json says otherwise), or touching or entering the
+// opening, it is a "pad_opening_clearance" violation, a red dot on the face of the pad. A via whose centre is on
+// the copper of a pad of its own net (via-in-pad) does not count against that pad. On sbb-dl-principale the ground
+// via at (3.96; 7.92) had its ring 0.026 mm from the opening of IC6.E5 with every check green. Copper and pours do not
+// change: a board of engine 14 comes to 15 with a recheck ("Ricontrolla"), no compile
+export const CHECKS_ENGINE_VERSION = 15;
 
 /**
  * The first engine that measures the footprints of the parts and absorbs

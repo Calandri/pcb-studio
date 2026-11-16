@@ -140,7 +140,17 @@ describe.each([6, 8])("una scheda a %i strati compilata da tscircuit", (n) => {
   it("i controlli: nessun errore, nessuna violazione, niente di aperto, e una colata su ogni strato aperta attorno al rame delle altre reti", () => {
     const { summary, circuitJson } = scheda();
     expect(summary.errors).toEqual([]);
-    expect(summary.drcViolations).toEqual([]);
+    /*
+     * One finding only, and it is the board as it is drawn: the via at x = -9
+     * of every row below the top leaves R.pin2 with its ring 0,03 mm inside the
+     * mask opening of that pad (pad_opening_clearance, engine 15), the dot
+     * halfway between ring and opening, on the top. Nothing else.
+     */
+    expect(summary.drcViolations.filter((v) => v.rule !== "pad_opening_clearance")).toEqual([]);
+    const sulPad = summary.drcViolations.flatMap((v) => (v.rule === "pad_opening_clearance" ? (v.points ?? []) : []));
+    expect(sulPad).toHaveLength(n - 1);
+    for (const p of sulPad) expect([p.x, p.layer]).toEqual([expect.closeTo(-9.235, 3), "top"]);
+    expect(summary.drcViolations[0]?.message).toMatch(/corona a -0\.030mm dall'apertura di R\d\.pin2 \(top\), la corona entra nell'apertura/);
     expect(summary.prcViolations).toEqual([]);
     expect(summary.unroutedTotal ?? summary.unroutedConnections.length).toBe(0);
     expect(summary.planesOverVias).toBeUndefined();
