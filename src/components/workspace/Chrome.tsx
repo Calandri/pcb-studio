@@ -126,6 +126,17 @@ export function Header({
         >
           Distinta
         </a>
+        {/* the parts with doNotPlace: out of the BOM and the pick and place, in their own file */}
+        {report.nonMontati.length > 0 && (
+          <a
+            href={`/api/export?projectId=${projectId}&kind=non-montati`}
+            download
+            title={`Pezzi non montati (${report.nonMontati.join(", ")}): restano nel Gerber, non stanno nel pick and place ne' nella distinta. Questo file li elenca per gli acquisti e il montaggio a mano.`}
+            className="rounded-[10px] border border-line-strong bg-[#141C1A] px-[15px] py-[9px] text-[13px] font-medium text-[#C7D6D1] transition-colors hover:border-[#3A5A50]"
+          >
+            Non montati
+          </a>
+        )}
         <a
           href={`/api/export?projectId=${projectId}&kind=pnp`}
           download

@@ -693,7 +693,9 @@ function buildHandler(viewer: Viewer) {
 
     server.tool(
       "export_urls",
-      "Restituisce i link per scaricare i file di produzione del progetto.",
+      "Restituisce i link per scaricare i file di produzione del progetto. I pezzi scritti con " +
+        "doNotPlace (solo impronta, es. un Tag-Connect) restano nel Gerber ma non stanno nel pick and " +
+        "place ne' nella distinta: sono nel file nonMontati, con la nota presa dalla prop nota o description del pezzo.",
       { projectId: z.string() },
       async ({ projectId }) => {
         if ((await projectAccess(projectId, viewer)) === "none") {
@@ -704,6 +706,7 @@ function buildHandler(viewer: Viewer) {
           gerber: `${base}/api/export?projectId=${projectId}&kind=gerber`,
           bom: `${base}/api/export?projectId=${projectId}&kind=bom`,
           pickAndPlace: `${base}/api/export?projectId=${projectId}&kind=pnp`,
+          nonMontati: `${base}/api/export?projectId=${projectId}&kind=non-montati`,
           nota: "i link richiedono la sessione dell'app nel browser",
         });
       },

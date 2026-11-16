@@ -13,7 +13,10 @@
  * appended at the end and ignored by those who do not use them.
  */
 
+import { convertCircuitJsonToPickAndPlaceRows } from "circuit-json-to-pnp-csv";
 import { analyzeFootprints } from "./footprint-provenance";
+import { parseJsxAttrs, readAttr, scanJsxTags } from "./manual-edits";
+import { eNonMontato, nomiNonMontati } from "./non-montati";
 
 interface El {
   type: string;
@@ -50,10 +53,22 @@ function byDesignator(a: string, b: string): number {
   return pa === pb ? Number(na) - Number(nb) : pa.localeCompare(pb);
 }
 
+/** the JLCPCB/LCSC codes the author declared on a part, first the one to order */
+function codiciJlcpcb(el: El | undefined): string[] {
+  const supplier = el?.supplier_part_numbers as Record<string, unknown> | undefined;
+  const jlc = supplier?.jlcpcb;
+  return Array.isArray(jlc) ? jlc.filter((c): c is string => typeof c === "string") : [];
+}
+
+/**
+ * The parts to buy and assemble. A part that is not mounted (`doNotPlace`, see
+ * non-montati.ts) is not one of them: it goes to buildNonMontati instead.
+ */
 export function buildBom(circuitJson: El[], sources: Record<string, string> = {}): BomLine[] {
   const footprintOf = new Map(
     analyzeFootprints(circuitJson, sources).records.map((r) => [r.component, r]),
   );
+  const nonMontati = nomiNonMontati(circuitJson);
 
   interface Group {
     designators: string[];
@@ -68,12 +83,10 @@ export function buildBom(circuitJson: El[], sources: Record<string, string> = {}
   for (const el of circuitJson) {
     if (el.type !== "source_component") continue;
     const name = String(el.name ?? "");
-    if (!name) continue;
+    if (!name || nonMontati.has(name)) continue;
 
     const record = footprintOf.get(name);
-    const supplier = el.supplier_part_numbers as Record<string, unknown> | undefined;
-    const jlc = supplier?.jlcpcb;
-    const codes = Array.isArray(jlc) ? jlc.filter((c): c is string => typeof c === "string") : [];
+    const codes = codiciJlcpcb(el);
     const lcsc = codes[0] ?? record?.lcsc ?? "";
     // the alternates really matter: when the first one is out of stock, the
     // purchasing office immediately has the equivalent part numbers instead of starting over
@@ -247,13 +260,163 @@ export function pnpToCsv(rows: PnpRow[]): string {
       cell(String(r.designator ?? "")),
       Number(r.mid_x ?? 0).toFixed(3),
       Number(r.mid_y ?? 0).toFixed(3),
-      cell(
-        typeof r.layer === "object" && r.layer !== null
-          ? String((r.layer as { name?: unknown }).name ?? "")
-          : String(r.layer ?? ""),
-      ),
+      cell(nomeDelLato(r.layer)),
       String(normalizeRotation(r.rotation)),
     ].join(","),
   );
   return [header, ...lines].join("\r\n");
+}
+
+/** "top" / "bottom", whether the row carries the name or the `{ name }` object */
+const nomeDelLato = (layer: unknown): string =>
+  typeof layer === "object" && layer !== null
+    ? String((layer as { name?: unknown }).name ?? "")
+    : String(layer ?? "");
+
+type PnpCircuitJson = Parameters<typeof convertCircuitJsonToPickAndPlaceRows>[0];
+
+/**
+ * The rows of the pick-and-place file: the library's rows on the body centre
+ * (see centriDiMontaggio), WITHOUT the parts that are not mounted. They are
+ * taken out of the circuit before the library reads it, so every other row is
+ * the one it always was; a board with none of them is read as it is.
+ */
+export function righeCpl(circuitJson: readonly unknown[]): PnpRow[] {
+  const montati = circuitJson.some(eNonMontato)
+    ? circuitJson.filter((e) => !eNonMontato(e))
+    : circuitJson;
+  return centriDiMontaggio(
+    convertCircuitJsonToPickAndPlaceRows(montati as unknown as PnpCircuitJson),
+    circuitJson,
+  );
+}
+
+/** a part that is on the board as a footprint only: not placed by the assembler, bought or fitted by us */
+export interface NonMontato {
+  designator: string;
+  /** the package as the BOM writes it */
+  footprint: string;
+  manufacturerPartNumber: string;
+  lcsc: string;
+  /** "top" or "bottom" */
+  layer: string;
+  /** mm, where the pick and place would have put it */
+  x: number;
+  y: number;
+  rotation: number;
+  /** the part's own `nota`, else its `description`, from the sources */
+  nota: string;
+}
+
+/** the props a note is read from, in order: one written for this file, then the part's description */
+const PROP_DELLA_NOTA = ["nota", "description"] as const;
+const NOTA_MASSIMA = 300;
+/** tags with a name that are not parts */
+const NON_PEZZI = new Set(["trace", "net", "netlabel", "schematicsection", "footprint"]);
+
+/**
+ * The note of each part named in `nomi`, read from the sources: the text of a
+ * `nota` prop, else of `description`, only when it is a plain string (an
+ * expression is code, not a note), on one line and at most NOTA_MASSIMA long.
+ */
+function noteDaiSorgenti(sources: Record<string, string>, nomi: Set<string>): Map<string, string> {
+  const note = new Map<string, string>();
+  for (const [path, content] of Object.entries(sources)) {
+    if (path.startsWith("lib/") || !path.endsWith(".tsx")) continue;
+    // a file that does not even contain the name: not scanned
+    if (![...nomi].some((n) => content.includes(n))) continue;
+    for (const tag of scanJsxTags(content)) {
+      if (NON_PEZZI.has(tag.name.toLowerCase())) continue;
+      const body = content.slice(tag.attrsStart, tag.attrsEnd);
+      const nome = readAttr(body, "name");
+      if (!nome || !nomi.has(nome) || note.has(nome)) continue;
+      const attrs = parseJsxAttrs(body);
+      for (const prop of PROP_DELLA_NOTA) {
+        const a = attrs.find((x) => x.name === prop);
+        if (!a || (a.kind !== "string" && a.kind !== "expr")) continue;
+        const valore = readAttr(body, prop);
+        if (valore === null || (a.kind === "expr" && valore === a.raw)) continue;
+        const pulita = valore.replace(/\p{Cc}+/gu, " ").replace(/\s+/g, " ").trim().slice(0, NOTA_MASSIMA);
+        if (pulita) {
+          note.set(nome, pulita);
+          break;
+        }
+      }
+    }
+  }
+  return note;
+}
+
+/**
+ * The parts that are not mounted, one row each, for the file of their own
+ * (distinta_non_montati.csv): what to buy and fit by hand, or what is only a
+ * footprint (a Tag-Connect). Name, package and codes as the BOM writes them,
+ * face and position as the pick and place would have, and the part's note.
+ * Their pads and holes stay on the board: the Gerber does not look here.
+ */
+export function buildNonMontati(circuitJson: El[], sources: Record<string, string> = {}): NonMontato[] {
+  const nomi = nomiNonMontati(circuitJson);
+  if (nomi.size === 0) return [];
+  const soloLoro = circuitJson.filter((e) => e.type !== "pcb_component" || eNonMontato(e));
+  const posizioni = centriDiMontaggio(
+    convertCircuitJsonToPickAndPlaceRows(soloLoro as unknown as PnpCircuitJson),
+    circuitJson,
+  );
+  const footprintOf = new Map(
+    analyzeFootprints(circuitJson, sources).records.map((r) => [r.component, r]),
+  );
+  const sorgente = new Map<string, El>();
+  for (const el of circuitJson) {
+    if (el.type === "source_component" && el.name && !sorgente.has(String(el.name))) sorgente.set(String(el.name), el);
+  }
+  const note = noteDaiSorgenti(sources, nomi);
+  return posizioni
+    .filter((p) => nomi.has(String(p.designator ?? "")))
+    .map((p) => {
+      const nome = String(p.designator);
+      const el = sorgente.get(nome);
+      const record = footprintOf.get(nome);
+      return {
+        designator: nome,
+        footprint: record?.footprint ?? "",
+        manufacturerPartNumber: String(el?.manufacturer_part_number ?? ""),
+        lcsc: codiciJlcpcb(el)[0] ?? record?.lcsc ?? "",
+        layer: nomeDelLato(p.layer),
+        x: Number(p.mid_x ?? 0),
+        y: Number(p.mid_y ?? 0),
+        rotation: normalizeRotation(p.rotation),
+        nota: note.get(nome) ?? "",
+      };
+    })
+    .sort((a, b) => byDesignator(a.designator, b.designator));
+}
+
+const NON_MONTATI_HEADER = [
+  "Nome",
+  "Impronta",
+  "Codice produttore (MPN)",
+  "Codice LCSC",
+  "Lato",
+  "X (mm)",
+  "Y (mm)",
+  "Rotazione",
+  "Nota",
+];
+
+/** the file of the parts that are not mounted: text cells are data (see csvCell), coordinates numbers like the pick and place */
+export function nonMontatiToCsv(rows: NonMontato[]): string {
+  const lines = rows.map((r) =>
+    [
+      cell(r.designator),
+      cell(r.footprint),
+      cell(r.manufacturerPartNumber),
+      cell(r.lcsc),
+      cell(r.layer),
+      r.x.toFixed(3),
+      r.y.toFixed(3),
+      String(normalizeRotation(r.rotation)),
+      cell(r.nota),
+    ].join(","),
+  );
+  return [NON_MONTATI_HEADER.map(cell).join(","), ...lines].join("\n") + "\n";
 }

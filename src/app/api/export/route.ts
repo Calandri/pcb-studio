@@ -4,11 +4,10 @@ import {
   stringifyExcellonDrill,
   stringifyGerberCommandLayers,
 } from "circuit-json-to-gerber";
-import { convertCircuitJsonToPickAndPlaceRows } from "circuit-json-to-pnp-csv";
 import { convertCircuitJsonToSchematicSvg } from "circuit-to-svg";
 import JSZip from "jszip";
 import { avvisoDelProgetto } from "@/lib/progetti-con-difetti";
-import { bomToCsv, buildBom, centriDiMontaggio, pnpToCsv } from "@/lib/bom";
+import { bomToCsv, buildBom, buildNonMontati, nonMontatiToCsv, pnpToCsv, righeCpl } from "@/lib/bom";
 import { apertiDellaSchedaCheEsce } from "@/lib/aperti-export";
 import { idDoppi } from "@/lib/duplicate-ids";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
@@ -37,11 +36,14 @@ export const maxDuration = 120;
 // Every exporter pins a slightly different circuit-json version (the layer
 // unions differ), so each call site casts to its own expected input type.
 type AnyCircuitJson = Parameters<typeof convertSoupToGerberCommands>[0];
-type PnpCircuitJson = Parameters<typeof convertCircuitJsonToPickAndPlaceRows>[0];
 type DrillCircuitJson = Parameters<typeof convertSoupToExcellonDrillCommands>[0]["circuitJson"];
 type SchematicCircuitJson = Parameters<typeof convertCircuitJsonToSchematicSvg>[0];
 
-const KINDS = new Set(["gerber", "bom", "bom-json", "pnp", "schematic"]);
+/*
+ * "non-montati": the parts written with doNotPlace (see non-montati.ts), which
+ * the pick and place and the BOM leave out, in a file of their own.
+ */
+const KINDS = new Set(["gerber", "bom", "bom-json", "pnp", "non-montati", "schematic"]);
 
 /** the project's pour clearance: what a pour that declares none keeps */
 const regolaDelleColate = (fsMap: Record<string, string>): number => {
@@ -59,7 +61,7 @@ export async function GET(req: Request): Promise<Response> {
   }
   if (!kind || !KINDS.has(kind)) {
     return Response.json(
-      { error: "kind must be gerber | bom | bom-json | pnp | schematic" },
+      { error: "kind must be gerber | bom | bom-json | pnp | non-montati | schematic" },
       { status: 400 },
     );
   }
@@ -84,7 +86,7 @@ export async function GET(req: Request): Promise<Response> {
    * BOM view triggered a full compile with routing — minutes of waiting for a
    * table that was already there.
    */
-  const wantsComponentsOnly = kind === "bom" || kind === "bom-json";
+  const wantsComponentsOnly = kind === "bom" || kind === "bom-json" || kind === "non-montati";
   const fabrication = kind === "gerber" || kind === "pnp";
 
   let circuitJson: AnyCircuitJson;
@@ -190,20 +192,26 @@ export async function GET(req: Request): Promise<Response> {
       }
       // same rows as the downloadable BOM, in JSON: the on-screen table
       // must not be able to diverge from the file that goes to production
+      // and the parts that are not mounted, which the table no longer lists, said apart
       case "bom-json": {
         const avviso = avvisoDelProgetto(projectId);
-        return Response.json({ rows: buildBom(circuitJson as never, fsMap), ...(avviso ? { avviso } : {}) });
+        const nonMontati = buildNonMontati(circuitJson as never, fsMap);
+        return Response.json({
+          rows: buildBom(circuitJson as never, fsMap),
+          ...(nonMontati.length > 0 ? { nonMontati } : {}),
+          ...(avviso ? { avviso } : {}),
+        });
       }
       case "pnp": {
         // the library's rows, our CSV: no formulas, rotations in [0, 360)
         // the body centre, not the middle of the footprint box (see centriDiMontaggio)
-        const csv = pnpToCsv(
-          centriDiMontaggio(
-            convertCircuitJsonToPickAndPlaceRows(circuitJson as unknown as PnpCircuitJson),
-            circuitJson as unknown[],
-          ),
-        );
+        // and no part that is not mounted: the assembler would look for it (see righeCpl)
+        const csv = pnpToCsv(righeCpl(circuitJson as unknown[]));
         return csvResponse(csv, "pnp.csv", avvisoDelProgetto(projectId));
+      }
+      case "non-montati": {
+        const csv = nonMontatiToCsv(buildNonMontati(circuitJson as never, fsMap));
+        return csvResponse(csv, "distinta_non_montati.csv", avvisoDelProgetto(projectId));
       }
       case "gerber": {
         const zip = new JSZip();
@@ -260,7 +268,7 @@ export async function GET(req: Request): Promise<Response> {
       }
       default:
         return Response.json(
-          { error: "kind must be gerber | bom | pnp | schematic" },
+          { error: "kind must be gerber | bom | bom-json | pnp | non-montati | schematic" },
           { status: 400 },
         );
     }

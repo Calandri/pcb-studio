@@ -5,6 +5,7 @@
  */
 
 import { quoteDelloStackup, type DeclaredStackup, type StackupDielectric } from "./design-rules";
+import { nomiNonMontati } from "./non-montati";
 import { COLORE_DEL_RAME, nomeDelloStrato, pilaDiRame, stratiDiRame } from "./strati-rame";
 
 export type Severity = "err" | "warn" | "ok";
@@ -92,6 +93,8 @@ export interface BoardReport {
   layerCount: number;
   componentCount: number;
   partsWithSupplier: number;
+  /** parts written with doNotPlace: out of the pick and place and the BOM, in a file of their own (see non-montati.ts) */
+  nonMontati: string[];
   traceCount: number;
   viaCount: number;
   unrouted: number;
@@ -548,6 +551,7 @@ export function buildBoardReport(
     layerCount,
     componentCount: components.length,
     partsWithSupplier: withSupplier,
+    nonMontati: [...nomiNonMontati(elements)].sort(),
     traceCount: traces.length,
     viaCount: vias.length,
     unrouted: unroutedCount,

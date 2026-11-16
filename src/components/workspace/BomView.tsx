@@ -51,6 +51,14 @@ interface StockResponse {
   error?: string;
 }
 
+/** a part written with doNotPlace: out of the table and of the pick and place (see non-montati.ts) */
+interface NonMontato {
+  designator: string;
+  manufacturerPartNumber: string;
+  layer: string;
+  nota: string;
+}
+
 interface Description {
   component: string;
   role: string;
@@ -59,6 +67,7 @@ interface Description {
 
 export function BomView({ projectId }: { projectId: string }) {
   const [rows, setRows] = useState<Array<Record<string, unknown>> | null>(null);
+  const [nonMontati, setNonMontati] = useState<NonMontato[]>([]);
   const [stock, setStock] = useState<StockResponse | null>(null);
   const [roles, setRoles] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +87,10 @@ export function BomView({ projectId }: { projectId: string }) {
             .catch(() => null),
         ]);
         if (bomRes.error) setError(String(bomRes.error));
-        else setRows(bomRes.rows ?? []);
+        else {
+          setRows(bomRes.rows ?? []);
+          setNonMontati(Array.isArray(bomRes.nonMontati) ? (bomRes.nonMontati as NonMontato[]) : []);
+        }
         if (!stockRes.error) setStock(stockRes as StockResponse);
         if (descRes?.descriptions) {
           setRoles(
@@ -104,6 +116,7 @@ export function BomView({ projectId }: { projectId: string }) {
     queueMicrotask(() => {
       if (cancelled) return;
       setRows(null);
+      setNonMontati([]);
       setStock(null);
       setError(null);
       void load(false);
@@ -232,6 +245,38 @@ export function BomView({ projectId }: { projectId: string }) {
           })}
         </tbody>
       </table>
+
+      {nonMontati.length > 0 && (
+        <div className="mt-4 rounded-[10px] border border-line bg-[#0E1513] px-3.5 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-[11px] font-semibold tracking-[0.06em] text-faint uppercase">
+              Non montati ({nonMontati.length})
+            </span>
+            <span className="text-[11.5px] text-faint">
+              restano nel Gerber, fuori dalla distinta e dal pick and place
+            </span>
+            <span className="flex-1" />
+            <a
+              href={`/api/export?projectId=${projectId}&kind=non-montati`}
+              download
+              aria-label="Scarica l'elenco dei pezzi non montati (CSV)"
+              className="rounded-md border border-line-strong px-2.5 py-1 text-[11px] font-semibold text-[#C7D6D1] transition-colors hover:border-[#3A5A50]"
+            >
+              scarica l&apos;elenco
+            </a>
+          </div>
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {nonMontati.map((p) => (
+              <li key={p.designator} className="text-[12px] text-muted">
+                <span className="font-medium text-[#C7D6D1]">{p.designator}</span>
+                {p.manufacturerPartNumber && <span className="ml-2 font-mono text-[11px]">{p.manufacturerPartNumber}</span>}
+                <span className="ml-2 text-faint">{p.layer}</span>
+                {p.nota && <span className="ml-2 text-faint">· {p.nota}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
