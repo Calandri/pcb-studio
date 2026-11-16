@@ -152,7 +152,16 @@
 // and is laid with the route the compile writes for a pcbPath with widths (toCircuitRoute). A correction is an orphan when the
 // widths it started from are not the ones of the trace of the files any more, one of one width included (as above). No board
 // of before changes: nothing to recheck
-export const CHECKS_ENGINE_VERSION = 15;
+// 16 (2026-11-16): the mask windows drawn by hand (maschera.json, solder-mask.ts): one opening for a whole row of
+// fine-pitch pins, a polygon in board coordinates put on the board by the compile and the recheck. A pad covered whole
+// by one opens none of its own, in the Gerber of the mask, in the viewer and in the checks; the ring of a via is measured
+// against the window too (pad_opening_clearance). And the strip of mask between two openings of a face is measured
+// (drc.ts, check 4.d): under the project's minSolderMaskBridgeMm (0.1016 mm, the 4 mil of PCB Basic, unless
+// design-rules.json says otherwise) it is a "solder_mask_bridge" violation, a red dot on its face, as is a window drawn by
+// hand that touches another opening; two openings of pads that meet are one window and are not said. A project without
+// maschera.json exports the same Gerber, byte for byte (the date aside). Copper and pours do not change: a board of
+// engine 15 comes to 16 with a recheck ("Ricontrolla"), which also puts the windows of the file on it
+export const CHECKS_ENGINE_VERSION = 16;
 
 /**
  * The first engine that measures the footprints of the parts and absorbs

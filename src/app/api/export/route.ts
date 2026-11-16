@@ -12,6 +12,7 @@ import { apertiDellaSchedaCheEsce } from "@/lib/aperti-export";
 import { idDoppi } from "@/lib/duplicate-ids";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
+import { comandiConLaMaschera } from "@/lib/solder-mask";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
 import { colateSopraIlRame, pianiSopraLeVie, type MisureDrc } from "@/lib/drc";
 import { colateCheSiToccano } from "@/lib/pour-pour";
@@ -220,8 +221,14 @@ export async function GET(req: Request): Promise<Response> {
         // the pours in an order where no hole erases copper written before it, whatever saved the board
         const inOrdine = await colateInOrdinePerIlGerber(circuitJson as unknown as Array<Record<string, unknown>>);
         const ruotate = senzaRotazioneDiCarico(
-          // through vias get their pad on the inner layers too (see via-layers)
-          stringifyGerberCommandLayers(convertSoupToGerberCommands(viePassantiSuOgniStrato(inOrdine as never) as AnyCircuitJson)),
+          stringifyGerberCommandLayers(
+            // the mask from the windows drawn by hand, when the board has any (see solder-mask.ts)
+            comandiConLaMaschera(
+              // through vias get their pad on the inner layers too (see via-layers)
+              viePassantiSuOgniStrato(inOrdine as never) as never,
+              (cj) => convertSoupToGerberCommands(cj as unknown as AnyCircuitJson),
+            ),
+          ),
         );
         if (ruotate.nonConvertiti.length > 0) {
           console.warn(`[export] ${projectId}: rotated apertures left as %LR on ${ruotate.nonConvertiti.join(", ")}`);

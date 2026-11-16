@@ -23,7 +23,7 @@
  * Pure, no React, nothing of the server.
  */
 import { distanzaViaApertura, type DesignRules } from "../design-rules";
-import { aperturaDelPad, bordoVicino, rameDelPad, type FormaRame } from "../drc";
+import { aperturaDelPad, apertureAMano, bordoVicino, rameDelPad, type FormaRame } from "../drc";
 import { RETE_SCRIVIBILE } from "../ground-stitching-file";
 import { ROUTE_LIMITS, round4, type ManualViaMove } from "../manual-routes";
 import { bloccoDelGesto } from "./gesto";
@@ -117,12 +117,14 @@ export function provaViaNuova(args: {
   const nomeDelPad = new Map<string, string>();
   for (const o of modello.ostacoli) if (o.tipo === "pad") nomeDelPad.set(o.id, o.nome);
   let peggio: { gap: number; nome: string; forma: FormaRame } | null = null;
+  // the windows drawn by hand in maschera.json: the pads under one open none of their own (see apertureAMano)
+  const aMano = apertureAMano(circuitJson as El[]);
   for (const el of circuitJson as El[]) {
     let apertura: { forma: FormaRame; oltre: number } | null = null;
     let id = "";
     if (el.type === "pcb_smtpad") {
-      apertura = aperturaDelPad(el);
       id = String(el.pcb_smtpad_id ?? "");
+      apertura = aMano.coperte.has(id) ? null : aperturaDelPad(el);
     } else if (el.type === "pcb_solder_paste") {
       const forma = rameDelPad(el);
       apertura = forma ? { forma, oltre: 0 } : null;
@@ -131,11 +133,16 @@ export function provaViaNuova(args: {
     if (!apertura) continue;
     const gap = bordoVicino(apertura.forma, dove.x, dove.y, apertura.oltre).d - r;
     if (gap >= soglia - EPS_MM || (peggio && gap >= peggio.gap)) continue;
-    peggio = { gap, nome: nomeDelPad.get(id) ?? (id || "una piazzola"), forma: apertura.forma };
+    peggio = { gap, nome: `dalla piazzola ${nomeDelPad.get(id) ?? (id || "una piazzola")}`, forma: apertura.forma };
+  }
+  for (const a of aMano.aperture) {
+    const gap = bordoVicino(a.forma, dove.x, dove.y).d - r;
+    if (gap >= soglia - EPS_MM || (peggio && gap >= peggio.gap)) continue;
+    peggio = { gap, nome: `dall'apertura a mano «${a.nome}»`, forma: a.forma };
   }
   if (peggio) {
     const quanto = peggio.gap <= 0 ? "dentro l'apertura" : `a ${millimetri(peggio.gap)} mm dall'apertura`;
-    return no(`bloccato dalla piazzola ${peggio.nome}: la corona sarebbe ${quanto} della maschera, servono ${millimetri(soglia)} mm`, {
+    return no(`bloccato ${peggio.nome}: la corona sarebbe ${quanto} della maschera, servono ${millimetri(soglia)} mm`, {
       x: peggio.forma.x,
       y: peggio.forma.y,
       raggioMm: 0.5,

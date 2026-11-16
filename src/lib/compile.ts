@@ -147,6 +147,7 @@ import {
   type SectionVariants,
 } from "./variants";
 import { leggiStencil, padSenzaPasta, pastaDaiPad, STENCIL_PATH } from "./solder-paste";
+import { avvisiDellaMaschera, conMascheraAMano } from "./solder-mask";
 
 export interface UnroutedDetail {
   /** e.g. ".R1 > .pin1 to net.VCC" */
@@ -810,11 +811,14 @@ export async function compileProject(
       bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
       larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
     }).catch(() => null);
-    // the stencil of each pad is the pad: see solder-paste.ts
-    const circuitJson = pastaDaiPad(
-      (ricolate?.circuitJson ?? conDistanzeProprie(conMano.circuitJson as never)) as CircuitElement[],
-      projectRules.rules.pasteExpansionMm ?? 0,
-      { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+    // the stencil of each pad is the pad: see solder-paste.ts; and the mask windows drawn by hand: see solder-mask.ts
+    const circuitJson = conMascheraAMano(
+      pastaDaiPad(
+        (ricolate?.circuitJson ?? conDistanzeProprie(conMano.circuitJson as never)) as CircuitElement[],
+        projectRules.rules.pasteExpansionMm ?? 0,
+        { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+      ),
+      projectFsMap,
     );
     const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
     return { circuitJson, rapportoColate };
@@ -1481,11 +1485,14 @@ export async function compileProject(
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
     larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
   }).catch(() => null);
-  // the stencil of each pad is the pad: see solder-paste.ts
-  const circuitJson = pastaDaiPad(
-    (ricolate?.circuitJson ?? conDistanzeProprie(manual.circuitJson as never)) as CircuitElement[],
-    projectRules.rules.pasteExpansionMm ?? 0,
-    { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+  // the stencil of each pad is the pad: see solder-paste.ts; and the mask windows drawn by hand: see solder-mask.ts
+  const circuitJson = conMascheraAMano(
+    pastaDaiPad(
+      (ricolate?.circuitJson ?? conDistanzeProprie(manual.circuitJson as never)) as CircuitElement[],
+      projectRules.rules.pasteExpansionMm ?? 0,
+      { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+    ),
+    projectFsMap,
   );
   const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise
@@ -3025,6 +3032,15 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
       message: `${p.nome}: ${p.pad} ${p.pad === 1 ? "piazzola" : "piazzole"} senza apertura nella lamina della pasta, il pezzo non si salda li'. Le aperture del suo datasheet vanno scritte in ${STENCIL_PATH}`,
       ...(p.x !== null && p.y !== null ? { x: p.x, y: p.y } : {}),
     });
+  }
+  /*
+   * The mask windows drawn by hand that are not what the file meant: an entry
+   * that could not be read, a window off the board, one for a part the board
+   * does not have, one that covers no pad of its part (see solder-mask.ts).
+   * Nothing for a project without maschera.json.
+   */
+  for (const a of avvisiDellaMaschera(circuitJson, sources)) {
+    prcViolations.push({ rule: "mask_opening", severity: "warn", ...a });
   }
   // multi-ruleset: the main DRC already covers the ruleset CHOSEN by the
   // project, which is no longer necessarily the first in the list

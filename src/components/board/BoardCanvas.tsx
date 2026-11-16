@@ -1417,8 +1417,24 @@ export function BoardCanvas({
           {showMask &&
             drawOrder.map((l) => (
               <g key={`mask-${l}`} opacity={layerOpacity(l)}>
+                {/*
+                  The windows drawn by hand (maschera.json): one opening for a
+                  whole row of pins, in board coordinates, so they do not follow
+                  a part being dragged. The pads under one open no ring of their own.
+                */}
+                {scene.finestre
+                  .filter((f) => f.layer === l && f.points.length >= 3)
+                  .map((f) => (
+                    <polygon
+                      key={`mf-${f.id}`}
+                      points={f.points.map((q) => `${q.x},${q.y}`).join(" ")}
+                      fill="#0C1A17"
+                    >
+                      <title>{`apertura a mano della maschera: ${f.nome}`}</title>
+                    </polygon>
+                  ))}
                 {scene.pads
-                  .filter((p) => !p.foro && p.layer === l && p.maskMargin > 0)
+                  .filter((p) => !p.foro && p.layer === l && p.maskMargin > 0 && !p.sottoFinestra)
                   .map((p) =>
                     p.circle ? (
                       <circle

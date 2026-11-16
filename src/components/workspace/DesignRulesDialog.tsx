@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ClassiRame } from "@/lib/classi-rame";
-import { COPPIE, INGOMBRO_ECCEDENZA_MM, SERIGRAFIA_DISTANZA_MM, VIA_APERTURA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
+import { COPPIE, DIGA_MASCHERA_MM, INGOMBRO_ECCEDENZA_MM, SERIGRAFIA_DISTANZA_MM, VIA_APERTURA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
 
 /**
  * Board fabrication rules.
@@ -75,6 +75,13 @@ const FIELDS: Array<{
     hint: "fra la corona di una via e l'apertura della maschera di una piazzola, anche della stessa rete: sotto, il ponte di maschera non tiene",
     puoEsserVuoto: true,
     diSerie: VIA_APERTURA_DISTANZA_MM,
+  },
+  {
+    key: "minSolderMaskBridgeMm",
+    label: "Diga di maschera",
+    hint: "la striscia di maschera piu' stretta fra due aperture della stessa faccia: sotto, il fornitore non la stampa. Sui passi fini una finestra per fila in maschera.json",
+    puoEsserVuoto: true,
+    diSerie: DIGA_MASCHERA_MM,
   },
 ];
 

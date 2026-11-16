@@ -1,5 +1,6 @@
 import {
   DEFAULT_DESIGN_RULES,
+  digaDellaMaschera,
   distanzaMinimaFra,
   distanzaViaApertura,
   type DesignRules,
@@ -413,13 +414,133 @@ export function aperturaDelPad(el: El): { forma: FormaRame; oltre: number } | nu
   if (el.is_covered_with_solder_mask === true) return null;
   const f = rameDelPad(el);
   if (!f) return null;
-  const m = num(el.soldermask_margin) ?? 0;
+  return allargata(f, num(el.soldermask_margin) ?? 0);
+}
+
+/** a copper shape grown by a mask margin m on every side, as the Gerber opens it (see aperturaDelPad) */
+function allargata(f: FormaRame, m: number): { forma: FormaRame; oltre: number } | null {
   if (f.tipo === "cerchio") return f.r + m > 0 ? { forma: { ...f, r: f.r + m }, oltre: 0 } : null;
   if (f.tipo === "capsula") {
     return f.capsula.r + m > 0 ? { forma: { ...f, capsula: { ...f.capsula, r: f.capsula.r + m } }, oltre: 0 } : null;
   }
   if (f.punti) return { forma: f, oltre: Math.max(0, m) };
   return f.w + 2 * m > 0 && f.h + 2 * m > 0 ? { forma: { ...f, w: f.w + 2 * m, h: f.h + 2 * m }, oltre: 0 } : null;
+}
+
+/**
+ * A MASK OPENING DRAWN BY HAND, on the board as an element of its own: one
+ * window for a whole row of pins (gang relief), from the project's
+ * maschera.json (see solder-mask.ts). Its outline is a polygon in board
+ * coordinates, so it does not move with a part: what it covers is measured
+ * every time from where the pads are (apertureAMano).
+ */
+export const APERTURA_A_MANO = "pcb_soldermask_opening";
+
+export interface AperturaAMano {
+  el: El;
+  id: string;
+  layer: "top" | "bottom";
+  /** the part it is for and its name, as the file writes them: "U1 fila nord" */
+  nome: string;
+  /** the part, alone */
+  pezzo: string;
+  /** its outline: the vertices, and the same polygon as a shape the checks measure */
+  punti: Array<{ x: number; y: number }>;
+  forma: FormaRame;
+  /** the SMD pads of its face it covers whole: they open no window of their own */
+  coperte: El[];
+}
+
+/** the polygon of a list of points, as a shape the checks measure */
+export function formaDaPunti(punti: Array<{ x: number; y: number }>): FormaRame {
+  const xs = punti.map((p) => p.x);
+  const ys = punti.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return { tipo: "rettangolo", x: (minX + maxX) / 2, y: (minY + maxY) / 2, w: maxX - minX, h: maxY - minY, rot: 0, punti };
+}
+
+/** points along the outline of a shape: the corners of a box or a polygon, sixteen around every round end */
+function puntiDelContorno(f: FormaRame): Array<{ x: number; y: number }> {
+  const giro = (cx: number, cy: number, r: number) =>
+    Array.from({ length: 16 }, (_, i) => ({ x: cx + r * Math.cos((i * Math.PI) / 8), y: cy + r * Math.sin((i * Math.PI) / 8) }));
+  if (f.tipo === "cerchio") return giro(f.x, f.y, f.r);
+  if (f.tipo === "capsula") return [...giro(f.capsula.ax, f.capsula.ay, f.capsula.r), ...giro(f.capsula.bx, f.capsula.by, f.capsula.r)];
+  if (f.punti) return f.punti;
+  const rad = ((f.rot ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return [
+    [-f.w / 2, -f.h / 2],
+    [f.w / 2, -f.h / 2],
+    [f.w / 2, f.h / 2],
+    [-f.w / 2, f.h / 2],
+  ].map(([dx, dy]) => ({ x: f.x + dx * cos - dy * sin, y: f.y + dx * sin + dy * cos }));
+}
+
+/**
+ * Whether an opening covers a pad whole: every point of the pad's outline in
+ * the opening (or on its edge, within a micron), and no corner of the opening
+ * cut into the pad.
+ */
+function copreIlPad(apertura: AperturaAMano, rame: FormaRame): boolean {
+  for (const p of puntiDelContorno(rame)) if (bordoVicino(apertura.forma, p.x, p.y).d > TOLLERANZA_MM) return false;
+  for (const v of apertura.punti) if (bordoVicino(rame, v.x, v.y).d < -TOLLERANZA_MM) return false;
+  return true;
+}
+
+/**
+ * The openings drawn by hand on a board, each with the SMD pads it covers
+ * whole on its face, and the ids of all those pads. A pad covered by one opens
+ * no window of its own (the Gerber, the viewer, the checks); a pad only partly
+ * in one keeps its own, and the two windows touching is said by check 4.d.
+ */
+export function apertureAMano(circuitJson: El[]): { aperture: AperturaAMano[]; coperte: Set<string> } {
+  const aperture: AperturaAMano[] = [];
+  const coperte = new Set<string>();
+  for (const el of circuitJson) {
+    if (el.type !== APERTURA_A_MANO) continue;
+    const layer = el.layer === "top" || el.layer === "bottom" ? el.layer : null;
+    const punti: Array<{ x: number; y: number }> = [];
+    for (const p of Array.isArray(el.points) ? (el.points as Array<{ x?: unknown; y?: unknown }>) : []) {
+      const x = num(p?.x);
+      const y = num(p?.y);
+      if (x !== null && y !== null) punti.push({ x, y });
+    }
+    if (!layer || punti.length < 3) continue;
+    const pezzo = typeof el.pezzo === "string" ? el.pezzo : "";
+    const nome = typeof el.nome === "string" ? el.nome : "";
+    aperture.push({
+      el,
+      id: String(el.pcb_soldermask_opening_id ?? ""),
+      layer,
+      nome: [pezzo, nome].filter(Boolean).join(" ") || String(el.pcb_soldermask_opening_id ?? "apertura"),
+      pezzo,
+      punti,
+      forma: formaDaPunti(punti),
+      coperte: [],
+    });
+  }
+  if (aperture.length === 0) return { aperture, coperte };
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_smtpad" || el.is_covered_with_solder_mask === true) continue;
+    const rame = rameDelPad(el);
+    if (!rame) continue;
+    const b = ingombroForma(rame);
+    for (const a of aperture) {
+      if (a.layer !== el.layer) continue;
+      const f = a.forma as { x: number; y: number; w: number; h: number };
+      if (b.minX < f.x - f.w / 2 - TOLLERANZA_MM || b.maxX > f.x + f.w / 2 + TOLLERANZA_MM) continue;
+      if (b.minY < f.y - f.h / 2 - TOLLERANZA_MM || b.maxY > f.y + f.h / 2 + TOLLERANZA_MM) continue;
+      if (!copreIlPad(a, rame)) continue;
+      a.coperte.push(el);
+      if (typeof el.pcb_smtpad_id === "string") coperte.add(el.pcb_smtpad_id);
+      break;
+    }
+  }
+  return { aperture, coperte };
 }
 
 /**
@@ -1538,8 +1659,14 @@ export function runDrcChecks(
    * net is a via in the pad, made on purpose: it does not count against that pad
    * (no project declares one in any other way), it does against the others. The
    * dot is in the middle of the gap, on the face of the pad; the nearest first.
+   *
+   * The openings drawn by hand (maschera.json, see apertureAMano) are openings
+   * like the others: a pad they cover has none of its own, and the via is
+   * measured against the hand-drawn window instead. A via in a pad of its own
+   * net under such a window is a via in the pad, as above.
    */
   const sogliaApertura = distanzaViaApertura(rules);
+  const aMano = apertureAMano(circuitJson);
   interface PiazzolaAperta {
     el: El;
     rame: FormaRame;
@@ -1566,18 +1693,20 @@ export function runDrcChecks(
     const rame = rameDelPad(el);
     const apertura = aperturaDelPad(el);
     if (!rame || !apertura) continue;
+    // under a window drawn by hand the pad opens none of its own: only its paste is left to it
+    const coperta = typeof el.pcb_smtpad_id === "string" && aMano.coperte.has(el.pcb_smtpad_id);
     const p: PiazzolaAperta = {
       el,
       rame,
       layer: String(el.layer),
       group: groupOfPcbPort(el.pcb_port_id),
-      aperture: [{ ...apertura, pasta: false }],
+      aperture: coperta ? [] : [{ ...apertura, pasta: false }],
       minX: Infinity,
       maxX: -Infinity,
       minY: Infinity,
       maxY: -Infinity,
     };
-    allarga(p, apertura.forma, apertura.oltre);
+    if (!coperta) allarga(p, apertura.forma, apertura.oltre);
     piazzoleAperte.push(p);
     if (typeof el.pcb_smtpad_id === "string") apertaDi.set(el.pcb_smtpad_id, p);
     if (typeof el.pcb_component_id === "string") {
@@ -1643,13 +1772,43 @@ export function runDrcChecks(
         const suo = pezzoPcb.get(String(el.pcb_component_id ?? ""));
         const hint = (el.port_hints as unknown[] | undefined)?.find((h) => typeof h === "string");
         if (suo && hint) return `${suo}.${String(hint)}`;
-        return String(el.pcb_smtpad_id ?? "pad");
+        return String(el.pcb_smtpad_id ?? el.pcb_plated_hole_id ?? "pad");
       },
       rete: (gruppo) => (gruppo ? (reteDi.get(gruppo) ?? null) : null),
     });
   };
   const viaVicine: Array<{ gap: number; message: string; punto: { x: number; y: number }; layer: string }> = [];
-  for (const el of piazzoleAperte.length > 0 ? circuitJson : []) {
+  /** one via too near an opening: the dot in the middle of the gap, between the edge of the opening and the ring, on the line to the centre */
+  const segnala = (
+    el: El,
+    x: number,
+    y: number,
+    r: number,
+    bordo: { x: number; y: number },
+    gap: number,
+    gruppo: string | null | undefined,
+    layer: string,
+    diChe: string,
+  ): void => {
+    const lx = bordo.x - x;
+    const ly = bordo.y - y;
+    const l = Math.hypot(lx, ly);
+    const punto =
+      l > 1e-12 ? { x: (bordo.x + x + (lx / l) * r) / 2, y: (bordo.y + y + (ly / l) * r) / 2 } : { x: bordo.x, y: bordo.y };
+    const reteVia = nomiDelleAperture().rete(gruppo ?? null);
+    const misura = (Math.abs(gap) < 0.0005 ? 0 : gap).toFixed(3);
+    viaVicine.push({
+      gap,
+      punto,
+      layer,
+      message:
+        `via ${String(el.pcb_via_id ?? "via")}${reteVia ? ` (${reteVia})` : ""} in (${x.toFixed(3)}, ${y.toFixed(3)}): ` +
+        `corona a ${misura}mm ${diChe}` +
+        `${gap < -TOLLERANZA_MM ? ", la corona entra nell'apertura" : gap <= TOLLERANZA_MM ? ", la corona tocca l'apertura" : ""}` +
+        ` < min ${sogliaApertura}mm`,
+    });
+  };
+  for (const el of piazzoleAperte.length > 0 || aMano.aperture.length > 0 ? circuitJson : []) {
     if (el.type !== "pcb_via") continue;
     const x = num(el.x);
     const y = num(el.y);
@@ -1672,31 +1831,147 @@ export function runDrcChecks(
       if (gruppo === undefined) gruppo = groupOfVia(el);
       // a via in the pad, of the pad's net: made on purpose
       if (bordoVicino(p.rame, x, y).d <= 0 && (gruppo === null || p.group === null || gruppo === p.group)) continue;
-      // in the middle of the gap: between the edge of the opening and the ring, on the line to the centre
-      const lx = bordo.x - x;
-      const ly = bordo.y - y;
-      const l = Math.hypot(lx, ly);
-      const punto =
-        l > 1e-12 ? { x: (bordo.x + x + (lx / l) * r) / 2, y: (bordo.y + y + (ly / l) * r) / 2 } : { x: bordo.x, y: bordo.y };
       const nomi = nomiDelleAperture();
-      const reteVia = nomi.rete(gruppo);
       const retePad = nomi.rete(p.group);
-      const misura = (Math.abs(gap) < 0.0005 ? 0 : gap).toFixed(3);
-      viaVicine.push({
-        gap,
-        punto,
-        layer: p.layer,
-        message:
-          `via ${String(el.pcb_via_id ?? "via")}${reteVia ? ` (${reteVia})` : ""} in (${x.toFixed(3)}, ${y.toFixed(3)}): ` +
-          `corona a ${misura}mm dall'apertura${bordo.pasta ? " della pasta" : ""} di ${nomi.piedino(p.el)} ` +
-          `(${retePad ? `${retePad}, ` : ""}${p.layer})` +
-          `${gap < -TOLLERANZA_MM ? ", la corona entra nell'apertura" : gap <= TOLLERANZA_MM ? ", la corona tocca l'apertura" : ""}` +
-          ` < min ${sogliaApertura}mm`,
+      segnala(
+        el, x, y, r, bordo, gap, gruppo, p.layer,
+        `dall'apertura${bordo.pasta ? " della pasta" : ""} di ${nomi.piedino(p.el)} (${retePad ? `${retePad}, ` : ""}${p.layer})`,
+      );
+    }
+    for (const m of aMano.aperture) {
+      const b = ingombroForma(m.forma);
+      if (x + portata < b.minX || x - portata > b.maxX || y + portata < b.minY || y - portata > b.maxY) continue;
+      const bordo = bordoVicino(m.forma, x, y);
+      const gap = bordo.d - r;
+      if (gap > TOLLERANZA_MM && gap >= sogliaApertura - TOLLERANZA_MM) continue;
+      if (gruppo === undefined) gruppo = groupOfVia(el);
+      // a via in a pad of its own net, under the window: made on purpose
+      const nelSuoPad = m.coperte.some((c) => {
+        const rame = rameDelPad(c);
+        const g = groupOfPcbPort(c.pcb_port_id);
+        return rame !== null && bordoVicino(rame, x, y).d <= 0 && (gruppo === null || g === null || gruppo === g);
       });
+      if (nelSuoPad) continue;
+      segnala(el, x, y, r, bordo, gap, gruppo, m.layer, `dall'apertura a mano «${m.nome}» della maschera (${m.layer})`);
     }
   }
   viaVicine.sort((a, b) => a.gap - b.gap);
   for (const v of viaVicine) push("pad_opening_clearance", v.message, v.punto, v.layer);
+
+  /*
+   * --- 4.d THE STRIP OF MASK BETWEEN TWO OPENINGS (Niccolo', 2026-11-16).
+   *
+   * PCB Basic prints a strip of mask (a "dam", a bridge) no narrower than
+   * 4 mil (row 23 of its capabilities: "Solder Mask Opening >= 2 mil / Bridge
+   * >= 4 mil"). On a part at 0.4-0.5 mm pitch an opening of 2 mil around every
+   * pad leaves less than that between two pins: the strip is not printed, or it
+   * peels, and nothing on the board said so. The way out is one window for a
+   * whole row of pins, drawn by hand (maschera.json, see solder-mask.ts).
+   *
+   * Every opening of a face against every other, edge to edge: the openings of
+   * the SMD pads (pad grown by its soldermask_margin, aperturaDelPad), of the
+   * plated holes not under the mask (their copper grown the same way, on both
+   * faces), and the windows drawn by hand, the pads they cover having none of
+   * their own. A strip narrower than the project's minSolderMaskBridgeMm is
+   * reported. Two openings of pads that touch or overlap are one window, which
+   * a fab makes as it is (no strip to print): not reported. A window drawn by
+   * hand that touches another opening is: the window was meant to stand apart
+   * (the ground pad in the middle of FL1, under the mask between the rows), and
+   * a pad only partly under it keeps its own opening, which the window meets.
+   * The dot is in the middle of the strip, on its face; the narrowest first.
+   */
+  const sogliaDiga = digaDellaMaschera(rules);
+  interface Finestra {
+    forma: FormaRame;
+    oltre: number;
+    layer: string;
+    /** the window drawn by hand, when it is one */
+    aMano: AperturaAMano | null;
+    el: El;
+    box: Box;
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+  }
+  const finestre: Finestra[] = [];
+  const finestra = (forma: FormaRame, oltre: number, layer: string, el: El, mano: AperturaAMano | null) => {
+    const b = ingombroForma(forma);
+    finestre.push({
+      forma,
+      oltre,
+      layer,
+      aMano: mano,
+      el,
+      box: boxDaForma(forma, { layer, label: "", group: null, kind: "pad" }),
+      minX: b.minX - oltre,
+      maxX: b.maxX + oltre,
+      minY: b.minY - oltre,
+      maxY: b.maxY + oltre,
+    });
+  };
+  for (const el of circuitJson) {
+    if (el.type === "pcb_smtpad") {
+      if (el.layer !== "top" && el.layer !== "bottom") continue;
+      if (typeof el.pcb_smtpad_id === "string" && aMano.coperte.has(el.pcb_smtpad_id)) continue;
+      const a = aperturaDelPad(el);
+      if (a) finestra(a.forma, a.oltre, String(el.layer), el, null);
+    } else if (el.type === "pcb_plated_hole") {
+      // a polygonal ring is measured as its box elsewhere: here that would invent strips the board does not have
+      if (el.is_covered_with_solder_mask === true || el.shape === "hole_with_polygon_pad") continue;
+      const rame = rameDelForo(el);
+      const a = rame ? allargata(rame, num(el.soldermask_margin) ?? 0) : null;
+      if (!a) continue;
+      const strati = Array.isArray(el.layers) ? (el.layers as unknown[]) : ["top", "bottom"];
+      for (const layer of ["top", "bottom"]) if (strati.includes(layer)) finestra(a.forma, a.oltre, layer, el, null);
+    }
+  }
+  for (const m of aMano.aperture) finestra(m.forma, 0, m.layer, m.el, m);
+  const dighe: Array<{ d: number; a: Finestra; b: Finestra }> = [];
+  const portataDiga = Math.max(sogliaDiga, 0) + TOLLERANZA_MM;
+  for (const layer of ["top", "bottom"]) {
+    const lista = finestre.filter((f) => f.layer === layer).sort((a, b) => a.minX - b.minX);
+    for (let i = 0; i < lista.length; i++) {
+      const a = lista[i];
+      for (let j = i + 1; j < lista.length && lista[j].minX <= a.maxX + portataDiga; j++) {
+        const b = lista[j];
+        if (b.minY > a.maxY + portataDiga || a.minY > b.maxY + portataDiga) continue;
+        const d = boxDistance(a.box, b.box) - a.oltre - b.oltre;
+        const tocca = d <= TOLLERANZA_MM;
+        if (!tocca && d >= sogliaDiga - TOLLERANZA_MM) continue;
+        // two openings of pads that meet are one window: no strip to print
+        if (tocca && !a.aMano && !b.aMano) continue;
+        dighe.push({ d, a, b });
+      }
+    }
+  }
+  if (dighe.length > 0) {
+    const nomi = nomiDelleAperture();
+    const chi = (f: Finestra) =>
+      f.aMano
+        ? `l'apertura a mano «${f.aMano.nome}»`
+        : f.el.type === "pcb_plated_hole"
+          ? `l'apertura del foro ${nomi.piedino(f.el)}`
+          : `l'apertura di ${nomi.piedino(f.el)}`;
+    dighe.sort((p, q) => p.d - q.d);
+    for (const { d, a, b } of dighe) {
+      // the window drawn by hand named first: it is the one to correct
+      const [primo, secondo] = b.aMano && !a.aMano ? [b, a] : [a, b];
+      // in the middle of the strip: the edge of one nearest to the other, and back
+      const cb = { x: (secondo.minX + secondo.maxX) / 2, y: (secondo.minY + secondo.maxY) / 2 };
+      const pa = bordoVicino(primo.forma, cb.x, cb.y, primo.oltre);
+      const pb = bordoVicino(secondo.forma, pa.x, pa.y, secondo.oltre);
+      const punto = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
+      push(
+        "solder_mask_bridge",
+        d <= TOLLERANZA_MM
+          ? `${chi(primo)} e ${chi(secondo)} si toccano (${primo.layer}): fra le due non resta maschera, min ${sogliaDiga}mm`
+          : `diga di maschera di ${d.toFixed(3)}mm fra ${chi(primo)} e ${chi(secondo)} (${primo.layer}) < min ${sogliaDiga}mm`,
+        punto,
+        primo.layer,
+      );
+    }
+  }
 
   /*
    * --- 5.a trace angles (house rule, Niccolo' 2026-07-26)

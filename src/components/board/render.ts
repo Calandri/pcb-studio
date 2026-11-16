@@ -9,6 +9,7 @@
 
 import { courtyardShape, footprintBoxes, type CourtyardShape } from "@/lib/footprint-bounds";
 import { INGOMBRO_ECCEDENZA_MM } from "@/lib/design-rules";
+import { apertureAMano } from "@/lib/drc";
 import { retiDelCircuito } from "@/lib/gruppi-di-rame";
 import { leggiIngombri, type Forma } from "@/lib/ingombro";
 import { COLORE_DEL_RAME, eStratoDiRame, pilaDiRame, type StratoDiRame } from "@/lib/strati-rame";
@@ -159,6 +160,8 @@ export interface Pad {
    * sees when they look at a board or at the CAD it came from.
    */
   maskMargin: number;
+  /** under a mask window drawn by hand (maschera.json): it opens no ring of its own */
+  sottoFinestra?: boolean;
   componentId: string;
   /** pin name, as on the schematic: VDD, CLOCK, pin3... */
   pin: string;
@@ -231,6 +234,19 @@ export interface Paste {
   layer: LayerId;
   circle: boolean;
   componentId: string;
+}
+
+/**
+ * A MASK WINDOW DRAWN BY HAND (maschera.json, see solder-mask.ts): one opening
+ * for a whole row of pins, a polygon in board coordinates. It does not move
+ * with its part.
+ */
+export interface FinestraMaschera {
+  id: string;
+  layer: LayerId;
+  points: Array<{ x: number; y: number }>;
+  /** the part and the name the file gives it: "U1 fila nord" */
+  nome: string;
 }
 
 export interface SilkPath {
@@ -382,6 +398,8 @@ export interface BoardScene {
   vias: Via[];
   holes: Hole[];
   paste: Paste[];
+  /** the mask windows drawn by hand, drawn on the mask layer */
+  finestre: FinestraMaschera[];
   silkPaths: SilkPath[];
   silkTexts: SilkText[];
   courtyards: Courtyard[];
@@ -454,6 +472,8 @@ export function buildScene(
       nomeComponente.set(String(el.source_component_id), String(el.name ?? ""));
     }
   }
+  /** the mask windows drawn by hand, and the pads they cover whole: see apertureAMano */
+  const aMano = apertureAMano(elements);
   const scene: BoardScene = {
     board,
     pours: [],
@@ -462,6 +482,7 @@ export function buildScene(
     vias: [],
     holes: [],
     paste: [],
+    finestre: [],
     silkPaths: [],
     silkTexts: [],
     courtyards: [],
@@ -570,6 +591,7 @@ export function buildScene(
           circle: String(el.shape ?? "") === "circle",
           rot: num(el.ccw_rotation) ?? 0,
           maskMargin: num(el.soldermask_margin) ?? 0,
+          ...(aMano.coperte.has(String(el.pcb_smtpad_id ?? "")) ? { sottoFinestra: true } : {}),
           componentId: String(el.pcb_component_id ?? ""),
           pin: pinOfPort.get(port) ?? "",
           net: netOfPort.get(port) ?? "",
@@ -735,6 +757,9 @@ export function buildScene(
         break;
       }
     }
+  }
+  for (const a of aMano.aperture) {
+    scene.finestre.push({ id: a.id, layer: a.layer, points: a.punti, nome: a.nome });
   }
 
   return scene;

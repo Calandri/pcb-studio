@@ -1,4 +1,5 @@
 import { leggiStencil, STENCIL_PATH } from "./solder-paste";
+import { contornoDelCircuito, DESCRIZIONE_MASCHERA, MASCHERA_PATH, validaFileDellaMaschera } from "./solder-mask";
 import { boardBaseOf } from "./board-base";
 import { fetchDatasheetFromUrl } from "./datasheet";
 import { importComponentFromLcsc } from "./easyeda-import";
@@ -80,11 +81,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       `Next to preset, with any preset, an optional "stackup" declares the board's real stackup, thicknesses in mm from the top: ` +
       `{"preset": "jlcpcb_standard", "stackup": {"copperMm": [0.035, 0.035], "dielectrics": [{"mm": 1.5, "er": 4.5, "kind": "core", "name": "FR4"}]}}; fields: ${campiDelloStackup()}. ` +
       `It gives the "Sezione della scheda" panel its depths and no check reads it; the file is whole, so writing it without "stackup" removes the one that was there. ` +
+      `${DESCRIZIONE_MASCHERA} ` +
       `It does not compile: compile after it.`,
     input_schema: {
       type: "object",
       properties: {
-        path: { type: "string", description: `e.g. main.tsx, schematico.json for the drawing's notes, ${DESIGN_RULES_PATH} for the design rules` },
+        path: { type: "string", description: `e.g. main.tsx, schematico.json for the drawing's notes, ${DESIGN_RULES_PATH} for the design rules, ${MASCHERA_PATH} for the mask windows drawn by hand` },
         content: { type: "string", description: "complete file content" },
       },
       required: ["path", "content"],
@@ -471,6 +473,35 @@ async function runTool(
         };
       }
       /*
+       * THE MASK WINDOWS DRAWN BY HAND (maschera.json, lib/solder-mask.ts):
+       * one opening for a whole row of fine-pitch pins. Checked whole before it
+       * is written, like the stencil, and against the board as last compiled
+       * when there is one (a window off the board is refused): a file with one
+       * bad window is refused with every reason, not half-read at the compile.
+       */
+      if (path === MASCHERA_PATH) {
+        if (content.length > MAX_FILE_CHARS) {
+          return { result: { error: `File too large (${content.length} chars, max ${MAX_FILE_CHARS})` } };
+        }
+        const cache = await getCompileCache(projectId).catch(() => null);
+        const contorno = contornoDelCircuito(cache?.circuitJson as unknown[] | undefined);
+        const esito = validaFileDellaMaschera(content, contorno.length >= 3 ? contorno : undefined);
+        if ("errori" in esito) {
+          return { result: { error: `${MASCHERA_PATH} non valido: ${esito.errori.slice(0, 10).join("; ")}` } };
+        }
+        await writeProjectFile(projectId, path, content);
+        return {
+          result: {
+            ok: true,
+            path,
+            chars: content.length,
+            openings: esito.aperture.length,
+            note: "mask windows saved: compile to put them on the board, the Gerber of the mask is written from the compiled board",
+          },
+          fileChanged: { path, content },
+        };
+      }
+      /*
        * THE PROJECT'S DESIGN RULES (design-rules.json): traces, vias, edge,
        * componentCourtyardExcessMm. Only the panel of the rules could set them,
        * so an agent working through the MCP left every board on the defaults.
@@ -512,7 +543,7 @@ async function runTool(
       if (!FILE_PATH_RE.test(path)) {
         return {
           result: {
-            error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}, ${STENCIL_PATH}, ${DESIGN_RULES_PATH}) are allowed`,
+            error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}, ${STENCIL_PATH}, ${MASCHERA_PATH}, ${DESIGN_RULES_PATH}) are allowed`,
           },
         };
       }

@@ -83,7 +83,8 @@ export interface PrcViolation {
     | "return_via_connector"
     | "power_trace_width"
     | "matched_length"
-    | "paste_missing";
+    | "paste_missing"
+    | "mask_opening";
   severity: "warn" | "fail";
   message: string;
   x?: number;

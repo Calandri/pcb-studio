@@ -328,16 +328,16 @@ describe("the routes that save a board from the cache leave only through vias", 
     const dieci = [...(db.saves[0].circuitJson as El[]), ...c5];
     db.saves = [];
     db.row = riga(dieci, 10);
-    expect(CHECKS_ENGINE_VERSION).toBe(15);
+    expect(CHECKS_ENGINE_VERSION).toBe(16);
     const risposta = (await (await recheck(post({ projectId: "p" }))).json()) as Risposta & {
       summary: { courtyards?: { count: number; scontri: Array<{ a: string; b: string; faccia: string }> }; targets: { courtyardCollisions: number; allGreen: boolean } };
     };
-    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 15, currentEngineVersion: 15, previousEngineVersion: 10 });
+    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 16, currentEngineVersion: 16, previousEngineVersion: 10 });
     expect(risposta.colateDaRifare).toBeUndefined();
     expect(risposta.pianiRicolati).toBeUndefined();
     expect(risposta.nonCertificata).toBeUndefined();
     const [s] = db.saves;
-    expect(s.engine).toBe(15);
+    expect(s.engine).toBe(16);
     // the copper and the pours as they were
     const rame = (cj: unknown[]) => (cj as El[]).filter((e) => ["pcb_copper_pour", "pcb_trace", "pcb_via", "pcb_smtpad"].includes(e.type));
     expect(rame(s.circuitJson)).toEqual(rame(dieci));

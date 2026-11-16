@@ -277,3 +277,72 @@ describe("write_file of design-rules.json with a stackup", () => {
     expect(descrizione).toContain("scritto senza stackup toglie la pila che c'era");
   });
 });
+
+/*
+ * The mask windows drawn by hand (maschera.json, solder-mask.ts), written as a
+ * client writes them: checked whole, against the board as last compiled when
+ * there is one, refused with the reasons and nothing written when wrong.
+ */
+describe("write_file of maschera.json", () => {
+  const FILA = { pezzo: "U1", nome: "fila nord", forma: "rettangolo", x: 0, y: 5.85, w: 7.8, h: 1.6 };
+  const scrivi = (corpo: unknown) =>
+    chiamaStrumento("write_file", { projectId: "p", path: "maschera.json", content: typeof corpo === "string" ? corpo : JSON.stringify(corpo) });
+  beforeEach(async () => {
+    stato.accesso = "edit";
+    stato.files = { "main.tsx": "export default () => <board />" };
+    compilazioni.n = 0;
+    const { getCompileCache } = await import("@/lib/project-store");
+    vi.mocked(getCompileCache).mockResolvedValue(null);
+  });
+
+  it("a right file is written as it is, and nothing compiles", async () => {
+    const corpo = JSON.stringify({ top: [FILA], bottom: [] }, null, 2);
+    const r = await scrivi(corpo);
+    expect(r).toMatchObject({ isError: false, result: { ok: true, path: "maschera.json", openings: 1 } });
+    expect(stato.files["maschera.json"]).toBe(corpo);
+    expect(compilazioni.n).toBe(0);
+  });
+
+  it("a wrong one is refused whole, with the reasons, and nothing is written", async () => {
+    for (const [corpo, atteso] of [
+      ["{ top: [", /non e' un JSON valido/],
+      [{ top: [{ ...FILA, forma: "cerchio" }] }, /top\[0\]\.forma: deve essere "rettangolo" o "poligono"/],
+      [{ top: [FILA], lato: [] }, /campo sconosciuto lato/],
+      [{ top: Array.from({ length: 401 }, () => FILA) }, /troppe aperture \(401, massimo 400/],
+    ] as Array<[unknown, RegExp]>) {
+      const r = await scrivi(corpo);
+      expect(String(r.result.error)).toMatch(/^maschera\.json non valido: /);
+      expect(String(r.result.error)).toMatch(atteso);
+      expect(stato.files["maschera.json"]).toBeUndefined();
+    }
+  });
+
+  it("a window off the board as last compiled is refused", async () => {
+    const { getCompileCache } = await import("@/lib/project-store");
+    vi.mocked(getCompileCache).mockResolvedValue({
+      circuitJson: [{ type: "pcb_board", center: { x: 0, y: 0 }, width: 20, height: 10 }],
+    } as never);
+    const r = await scrivi({ top: [FILA] });
+    expect(String(r.result.error)).toBe("maschera.json non valido: top[0]: esce dalla scheda");
+    expect((await scrivi({ top: [{ ...FILA, y: 3 }] })).result).toMatchObject({ ok: true });
+  });
+
+  it("the tool and the instructions say how to write it, where an agent reads them", async () => {
+    const r = await POST(
+      new Request("http://localhost/api/mcp/mcp", {
+        method: "POST",
+        headers: { authorization: "Bearer pcbs_prova", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    const corpo = await r.text();
+    const riga = corpo.split("\n").find((l) => l.startsWith("data: ")) ?? corpo;
+    const strumenti = (JSON.parse(riga.replace(/^data: /, "")) as { result: { tools: Array<{ name: string; description: string }> } }).result.tools;
+    const descrizione = strumenti.find((t) => t.name === "write_file")?.description ?? "";
+    expect(descrizione).toContain("maschera.json (le aperture della maschera disegnate a mano");
+    const { DESCRIZIONE_MASCHERA } = await import("@/lib/solder-mask");
+    expect(DESCRIZIONE_MASCHERA).toContain('"forma": "poligono"');
+    const { TOOL_DEFINITIONS } = await import("@/lib/agent-tools");
+    expect(TOOL_DEFINITIONS.find((t) => t.name === "write_file")?.description).toContain(DESCRIZIONE_MASCHERA);
+  });
+});

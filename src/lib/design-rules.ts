@@ -145,6 +145,14 @@ export interface DesignRules {
    * the solder of the pad runs into the via. Missing: VIA_APERTURA_DISTANZA_MM.
    */
   minViaToPadOpeningMm?: number;
+  /**
+   * THE NARROWEST STRIP OF MASK LEFT BETWEEN TWO OPENINGS, edge to edge, on
+   * one face (see check 4.d in drc.ts): the openings of the pads, of the
+   * plated holes and those drawn by hand in maschera.json (solder-mask.ts).
+   * Under it the fab cannot print the strip, it peels off or is removed, and
+   * the solder of one pad runs to the next. Missing: DIGA_MASCHERA_MM.
+   */
+  minSolderMaskBridgeMm?: number;
 }
 
 /**
@@ -158,6 +166,19 @@ export const VIA_APERTURA_DISTANZA_MM = 0.05;
 export function distanzaViaApertura(rules: DesignRules): number {
   const v = rules.minViaToPadOpeningMm;
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : VIA_APERTURA_DISTANZA_MM;
+}
+
+/**
+ * The strip of mask between two openings in a project that writes none: the
+ * 4 mil of PCB Basic (row 23 of its capabilities, "Solder Mask Opening >= 2 mil
+ * / Bridge >= 4 mil"), the fab the boards are made by.
+ */
+export const DIGA_MASCHERA_MM = 0.1016;
+
+/** the strip of mask between two openings the project asks, or the default */
+export function digaDellaMaschera(rules: DesignRules): number {
+  const v = rules.minSolderMaskBridgeMm;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : DIGA_MASCHERA_MM;
 }
 
 /**
@@ -327,6 +348,7 @@ const LIMITS: Record<
       | "minSilkscreenClearanceMm"
       | "componentCourtyardExcessMm"
       | "minViaToPadOpeningMm"
+      | "minSolderMaskBridgeMm"
       | "autoPlaneVias"
       | "pasteOnPlatedHoles"
       | "autoroute"
@@ -335,7 +357,8 @@ const LIMITS: Record<
   | "pasteExpansionMm"
   | "minSilkscreenClearanceMm"
   | "componentCourtyardExcessMm"
-  | "minViaToPadOpeningMm",
+  | "minViaToPadOpeningMm"
+  | "minSolderMaskBridgeMm",
   { min: number; max: number }
 > = {
   minTraceWidthMm: { min: 0.05, max: 2 },
@@ -359,6 +382,8 @@ const LIMITS: Record<
   componentCourtyardExcessMm: { min: 0, max: 1 },
   // zero: only a ring that touches or enters the opening counts; beyond a millimetre it is a typo
   minViaToPadOpeningMm: { min: 0, max: 1 },
+  // zero: only the openings drawn by hand that touch another are said; beyond a millimetre it is a typo
+  minSolderMaskBridgeMm: { min: 0, max: 1 },
 };
 
 /** the limits of one pair's own distance (clearanceByPairMm): under ten microns a mangled file */
