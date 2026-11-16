@@ -225,13 +225,31 @@ export function leggiRame(
       capi.push({ x, y });
     }
     const [from, to] = capi;
-    if (from.x === to.x && from.y === to.y) return { errore: `${dove}: non si sposta` };
+    /*
+     * A pasted via (ManualViaMove.aggiunta) is laid where it is pasted: there
+     * `from` and `to` are one place. A via of the files moves, or it is not a
+     * correction.
+     */
+    if (r.aggiunta !== undefined && r.aggiunta !== true) return { errore: `${dove}: aggiunta e' true o non c'e'` };
+    const aggiunta = r.aggiunta === true;
+    if (aggiunta && (from.x !== to.x || from.y !== to.y)) return { errore: `${dove}: una via incollata si posa dove e' incollata (from e to sono lo stesso posto)` };
+    if (!aggiunta && from.x === to.x && from.y === to.y) return { errore: `${dove}: non si sposta` };
     const misure = misureDellaVia(r.outerDiameter, r.holeDiameter);
     if (typeof misure === "string") return { errore: `${dove}: ${misure}` };
     if (!Array.isArray(r.layers) || r.layers.length < 2 || r.layers.length > 8 || !r.layers.every(eStratoDiRame) || new Set(r.layers).size !== r.layers.length) {
       return { errore: `${dove}: gli strati vanno scritti tutti, ognuno una volta` };
     }
-    vias.push({ net: r.net, from, to, holeDiameter: misure.foro, outerDiameter: misure.corona, layers: [...r.layers], gesto, at: quando });
+    vias.push({
+      net: r.net,
+      from,
+      to,
+      holeDiameter: misure.foro,
+      outerDiameter: misure.corona,
+      layers: [...r.layers],
+      gesto,
+      at: quando,
+      ...(aggiunta ? { aggiunta: true as const } : {}),
+    });
   }
 
   const riscritte: PercorsoRiscritto[] = [];
@@ -315,6 +333,14 @@ export function trattiStorti(route: ManualRoute, dati?: ReadonlySet<string>): st
 
 /** the checks of the DRC that measure a distance between copper, holes and the edge; the pours are apart (see verificaRame) */
 const REGOLE_DI_DISTANZA = new Set(["pad_clearance", "trace_pad_clearance", "trace_trace_clearance", "board_edge_clearance", "hole_to_hole"]);
+/**
+ * And for a save that pastes a via, the strip of mask between its ring and
+ * the opening of a pad (drc.ts, "pad_opening_clearance"): a stitching via
+ * placed in or against a pad is refused. A move is not judged on it: its
+ * gesture does not see the openings, and refusing it after the drag would
+ * take back a via the person is moving away from a pad.
+ */
+const REGOLE_DI_UNA_VIA_INCOLLATA = new Set([...REGOLE_DI_DISTANZA, "pad_opening_clearance"]);
 
 interface Distanze {
   quante: number;
@@ -323,10 +349,10 @@ interface Distanze {
   esempi: DrcViolation[];
 }
 
-function distanzeRotte(violazioni: DrcViolation[]): Map<string, Distanze> {
+function distanzeRotte(violazioni: DrcViolation[], regole: ReadonlySet<string> = REGOLE_DI_DISTANZA): Map<string, Distanze> {
   const out = new Map<string, Distanze>();
   for (const v of violazioni) {
-    if (!REGOLE_DI_DISTANZA.has(v.rule)) continue;
+    if (!regole.has(v.rule)) continue;
     const d = out.get(v.rule) ?? { quante: 0, punti: new Set<string>(), esempi: [] };
     const quante = v.count ?? 1;
     d.quante += quante;
@@ -342,9 +368,9 @@ function distanzeRotte(violazioni: DrcViolation[]): Map<string, Distanze> {
 }
 
 /** the first distance broken after that was not broken before, in the words of the DRC; null when there is none */
-function distanzaNuova(prima: DrcViolation[], dopo: DrcViolation[]): string | null {
-  const eraRotto = distanzeRotte(prima);
-  for (const [regola, ora] of distanzeRotte(dopo)) {
+function distanzaNuova(prima: DrcViolation[], dopo: DrcViolation[], regole: ReadonlySet<string> = REGOLE_DI_DISTANZA): string | null {
+  const eraRotto = distanzeRotte(prima, regole);
+  for (const [regola, ora] of distanzeRotte(dopo, regole)) {
     const era = eraRotto.get(regola);
     if (!era || ora.quante > era.quante) return ora.esempi[0].message;
     if (!ora.punti || !era.punti) continue;
@@ -448,10 +474,11 @@ export function verificaRame(args: {
   const vie = { viaDiameter: regole.minViaDiameterMm, viaHoleDiameter: regole.minViaHoleMm };
   const dopo = applyManualRoutes({ circuitJson, routes: lasciato.pcb_routes, vias: lasciato.pcb_vias, ...vie });
   const rotteDopo = runDrcChecks(dopo.circuitJson as never, regole);
+  const guardate = entrate.vias.some((v) => v.aggiunta) ? REGOLE_DI_UNA_VIA_INCOLLATA : REGOLE_DI_DISTANZA;
   // nothing broken at all: no need to know how the board stood before
-  if (distanzeRotte(rotteDopo).size === 0) return { ok: true };
+  if (distanzeRotte(rotteDopo, guardate).size === 0) return { ok: true };
   const prima = applyManualRoutes({ circuitJson, routes: correnti.pcb_routes, vias: correnti.pcb_vias, ...vie });
-  const nuova = distanzaNuova(runDrcChecks(prima.circuitJson as never, regole), rotteDopo);
+  const nuova = distanzaNuova(runDrcChecks(prima.circuitJson as never, regole), rotteDopo, guardate);
   return nuova ? { ok: false, motivo: `il rame viola una distanza che prima era rispettata: ${nuova}` } : { ok: true };
 }
 
@@ -493,6 +520,8 @@ function partenzaMancante(scheda: El[], correnti: ManualEdits, rame: CopperPatch
       return finito(q.x) && finito(q.y) && round4(q.x) === dove.x && round4(q.y) === dove.y;
     };
     for (const via of rame.vias) {
+      // a pasted via starts from nothing of the board: whether its net is there is asked when it is laid (statoDelRame)
+      if (via.aggiunta) continue;
       const sua = vie.find((e) => {
         if (!li(e, via.from) && !li(e.moved_from, via.from)) return false;
         const rete = reti.diVia(e as never);

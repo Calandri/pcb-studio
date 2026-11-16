@@ -344,5 +344,5 @@ export function useGestoDelRame({
     };
   }, [attivo, lascia, zittisci, vivo]);
 
-  return { bersagli, nascosti, vivo: vivo as GestoVivo, prendi, muovi, rilascia, annulla };
+  return { bersagli, nascosti, vivo: vivo as GestoVivo, prendi, muovi, rilascia, annulla, dici };
 }

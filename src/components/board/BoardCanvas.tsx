@@ -16,7 +16,9 @@ import { opacitaStrato, stratoScelto } from "./strati-visibili";
 import { BersagliDelRame } from "./BersagliDelRame";
 import { comeSiSposta, type CosaSiSposta } from "./cosa-si-sposta";
 import { AvvisoDelGesto, RameInMovimento } from "./RameInMovimento";
-import { NESSUN_RAME, useGestoDelRame, type RameInAttesa, type RameNascosto } from "./gesto-del-rame";
+import { NESSUN_RAME, useGestoDelRame, type PuntatoreGiu, type RameInAttesa, type RameNascosto } from "./gesto-del-rame";
+import { nelPannelloDelleVie, useDuplicaVia } from "./duplica-via";
+import type { BersaglioDelRame } from "@/lib/spinta/gesto-tipi";
 import { GRID_DEFAULT, GRID_OPTIONS, ascoltaGriglia, grigliaSalvata, salvaGriglia } from "./griglia";
 import {
   DESIGNATOR_FONT,
@@ -296,6 +298,25 @@ export function BoardCanvas({
     inAttesa: rameInAttesa,
     onGesto: onGestoDelRame,
   });
+  /** DUPLICA VIA: with the vias chosen, a via pressed is chosen, Cmd+C copies it, Cmd+V or a click pastes copies (duplica-via.ts) */
+  const duplica = useDuplicaVia({
+    attivo: mode === "move" && selectMode === "off" && regole !== undefined && onGestoDelRame !== undefined && cosaSiSposta === "vie",
+    circuitJson,
+    regole,
+    inAttesa: rameInAttesa,
+    onGesto: onGestoDelRame,
+    dici: rame.dici,
+  });
+  const scegliVia = duplica.scegli;
+  const prendiRame = rame.prendi;
+  /** a press on copper: a via is chosen too, for Cmd+C */
+  const prendiIlRame = useCallback(
+    (b: BersaglioDelRame, e: PuntatoreGiu) => {
+      if (b.tipo === "via") scegliVia({ pcbViaId: b.pcbViaId, x: b.x, y: b.y });
+      prendiRame(b, e);
+    },
+    [scegliVia, prendiRame],
+  );
   /** the parts take the press: always, unless the bar chose the traces or the vias alone */
   const spostaPezzi = cosaSiSposta === undefined || cosaSiSposta === "pezzi";
   /** the copper targets of the kind chosen: the stretches, the vias, or both when nothing is chosen */
@@ -1126,6 +1147,20 @@ export function BoardCanvas({
     <div
       ref={wrapRef}
       className="relative min-h-0 w-full flex-1 overflow-hidden select-none"
+      onPointerDownCapture={(e) => {
+        /*
+         * "Incolla" on: a click on the board pastes a copy of the via there,
+         * before anything under the pointer takes the press (a via, a trace,
+         * the view). The buttons of the canvas and of the panel stay buttons.
+         */
+        if (!duplica.incolla || e.button !== 0 || e.shiftKey || nelPannelloDelleVie(e.target)) return;
+        const rect = wrapRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        e.stopPropagation();
+        e.preventDefault();
+        const p = toMm(e.clientX - rect.left, e.clientY - rect.top);
+        duplica.incollaIn({ x: snap(p.x, !e.altKey, gridMm), y: snap(p.y, !e.altKey, gridMm) });
+      }}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         const rect = wrapRef.current?.getBoundingClientRect();
@@ -1162,6 +1197,12 @@ export function BoardCanvas({
         (e.target as Element).setPointerCapture?.(e.pointerId);
       }}
       onPointerMove={(e) => {
+        // where Cmd+V pastes a copy of a via: the pointer, on the grid (Alt takes it off)
+        if (duplica.copiata) {
+          const rect = wrapRef.current?.getBoundingClientRect();
+          const p = rect ? toMm(e.clientX - rect.left, e.clientY - rect.top) : null;
+          duplica.segui(p ? { x: snap(p.x, !e.altKey, gridMm), y: snap(p.y, !e.altKey, gridMm) } : null);
+        }
         // copper in hand follows the cursor on the same grid as a part (Alt takes it off)
         if (
           rame.muovi(() => {
@@ -1705,7 +1746,7 @@ export function BoardCanvas({
 
           {/* the copper that can never move: under the handles, so a press on a part stays the part's (see BersagliDelRame) */}
           {bersagliDelRame.length > 0 && spostaPezzi && (
-            <BersagliDelRame bersagli={bersagliDelRame} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
+            <BersagliDelRame bersagli={bersagliDelRame} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={prendiIlRame} />
           )}
 
           {/* invisible rectangles over the components: they provide the hover,
@@ -1894,10 +1935,25 @@ export function BoardCanvas({
             a press on it says why it does not move.
           */}
           {bersagliDelRame.length > 0 && !spostaPezzi && (
-            <BersagliDelRame bersagli={bersagliDelRame} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} soloVie={cosaSiSposta === "vie"} onPrendi={rame.prendi} />
+            <BersagliDelRame bersagli={bersagliDelRame} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} soloVie={cosaSiSposta === "vie"} onPrendi={prendiIlRame} />
           )}
           {bersagliDelRame.length > 0 && (
-            <BersagliDelRame bersagli={bersagliDelRame} scelto={scelto} xray={xray} mmPerPx={mmPerPx} soloVie={cosaSiSposta === "vie"} onPrendi={rame.prendi} />
+            <BersagliDelRame bersagli={bersagliDelRame} scelto={scelto} xray={xray} mmPerPx={mmPerPx} soloVie={cosaSiSposta === "vie"} onPrendi={prendiIlRame} />
+          )}
+
+          {/* the via chosen for Cmd+C: a dashed ring, that takes no press */}
+          {duplica.scelta && (
+            <circle
+              data-via-scelta={duplica.scelta.pcbViaId}
+              cx={duplica.scelta.x}
+              cy={duplica.scelta.y}
+              r={Math.max(0.35, mmPerPx * 8)}
+              fill="none"
+              stroke="#3BE8B0"
+              strokeWidth={mmPerPx * 1.5}
+              strokeDasharray={`${mmPerPx * 3} ${mmPerPx * 2}`}
+              pointerEvents="none"
+            />
           )}
 
           <AvvisoDelGesto vivo={rame.vivo} mmPerPx={mmPerPx} />
@@ -2043,6 +2099,52 @@ export function BoardCanvas({
       )}
 
       {apertiInVista(flags, apertiAccesi) && <LegendaAperti circuitJson={circuitJson} />}
+
+      {/*
+        DUPLICA VIA, for the mouse as for the keys: copy the via chosen, then
+        paste copies with a click on the board until "Fine" (or Esc). The
+        same as Cmd+C and Cmd+V, see duplica-via.ts.
+      */}
+      {mode === "move" && selectMode === "off" && cosaSiSposta === "vie" && regole !== undefined && onGestoDelRame !== undefined && (
+        <div
+          data-duplica-via=""
+          className="absolute bottom-[18px] left-[18px] z-20 flex max-w-[min(520px,80%)] items-center gap-2 rounded-[10px] border border-[#1F2C29] bg-[rgba(9,14,13,0.92)] px-2.5 py-1.5 text-[11px] text-[#B9CAC5] backdrop-blur"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            data-duplica-via-copia=""
+            disabled={!duplica.scelta}
+            onClick={duplica.copia}
+            title="Copia la via scelta (Cmd+C): stessa rete, stesso foro, stessa corona, stessi strati"
+            className="rounded-[6px] border border-[#2A3B37] px-1.5 py-0.5 text-brand disabled:opacity-40"
+          >
+            Copia via
+          </button>
+          <button
+            type="button"
+            data-duplica-via-incolla=""
+            disabled={!duplica.copiata}
+            aria-pressed={duplica.incolla}
+            onClick={() => duplica.setIncolla(!duplica.incolla)}
+            title="Ogni clic sulla scheda incolla una copia della via (anche Cmd+V, dove sta il puntatore). Esc per finire"
+            className={`rounded-[6px] border px-1.5 py-0.5 disabled:opacity-40 ${
+              duplica.incolla ? "border-brand bg-[rgba(59,232,176,0.14)] text-brand" : "border-[#2A3B37] text-brand"
+            }`}
+          >
+            {duplica.incolla ? "Fine" : "Incolla con un clic"}
+          </button>
+          <span className="truncate text-[#5F726C]">
+            {duplica.incolla && duplica.copiata
+              ? `clicca sulla scheda: una via di ${duplica.copiata.net} per clic`
+              : duplica.copiata
+                ? `copiata la via di ${duplica.copiata.net} (${String(duplica.copiata.corona).replace(".", ",")} / ${String(duplica.copiata.foro).replace(".", ",")} mm): Cmd+V la incolla dove sta il puntatore`
+                : duplica.scelta
+                  ? "via scelta: Cmd+C la copia"
+                  : "clicca una via per sceglierla, poi copiala per fare vie di cucitura"}
+          </span>
+        </div>
+      )}
 
       {/* view controls, as in the mockup */}
       <div className="absolute top-[18px] right-[18px] flex flex-col gap-1.5">

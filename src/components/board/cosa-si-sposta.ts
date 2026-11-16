@@ -15,7 +15,7 @@ export type CosaSiSposta = "pezzi" | "piste" | "vie";
 export const COSE_CHE_SI_SPOSTANO: ReadonlyArray<{ cosa: CosaSiSposta; nome: string; aiuto: string }> = [
   { cosa: "pezzi", nome: "componenti", aiuto: "Trascina un componente: R lo ruota, le frecce lo muovono di un passo. Piste e vie restano ferme" },
   { cosa: "piste", nome: "piste", aiuto: "Trascina un tratto dritto di pista: scorre di lato e le piste vicine si scostano. Componenti e vie restano fermi" },
-  { cosa: "vie", nome: "vie", aiuto: "Trascina una via: le sue piste la seguono e le piste vicine si scostano. Componenti e tratti restano fermi" },
+  { cosa: "vie", nome: "vie", aiuto: "Trascina una via: le sue piste la seguono e le piste vicine si scostano. Componenti e tratti restano fermi. Clic su una via e Cmd+C la copia, Cmd+V ne incolla una uguale dove sta il puntatore (vie di cucitura)" },
 ];
 
 /** what the strip under the board says to do, for the kind chosen */

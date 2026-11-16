@@ -137,7 +137,10 @@ export interface ManualRoute {
   at?: string;
 }
 
-/** A via the files put at `from`, that the person moved to `to`. */
+/**
+ * A via the files put at `from`, that the person moved to `to`; or, with
+ * `aggiunta`, a via the person pasted (see `aggiunta`).
+ */
 export interface ManualViaMove {
   /** the net of the via by NAME ("GND", "P3V3"), never an id and never the via's own name (VG12 slips) */
   net: string;
@@ -151,6 +154,17 @@ export interface ManualViaMove {
   gesto?: string;
   /** when it was made, ISO 8601 */
   at?: string;
+  /**
+   * A VIA THE FILES DO NOT HAVE: a copy of a via of the net, pasted in Sposta
+   * (Cmd+C, Cmd+V), a stitching via joined to no trace, that the pour of its
+   * net takes in. It is laid at `to`; `from` is where it was first pasted, and
+   * stays so when it is moved (applyCopperPatch). Nothing of the files is
+   * looked for: it is an orphan only when the board has no net of that name.
+   * Its key is where it stands now (`to`, see viaMoveKey): `from`, where it was
+   * pasted first, is no key, since another one can be pasted there once the
+   * first has been moved away.
+   */
+  aggiunta?: true;
 }
 
 type El = Record<string, unknown>;
@@ -216,9 +230,15 @@ export function manualRouteKey(route: ManualRoute): string {
   return route.connection;
 }
 
-/** the key a moved via is stored by: its net and where the files put it */
-export function viaMoveKey(via: Pick<ManualViaMove, "net" | "from">): string {
-  return `${via.net} @ ${via.from.x},${via.from.y}`;
+/**
+ * The key a moved via is stored by: its net and where the files put it. A
+ * pasted via by its net and where it stands now, marked apart: two vias never
+ * stand in one place, while two can be pasted in one place one after the other
+ * (the first moved away in between).
+ */
+export function viaMoveKey(via: Pick<ManualViaMove, "net" | "from" | "to" | "aggiunta">): string {
+  const dove = via.aggiunta ? via.to : via.from;
+  return `${via.aggiunta ? "+" : ""}${via.net} @ ${dove.x},${dove.y}`;
 }
 
 /** two 32-bit FNV-1a passes with different seeds: a compact, stable, non-cryptographic digest */
@@ -445,7 +465,8 @@ const MAX_VIE_NEL_FILE = FILE_LIMITS.maxRoutes;
  * Reads the moved vias defensively: an entry that is not one is dropped, never
  * thrown. A file written before the field existed has none: an empty list.
  *   - the net by name, and the two places, finite and on a board, kept to
- *     0.0001 mm; an entry that moves nothing (`to` is `from`) is not a move;
+ *     0.0001 mm; an entry that moves nothing (`to` is `from`) is not a move,
+ *     unless it is a pasted via (`aggiunta`), which stands where it was pasted;
  *   - hole, ring and layers: they are the via whoever copies the correction has
  *     to write, so an entry without them is not one. Sizes are clamped to
  *     ROUTE_LIMITS, like the vias of a route;
@@ -468,7 +489,9 @@ export function parseManualViaMoves(value: unknown, max: number = MAX_VIE_NEL_FI
     if (typeof r.net !== "string" || !r.net || r.net.length > 200) continue;
     const from = posto(r.from);
     const to = posto(r.to);
-    if (!from || !to || (from.x === to.x && from.y === to.y)) continue;
+    // a pasted via stays where it was pasted until it is moved: there `to` is `from`
+    const aggiunta = r.aggiunta === true;
+    if (!from || !to || (!aggiunta && from.x === to.x && from.y === to.y)) continue;
     if (!finite(r.outerDiameter) || r.outerDiameter <= 0 || !finite(r.holeDiameter) || r.holeDiameter <= 0) continue;
     const outerDiameter = clamp(r.outerDiameter, ROUTE_LIMITS.minViaMm, ROUTE_LIMITS.maxViaMm);
     const holeDiameter = clamp(r.holeDiameter, ROUTE_LIMITS.minViaHoleMm, Math.max(ROUTE_LIMITS.minViaHoleMm, outerDiameter - 0.05));
@@ -477,7 +500,17 @@ export function parseManualViaMoves(value: unknown, max: number = MAX_VIE_NEL_FI
     if (layers.length < 2 || !layers.every((l): l is Layer => LAYERS.includes(l as Layer))) continue;
     const gesto = gestoDi(r.gesto);
     const at = quandoDi(r.at);
-    const via: ManualViaMove = { net: r.net, from, to, holeDiameter, outerDiameter, layers, ...(gesto ? { gesto } : {}), ...(at ? { at } : {}) };
+    const via: ManualViaMove = {
+      net: r.net,
+      from,
+      to,
+      holeDiameter,
+      outerDiameter,
+      layers,
+      ...(gesto ? { gesto } : {}),
+      ...(at ? { at } : {}),
+      ...(aggiunta ? { aggiunta: true as const } : {}),
+    };
     const chiave = viaMoveKey(via);
     perChiave.delete(chiave);
     perChiave.set(chiave, via);
@@ -1154,6 +1187,9 @@ function vieDellePisteTornate(els: El[], tornate: El[], strati: string[], viaDia
  * the trace would be left changing layer through nothing.
  */
 function vieSpostate(els: El[], spostate: readonly ManualViaMove[]): { els: El[]; orfane: string[]; assorbite: string[] } {
+  // the vias an earlier pass pasted (aggiunta_da) are not the files': they go, and are laid again from the entries
+  const giaIncollate = els.some((e) => e.type === "pcb_via" && e.aggiunta_da !== undefined);
+  if (giaIncollate) els = els.filter((e) => !(e.type === "pcb_via" && e.aggiunta_da !== undefined));
   const vie = els.filter((e) => e.type === "pcb_via");
   if (spostate.length === 0 && !vie.some((v) => v.moved_from !== undefined)) return { els, orfane: [], assorbite: [] };
 
@@ -1215,7 +1251,7 @@ function vieSpostate(els: El[], spostate: readonly ManualViaMove[]): { els: El[]
     const veniva = postoDi(via.moved_from);
     if (!veniva) continue;
     const rete = nomeDellaRete(via);
-    const sua = spostate.find((s) => !fatte.has(s) && s.net === rete && stessoPosto(s.from.x, s.from.y, veniva.x, veniva.y));
+    const sua = spostate.find((s) => !s.aggiunta && !fatte.has(s) && s.net === rete && stessoPosto(s.from.x, s.from.y, veniva.x, veniva.y));
     if (!sua) {
       sposta(via, veniva, null);
       continue;
@@ -1236,8 +1272,13 @@ function vieSpostate(els: El[], spostate: readonly ManualViaMove[]): { els: El[]
         !nellePiste.has(chiaveDelPosto(v.x, v.y)) &&
         nomeDellaRete(v) === rete,
     );
+  const incollate: ManualViaMove[] = [];
   for (const s of spostate) {
     if (fatte.has(s)) continue;
+    if (s.aggiunta) {
+      incollate.push(s);
+      continue;
+    }
     const via = deiFile(s.net, s.from);
     const arrivata = deiFile(s.net, s.to);
     if (via && !arrivata) sposta(via, s.to, s.from);
@@ -1245,7 +1286,61 @@ function vieSpostate(els: El[], spostate: readonly ManualViaMove[]): { els: El[]
     // nothing to start from; or a via of the files at both ends, where moving one would put two holes in one place
     else orfane.push(viaMoveKey(s));
   }
-  return { els: cambi.size > 0 ? els.map((e) => cambi.get(e) ?? e) : els, orfane, assorbite };
+  const spostateLe = cambi.size > 0 ? els.map((e) => cambi.get(e) ?? e) : els;
+  if (incollate.length === 0) return { els: spostateLe, orfane, assorbite };
+  return { els: [...spostateLe, ...vieIncollate(spostateLe, incollate, orfane, assorbite)], orfane, assorbite };
+}
+
+/**
+ * THE PASTED VIAS (ManualViaMove.aggiunta): a `pcb_via` at `to` for each, of
+ * the net its entry names, as a <via> of the files is written (the
+ * connectivity key of the net, which the pours read, and the net in
+ * `pcb_trace_id`), with `aggiunta_da` saying where it was pasted: what the
+ * next pass takes away before laying them again. Not laid, and said: one whose
+ * net the board does not have (an orphan), one where a via of its net already
+ * stands (absorbed: the files or another paste have it), one where a via of
+ * another net stands (an orphan).
+ */
+function vieIncollate(els: El[], incollate: readonly ManualViaMove[], orfane: string[], assorbite: string[]): El[] {
+  const reti = new Map<string, El>();
+  for (const e of els) if (e.type === "source_net" && typeof e.name === "string" && !reti.has(e.name)) reti.set(e.name, e);
+  const giaReti = retiDelCircuito(els);
+  const vieDove = els.filter((e) => e.type === "pcb_via").map((e) => ({ x: num(e.x), y: num(e.y), rete: giaReti.nome(giaReti.diVia(e as never) ?? "") }));
+  const idPresi = new Set(els.filter((e) => e.type === "pcb_via").map((e) => String(e.pcb_via_id ?? "")));
+  const out: El[] = [];
+  let n = 0;
+  for (const s of incollate) {
+    const rete = reti.get(s.net);
+    const gia = vieDove.find((v) => stessoPosto(v.x, v.y, s.to.x, s.to.y));
+    if (!rete) {
+      orfane.push(viaMoveKey(s));
+      continue;
+    }
+    if (gia) {
+      (gia.rete === s.net ? assorbite : orfane).push(viaMoveKey(s));
+      continue;
+    }
+    let id = `pcb_via_incollata_${n++}`;
+    while (idPresi.has(id)) id = `pcb_via_incollata_${n++}`;
+    idPresi.add(id);
+    const chiave = rete.subcircuit_connectivity_map_key;
+    out.push({
+      type: "pcb_via",
+      pcb_via_id: id,
+      x: s.to.x,
+      y: s.to.y,
+      outer_diameter: s.outerDiameter,
+      hole_diameter: s.holeDiameter,
+      layers: [...s.layers],
+      from_layer: s.layers[0],
+      to_layer: s.layers[s.layers.length - 1],
+      pcb_trace_id: String(rete.source_net_id ?? ""),
+      ...(typeof chiave === "string" && chiave ? { subcircuit_connectivity_map_key: chiave } : {}),
+      aggiunta_da: { x: s.from.x, y: s.from.y },
+    });
+    vieDove.push({ x: s.to.x, y: s.to.y, rete: s.net });
+  }
+  return out;
 }
 
 function conLePisteAMano({

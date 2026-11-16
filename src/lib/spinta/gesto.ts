@@ -140,7 +140,7 @@ const provaDellaVia = (modello: Modello, via: number): EsitoDellaMossa => sposta
 const provaDelTratto = (modello: Modello, pista: number, tratto: number): EsitoDellaMossa => traslaTratto(modello, { pista, tratto }, { x: 0, y: 0 });
 
 /** the block of a move, as the viewer shows it: the sentence, and where to draw the halo */
-function bloccoDelGesto(modello: Modello, blocco: Blocco): BloccoDelGesto {
+export function bloccoDelGesto(modello: Modello, blocco: Blocco): BloccoDelGesto {
   const cosa = blocco.cosa;
   if (cosa.tipo === "niente") return { motivo: blocco.messaggio };
   let raggioMm = 0.5;

@@ -1298,16 +1298,23 @@ export function applyCopperPatch(
 
   let vias = edits.pcb_vias;
   for (const nuova of patch.vias) {
-    const prima = vias.find((v) => v.net === nuova.net && v.to.x === nuova.from.x && v.to.y === nuova.from.y);
-    const via = prima ? { ...nuova, from: prima.from } : nuova;
+    /*
+     * A via moved again keeps where it started (the files' place, or where it
+     * was pasted, and whether it is a pasted one). A via pasted now starts
+     * here: it is never taken for the one another entry put in that place.
+     */
+    const prima = nuova.aggiunta ? undefined : vias.find((v) => v.net === nuova.net && v.to.x === nuova.from.x && v.to.y === nuova.from.y);
+    const via: ManualViaMove = prima ? { ...nuova, from: prima.from, ...(prima.aggiunta ? { aggiunta: true as const } : {}) } : nuova;
     const chiave = viaMoveKey(via);
+    // the entry it moves on goes, and any of the same key (a pasted via is keyed by where it stands, so moved its key changes)
+    const vanno = (v: ManualViaMove) => v === prima || viaMoveKey(v) === chiave;
     for (const v of vias) {
-      if (viaMoveKey(v) === chiave && !replaced.vias.includes(v)) replaced.vias.push(v);
+      if (vanno(v) && !replaced.vias.includes(v)) replaced.vias.push(v);
     }
-    vias = vias.filter((v) => viaMoveKey(v) !== chiave);
-    added.vias = added.vias.filter((v) => viaMoveKey(v) !== chiave);
-    // dragged back to where the files put it: there is nothing left to correct
-    if (via.from.x === via.to.x && via.from.y === via.to.y) continue;
+    vias = vias.filter((v) => !vanno(v));
+    added.vias = added.vias.filter((v) => !vanno(v));
+    // dragged back to where the files put it: there is nothing left to correct (a pasted via stays where it is put)
+    if (!via.aggiunta && via.from.x === via.to.x && via.from.y === via.to.y) continue;
     vias = [...vias, via];
     added.vias.push(via);
   }
