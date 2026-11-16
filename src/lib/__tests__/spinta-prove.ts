@@ -11,7 +11,7 @@ import { expect } from "vitest";
 import { runDrcChecks } from "@/lib/drc";
 import { idDoppi } from "@/lib/duplicate-ids";
 import { applyCopperPatch, type ManualEdits } from "@/lib/manual-edits";
-import { applyManualRoutes, manualRouteKey, percorsoDellaPista, type ManualRoutePoint } from "@/lib/manual-routes";
+import { applyManualRoutes, larghezzeDeiTratti, manualRouteKey, percorsoDellaPista, type ManualRoutePoint } from "@/lib/manual-routes";
 import { direzioneEsatta, inUnita } from "@/lib/spinta/geometria";
 import type { SalvataggioDelGesto } from "@/lib/spinta/gesto-tipi";
 import { leggiRame, trattiStorti, verificaRame } from "@/lib/spinta/verifica";
@@ -32,11 +32,12 @@ export const violazioni = (cj: unknown[]): Record<string, number> => {
 export const piste = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_trace");
 export const vie = (cj: unknown[]) => (cj as El[]).filter((e) => e.type === "pcb_via");
 export const larghezzaDi = (e: El): number => Number((e.route as Array<Record<string, unknown>>).find((p) => p.route_type === "wire")?.width);
-/** the stretches of some paths, as text, in no order */
+/** the stretches of some paths, as text, in no order; each at its own width when the path says widths on its points */
 export const comeTratti = (percorsi: Array<{ punti: ManualRoutePoint[]; larga: number }>): string[] =>
-  percorsi.flatMap(({ punti, larga }) =>
-    punti.slice(1).flatMap((b, i) => (punti[i].layer === b.layer ? [JSON.stringify({ x1: punti[i].x, y1: punti[i].y, x2: b.x, y2: b.y, layer: b.layer, width: larga })] : [])),
-  );
+  percorsi.flatMap(({ punti, larga }) => {
+    const w = larghezzeDeiTratti(punti, larga);
+    return punti.slice(1).flatMap((b, i) => (punti[i].layer === b.layer ? [JSON.stringify({ x1: punti[i].x, y1: punti[i].y, x2: b.x, y2: b.y, layer: b.layer, width: w[i] })] : []));
+  });
 export const trattiDellaScheda = (cj: unknown[], senza: ReadonlySet<string>): string[] =>
   comeTratti(piste(cj).filter((e) => !senza.has(String(e.pcb_trace_id))).map((e) => ({ punti: percorsoDellaPista(e), larga: larghezzaDi(e) })));
 export const posto = (v: object): string => `${Number((v as { x?: unknown }).x)};${Number((v as { y?: unknown }).y)}`;

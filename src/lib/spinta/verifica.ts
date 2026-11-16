@@ -74,8 +74,13 @@ function coordinata(v: unknown, alMicron = false): number | string {
  * 0.001 mm, see coordinata). Nothing is dropped: two equal points in a row
  * are a stretch of no length, and that is for verificaRame to refuse, not for
  * the reading to hide.
+ *
+ * `conLarghezze`: a point may say the width of the trace from there on
+ * (ManualRoutePoint.width, the path of a correction of a trace whose width
+ * changes along it), checked like the width of a route. A hand route has one
+ * width in its file: whatever its points say is not read.
  */
-function punti(v: unknown, alMicron = false): ManualRoutePoint[] | string {
+function punti(v: unknown, alMicron = false, conLarghezze = false): ManualRoutePoint[] | string {
   if (!Array.isArray(v)) return "i punti non sono una lista";
   const out: ManualRoutePoint[] = [];
   for (const [i, p] of v.entries()) {
@@ -86,6 +91,12 @@ function punti(v: unknown, alMicron = false): ManualRoutePoint[] | string {
     if (typeof x === "string") return `punto ${i + 1}: ${x}`;
     if (typeof y === "string") return `punto ${i + 1}: ${y}`;
     if (!eStratoDiRame(q.layer)) return `punto ${i + 1}: lo strato non e' uno strato di rame`;
+    if (conLarghezze && q.width !== undefined) {
+      const w = larghezza(q.width);
+      if (typeof w === "string") return `punto ${i + 1}: ${w}`;
+      out.push({ x, y, layer: q.layer, width: w });
+      continue;
+    }
     out.push({ x, y, layer: q.layer });
   }
   return out;
@@ -163,13 +174,13 @@ export function leggiRame(
       return { errore: `${dove}: manca la pista di partenza (replaces): qui si salvano solo correzioni del rame dei file` };
     }
     const s = r.replaces as Record<string, unknown>;
-    const original = punti(s.original);
+    const original = punti(s.original, false, true);
     if (typeof original === "string") return { errore: `${dove}, pista di partenza: ${original}` };
     if (original.length < 2) return { errore: `${dove}: la pista di partenza ha meno di due punti` };
     const larghezzaDiPartenza = larghezza(s.width);
     if (typeof larghezzaDiPartenza === "string") return { errore: `${dove}, pista di partenza: ${larghezzaDiPartenza}` };
     // with no points of its own it only takes the trace of the files out
-    const suoi = punti(r.points ?? []);
+    const suoi = punti(r.points ?? [], false, true);
     if (typeof suoi === "string") return { errore: `${dove}: ${suoi}` };
     if (suoi.length === 1) return { errore: `${dove}: un punto solo non e' una pista` };
     const larga = larghezza(r.width);

@@ -312,7 +312,7 @@ export class Risolutore {
       const suo = altra.tratti[rif.tratto];
       if (p.strato !== null && suo.strato !== p.strato) continue;
       const [c, d] = capiDelTratto(altra, suo);
-      const mezza = altra.larghezza / 2;
+      const mezza = suo.larghezza / 2;
       if (Math.max(c.x, d.x) + mezza < minX || Math.min(c.x, d.x) - mezza > maxX || Math.max(c.y, d.y) + mezza < minY || Math.min(c.y, d.y) - mezza > maxY) continue;
       const s = segmento(c, d);
       if (this.luce(p, s, mezza) >= this.soglia(p, s, mezza) - EPS_MM) continue;
@@ -357,7 +357,7 @@ export class Risolutore {
     const { modello, limiti } = this;
     const sua = modello.piste[pista];
     const suo = sua.tratti[tratto];
-    const mezza = sua.larghezza / 2;
+    const mezza = suo.larghezza / 2;
     const prima = segmento(...capiDelTratto(sua, suo));
     const punti = r.percorsi.get(pista) ?? sua.punti;
     const qui = segmento(punti[suo.da], punti[suo.da + 1]);

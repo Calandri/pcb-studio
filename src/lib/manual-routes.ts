@@ -33,6 +33,14 @@ export interface ManualRoutePoint {
   x: number;
   y: number;
   layer: Layer;
+  /**
+   * mm: the width of the trace FROM THIS POINT ON, until a later point says
+   * another; before the first point that says one the trace has the width of
+   * its route. The same as `width` on a point of a <trace pcbPath>. Only the
+   * path of a trace whose width changes along it says any (a correction of
+   * such a trace, and the path it started from); a hand route never does.
+   */
+  width?: number;
 }
 
 export interface ManualRoute {
@@ -253,7 +261,7 @@ const quandoDi = (v: unknown): string | undefined =>
  * Consecutive identical points are dropped; the same place on another layer
  * stays, that is a via.
  */
-function leggiPunti(raw: unknown[], arrotonda: (v: number) => number): ManualRoutePoint[] | null {
+function leggiPunti(raw: unknown[], arrotonda: (v: number) => number, conLarghezze = false): ManualRoutePoint[] | null {
   const points: ManualRoutePoint[] = [];
   for (const p of raw) {
     if (typeof p !== "object" || p === null) return null;
@@ -263,12 +271,64 @@ function leggiPunti(raw: unknown[], arrotonda: (v: number) => number): ManualRou
     // a missing layer is the old default; an unknown one is refused
     const layer = q.layer === undefined ? "top" : (q.layer as Layer);
     if (!LAYERS.includes(layer)) return null;
-    const point = { x: arrotonda(q.x), y: arrotonda(q.y), layer };
+    // the width from this point on (see ManualRoutePoint.width): clamped like the width of a route
+    const width = conLarghezze && finite(q.width) ? clamp(q.width, ROUTE_LIMITS.minWidthMm, ROUTE_LIMITS.maxWidthMm) : undefined;
+    const point: ManualRoutePoint = { x: arrotonda(q.x), y: arrotonda(q.y), layer, ...(width !== undefined ? { width } : {}) };
     const prev = points[points.length - 1];
-    if (prev && prev.x === point.x && prev.y === point.y && prev.layer === point.layer) continue;
+    if (prev && prev.x === point.x && prev.y === point.y && prev.layer === point.layer) {
+      // the same place twice: the width the second one says is the one from there on
+      if (width !== undefined) prev.width = width;
+      continue;
+    }
     points.push(point);
   }
   return points;
+}
+
+/**
+ * The width of every stretch of a path: `out[i]` is the copper from
+ * `points[i]` to `points[i + 1]`, at the width the last point up to `i` says,
+ * or `width` before any says one. A change of layer is a via, not copper: it
+ * has the width that runs there, and nobody draws it.
+ */
+export function larghezzeDeiTratti(points: readonly ManualRoutePoint[], width: number): number[] {
+  const out: number[] = [];
+  let ora = width;
+  for (let i = 0; i + 1 < points.length; i++) {
+    if (finite(points[i].width)) ora = points[i].width!;
+    out.push(ora);
+  }
+  return out;
+}
+
+/**
+ * A path as a correction stores it: `width` on a point only where the width
+ * changes from the one before (the first stretch has the width of the route),
+ * and none on the last point, where no stretch begins. A path whose stretches
+ * all have the route's width says none: what it was before the widths.
+ */
+export function conLeLarghezze(points: readonly ManualRoutePoint[], width: number): ManualRoutePoint[] {
+  const larghezze = larghezzeDeiTratti(points, width);
+  let ora = width;
+  return points.map((p, i) => {
+    const out: ManualRoutePoint = { x: p.x, y: p.y, layer: p.layer };
+    const w = larghezze[i];
+    if (w !== undefined && Math.abs(w - ora) > 1e-9) {
+      out.width = w;
+      ora = w;
+    }
+    return out;
+  });
+}
+
+/** the widths a path draws one after the other, a repeat in a row taken once: the necks of a trace, wherever its corners are */
+function profiloDelleLarghezze(points: readonly ManualRoutePoint[], width: number): number[] {
+  const out: number[] = [];
+  for (const [i, w] of larghezzeDeiTratti(points, width).entries()) {
+    if (points[i].layer !== points[i + 1].layer) continue;
+    if (out.length === 0 || Math.abs(out[out.length - 1] - w) > 1e-6) out.push(w);
+  }
+  return out;
 }
 
 /**
@@ -284,7 +344,9 @@ function leggiPunti(raw: unknown[], arrotonda: (v: number) => number): ManualRou
  *     for every check), while the same x/y on another layer stays — that is a
  *     via;
  *   - widths and via sizes: clamped to ROUTE_LIMITS, a zero or negative via
- *     is ignored (the project default applies);
+ *     is ignored (the project default applies). The width on a point (a
+ *     correction of a trace whose width changes along it) the same way; one
+ *     that is not a number is not read, and a drawn route has none;
  *   - a `replaces` that does not say what it replaces (no starting path of two
  *     points, no width): the whole route. Read without it the route would be
  *     ADDED next to the trace of the files, which is the doubled copper the
@@ -312,7 +374,7 @@ export function parseManualRoutes(value: unknown, limits: ParseRouteLimits = {})
       if (typeof r.replaces !== "object" || r.replaces === null) continue;
       const s = r.replaces as Record<string, unknown>;
       if (!Array.isArray(s.original) || s.original.length > maxPoints || !finite(s.width)) continue;
-      const original = leggiPunti(s.original, round4);
+      const original = leggiPunti(s.original, round4, true);
       if (!original || original.length < 2) continue;
       replaces = { original, width: clamp(s.width, ROUTE_LIMITS.minWidthMm, ROUTE_LIMITS.maxWidthMm) };
     }
@@ -320,7 +382,8 @@ export function parseManualRoutes(value: unknown, limits: ParseRouteLimits = {})
     // a correction with no points of its own only takes the trace out; a drawn route is its points
     const scritti = replaces && r.points === undefined ? [] : r.points;
     if (!Array.isArray(scritti) || scritti.length > maxPoints) continue;
-    const points = leggiPunti(scritti, replaces ? round4 : round3);
+    // a correction keeps the width of each stretch (ManualRoutePoint.width); a drawn route has one
+    const points = leggiPunti(scritti, replaces ? round4 : round3, replaces !== undefined);
     // two points are the minimum for a segment: below that it is not a trace
     if (!points || (replaces ? points.length === 1 : points.length < 2)) continue;
     const width = finite(r.width)
@@ -481,9 +544,28 @@ function toCircuitRoute(
   const out: El[] = [];
   const dia = route.viaDiameter ?? viaDiameter;
   const foro = route.viaHoleDiameter ?? viaHoleDiameter;
+  /*
+   * A path that says widths on its points (ManualRoutePoint.width) is written
+   * as the compile writes a <trace pcbPath> that says them (the patch of
+   * @tscircuit/core, PCB_STUDIO_SEGMENT_WIDTHS): where the width changes the
+   * point is written twice, with the width before and the one after, so that
+   * every segment has one width at its two ends; the second copy only when the
+   * route goes on from there. On the first point after a via the width is
+   * taken at once, as on a via point of a pcbPath. The copper of a correction
+   * of a trace with necks is then the route of that trace, point for point.
+   * A path with no widths gives the route it always gave.
+   */
+  let larga = route.width;
+  let passo: El | null = null;
+  const prendiIlPasso = () => {
+    if (passo) out.push(passo);
+    passo = null;
+  };
   for (const [i, p] of route.points.entries()) {
     const previous = route.points[i - 1];
+    const suo = finite(p.width) && p.width > 0 ? p.width : undefined;
     if (previous && previous.layer !== p.layer) {
+      prendiIlPasso();
       out.push({
         route_type: "via",
         x: p.x,
@@ -493,14 +575,20 @@ function toCircuitRoute(
         via_diameter: dia,
         via_hole_diameter: foro,
       });
+      if (suo !== undefined) larga = suo;
     }
+    prendiIlPasso();
     out.push({
       route_type: "wire",
       x: p.x,
       y: p.y,
       layer: p.layer,
-      width: route.width,
+      width: larga,
     });
+    if (suo !== undefined && Math.abs(suo - larga) > 1e-12) {
+      larga = suo;
+      passo = { route_type: "wire", x: p.x, y: p.y, layer: p.layer, width: larga };
+    }
   }
   return out;
 }
@@ -563,7 +651,7 @@ function sostituitaDi(v: unknown): Sostituita | null {
   if (typeof v !== "object" || v === null) return null;
   const s = v as Record<string, unknown>;
   if (!Array.isArray(s.original) || !finite(s.width) || s.width <= 0) return null;
-  const original = leggiPunti(s.original, round4);
+  const original = leggiPunti(s.original, round4, true);
   if (!original || original.length < 2) return null;
   return {
     original,
@@ -632,15 +720,34 @@ const chiaveDelPosto = (x: unknown, y: unknown): string => `${round4(num(x))},${
  * writes in `replaces.original`, and what a correction is compared with.
  */
 export function percorsoDellaPista(pcbTrace: Record<string, unknown>): ManualRoutePoint[] {
+  /*
+   * A trace whose width changes along it says on every point the width of the
+   * stretch that begins there: the width of the LAST wire written in that
+   * place (where the width changes the route writes the point twice, and the
+   * second copy has the width after). A trace of one width says none.
+   */
+  const larghezze = cambiaLarghezza(pcbTrace);
   const out: ManualRoutePoint[] = [];
   for (const p of (Array.isArray(pcbTrace.route) ? pcbTrace.route : []) as El[]) {
     if (p.route_type === "via" || !finite(p.x) || !finite(p.y)) continue;
-    const point = { x: round4(p.x), y: round4(p.y), layer: String(p.layer ?? "top") as Layer };
+    const point: ManualRoutePoint = { x: round4(p.x), y: round4(p.y), layer: String(p.layer ?? "top") as Layer };
+    if (larghezze && finite(p.width) && p.width > 0) point.width = p.width;
     const prev = out[out.length - 1];
-    if (prev && prev.x === point.x && prev.y === point.y && prev.layer === point.layer) continue;
+    if (prev && prev.x === point.x && prev.y === point.y && prev.layer === point.layer) {
+      if (point.width !== undefined) prev.width = point.width;
+      continue;
+    }
     out.push(point);
   }
   return out;
+}
+
+/** the width of the first wire of a trace; null when it says none */
+function larghezzaDelPrimoFilo(pcbTrace: Record<string, unknown>): number | null {
+  for (const p of (Array.isArray(pcbTrace.route) ? pcbTrace.route : []) as El[]) {
+    if (p.route_type === "wire" && finite(p.width) && p.width > 0) return p.width;
+  }
+  return null;
 }
 
 /** whether the wires of a trace say more than one width: a trace with necks, drawn by the widths on the points of its pcbPath */
@@ -952,16 +1059,27 @@ function leggiIlRame(
       if (d < distanza) [vicina, distanza] = [e, d];
     }
     /*
-     * A trace whose width changes along its path (a width on a point of its
-     * pcbPath) is not replaced: a correction is copper of one width, and laid
-     * in its place it would erase the necks the files draw, with nobody told.
-     * No gesture makes such a correction (Sposta holds the trace still), so
-     * this one was made on the trace before the files gave it its widths: the
-     * copper it started from is gone, it is an orphan, and the files win.
+     * THE NECKS OF THE TRACE. Where the trace of the files or the path the
+     * correction started from changes width along it, the correction is laid
+     * only if the two draw the same widths one after the other: the gesture
+     * then saved every stretch with its width (ManualRoutePoint.width), and
+     * the copper it lays is that trace moved, necks and all. Otherwise the
+     * copper it started from is gone, and it is an orphan: a correction of one
+     * width made before the files gave the trace its necks would erase them
+     * with nobody told, and one made on necks the files have changed since
+     * would put the old ones back. The files win.
      */
-    if (cambiaLarghezza(vicina)) {
-      stato.orfane.routes.push(chiave);
-      continue;
+    const original = route.replaces!.original;
+    const deiFileCambia = cambiaLarghezza(vicina);
+    if (deiFileCambia || original.some((p) => p.width !== undefined)) {
+      const deiFile = percorsoDellaPista(vicina);
+      const daFile = profiloDelleLarghezze(deiFile, deiFile[0]?.width ?? larghezzaDelPrimoFilo(vicina) ?? route.replaces!.width);
+      const daCorrezione = profiloDelleLarghezze(original, route.replaces!.width);
+      const uguali = (a: number[], b: number[]) => a.length === b.length && a.every((w, i) => Math.abs(w - b[i]) <= 1e-6);
+      if (!uguali(daFile, daCorrezione) && !uguali(daFile, [...daCorrezione].reverse())) {
+        stato.orfane.routes.push(chiave);
+        continue;
+      }
     }
     prese.add(vicina);
     letto.sostituite.set(vicina, route);

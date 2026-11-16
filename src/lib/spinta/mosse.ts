@@ -265,12 +265,20 @@ function bloccoDellaTenuta(modello: Modello, tenuta: Tenuta, strato: string): Bl
   };
 }
 
-/** whether what a stretch held is still held by the copper that takes its place */
-function ancoraTenuto(modello: Modello, pista: PistaDelModello, tenuta: Tenuta, nuovi: Segmento[]): boolean {
-  const mezza = pista.larghezza / 2;
+/** the width of the end stretch of a trace that ends at a place: the one it begins with, or the one it ends with */
+function larghezzaDelCapo(pista: PistaDelModello, x: number, y: number): number {
+  const inizio = pista.punti[0];
+  const tratto = inizio.x === x && inizio.y === y ? pista.tratti[0] : pista.tratti[pista.tratti.length - 1];
+  return tratto?.larghezza ?? pista.larghezza;
+}
+
+/** whether what a stretch held is still held by the copper that takes its place: `larghezza` is the stretch's own */
+function ancoraTenuto(modello: Modello, larghezza: number, tenuta: Tenuta, nuovi: Segmento[]): boolean {
+  const mezza = larghezza / 2;
   return nuovi.some((s) => {
     if (tenuta.tipo === "pista") {
-      return distanzaPuntoSegmento(tenuta.x, tenuta.y, s.ax, s.ay, s.bx, s.by) <= mezza + modello.piste[tenuta.pista].larghezza / 2 + CONTATTO_MM;
+      const altra = modello.piste[tenuta.pista];
+      return distanzaPuntoSegmento(tenuta.x, tenuta.y, s.ax, s.ay, s.bx, s.by) <= mezza + larghezzaDelCapo(altra, tenuta.x, tenuta.y) / 2 + CONTATTO_MM;
     }
     if (tenuta.tipo === "via") {
       const via = modello.vie[tenuta.via];
@@ -378,7 +386,7 @@ export function giudica(
       const suo = altra.tratti[rif.tratto];
       if (p.strato !== null && suo.strato !== p.strato) continue;
       const [c, d] = capiDelTratto(altra, suo);
-      const misura = (g: Segmento) => distanzaSegmenti(g.ax, g.ay, g.bx, g.by, c.x, c.y, d.x, d.y) - p.mezza - altra.larghezza / 2;
+      const misura = (g: Segmento) => distanzaSegmenti(g.ax, g.ay, g.bx, g.by, c.x, c.y, d.x, d.y) - p.mezza - suo.larghezza / 2;
       prova(misura(p), richiesta(p.tipo, "trace"), distanzaMinimaFra(regole, p.tipo, "trace"), () => misura(p.prima), p.nuovo, () => ({
         motivo: "pista",
         cosa: cosaPista(altra, suo.indice),
@@ -506,10 +514,10 @@ function capoInUnPad(modello: Modello, pista: PistaDelModello, capo: { x: number
   return null;
 }
 
-/** a stretch of a trace as a piece to judge: its new place, and the one it had */
-const pezzoDiPista = (pista: PistaDelModello, strato: string, nuovo: Segmento, prima: Segmento, aggiunto = false, tratto?: number): Pezzo => ({
+/** a stretch of a trace as a piece to judge: its new place, and the one it had; `larghezza` is the stretch's own (a trace may change width along it) */
+const pezzoDiPista = (pista: PistaDelModello, larghezza: number, strato: string, nuovo: Segmento, prima: Segmento, aggiunto = false, tratto?: number): Pezzo => ({
   ...nuovo,
-  mezza: pista.larghezza / 2,
+  mezza: larghezza / 2,
   strato,
   tipo: "trace",
   rete: pista.rete,
@@ -534,7 +542,7 @@ export const TRATTO_CORTO_MM = 0.2;
  * of 0.57 mm), so every move that shortened a corner stopped before it began,
  * and the trace could not be moved at all.
  */
-const lunghezzaMinima = (pista: PistaDelModello, prima: number): number => Math.min(prima, pista.larghezza, TRATTO_CORTO_MM);
+const lunghezzaMinima = (larghezza: number, prima: number): number => Math.min(prima, larghezza, TRATTO_CORTO_MM);
 
 /** a length as the block says it: millimetres, a comma, two digits at most */
 const millimetri = (v: number): string => String(Math.round(v * 100) / 100).replace(".", ",");
@@ -744,7 +752,7 @@ export function geometriaDelTratto(
   ];
   for (const l of lunghi) {
     const era = l.erano * passoMm(l.d);
-    const minima = lunghezzaMinima(l.pista, era);
+    const minima = lunghezzaMinima(l.tratto.larghezza, era);
     if (l.passi * passoMm(l.d) >= minima - EPS_MM) continue;
     const piegata = l.passi < 0 && l.acuto;
     // which stretch is too short, how long it is and how short it may get: "a stretch would vanish" said neither
@@ -765,7 +773,8 @@ export function geometriaDelTratto(
   const metti = (di: PistaDelModello, k: number, dove: Punto) => {
     let punti = percorsi.get(di.indice);
     if (!punti) percorsi.set(di.indice, (punti = [...puntiDi(di)]));
-    punti[k] = { ...mm(dove), layer: di.punti[k].layer };
+    // the corner moves; its layer and the width of the stretch that begins there (ManualRoutePoint.width) stay
+    punti[k] = { ...punti[k], ...mm(dove), layer: di.punti[k].layer };
   };
   metti(pista, tratto.da, ia);
   metti(pista, tratto.da + 1, ib);
@@ -784,7 +793,7 @@ export function geometriaDelTratto(
   // what the two neighbours held, they still hold
   for (const v of [vp, vn]) {
     for (const tenuta of v.tratto.tiene) {
-      if (!ancoraTenuto(modello, v.pista, tenuta, [nuovo(v.pista, v.tratto)])) return bloccato(bloccoDellaTenuta(modello, tenuta, v.tratto.strato));
+      if (!ancoraTenuto(modello, v.tratto.larghezza, tenuta, [nuovo(v.pista, v.tratto)])) return bloccato(bloccoDellaTenuta(modello, tenuta, v.tratto.strato));
     }
   }
   // each piece remembers the stretch as the model has it: where it was when the gesture began
@@ -793,7 +802,9 @@ export function geometriaDelTratto(
     { pista, tratto },
     { pista: vn.pista, tratto: vn.tratto },
   ];
-  const pezzi = toccati.map((x) => pezzoDiPista(x.pista, x.tratto.strato, nuovo(x.pista, x.tratto), segmento(...capiDelTratto(x.pista, x.tratto)), false, x.tratto.indice));
+  const pezzi = toccati.map((x) =>
+    pezzoDiPista(x.pista, x.tratto.larghezza, x.tratto.strato, nuovo(x.pista, x.tratto), segmento(...capiDelTratto(x.pista, x.tratto)), false, x.tratto.indice),
+  );
 
   // the line went `quanto` of its steps along its normal (a; b), which is one unit long, or a diagonal
   const traslazione = quanto / (rs.a * rs.a + rs.b * rs.b) / UNITA_PER_MM;
@@ -924,7 +935,7 @@ export function geometriaDellaVia(modello: Modello, quale: number, a: { x: numbe
       const verso = fisso < k ? tratto.direzione : opposta(tratto.direzione);
       const g = gambe(P, V, verso);
       const era = passiLungo(P, C, verso) * passoMm(verso);
-      const minima = lunghezzaMinima(pista, era);
+      const minima = lunghezzaMinima(tratto.larghezza, era);
       if (g.a * passoMm(verso) < minima - EPS_MM) {
         const piegata = g.a < 0;
         return {
@@ -942,9 +953,9 @@ export function geometriaDellaVia(modello: Modello, quale: number, a: { x: numbe
       const vecchio = segmento(lontano, pista.punti[k]);
       const nuovi = g.e ? [segmento(lontano, Q), segmento(Q, arrivo)] : [segmento(lontano, arrivo)];
       for (const tenuta of tratto.tiene) {
-        if (!ancoraTenuto(modello, pista, tenuta, nuovi)) return { blocco: bloccoDellaTenuta(modello, tenuta, tratto.strato) };
+        if (!ancoraTenuto(modello, tratto.larghezza, tenuta, nuovi)) return { blocco: bloccoDellaTenuta(modello, tenuta, tratto.strato) };
       }
-      nuovi.forEach((s, n) => pezzi.push(pezzoDiPista(pista, tratto.strato, s, vecchio, n === 1)));
+      nuovi.forEach((s, n) => pezzi.push(pezzoDiPista(pista, tratto.larghezza, tratto.strato, s, vecchio, n === 1)));
       cambiati.push({ pista: pista.indice, tratto: tratto.indice });
       return { gomito: g.e ? { ...Q, layer: tratto.strato } : null };
     };
@@ -959,7 +970,8 @@ export function geometriaDellaVia(modello: Modello, quale: number, a: { x: numbe
         if ("blocco" in esito) return bloccato(esito.blocco);
         if (esito.gomito) punti.push(esito.gomito);
       }
-      punti.push({ ...arrivo, layer: p.layer });
+      // the via moves; the layer of the point and the width it says (ManualRoutePoint.width) stay
+      punti.push({ ...p, ...arrivo });
       if (k < ultimo && pista.punti[k + 1].layer === p.layer) {
         const esito = rifai(k, k + 1);
         if ("blocco" in esito) return bloccato(esito.blocco);

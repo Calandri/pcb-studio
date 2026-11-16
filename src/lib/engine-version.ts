@@ -148,6 +148,10 @@
 // the copper of a pad of its own net (via-in-pad) does not count against that pad. On sbb-dl-principale the ground
 // via at (3.96; 7.92) had its ring 0.026 mm from the opening of IC6.E5 with every check green. Copper and pours do not
 // change: a board of engine 14 comes to 15 with a recheck ("Ricontrolla"), no compile
+// Still 15 (2026-11-16): Sposta moves a trace that changes width. Its correction says `width` on its points (ManualRoutePoint.width)
+// and is laid with the route the compile writes for a pcbPath with widths (toCircuitRoute). A correction is an orphan when the
+// widths it started from are not the ones of the trace of the files any more, one of one width included (as above). No board
+// of before changes: nothing to recheck
 export const CHECKS_ENGINE_VERSION = 15;
 
 /**

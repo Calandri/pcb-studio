@@ -108,9 +108,9 @@ export interface TrattoDelModello {
    * mm: the width of its own copper, read on the point of the route it starts
    * from (where the width changes the route writes the point twice, and that
    * point is the second). The trace's on a trace of one width; on a trace whose
-   * width changes along its path (a width on a point of its pcbPath, which
-   * holds it still: see `ferma`) the target the viewer draws on the stretch is
-   * as wide as its copper. The moves measure every trace at its widest.
+   * width changes along its path (a width on a point of its pcbPath) the
+   * target the viewer draws on the stretch is as wide as its copper, and the
+   * moves measure the stretch at its own width.
    */
   larghezza: number;
   strato: ManualRoutePoint["layer"];
@@ -137,9 +137,15 @@ export interface PistaDelModello {
   rete: string | null;
   /** the name of that net (GND, P3V3), "" when it has none */
   nomeRete: string;
-  /** mm; the widest when its stretches differ (the trace is then `ferma`) */
+  /** mm; the widest when its stretches differ: what a broad look around it measures (each stretch has its own, TrattoDelModello.larghezza) */
   larghezza: number;
-  /** the path, as a correction stores it: mm to 0.0001, a via where two points share a place on two layers */
+  /**
+   * The path, as a correction stores it: mm to 0.0001, a via where two points
+   * share a place on two layers. On a trace whose width changes along it every
+   * point says the width of the stretch that begins there (`width`, see
+   * percorsoDellaPista), and a point a move adds says none: it is in the
+   * middle of a stretch, and has the width of the point before.
+   */
   punti: ManualRoutePoint[];
   tratti: TrattoDelModello[];
   /** a curve drawn as chords: none of its stretches has a direction to keep */
@@ -444,10 +450,21 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
     // a hand route is read from the file to the micron: a point between two microns would not come back where it was written
     if (aMano && punti.some((q) => inUnita(q.x) % 10 !== 0 || inUnita(q.y) % 10 !== 0)) perche("la pista a mano ha un punto fuori dalla griglia di 0,001 mm");
     if (!aMano && !connessioneScritta(connessione)) perche("la connessione della pista non ha un nome con pezzo e piedino");
-    if (larghezze.some((w) => Math.abs(w - larga) > 1e-9)) perche("la pista cambia larghezza lungo il percorso");
+    /*
+     * A trace whose width changes along it (a width on a point of its
+     * pcbPath) moves like any other: its path says the width of every stretch
+     * (percorsoDellaPista), the moves keep it on every point they carry, and
+     * the correction saves it (ManualRoutePoint.width). A hand route has one
+     * width in the file, and rewritten it would lose the others.
+     */
+    const cambia = larghezze.some((w) => Math.abs(w - larga) > 1e-9);
+    if (cambia && aMano) perche("la pista a mano cambia larghezza lungo il percorso: il file le da' una larghezza sola");
     // the same for a trace that does not say how wide it is: drawn at the minimum of the rules, not moved
     if (larghezze.length === 0) perche("la pista non dice la sua larghezza");
-    else if (typeof larghezzaScrivibile(larga) === "string") perche(String(larghezzaScrivibile(larga)));
+    else {
+      const fuori = larghezze.map((w) => larghezzaScrivibile(w)).find((w) => typeof w === "string");
+      if (fuori !== undefined) perche(String(fuori));
+    }
     if (punti.some((p) => Math.abs(p.x) > ROUTE_LIMITS.maxCoordMm || Math.abs(p.y) > ROUTE_LIMITS.maxCoordMm)) perche("la pista va oltre il metro");
     if (punti.some((p) => !eStratoDiRame(p.layer))) perche("la pista nomina uno strato che non e' di rame");
     // a via point the path does not go through (at an end, or with no change of layer): the path a correction saves would lose it
@@ -657,7 +674,7 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
     for (const { pista, tratto, lato, punto } of capi) {
       // the ends of other traces that stand in this same place
       const insieme = capi.filter((c) => c.pista !== pista && compatibili(c.pista.rete, pista.rete));
-      const mezza = pista.larghezza / 2;
+      const mezza = tratto.larghezza / 2;
       let aT: { pista: number; tratto: number } | null = null;
       for (const rif of grigliaTratti.vicini(punto.x - mezza, punto.y - mezza, punto.x + mezza, punto.y + mezza)) {
         if (rif.pista === pista.indice) continue;
@@ -667,7 +684,7 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
         // a stretch that ends here as well is met end to end, not run into
         if (insieme.some((c) => c.tratto === suo)) continue;
         const [a, b] = capiDelTratto(altra, suo);
-        if (pointSegDistance(punto.x, punto.y, a.x, a.y, b.x, b.y) > mezza + altra.larghezza / 2 + CONTATTO_MM) continue;
+        if (pointSegDistance(punto.x, punto.y, a.x, a.y, b.x, b.y) > mezza + suo.larghezza / 2 + CONTATTO_MM) continue;
         suo.tiene.push({ tipo: "pista", pista: pista.indice, x: punto.x, y: punto.y });
         aT ??= { pista: altra.indice, tratto: suo.indice };
       }
@@ -686,7 +703,7 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
       if (!compatibili(pista.rete, via.rete)) continue;
       const tratto = pista.tratti[rif.tratto];
       const [a, b] = capiDelTratto(pista, tratto);
-      if (pointSegDistance(via.x, via.y, a.x, a.y, b.x, b.y) > r + pista.larghezza / 2 + CONTATTO_MM) continue;
+      if (pointSegDistance(via.x, via.y, a.x, a.y, b.x, b.y) > r + tratto.larghezza / 2 + CONTATTO_MM) continue;
       tratto.tiene.push({ tipo: "via", via: via.indice });
       via.tiene.push({ tipo: "pista", pista: pista.indice, tratto: tratto.indice });
     }
@@ -695,7 +712,7 @@ export function leggiModello(circuitJson: unknown[], regole: DesignRules): Model
   const tocca = (pad: PadDelModello, pista: PistaDelModello, tratto: TrattoDelModello): boolean => {
     if (!stratiSiToccano(pad.strato, tratto.strato)) return false;
     const [a, b] = capiDelTratto(pista, tratto);
-    return distanzaSegmentoForma(pad.forma, a.x, a.y, b.x, b.y) <= pista.larghezza / 2 + CONTATTO_MM;
+    return distanzaSegmentoForma(pad.forma, a.x, a.y, b.x, b.y) <= tratto.larghezza / 2 + CONTATTO_MM;
   };
   for (const pad of ostacoli) {
     if (pad.tipo !== "pad" || pad.rete === null) continue;

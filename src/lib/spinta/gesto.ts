@@ -43,6 +43,7 @@ import type {
   TrattoInMovimento,
   ViaInMovimento,
 } from "./gesto-tipi";
+import { larghezzeDeiTratti } from "../manual-routes";
 import { capiDelTratto, leggiModello, type Modello } from "./modello";
 import { spostaVia, traslaTratto, type Blocco, type EsitoDellaMossa, type RameMosso } from "./mosse";
 import { Risolutore } from "./risolutore";
@@ -180,10 +181,12 @@ function statoDi(g: Interno, esito: RameMosso, posizione: { x: number; y: number
   for (const i of [...g.piste, ...spinte]) {
     const pista = modello.piste[i];
     const punti = mosse.get(i) ?? pista.punti;
+    // each stretch at its own width: a trace may change width along it (ManualRoutePoint.width)
+    const larghe = larghezzeDeiTratti(punti, pista.larghezza);
     for (let k = 0; k + 1 < punti.length; k++) {
       const a = punti[k];
       const b = punti[k + 1];
-      if (a.layer === b.layer) tratti.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, layer: a.layer, width: pista.larghezza });
+      if (a.layer === b.layer) tratti.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, layer: a.layer, width: larghe[k] });
     }
   }
   const arrivi = new Map(esito.vie.map((v) => [v.via, v.a]));

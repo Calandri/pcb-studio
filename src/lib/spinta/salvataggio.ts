@@ -29,11 +29,25 @@
  * generate them) reads these same fields.
  */
 import type { CopperPatch } from "../manual-edits";
-import { stessoPercorso, type ManualRoute, type ManualRoutePoint, type ManualViaMove } from "../manual-routes";
+import { conLeLarghezze, larghezzeDeiTratti, stessoPercorso, type ManualRoute, type ManualRoutePoint, type ManualViaMove } from "../manual-routes";
 import type { Modello } from "./modello";
 import type { PistaMossa, RameMosso, ViaMossa } from "./mosse";
 
-const punto = (p: ManualRoutePoint): ManualRoutePoint => ({ x: p.x, y: p.y, layer: p.layer });
+/** a point of a path with what it says: the width from there on, when its trace changes width along it */
+const punto = (p: ManualRoutePoint): ManualRoutePoint => ({ x: p.x, y: p.y, layer: p.layer, ...(p.width !== undefined ? { width: p.width } : {}) });
+/**
+ * A path as the model holds it: on a trace whose width changes along it every
+ * point says the width of the stretch that begins there (see
+ * PistaDelModello.punti), read from a path that says it only where it changes.
+ */
+function conOgniLarghezza(punti: readonly ManualRoutePoint[], width: number): ManualRoutePoint[] {
+  if (!punti.some((p) => p.width !== undefined)) return punti.map(punto);
+  const larghe = larghezzeDeiTratti(punti, width);
+  return punti.map((p, i) => ({ x: p.x, y: p.y, layer: p.layer, width: larghe[Math.min(i, larghe.length - 1)] ?? width }));
+}
+
+/** a point of a hand route: its file gives the route one width */
+const puntoAMano = (p: ManualRoutePoint): ManualRoutePoint => ({ x: p.x, y: p.y, layer: p.layer });
 
 /** where a path changes layer, in order: the places of its vias */
 const cambiDiStrato = (punti: readonly ManualRoutePoint[]): ManualRoutePoint[] => punti.filter((p, i) => i > 0 && punti[i - 1].layer !== p.layer);
@@ -57,13 +71,22 @@ export function correzioniDellaMossa(
   const delGesto = { gesto, ...(quando ? { at: quando } : {}) };
   const routes: ManualRoute[] = mossa.piste.filter(({ pista }) => modello.piste[pista].aMano === null).map(({ pista, punti }) => {
     const p = modello.piste[pista];
+    /*
+     * The width of the route is the one of its first stretch, and a point says
+     * one only where it changes (conLeLarghezze): what a <trace pcbPath> says
+     * with `thickness` and `width` on its points. A trace of one width says
+     * none, as before. The path it started from is written the same way: an
+     * undo puts the trace back with its necks.
+     */
+    const prima = larghezzeDeiTratti(p.punti, p.larghezza)[0] ?? p.larghezza;
+    const dopo = larghezzeDeiTratti(punti, p.larghezza)[0] ?? p.larghezza;
     return {
       connection: p.connessione,
-      points: punti.map(punto),
-      width: p.larghezza,
+      points: conLeLarghezze(punti, dopo),
+      width: dopo,
       // the holes of the trace keep their size: said here, so that whoever copies the correction need not read the board
       ...(p.via ? { viaDiameter: p.via.diametro, viaHoleDiameter: p.via.foro } : {}),
-      replaces: { original: p.punti.map(punto), width: p.larghezza },
+      replaces: { original: conLeLarghezze(p.punti, prima), width: prima },
       ...delGesto,
     };
   });
@@ -94,7 +117,7 @@ export function correzioniDellaMossa(
 export function riscritteDellaMossa(modello: Modello, mossa: Pick<RameMosso, "piste">): Array<{ chiave: string; points: ManualRoutePoint[] }> {
   return mossa.piste.flatMap(({ pista, punti }) => {
     const chiave = modello.piste[pista].aMano;
-    return chiave === null ? [] : [{ chiave, points: punti.map(punto) }];
+    return chiave === null ? [] : [{ chiave, points: punti.map(puntoAMano) }];
   });
 }
 
@@ -132,14 +155,15 @@ export function rameDelleCorrezioni(modello: Modello, rame: CopperPatch, verso: 
       esito.nonTrovate.routes.push(route);
       continue;
     }
-    const [da, a] = verso === "posate" ? [route.replaces.original, route.points] : [route.points, route.replaces.original];
+    const [da, a, larga] =
+      verso === "posate" ? [route.replaces.original, route.points, route.width] : [route.points, route.replaces.original, route.replaces.width];
     const pista = modello.piste.find((p) => !prese.has(p.indice) && p.connessione === route.connection && stessoPercorso(p.punti, da));
     if (!pista) {
       esito.nonTrovate.routes.push(route);
       continue;
     }
     prese.add(pista.indice);
-    esito.piste.push({ pista: pista.indice, punti: a.map(punto) });
+    esito.piste.push({ pista: pista.indice, punti: conOgniLarghezza(a, larga) });
     // the vias the trace changes layer in travel with its path: the ones that are not where they were
     const erano = cambiDiStrato(da);
     const sono = cambiDiStrato(a);

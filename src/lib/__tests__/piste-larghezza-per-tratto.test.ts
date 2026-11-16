@@ -155,11 +155,12 @@ describe("una pista con piu' larghezze", () => {
     ]);
   });
 
-  it("Sposta la tiene ferma e dice perche': il salvataggio di un gesto non saprebbe le sue larghezze", () => {
+  it("Sposta la prende come le altre (dal 16/11/2026): il bersaglio di ogni tratto e' largo quanto il suo rame", () => {
     const id = String(piste(fatta.circuitJson)[0].pcb_trace_id);
     const prese = preseDelRame(fatta.circuitJson).filter((b) => b.tipo === "tratto" && b.pcbTraceId === id);
     expect(prese.length).toBeGreaterThan(0);
-    for (const b of prese) expect(b.fermo).toContain("la pista cambia larghezza lungo il percorso");
+    // what holds a stretch is its geometry (a pad at its end, a neighbour on its line), never its width
+    for (const b of prese) expect(b.fermo ?? "").not.toContain("cambia larghezza");
     // the target of each stretch is as wide as its copper, not as the widest stretch
     expect(
       prese.map((b) => (b.tipo === "tratto" ? [r3(b.x1), r3(b.y1), r3(b.x2), r3(b.y2), b.width] : null)),
@@ -177,7 +178,7 @@ describe("una pista con piu' larghezze", () => {
       presa: { tipo: "tratto", pcbTraceId: id, indice: presa.indice },
     });
     const detto = "rifiuto" in esito ? esito.rifiuto : JSON.stringify(esito.stato);
-    expect(detto).toContain("cambia larghezza");
+    expect(detto).not.toContain("cambia larghezza");
   });
 });
 
@@ -285,10 +286,18 @@ describe("una correzione di Sposta fatta prima che i file dessero le larghezze",
     expect(uniforme.summary.manualEditsOrphans).toBeUndefined();
   }, 120_000);
 
-  it("e il salvataggio rifiuta una correzione su una pista che cambia larghezza, anche fatta a mano", async () => {
+  it("e il salvataggio rifiuta una correzione di una larghezza sola su una pista che cambia larghezza, anche fatta a mano", async () => {
     const fatta = await compileProject({ "main.tsx": scheda(CON_LARGHEZZE) });
-    const original = percorsoDellaPista(piste(fatta.circuitJson)[0]);
-    expect(original.map((p) => [r3(p.x), r3(p.y)])).toEqual([[-7.175, 0], [-7.175, 2], [0, 2], [7.175, 2], [7.175, 0]]);
+    const conLarghezze = percorsoDellaPista(piste(fatta.circuitJson)[0]);
+    expect(conLarghezze.map((p) => [r3(p.x), r3(p.y), p.width])).toEqual([
+      [-7.175, 0, 0.2],
+      [-7.175, 2, 0.6],
+      [0, 2, 0.2],
+      [7.175, 2, 0.2],
+      [7.175, 0, 0.2],
+    ]);
+    // the path without its widths: a correction that does not know the necks
+    const original = conLarghezze.map(({ x, y, layer }) => ({ x, y, layer }));
     const esito = verificaRame({
       circuitJson: fatta.circuitJson,
       regole: resolveDesignRules({}).rules,
