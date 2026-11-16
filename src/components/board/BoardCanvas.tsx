@@ -1704,7 +1704,7 @@ export function BoardCanvas({
           )}
 
           {/* the copper that can never move: under the handles, so a press on a part stays the part's (see BersagliDelRame) */}
-          {bersagliDelRame.length > 0 && (
+          {bersagliDelRame.length > 0 && spostaPezzi && (
             <BersagliDelRame bersagli={bersagliDelRame} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
           )}
 
@@ -1822,11 +1822,6 @@ export function BoardCanvas({
             );
           })}
 
-          {/* the copper that can move: over the handles of the parts, see BersagliDelRame */}
-          {bersagliDelRame.length > 0 && (
-            <BersagliDelRame bersagli={bersagliDelRame} scelto={scelto} xray={xray} mmPerPx={mmPerPx} onPrendi={rame.prendi} />
-          )}
-
           {/* automatic-check markers, where they really are */}
           {showErrors &&
             markers.map((m) => {
@@ -1883,6 +1878,26 @@ export function BoardCanvas({
               scelto={apertoScelto?.id ?? null}
               sposta={mmPointTx}
             />
+          )}
+
+          {/*
+            THE COPPER THAT CAN MOVE: over the handles of the parts (see
+            BersagliDelRame) AND over the markers of the checks. A marker takes
+            the pointer 14 pixels around its point, for its tooltip: drawn over
+            the targets it swallowed every press on a via or a stretch near a
+            finding of the DRC or a silkscreen clash, with nothing said
+            (sbb-dl-principale, 2026-11-16, in "Tutto": the vias next to C65
+            and IC6 could not be taken). The copper targets are only there in
+            Sposta, with the vias or the traces chosen: a marker keeps its
+            tooltip everywhere else. With the vias or the traces alone the parts
+            take no press, and the copper that can never move comes up here too:
+            a press on it says why it does not move.
+          */}
+          {bersagliDelRame.length > 0 && !spostaPezzi && (
+            <BersagliDelRame bersagli={bersagliDelRame} fermi scelto={scelto} xray={xray} mmPerPx={mmPerPx} soloVie={cosaSiSposta === "vie"} onPrendi={rame.prendi} />
+          )}
+          {bersagliDelRame.length > 0 && (
+            <BersagliDelRame bersagli={bersagliDelRame} scelto={scelto} xray={xray} mmPerPx={mmPerPx} soloVie={cosaSiSposta === "vie"} onPrendi={rame.prendi} />
           )}
 
           <AvvisoDelGesto vivo={rame.vivo} mmPerPx={mmPerPx} />

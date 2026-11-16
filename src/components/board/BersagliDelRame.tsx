@@ -31,6 +31,12 @@ import { stratoDiRame, stratoVisibile, type StratoScelto } from "./strati-visibi
 
 /** the least a target measures across, screen pixels */
 const PRESA_MINIMA_PX = 5;
+/**
+ * The least a VIA measures across when only the vias are chosen in the bar:
+ * the parts take no press then, and a via of 0,45 mm seen from far was a
+ * target of a few pixels (sbb-dl-principale, 2026-11-16).
+ */
+export const PRESA_MINIMA_VIA_SOLA_PX = 10;
 
 export const BersagliDelRame = memo(function BersagliDelRame({
   bersagli: tutti,
@@ -38,6 +44,7 @@ export const BersagliDelRame = memo(function BersagliDelRame({
   scelto,
   xray,
   mmPerPx,
+  soloVie = false,
   onPrendi,
 }: {
   bersagli: readonly BersaglioDelRame[];
@@ -46,10 +53,13 @@ export const BersagliDelRame = memo(function BersagliDelRame({
   scelto: StratoScelto;
   xray: number;
   mmPerPx: number;
+  /** only the vias are chosen: their targets are larger (PRESA_MINIMA_VIA_SOLA_PX) */
+  soloVie?: boolean;
   onPrendi: (bersaglio: BersaglioDelRame, e: PuntatoreGiu) => void;
 }) {
   const bersagli = tutti.filter((b) => (b.fermo !== undefined) === fermi);
   const minimo = mmPerPx * PRESA_MINIMA_PX;
+  const minimoVia = mmPerPx * (soloVie ? PRESA_MINIMA_VIA_SOLA_PX : PRESA_MINIMA_PX);
   const tratto = (b: Extract<BersaglioDelRame, { tipo: "tratto" }>) => (
     <line
       key={`tratto-${b.pcbTraceId}-${b.indice}`}
@@ -84,7 +94,7 @@ export const BersagliDelRame = memo(function BersagliDelRame({
             data-presa={`via:${b.pcbViaId}`}
             cx={b.x}
             cy={b.y}
-            r={Math.max(b.outerDiameter, minimo) / 2}
+            r={Math.max(b.outerDiameter, minimoVia) / 2}
             fill="transparent"
             stroke="transparent"
             strokeWidth={mmPerPx * 1.5}
