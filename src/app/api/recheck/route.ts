@@ -4,7 +4,7 @@ import { resolveDesignRules } from "@/lib/design-rules";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { conMascheraAMano } from "@/lib/solder-mask";
 import { colateSenzaColli } from "@/lib/pour-necks";
-import { conDistanzeDichiarate, ricolaSeLeVieEranoParziali } from "@/lib/pours-recompute";
+import { conColateFlottanti, conDistanzeDichiarate, ricolaSeLeVieEranoParziali } from "@/lib/pours-recompute";
 import { vieSemprePassanti } from "@/lib/via-layers";
 import { CHECKS_ENGINE_VERSION, colateDiUnMotoreDiPrima, motoreDaSalvare, nonCertificata } from "@/lib/engine-version";
 import { withLibrary } from "@/lib/agent-tools";
@@ -87,12 +87,17 @@ export async function POST(req: Request): Promise<Response> {
      * today's files (see conDistanzeDichiarate): a board saved before it was
      * declared is poured again with it when it has to be, and judged by it
      * when it is not. A project that declares none keeps its board as it is.
+     * And the pours a <copperpour flottante> leaves floating on purpose, marked
+     * from today's files the same way (see conColateFlottanti).
      */
     const ricolata = await ricolaSeLeVieEranoParziali({
-      circuitJson: conDistanzeDichiarate(
-        vieSemprePassanti(cache.circuitJson as Array<Record<string, unknown> & { type: string }>),
+      circuitJson: conColateFlottanti(
+        conDistanzeDichiarate(
+          vieSemprePassanti(cache.circuitJson as Array<Record<string, unknown> & { type: string }>),
+          progetto,
+          regole.minClearanceMm,
+        ),
         progetto,
-        regole.minClearanceMm,
       ),
       engineVersion: cache.engineVersion,
       clearanceMm: regole.pourClearanceMm ?? regole.minClearanceMm,

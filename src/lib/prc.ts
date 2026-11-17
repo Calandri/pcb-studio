@@ -11,7 +11,7 @@
  */
 
 import { eMassa, ePotenza } from "./net-roles";
-import { insidePour, readPours } from "./pours";
+import { colataFlottante, insidePour, readPours } from "./pours";
 import { distanzaPuntoForma, rameDelPad, type FormaRame } from "./drc";
 import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 
@@ -449,6 +449,8 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
   // --- 2. copper pour islands: a pour with no same-net pad/via inside is dead copper
   for (const pour of circuitJson) {
     if (pour.type !== "pcb_copper_pour" || !pour.source_net_id) continue;
+    // left floating on purpose (<copperpour flottante>, see FLOTTANTE in pours.ts): dead copper by choice
+    if (colataFlottante(pour)) continue;
     const netName = maps.netNameById.get(String(pour.source_net_id));
     if (!netName) continue;
     const layer = String(

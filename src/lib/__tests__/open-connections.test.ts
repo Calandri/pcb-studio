@@ -210,7 +210,9 @@ describe("una volta per scheda", () => {
     const { collegamenti } = collegamentiAperti(els);
     const ms = performance.now() - t0;
     // la massa non ha rame: 110 piedini, 109 tratti; le cento reti a due piedini sono unite
-    expect(collegamenti).toHaveLength(109);
+    expect(collegamenti.filter((c) => !c.colata)).toHaveLength(109);
+    // e le dieci colate stanno su reti senza piedini: dieci colate isolate (17/11/2026)
+    expect(collegamenti.filter((c) => c.colata)).toHaveLength(10);
     expect(ms).toBeLessThan(100);
   });
 });

@@ -161,7 +161,18 @@
 // hand that touches another opening; two openings of pads that meet are one window and are not said. A project without
 // maschera.json exports the same Gerber, byte for byte (the date aside). Copper and pours do not change: a board of
 // engine 15 comes to 16 with a recheck ("Ricontrolla"), which also puts the windows of the file on it
-export const CHECKS_ENGINE_VERSION = 16;
+// 17 (2026-11-17): every piece of pour cut off from its net is an open connection (open-connections.ts). A piece of
+// poured copper of a net that the copper does not join to the island with most of the net's pins, and that holds no
+// pin of the net, was counted nowhere: a ground pour on inner1 with no via to the rest of the ground read "0 aperti"
+// ("ogni pour deve essere collegato e non flottante a meno di sceglierlo flottante", Niccolo'). Now it is one more
+// missing connection of its net, in the viewer (its copper filled, a red ring on its point), in the summary
+// (unroutedTotal counts its net, unroutedConnections names it "colata isolata <net> su <layer>, <area> mm², in (x, y)",
+// a net no declared connection is on comes as `colata:<net>`) and in the export, which refuses it. A pour on a net no
+// pin is on is always open. A `<copperpour flottante>` floats on purpose: its pieces are marked (FLOTTANTE in pours.ts,
+// by the compile and the recheck from today's files) and are neither open nor a "pour_island". The pieces of one net
+// on one layer are one where they touch or overlap, as before. Copper and pours do not change: a board of engine 16
+// comes to 17 with a recheck ("Ricontrolla"); a board with no piece cut off counts what it counted
+export const CHECKS_ENGINE_VERSION = 17;
 
 /**
  * The first engine that measures the footprints of the parts and absorbs

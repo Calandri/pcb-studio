@@ -62,6 +62,24 @@ export function distanzaPropria(el: unknown): number | undefined {
   return v !== null && v > 0 ? v : undefined;
 }
 
+/**
+ * A POUR LEFT FLOATING ON PURPOSE, written on its element.
+ *
+ * Every piece of copper of a net must reach the rest of that net: a piece of
+ * pour that does not is a missing connection (open-connections.ts), however
+ * many of its own pads it holds. A designer can want one floating all the same
+ * (a copper balance fill, a shield left unconnected): the `<copperpour>` says
+ * so with `flottante`, read from the source like the clearance
+ * (conColateFlottanti in pours-recompute.ts) and written here on every element
+ * of that pour, so it travels with the board to the checks and the export.
+ */
+export const FLOTTANTE = "pcb_studio_flottante";
+
+/** whether a pour element was declared floating on purpose */
+export function colataFlottante(el: unknown): boolean {
+  return (el as El | null | undefined)?.[FLOTTANTE] === true;
+}
+
 /** one clearance the pours of a board are poured with, and how many pours hold it */
 export interface DistanzaInUso {
   mm: number;
@@ -168,6 +186,119 @@ export function insidePour(x: number, y: number, pour: PourShape): boolean {
   if (x < pour.minX || x > pour.maxX || y < pour.minY || y > pour.maxY) return false;
   if (!insideRing(x, y, pour.outer)) return false;
   return !pour.holes.some((h) => insideRing(x, y, h));
+}
+
+/** the area of a ring, whichever way it turns */
+function areaAnello(ring: Array<{ x: number; y: number }>): number {
+  let s = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) s += ring[j].x * ring[i].y - ring[i].x * ring[j].y;
+  return Math.abs(s / 2);
+}
+
+/** the copper of one pour: its outline less its holes, in mm² */
+export function areaDellaColata(pour: PourShape): number {
+  return Math.max(0, areaAnello(pour.outer) - pour.holes.reduce((s, h) => s + areaAnello(h), 0));
+}
+
+/**
+ * THE COPPER OF SOME POURS OF ONE LAYER, in mm², what overlaps counted once.
+ *
+ * A face of a board drawn by hand is written as tiles that overlap (tscircuit
+ * takes no holes in a `<copperpour>`): on sbb-dl-principale the sum of the
+ * pieces is well above the copper there is. So the area is swept: between two
+ * vertex abscissas every side crosses the strip whole, and the copper across
+ * the middle of the strip, the union of the inside spans of every pour (even
+ * and odd over outline and holes), times its width. Exact for pours that do
+ * not overlap; where two sides cross inside a strip it is off by a sliver.
+ */
+export function areaDelRame(pours: PourShape[]): number {
+  if (pours.length === 0) return 0;
+  if (pours.length === 1) return areaDellaColata(pours[0]);
+  type Lato = { x0: number; y0: number; x1: number; y1: number; colata: number };
+  const lati: Lato[] = [];
+  const xs: number[] = [];
+  pours.forEach((p, k) => {
+    for (const ring of [p.outer, ...p.holes]) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[j];
+        const b = ring[i];
+        xs.push(b.x);
+        if (a.x === b.x) continue;
+        lati.push(a.x < b.x ? { x0: a.x, y0: a.y, x1: b.x, y1: b.y, colata: k } : { x0: b.x, y0: b.y, x1: a.x, y1: a.y, colata: k });
+      }
+    }
+  });
+  xs.sort((a, b) => a - b);
+  lati.sort((a, b) => a.x0 - b.x0);
+  let attivi: Lato[] = [];
+  let prossimo = 0;
+  let area = 0;
+  const tagli = new Map<number, number[]>();
+  for (let i = 1; i < xs.length; i++) {
+    const xa = xs[i - 1];
+    const xb = xs[i];
+    if (xb - xa < 1e-9) continue;
+    const xm = (xa + xb) / 2;
+    attivi = attivi.filter((l) => l.x1 > xm);
+    while (prossimo < lati.length && lati[prossimo].x0 < xm) {
+      if (lati[prossimo].x1 > xm) attivi.push(lati[prossimo]);
+      prossimo++;
+    }
+    tagli.clear();
+    for (const l of attivi) {
+      const y = l.y0 + ((xm - l.x0) * (l.y1 - l.y0)) / (l.x1 - l.x0);
+      const lista = tagli.get(l.colata);
+      if (lista) lista.push(y);
+      else tagli.set(l.colata, [y]);
+    }
+    /*
+     * A pour's sides cross the middle of the strip an even number of times
+     * (outline and holes are closed rings): sorted, each pair is a span of its
+     * copper, the hole between two pairs left out by even and odd.
+     */
+    const tratti: Array<[number, number]> = [];
+    for (const ys of tagli.values()) {
+      ys.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < ys.length; k += 2) tratti.push([ys[k], ys[k + 1]]);
+    }
+    tratti.sort((a, b) => a[0] - b[0]);
+    let lunghezza = 0;
+    let fine = -Infinity;
+    for (const [y0, y1] of tratti) {
+      if (y1 <= fine) continue;
+      lunghezza += y1 - Math.max(y0, fine);
+      fine = y1;
+    }
+    area += lunghezza * (xb - xa);
+  }
+  return area;
+}
+
+/**
+ * A POINT ON THE COPPER OF A POUR, well inside it: where a mark is drawn and a
+ * person is sent. The centre of the box is often on no copper at all (an L, a
+ * ring round a chip), so the pour is cut across at a few heights and the point
+ * is the middle of the widest span of copper found.
+ */
+export function puntoSulRame(pour: PourShape): { x: number; y: number } {
+  let meglio: { x: number; y: number; largo: number } | null = null;
+  for (const f of [0.5, 0.3, 0.7, 0.4, 0.6, 0.2, 0.8, 0.1, 0.9]) {
+    const y = pour.minY + f * (pour.maxY - pour.minY);
+    const xs: number[] = [];
+    for (const ring of [pour.outer, ...pour.holes]) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i];
+        const b = ring[j];
+        if (a.y > y !== b.y > y) xs.push(((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x);
+      }
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const largo = xs[k + 1] - xs[k];
+      if (!meglio || largo > meglio.largo) meglio = { x: (xs[k] + xs[k + 1]) / 2, y, largo };
+    }
+  }
+  return meglio ? { x: meglio.x, y: meglio.y } : { x: pour.outer[0].x, y: pour.outer[0].y };
 }
 
 /**

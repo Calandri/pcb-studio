@@ -66,6 +66,7 @@ import {
 import { applyManualRoutes } from "./manual-routes";
 import {
   colateDichiarate,
+  conColateFlottanti,
   conDistanzeDichiarate,
   distanzeDichiarate,
   ricolaPiani,
@@ -640,8 +641,16 @@ export async function compileProject(
    * already honoured the declared value there, and the checks must judge it by
    * the same one. A board that declares none gets back the array it gave.
    */
+  /*
+   * And the ones a <copperpour flottante> leaves floating on purpose, marked the
+   * same way (see conColateFlottanti): the pieces of such a pour are no missing
+   * connection (open-connections.ts).
+   */
   const conDistanzeProprie = (circuitJson: CircuitElement[]): CircuitElement[] =>
-    conDistanzeDichiarate(circuitJson as never, projectFsMap, projectRules.rules.minClearanceMm) as never;
+    conColateFlottanti(
+      conDistanzeDichiarate(circuitJson as never, projectFsMap, projectRules.rules.minClearanceMm),
+      projectFsMap,
+    ) as never;
   /*
    * A compile never routes and never places, whoever calls it (Niccolo',
    * 2026-11-09: "il routing lo farai sempre tu, togli ogni AUTO"). Copper is
@@ -2926,6 +2935,26 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
   const connectionGroups = groupInfo.size;
   let unroutedTotal = 0;
   for (const info of groupInfo.values()) if (!info.routed) unroutedTotal++;
+  /*
+   * AND THE PIECES OF POUR OF A NET NO DECLARED CONNECTION IS ON (route-score.ts,
+   * `colata:<net>`): a pour on a net no pin is on reaches nothing. Counted and
+   * listed like any other open connection, from a point on their copper.
+   */
+  for (const [key, aperto] of unrouted) {
+    if (groupInfo.has(key)) continue;
+    unroutedTotal++;
+    if (unroutedConnections.length < 40) unroutedConnections.push(aperto.nome);
+    if (unroutedDetail.length < 10) {
+      unroutedDetail.push({
+        name: aperto.nome,
+        nets: [...new Set(aperto.tratti.map((t) => t.nome).filter(Boolean))].slice(0, 4),
+        points: aperto.tratti
+          .flatMap((t) => [t.da, t.a])
+          .slice(0, 8)
+          .map((capo) => ({ x: round2(capo.x), y: round2(capo.y), layer: capo.strato })),
+      });
+    }
+  }
 
   const sourceTraces = sourceTraceEls.length;
   const pcbTraces = pcbTraceEls.length;

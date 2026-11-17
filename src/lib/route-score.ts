@@ -11,7 +11,7 @@
 import { DEFAULT_DESIGN_RULES, type DesignRules } from "./design-rules";
 import { runDrcChecks } from "./drc";
 import { gruppiDiRame } from "./gruppi-di-rame";
-import { collegamentiApertiDelRame, type CollegamentoAperto } from "./open-connections";
+import { collegamentiApertiDelRame, descriviColataIsolata, type CollegamentoAperto } from "./open-connections";
 
 export interface CircuitElement {
   type: string;
@@ -144,6 +144,11 @@ function totalWireLengthMm(circuitJson: CircuitElement[]): number {
  * both "connected": the summary said 1 open where there were 3. Now a pour
  * joins what its copper touches, like any other copper, and a group is open
  * when one of those missing stretches runs between two of its pads.
+ *
+ * And a group is open when its net has a piece of pour that reaches none of
+ * its pins (open-connections.ts, 2026-11-17): the pieces of a net go to the
+ * first group on that net. The pieces of a net no group is on (a pour on a net
+ * no pin is on) are a group of their own, `colata:<net>`.
  */
 export function computeUnroutedGroupKeys(circuitJson: CircuitElement[]): Set<string> {
   return new Set(unroutedGroups(circuitJson).keys());
@@ -186,10 +191,20 @@ export function unroutedGroups(circuitJson: CircuitElement[]): Map<string, Grupp
   const { collegamenti } = collegamentiApertiDelRame(circuitJson, rame);
   if (collegamenti.length === 0) return out;
 
+  /** net by net, the pieces of pour that hold none of its pins: missing by themselves, outside the tree */
+  const soloColata = new Map<string, CollegamentoAperto[]>();
+  for (const c of collegamenti) {
+    if (c.da.porta) continue;
+    const lista = soloColata.get(c.rete);
+    if (lista) lista.push(c);
+    else soloColata.set(c.rete, [c]);
+  }
+
   /** net by net, the tree its missing stretches make over its islands */
   type Ramo = { verso: number; tratto: CollegamentoAperto };
   const alberi = new Map<string, Map<number, Ramo[]>>();
   for (const tratto of collegamenti) {
+    if (!tratto.da.porta) continue;
     let albero = alberi.get(tratto.rete);
     if (!albero) alberi.set(tratto.rete, (albero = new Map()));
     const a = rame.diPorta(tratto.da.porta);
@@ -226,10 +241,22 @@ export function unroutedGroups(circuitJson: CircuitElement[]): Map<string, Grupp
   for (const [key, porte] of gruppi) {
     let albero: Map<number, Ramo[]> | undefined;
     const isole = new Set<number>();
+    /** the pieces of pour of its net, when no group before took them */
+    let pezzi: CollegamentoAperto[] = [];
     for (const porta of porte.keys()) {
-      albero ??= alberi.get(rame.reti.diPorta.get(porta) ?? "");
+      const rete = rame.reti.diPorta.get(porta) ?? "";
+      albero ??= alberi.get(rete);
       const isola = rame.diPorta(porta);
       if (albero?.has(isola)) isole.add(isola);
+      const suoi = soloColata.get(rete);
+      if (suoi) {
+        pezzi = pezzi.concat(suoi);
+        soloColata.delete(rete);
+      }
+    }
+    if (pezzi.length > 0 && (!albero || isole.size < 2)) {
+      out.set(key, { nome: descriviColataIsolata(pezzi[0]), tratti: pezzi });
+      continue;
     }
     // all its pins on one island: whatever else the net misses is not its own
     if (!albero || isole.size < 2) continue;
@@ -251,11 +278,15 @@ export function unroutedGroups(circuitJson: CircuitElement[]): Map<string, Grupp
         suoi.add(ramo.tratto);
       }
     }
-    const tratti = collegamenti.filter((c) => suoi.has(c));
+    const tratti = [...collegamenti.filter((c) => suoi.has(c)), ...pezzi];
     if (tratti.length === 0) continue;
     const dichiarata =
       porte.get(tratti[0].da.porta) ?? porte.get(tratti[0].a.porta) ?? porte.values().next().value;
     out.set(key, { nome: dichiarata ? nomeDellaTraccia(dichiarata) : key, tratti });
+  }
+  // the pieces of pour of a net no group is on
+  for (const [rete, pezzi] of soloColata) {
+    out.set(`colata:${rete}`, { nome: descriviColataIsolata(pezzi[0]), tratti: pezzi });
   }
   return out;
 }

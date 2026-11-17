@@ -8,7 +8,7 @@ import { MAX_POUR_CLEARANCE_MM } from "./design-rules";
 import { pianiSopraLeVie } from "./drc";
 import { ENGINE_VIE_PASSANTI } from "./engine-version";
 import { parseLength } from "./pcb-route-model";
-import { DISTANZA_PROPRIA, distanzaPropria, planeServedPorts, readPours } from "./pours";
+import { DISTANZA_PROPRIA, FLOTTANTE, distanzaPropria, planeServedPorts, readPours } from "./pours";
 import { getManifoldModuleSync } from "@tscircuit/manifold-2d";
 import { capsula, cerchio, poligonoCresciuto, rettangoloArrotondato, type Punto } from "./pour-geometry";
 import { abbracciaRamePropio, allargaAnello, formaPulita, ritagliaAlContorno, senzaColliStretti, type RamePropio } from "./pour-necks";
@@ -671,6 +671,8 @@ interface CopperpourScritta {
   senzaContorno: boolean;
   /** the `clearance` exactly as written, when it is written */
   clearance?: string;
+  /** it says `flottante`: left floating on purpose (see FLOTTANTE in pours.ts) */
+  flottante: boolean;
 }
 
 /**
@@ -759,7 +761,10 @@ function copperpourScritte(testo: string): CopperpourScritta[] {
     const c = /\bclearance\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*([^}]*?)\s*\})/.exec(attr);
     const clearance = c ? (c[1] ?? c[2] ?? c[3]) : undefined;
     const senzaContorno = !/\boutline\s*=/.test(attr);
-    out.push({ layer, net, outline, senzaContorno, ...(clearance !== undefined ? { clearance } : {}) });
+    // flottante, flottante={true}, flottante="true"; flottante={false} says the opposite
+    const f = /(?:^|\s)flottante(?:\s*=\s*(?:\{\s*(true|false)\s*\}|"(true|false)"|'(true|false)'))?(?=\s|$)/.exec(attr);
+    const flottante = f !== null && (f[1] ?? f[2] ?? f[3] ?? "true") === "true";
+    out.push({ layer, net, outline, senzaContorno, flottante, ...(clearance !== undefined ? { clearance } : {}) });
   }
   return out;
 }
@@ -791,6 +796,8 @@ export interface DistanzaDichiarata {
   outline: Array<{ x: number; y: number }> | null;
   /** the clearance it keeps from the other nets, within the limits; null when it declares none */
   mm: number | null;
+  /** it is left floating on purpose (`flottante`, see FLOTTANTE in pours.ts) */
+  flottante: boolean;
 }
 
 /**
@@ -842,7 +849,7 @@ export function distanzeDichiarate(
           mm = letta;
         }
       }
-      dichiarate.push({ file, layer: c.layer, net: c.net, outline: c.outline, mm });
+      dichiarate.push({ file, layer: c.layer, net: c.net, outline: c.outline, mm, flottante: c.flottante });
     }
   }
   const senzaContorno = new Map<string, Set<number | null>>();
@@ -864,28 +871,22 @@ export function distanzeDichiarate(
 }
 
 /**
- * THE DECLARED CLEARANCE, WRITTEN ON THE POURS IT BELONGS TO (see
- * DISTANZA_PROPRIA in pours.ts, and distanzeDichiarate for what is declared).
+ * WHICH `<copperpour>` OF THE FILES A POUR ELEMENT COMES FROM.
  *
  * tscircuit gives back no trace of which `<copperpour>` an element came from,
  * so it is told by geometry, as conContorniDichiarati does: a piece of face and
  * net that lies inside a declared literal outline belongs to it, the smallest
- * one when outlines nest. A pour with no literal outline (a whole plane, or an
- * outline built in code) gets the pieces of its face and net that no outline
- * claimed. A pour that declares nothing claims its pieces all the same, so a
- * hand strip inside the board keeps the project's rule even when the plane of
- * its net on that face asks for more.
+ * one when outlines nest. A piece no literal outline claimed belongs to the
+ * pours of its face and net with no literal outline (a whole plane, or an
+ * outline built in code), all of them: they cannot be told apart. Neither: it
+ * comes from no declaration this can read.
  *
- * Nothing declared and nothing already written: the same array back, element
- * for element, so a board that never declared a distance pours as it always
- * did. On a saved board (recheck) the values are written again from today's
- * files, and one no longer declared is taken away.
+ * One matching for everything a `<copperpour>` declares about itself, its
+ * clearance (conDistanzeDichiarate) and whether it floats (conColateFlottanti).
  */
-export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoMm: number): El[] {
-  const { dichiarate } = distanzeDichiarate(files, minimoMm);
-  const giaScritte = circuitJson.some((el) => el.type === "pcb_copper_pour" && DISTANZA_PROPRIA in el);
-  if (!giaScritte && !dichiarate.some((d) => d.mm !== null)) return circuitJson;
+type Provenienza = { contorno: DistanzaDichiarata } | { senzaContorno: DistanzaDichiarata[] } | null;
 
+function provenienzaDelleColate(circuitJson: El[], dichiarate: DistanzaDichiarata[]): (el: El) => Provenienza {
   const reteDi = new Map<string, string>();
   for (const el of circuitJson) {
     if (el.type === "source_net") reteDi.set(String(el.name ?? ""), String(el.source_net_id ?? ""));
@@ -906,24 +907,23 @@ export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoM
     .map((d) => ({ d, netId: reteDi.get(d.net), area: area(d.outline), box: scatola(d.outline) }))
     .filter((c) => c.netId !== undefined)
     .sort((a, b) => a.area - b.area);
-  /* face and net -> the distance of the pours with no literal outline there, if they agree on one */
-  const senzaContorno = new Map<string, number | null | "ambigua">();
+  /* face and net -> the pours with no literal outline there */
+  const senzaContorno = new Map<string, DistanzaDichiarata[]>();
   for (const d of dichiarate) {
     if (d.outline) continue;
     const netId = reteDi.get(d.net);
     if (netId === undefined) continue;
     const k = `${d.layer}|${netId}`;
-    const prima = senzaContorno.get(k);
-    senzaContorno.set(k, prima === undefined || prima === d.mm ? d.mm : "ambigua");
+    const lista = senzaContorno.get(k);
+    if (lista) lista.push(d);
+    else senzaContorno.set(k, [d]);
   }
 
-  return circuitJson.map((el) => {
-    if (el.type !== "pcb_copper_pour") return el;
+  return (el) => {
     const layer = String(el.layer ?? "");
     const net = String(el.source_net_id ?? "");
     const anello = (el.brep_shape as { outer_ring?: Anello } | undefined)?.outer_ring?.vertices ??
       (el.points as Array<{ x: number; y: number }> | undefined) ?? [];
-    let mm: number | null = null;
     const b = anello.length >= 3 ? scatola(anello) : null;
     const suo = b
       ? conContorno.find(
@@ -937,11 +937,39 @@ export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoM
             anello.every((v) => dentro(v.x, v.y, c.d.outline) || dalBordo(v.x, v.y, c.d.outline) < 0.01),
         )
       : undefined;
-    if (suo) mm = suo.d.mm;
-    else {
-      const s = senzaContorno.get(`${layer}|${net}`);
-      mm = typeof s === "number" ? s : null;
-    }
+    if (suo) return { contorno: suo.d };
+    const senza = senzaContorno.get(`${layer}|${net}`);
+    return senza ? { senzaContorno: senza } : null;
+  };
+}
+
+/**
+ * THE DECLARED CLEARANCE, WRITTEN ON THE POURS IT BELONGS TO (see
+ * DISTANZA_PROPRIA in pours.ts, and distanzeDichiarate for what is declared).
+ *
+ * A piece takes the clearance of the `<copperpour>` it comes from
+ * (provenienzaDelleColate); one that only the pours with no literal outline
+ * claim takes theirs when they agree on one. A pour that declares nothing
+ * claims its pieces all the same, so a hand strip inside the board keeps the
+ * project's rule even when the plane of its net on that face asks for more.
+ *
+ * Nothing declared and nothing already written: the same array back, element
+ * for element, so a board that never declared a distance pours as it always
+ * did. On a saved board (recheck) the values are written again from today's
+ * files, and one no longer declared is taken away.
+ */
+export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoMm: number): El[] {
+  const { dichiarate } = distanzeDichiarate(files, minimoMm);
+  const giaScritte = circuitJson.some((el) => el.type === "pcb_copper_pour" && DISTANZA_PROPRIA in el);
+  if (!giaScritte && !dichiarate.some((d) => d.mm !== null)) return circuitJson;
+  const provenienza = provenienzaDelleColate(circuitJson, dichiarate);
+
+  return circuitJson.map((el) => {
+    if (el.type !== "pcb_copper_pour") return el;
+    const p = provenienza(el);
+    let mm: number | null = null;
+    if (p && "contorno" in p) mm = p.contorno.mm;
+    else if (p && p.senzaContorno.every((d) => d.mm === p.senzaContorno[0].mm)) mm = p.senzaContorno[0].mm;
     if (mm === null) {
       if (!(DISTANZA_PROPRIA in el)) return el;
       const senza = { ...el };
@@ -949,6 +977,38 @@ export function conDistanzeDichiarate(circuitJson: El[], files: unknown, minimoM
       return senza;
     }
     return el[DISTANZA_PROPRIA] === mm ? el : { ...el, [DISTANZA_PROPRIA]: mm };
+  });
+}
+
+/**
+ * THE POURS LEFT FLOATING ON PURPOSE, marked on their elements (see FLOTTANTE
+ * in pours.ts): every piece of a `<copperpour flottante>`, matched to its
+ * declaration as the clearance is (provenienzaDelleColate). A piece that only
+ * the pours with no literal outline of its face and net claim floats when all
+ * of them say so: one of them that does not is enough to want it joined.
+ *
+ * Nothing declared floating and nothing already marked: the same array back.
+ * On a saved board (recheck) the marks are written again from today's files,
+ * and one no longer declared is taken away.
+ */
+export function conColateFlottanti(circuitJson: El[], files: unknown): El[] {
+  // the distances do not matter here: any minimum reads the same declarations
+  const { dichiarate } = distanzeDichiarate(files, 0);
+  const giaScritte = circuitJson.some((el) => el.type === "pcb_copper_pour" && FLOTTANTE in el);
+  if (!giaScritte && !dichiarate.some((d) => d.flottante)) return circuitJson;
+  const provenienza = provenienzaDelleColate(circuitJson, dichiarate);
+
+  return circuitJson.map((el) => {
+    if (el.type !== "pcb_copper_pour") return el;
+    const p = provenienza(el);
+    const flottante = p !== null && ("contorno" in p ? p.contorno.flottante : p.senzaContorno.every((d) => d.flottante));
+    if (!flottante) {
+      if (!(FLOTTANTE in el)) return el;
+      const senza = { ...el };
+      delete senza[FLOTTANTE];
+      return senza;
+    }
+    return el[FLOTTANTE] === true ? el : { ...el, [FLOTTANTE]: true };
   });
 }
 

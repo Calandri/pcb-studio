@@ -56,6 +56,11 @@ const REGOLE = JSON.stringify({
   rules: { minTraceWidthMm: 0.127, minClearanceMm: 0.152, minViaHoleMm: 0.2, minViaDiameterMm: 0.5, pourClearanceMm: 0.2, autoPlaneVias: false, autoroute: false },
 });
 
+/*
+ * The ground pours of the layers below the top are there for the traces and the
+ * vias of every layer, and no via of GND reaches them: they float, and say so
+ * (`flottante`, engine 17), or each would be an open connection of GND.
+ */
 const main = (n: number, opzioni: { piste?: boolean } = {}) => {
   const strati = PILA[n];
   const parti = strati
@@ -75,7 +80,7 @@ const main = (n: number, opzioni: { piste?: boolean } = {}) => {
   return `export default () => (
   <board width="30mm" height="${n * PASSO + 8}mm" layers={${n}} thickness="1.6mm" pcbStyle={{ viaHoleDiameter: 0.2, viaPadDiameter: 0.5 }}>
     <net name="GND" />
-    ${strati.map((s) => `<copperpour layer="${s}" connectsTo="net.GND" />`).join("\n    ")}
+    ${strati.map((s) => `<copperpour layer="${s}" connectsTo="net.GND"${s === "top" ? "" : " flottante"} />`).join("\n    ")}
     ${parti}
     ${piste}
     ${strati.map((_, i) => `<trace from=".R${i + 1} > .pin1" to="net.GND" />`).join("\n    ")}

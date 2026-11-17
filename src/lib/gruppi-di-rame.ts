@@ -34,7 +34,7 @@ import {
   rameDelPad,
   type FormaRame,
 } from "./drc";
-import { insidePour, readPours, type PourShape } from "./pours";
+import { colataFlottante, insidePour, readPours, type PourShape } from "./pours";
 
 interface El {
   type: string;
@@ -346,6 +346,8 @@ interface Colata {
   el: El;
   forma: PourShape;
   rete: string | null;
+  /** its `<copperpour>` floats on purpose (see FLOTTANTE in pours.ts) */
+  flottante: boolean;
 }
 
 interface Unioni {
@@ -728,7 +730,14 @@ function unisciIlResto(circuitJson: El[], reti: RetiDelCircuito, u: Unioni, grig
     if (el.type !== "pcb_copper_pour") continue;
     const forma = readPours([el])[0];
     if (!forma) continue;
-    colate.push({ nodo: isole.nuovo(), id: String(el.pcb_copper_pour_id ?? ""), el, forma, rete: reti.diColata(el) });
+    colate.push({
+      nodo: isole.nuovo(),
+      id: String(el.pcb_copper_pour_id ?? ""),
+      el,
+      forma,
+      rete: reti.diColata(el),
+      flottante: colataFlottante(el),
+    });
   }
   if (colate.length === 0) return;
 
@@ -902,7 +911,14 @@ export interface ColataDiRame {
   /** pcb_copper_pour_id */
   id: string;
   strato: string;
+  /** the net it declares, else the one of the copper it touches */
   rete: string | null;
+  /** the net its element declares, null when it declares none */
+  reteDichiarata: string | null;
+  /** its `<copperpour>` floats on purpose (see FLOTTANTE in pours.ts) */
+  flottante: boolean;
+  /** its copper: outline and holes, on its layer */
+  forma: PourShape;
   gruppo: number;
 }
 
@@ -1042,7 +1058,15 @@ export function gruppiDiRame(circuitJson: unknown[]): GruppiDiRame {
   const perColata = new Map<string, number>();
   for (const c of u.colate) {
     const g = gruppoDi(c.nodo, c.rete);
-    g.colate.push({ id: c.id, strato: c.forma.layer, rete: c.rete, gruppo: g.indice });
+    g.colate.push({
+      id: c.id,
+      strato: c.forma.layer,
+      rete: c.rete,
+      reteDichiarata: c.rete,
+      flottante: c.flottante,
+      forma: c.forma,
+      gruppo: g.indice,
+    });
     if (c.id) perColata.set(c.id, g.indice);
   }
 

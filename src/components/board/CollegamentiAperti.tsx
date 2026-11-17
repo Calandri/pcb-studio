@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ViewFlags } from "../ViewPresets";
 import { apertiDellaScheda, rameDellaScheda, type CollegamentiAperti, type CollegamentoAperto } from "@/lib/open-connections";
+import type { PourShape } from "@/lib/pours";
 
 /**
  * THE OPEN CONNECTIONS, ON THE BOARD.
@@ -25,9 +26,24 @@ import { apertiDellaScheda, rameDellaScheda, type CollegamentiAperti, type Colle
  * the very thing that is missing. The END says the face: full when its pad is
  * on the face being looked at (or goes through the board), hollow when it is
  * on another one.
+ *
+ * A PIECE OF POUR CUT OFF FROM ITS NET (open-connections.ts, `colata`) is
+ * drawn as itself: its copper filled in the same colour, and a red ring on the
+ * point of it the list names, the ring of an error of the checks. "Pour non
+ * collegati [...] non si vede bene da PCB STUDIO" (Niccolo', 2026-11-17).
  */
 export const COLORE_APERTO = "#FF4FE0";
 const BORDO_SCURO = "#06100D";
+/** the ring of an error of the checks (BoardCanvas, markers) */
+const ROSSO_ERRORE = "#FF6B5A";
+
+/** the outline and the holes of some pours as one SVG path, holes left empty by the even-odd rule */
+function percorsoDelleColate(forme: PourShape[]): string {
+  return forme
+    .flatMap((f) => [f.outer, ...f.holes])
+    .map((anello) => `M${anello.map((p) => `${p.x} ${p.y}`).join("L")}Z`)
+    .join("");
+}
 
 /** the open connections are on screen: always in the views that show them, elsewhere when the person asked */
 export function apertiInVista(flags: Pick<ViewFlags, "is_showing_rats_nest">, accesi: boolean | undefined): boolean {
@@ -143,8 +159,48 @@ export function CollegamentiApertiSulVisore({
   const { collegamenti } = apertiDellaScheda(circuitJson);
   if (collegamenti.length === 0) return null;
   const raggio = mmPerPx * 4;
+  const rame = collegamenti.some((c) => c.colata) && circuitJson ? rameDellaScheda(circuitJson) : null;
   return (
     <g data-collegamenti-aperti={collegamenti.length} pointerEvents="none">
+      {/* the pieces of pour cut off, under the lines: their copper, each on its face as strongly as that face is drawn */}
+      {rame &&
+        collegamenti.map((c) => {
+          if (!c.colata) return null;
+          const ids = new Set(c.colata.colate);
+          const pezzi = (rame.gruppi[c.colata.gruppo]?.colate ?? []).filter((k) => ids.has(k.id));
+          const evidente = c.id === scelto;
+          return (
+            <g key={`colata-${c.id}`} data-colata-isolata={c.id}>
+              {c.colata.strati.map((strato) => {
+                const forme = pezzi.filter((k) => k.strato === strato).map((k) => k.forma);
+                if (forme.length === 0) return null;
+                const sulLato = forza(strato) >= 1;
+                return (
+                  <path
+                    key={strato}
+                    d={percorsoDelleColate(forme)}
+                    fillRule="evenodd"
+                    fill={COLORE_APERTO}
+                    fillOpacity={sulLato ? (evidente ? 0.42 : 0.26) : 0.1}
+                    stroke={COLORE_APERTO}
+                    strokeWidth={evidente ? 2 : 1.2}
+                    strokeDasharray={sulLato ? undefined : "3 3"}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })}
+              <circle
+                cx={c.colata.x}
+                cy={c.colata.y}
+                r={mmPerPx * 9}
+                fill="none"
+                stroke={ROSSO_ERRORE}
+                strokeWidth={mmPerPx * 1.8}
+                className="drc-marker"
+              />
+            </g>
+          );
+        })}
       {collegamenti.map((c) => {
         const evidente = c.id === scelto;
         const capi = [c.da, c.a].map((capo) => ({
@@ -216,6 +272,8 @@ export function CollegamentiApertiSulVisore({
 export function LegendaAperti({ circuitJson }: { circuitJson: unknown[] | null }) {
   const { collegamenti, nonCalcolati } = apertiDellaScheda(circuitJson);
   const n = collegamenti.length;
+  // the pieces of pour cut off that hold no pin: drawn with the red ring
+  const isolate = collegamenti.filter((c) => c.colata && !c.da.porta).length;
   if (nonCalcolati !== undefined) {
     // the board is drawn, the lines are not: said, never an empty view that reads "nothing is open"
     return (
@@ -250,6 +308,16 @@ export function LegendaAperti({ circuitJson }: { circuitJson: unknown[] | null }
             <circle cx="5" cy="5" r="3.4" fill="none" stroke={COLORE_APERTO} strokeWidth="1.5" />
           </svg>
           <span className="text-[#9DB8AC]">su un&apos;altra</span>
+          {isolate > 0 && (
+            <>
+              <svg width="10" height="10" aria-hidden>
+                <circle cx="5" cy="5" r="3.4" fill="none" stroke={ROSSO_ERRORE} strokeWidth="1.5" />
+              </svg>
+              <span className="text-[#9DB8AC]">
+                {isolate === 1 ? "colata isolata" : `${isolate} colate isolate`}
+              </span>
+            </>
+          )}
         </>
       )}
     </div>

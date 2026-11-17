@@ -73,12 +73,19 @@ export function ElencoAperti({ aperti, dichiarati }: { aperti: StatoAperti; dich
 
   const riga = (c: CollegamentoAperto, conNome: boolean) => {
     const evidente = scelto?.id === c.id;
+    // a piece of pour cut off with no pin on it: its layers, its area and where it is, then the pin it should reach
+    const colata = c.colata && !c.da.porta ? c.colata : null;
+    const misura = colata ? `${millimetri(colata.areaMm2, 2)} mm²` : `${millimetri(c.lunghezzaMm, 1)} mm`;
     return (
       <button
         key={c.id}
         type="button"
         onClick={() => scegli(c.id)}
-        title="Porta la scheda su questo collegamento e lo evidenzia"
+        title={
+          colata
+            ? "Porta la scheda su questa colata isolata e la evidenzia: va collegata alla sua rete, o dichiarata flottante"
+            : "Porta la scheda su questo collegamento e lo evidenzia"
+        }
         className="flex flex-col gap-0.5 rounded-lg border px-2.5 py-1.5 text-left transition-colors hover:border-[#5A3A55]"
         style={{
           background: evidente ? "rgba(255,79,224,0.10)" : "#0F0D10",
@@ -88,18 +95,31 @@ export function ElencoAperti({ aperti, dichiarati }: { aperti: StatoAperti; dich
         {conNome && (
           <span className="flex items-baseline gap-2">
             <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold text-[#E6D7E4]">{c.nome || "senza nome"}</span>
-            <span className="flex-none font-mono text-[10px] text-faint">{millimetri(c.lunghezzaMm, 1)} mm</span>
+            <span className="flex-none font-mono text-[10px] text-faint">{misura}</span>
           </span>
         )}
-        <span className="flex items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-[#C7B6C5]">
-            {c.da.piedino} → {c.a.piedino}
+        {colata ? (
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-[#C7B6C5]">
+              colata isolata in ({millimetri(colata.x, 2)}; {millimetri(colata.y, 2)})
+              {c.a !== c.da && c.a.porta ? ` → ${c.a.piedino}` : " · nessun piedino della rete"}
+            </span>
+            <span className="flex-none text-[10px] text-faint">
+              {colata.strati.map(nomeDelloStrato).join(" + ")}
+              {!conNome && ` · ${misura}`}
+            </span>
           </span>
-          <span className="flex-none text-[10px] text-faint">
-            {facceDelTratto(c)}
-            {!conNome && ` · ${millimetri(c.lunghezzaMm, 1)} mm`}
+        ) : (
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-[#C7B6C5]">
+              {c.da.piedino} → {c.a.piedino}
+            </span>
+            <span className="flex-none text-[10px] text-faint">
+              {facceDelTratto(c)}
+              {!conNome && ` · ${misura}`}
+            </span>
           </span>
-        </span>
+        )}
       </button>
     );
   };

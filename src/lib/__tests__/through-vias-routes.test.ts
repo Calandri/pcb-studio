@@ -76,11 +76,17 @@ import { CHECKS_ENGINE_VERSION, ENGINE_COLATE_DAI_CONTORNI, ENGINE_VIE_PASSANTI,
 import { serigrafiaInConflitto } from "@/lib/silkscreen-clearance";
 import { convertSoupToGerberCommands, stringifyGerberCommandLayers } from "circuit-json-to-gerber";
 import { filesHash } from "@/lib/project-store";
+import { FLOTTANTE } from "@/lib/pours";
 
+/*
+ * The plane of inner1 is here for the vias that cross it, and no via of GND
+ * reaches it: it floats, and says so (`flottante`, engine 17), or it would be
+ * an open connection and the export would refuse the board for that.
+ */
 const MAIN = `export default () => (
   <board width="20mm" height="12mm" layers={4} pcbStyle={{ viaHoleDiameter: 0.2, viaPadDiameter: 0.5 }}>
     <net name="GND" />
-    <copperpour layer="inner1" connectsTo="net.GND" />
+    <copperpour layer="inner1" connectsTo="net.GND" flottante />
     <resistor name="R1" resistance="1k" footprint="0402" pcbX={-6} pcbY={0} />
     <resistor name="R2" resistance="1k" footprint="0402" pcbX={6} pcbY={0} layer="bottom" />
     <trace from=".R1 > .pin1" to="net.GND" />
@@ -328,16 +334,16 @@ describe("the routes that save a board from the cache leave only through vias", 
     const dieci = [...(db.saves[0].circuitJson as El[]), ...c5];
     db.saves = [];
     db.row = riga(dieci, 10);
-    expect(CHECKS_ENGINE_VERSION).toBe(16);
+    expect(CHECKS_ENGINE_VERSION).toBe(17);
     const risposta = (await (await recheck(post({ projectId: "p" }))).json()) as Risposta & {
       summary: { courtyards?: { count: number; scontri: Array<{ a: string; b: string; faccia: string }> }; targets: { courtyardCollisions: number; allGreen: boolean } };
     };
-    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 16, currentEngineVersion: 16, previousEngineVersion: 10 });
+    expect(risposta).toMatchObject({ ok: true, saved: true, engineVersion: 17, currentEngineVersion: 17, previousEngineVersion: 10 });
     expect(risposta.colateDaRifare).toBeUndefined();
     expect(risposta.pianiRicolati).toBeUndefined();
     expect(risposta.nonCertificata).toBeUndefined();
     const [s] = db.saves;
-    expect(s.engine).toBe(16);
+    expect(s.engine).toBe(17);
     // the copper and the pours as they were
     const rame = (cj: unknown[]) => (cj as El[]).filter((e) => ["pcb_copper_pour", "pcb_trace", "pcb_via", "pcb_smtpad"].includes(e.type));
     expect(rame(s.circuitJson)).toEqual(rame(dieci));
@@ -568,8 +574,9 @@ describe("the routes that save a board from the cache leave only through vias", 
     const altra = { type: "source_net", source_net_id: "n_altra", name: "ALTRA" };
     const quadro = (x0: number, y0: number, x1: number, y1: number) => [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
     // a ground plane on top with a hole, and an island of another net in the hole, written island first
-    const isola = { type: "pcb_copper_pour", pcb_copper_pour_id: "isola", source_net_id: altra.source_net_id, layer: "top", shape: "brep", brep_shape: { outer_ring: { vertices: quadro(3.5, 3.5, 4.5, 4) }, inner_rings: [] } };
-    const piano = { type: "pcb_copper_pour", pcb_copper_pour_id: "piano", source_net_id: gnd.source_net_id, layer: "top", shape: "brep", brep_shape: { outer_ring: { vertices: quadro(0, 2, 8, 5.5) }, inner_rings: [{ vertices: quadro(3, 3, 5, 4.5) }] } };
+    // (neither reaches a pin: they float on purpose, or the export would refuse them as open connections)
+    const isola = { type: "pcb_copper_pour", pcb_copper_pour_id: "isola", source_net_id: altra.source_net_id, layer: "top", shape: "brep", brep_shape: { outer_ring: { vertices: quadro(3.5, 3.5, 4.5, 4) }, inner_rings: [] }, [FLOTTANTE]: true };
+    const piano = { type: "pcb_copper_pour", pcb_copper_pour_id: "piano", source_net_id: gnd.source_net_id, layer: "top", shape: "brep", brep_shape: { outer_ring: { vertices: quadro(0, 2, 8, 5.5) }, inner_rings: [{ vertices: quadro(3, 3, 5, 4.5) }] }, [FLOTTANTE]: true };
     const salvataCosi = [...buona.circuitJson, altra, isola, piano];
     // in the order it was saved in, the converter erases the island
     const comeSalvata = stringifyGerberCommandLayers(convertSoupToGerberCommands(salvataCosi as never)) as Record<string, string>;
