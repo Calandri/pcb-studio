@@ -1,6 +1,6 @@
 import { leggiStencil, STENCIL_PATH } from "./solder-paste";
 import { contornoDelCircuito, DESCRIZIONE_MASCHERA, MASCHERA_PATH, validaFileDellaMaschera } from "./solder-mask";
-import { DESCRIZIONE_FLEX, FLEX_PATH, schedaDelFlessibile, validaFileDelFlessibile } from "./flex";
+import { DESCRIZIONE_FLEX, ESEMPIO_FLEX, FLEX_PATH, schedaDelFlessibile, validaFileDelFlessibile } from "./flex";
 import { boardBaseOf } from "./board-base";
 import { fetchDatasheetFromUrl } from "./datasheet";
 import { importComponentFromLcsc } from "./easyeda-import";
@@ -519,7 +519,21 @@ async function runTool(
         const cache = await getCompileCache(projectId).catch(() => null);
         const esito = validaFileDelFlessibile(content, schedaDelFlessibile(cache?.circuitJson as unknown[] | undefined));
         if ("errori" in esito) {
-          return { result: { error: `${FLEX_PATH} non valido: ${esito.errori.slice(0, 10).join("; ")}` } };
+          /*
+           * With the reasons, a file that IS right: whoever writes flex.json
+           * without having read its format (a client can cut the instructions
+           * of the server short) gets it from the first refusal. It is our own
+           * example, nothing of what was sent.
+           */
+          return {
+            result: {
+              error: `${FLEX_PATH} non valido: ${esito.errori.slice(0, 10).join("; ")}`,
+              esempio: ESEMPIO_FLEX,
+              nota:
+                "esempio: un flex.json completo e valido (coda a un solo strato, piega a 180 gradi, finestra, ritaglio, irrigiditore). " +
+                "Il contorno della scheda in main.tsx (<board outline>) deve gia' comprendere la coda, ed essere stato compilato, prima di scrivere il file",
+            },
+          };
         }
         await writeProjectFile(projectId, path, content);
         return {

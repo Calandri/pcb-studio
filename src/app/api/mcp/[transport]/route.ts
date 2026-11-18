@@ -8,7 +8,7 @@ import { compileProject } from "@/lib/compile";
 import { compileBudgetMs, rigaDiFine } from "@/lib/compile-run";
 import { campiDelleRegole, campiDelloStackup } from "@/lib/design-rules";
 import { DESCRIZIONE_MASCHERA } from "@/lib/solder-mask";
-import { DESCRIZIONE_FLEX } from "@/lib/flex";
+import { DESCRIZIONE_FLEX, ESEMPIO_FLEX } from "@/lib/flex";
 import { rilasciaPezzi } from "@/lib/manual-edits-store";
 import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
@@ -278,13 +278,6 @@ function buildHandler(viewer: Viewer) {
         "\"x\": 0, \"y\": 5.85, \"w\": 7.8, \"h\": 1.6, \"rot\": 0}], \"bottom\": []}, oppure \"forma\": \"poligono\" con " +
         "\"punti\": [{\"x\": ..., \"y\": ...}, ...]; una piazzola coperta per intero da una finestra non apre la sua, le altre restano " +
         "come sono; il formato completo e' in Project rules delle istruzioni; un'apertura sbagliata rifiuta tutto il file col motivo), " +
-        "flex.json (scheda rigido-flessibile: le zone flessibili del contorno della scheda, in coordinate di scheda in mm col centro in 0,0, " +
-        "con gli strati di rame che esistono nella zona, finestre senza rame e ritagli, le linee di piega fino a 180 gradi, gli irrigiditori e le aperture del coverlay: " +
-        "{\"pila\": {\"spessoreMm\": 0.1, \"coverlay\": \"giallo\"}, \"zone\": [{\"nome\": \"coda\", \"strati\": [\"inner1\"], \"punti\": [{\"x\": ..., \"y\": ...}, ...], " +
-        "\"finestre\": [{\"nome\": ..., \"punti\": [...]}], \"ritagli\": [...]}], \"pieghe\": [{\"nome\": ..., \"da\": {\"x\": ..., \"y\": ...}, \"a\": {...}, " +
-        "\"raggioMm\": 1, \"angolo\": 180, \"verso\": \"su\"}], \"irrigiditori\": [{\"lato\": \"bottom\", \"materiale\": \"poliimmide\", \"spessoreMm\": 0.2, \"punti\": [...]}], " +
-        "\"coverlay\": {\"top\": [], \"bottom\": []}}; prima si disegna tutto il contorno, coda compresa, nel <board outline> di main.tsx e si compila, poi si scrive flex.json; " +
-        "l'esempio completo e i controlli sono in Project rules delle istruzioni; una voce sbagliata o una zona fuori dal contorno rifiuta tutto il file col motivo), " +
         "e design-rules.json (le regole di progetto: " +
         "{\"preset\": \"jlcpcb_standard\" | \"oshpark\" | \"jlcpcb_enhanced\"} oppure {\"preset\": \"custom\", \"rules\": " +
         "{\"minTraceWidthMm\": 0.15, \"minClearanceMm\": 0.15, \"componentCourtyardExcessMm\": 0.2}}; campi di rules, quelli " +
@@ -293,6 +286,31 @@ function buildHandler(viewer: Viewer) {
         "{\"preset\": \"jlcpcb_standard\", \"stackup\": {\"copperMm\": [0.035, 0.035], \"dielectrics\": [{\"mm\": 1.5, \"er\": 4.5, \"kind\": \"core\", \"name\": \"FR4\"}]}}, " +
         `campi: ${campiDelloStackup()}; da' le quote al pannello Sezione della scheda e nessun controllo la legge; ` +
         "il file e' intero: scritto senza stackup toglie la pila che c'era). " +
+        /*
+         * The whole of flex.json is HERE, example included, and not only in the
+         * instructions: a client can cut the instructions of a server short
+         * (Claude Code shows the first few thousand characters, and "Project
+         * rules" is at their end), while it passes the description of a tool whole.
+         * It comes last, so what is said of the other files stays where it was.
+         */
+        "E flex.json (scheda RIGIDO-FLESSIBILE: dice quali parti del contorno della scheda sono flessibili. PRIMA si disegna tutto il pezzo, parte rigida e code " +
+        "insieme, nel <board outline> di main.tsx e si compila; POI si scrive flex.json e si ricompila. Coordinate di scheda in mm, centro 0,0, y in su, viste da sopra. " +
+        "Esempio COMPLETO, una coda di massa a un solo strato larga 37 mm e spessa 0,1 che esce dal bordo basso e si ripiega di 180 gradi sopra la scheda: " +
+        `${JSON.stringify(ESEMPIO_FLEX)}. ` +
+        "pila (obbligatoria): spessoreMm della parte flessibile, coverlay giallo/bianco/nero/nessuno, materiali facoltativi dall'alto al basso. " +
+        "zone (1-8): poligono dentro il contorno, coi vertici che stanno sul contorno scritti con le stesse coordinate del contorno, nome unico, strati = gli strati " +
+        "di rame che esistono nella zona (top, inner1, inner2, bottom...; gli altri finiscono dove la zona comincia); facoltativi finestre (aree senza rame su nessuno " +
+        "strato, il laminato resta: le zone libere delle antenne) e ritagli (fori nella coda, finiscono nel contorno del Gerber). " +
+        "pieghe: segmento da-a dentro una zona, raggioMm interno, angolo fino a 180, verso su (verso la faccia top) o giu; curva un tratto di coda lungo quanto l'arco, " +
+        "meta' per parte della linea (3,3 mm per 180 gradi a raggio 1 su 0,1 mm): la linea sta ad almeno meta' arco dalla parte rigida. " +
+        "irrigiditori: poligono, lato top/bottom, materiale poliimmide/fr4/acciaio/alluminio, spessoreMm, fori facoltativi. coverlay: aperture per faccia, dentro una zona. " +
+        "La compilazione ritaglia le colate degli strati non dichiarati fuori dalla zona e quelle degli strati dichiarati fuori da finestre e ritagli (il rame della coda si " +
+        "mette su uno strato dichiarato: un <copperpour> sulla coda che si sovrappone al piano della parte rigida), apre la maschera e toglie la serigrafia nella zona. " +
+        "Il DRC segnala, col cerchio rosso: flex_plated_hole (via o foro metallizzato nella zona, o col rame a meno di 0,5 mm dal confine rigido/flessibile o dal tratto che una " +
+        "piega curva), flex_copper_layer, flex_copper_window, flex_component (pezzo nella zona non sopra un irrigiditore della faccia opposta), flex_edge_clearance (0,25 mm dal " +
+        "taglio), flex_bend_radius (almeno 10, 12 o 24 volte lo spessore per 1, 2 o piu' strati), flex_bend_area, flex_stiffener_bend e l'avviso flex_bend_crossing; le soglie " +
+        "sono minPlatedHoleToFlexMm, minFlexEdgeClearanceMm e minBendRadiusPerThickness di design-rules.json. L'export aggiunge Mech_RigidFlex.gbr, F_Coverlay.gbr, B_Coverlay.gbr, " +
+        "F_Stiffener.gbr / B_Stiffener.gbr e RigidFlex_Stackup.txt. Una voce sbagliata, o una zona fuori dal contorno dell'ultima compilazione, rifiuta tutto il file col motivo, e la risposta ripete l'esempio). " +
         "Poi chiama compile per validare: e' la compilazione a dire se il progetto sta in piedi.",
       { projectId: z.string(), path: z.string(), content: z.string() },
       async ({ projectId, path, content }) => {

@@ -403,6 +403,9 @@ describe("write_file of flex.json", () => {
       expect(String(r.result.error)).toMatch(atteso);
       expect(String(r.result.error)).not.toContain("<script>");
       expect(stato.files["flex.json"]).toBeUndefined();
+      // with the reasons, a whole file that is right: ours, nothing of what was sent
+      expect(r.result.esempio).toEqual((await import("@/lib/flex")).ESEMPIO_FLEX);
+      expect(JSON.stringify(r.result)).not.toContain("<script>");
     }
   });
 
@@ -440,9 +443,14 @@ describe("write_file of flex.json", () => {
     const riga = corpo.split("\n").find((l) => l.startsWith("data: ")) ?? corpo;
     const strumenti = (JSON.parse(riga.replace(/^data: /, "")) as { result: { tools: Array<{ name: string; description: string }> } }).result.tools;
     const descrizione = strumenti.find((t) => t.name === "write_file")?.description ?? "";
-    expect(descrizione).toContain("flex.json (scheda rigido-flessibile: le zone flessibili del contorno della scheda");
-    expect(descrizione).toContain('"angolo": 180');
     const { DESCRIZIONE_FLEX, ESEMPIO_FLEX } = await import("@/lib/flex");
+    // the description of the tool carries the whole example by itself: a client may cut the instructions of the server short
+    expect(descrizione).toContain("E flex.json (scheda RIGIDO-FLESSIBILE: dice quali parti del contorno della scheda sono flessibili. PRIMA si disegna tutto il pezzo");
+    // after what the description always said of the other files, which stays where it was
+    expect(descrizione.indexOf("flex.json (scheda RIGIDO-FLESSIBILE")).toBeGreaterThan(descrizione.indexOf("design-rules.json (le regole di progetto"));
+    expect(descrizione.endsWith("Poi chiama compile per validare: e' la compilazione a dire se il progetto sta in piedi.")).toBe(true);
+    expect(descrizione).toContain(JSON.stringify(ESEMPIO_FLEX));
+    for (const parola of ["finestre", "ritagli", "angolo fino a 180", "flex_plated_hole", "minPlatedHoleToFlexMm", "Mech_RigidFlex.gbr"]) expect(descrizione, parola).toContain(parola);
     expect(DESCRIZIONE_FLEX).toContain(JSON.stringify(ESEMPIO_FLEX));
     expect(DESCRIZIONE_FLEX).toContain("FIRST draw the whole piece in main.tsx");
     const { TOOL_DEFINITIONS } = await import("@/lib/agent-tools");
