@@ -36,6 +36,7 @@ import { compileProject, type CompileSummary } from "@/lib/compile";
 import { DESIGN_RULES_PATH, resolveDesignRules } from "@/lib/design-rules";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
 import { FILE_COVERLAY, FILE_IRRIGIDITORI, FILE_MECCANICO, FILE_PILA, FLEX_PATH } from "@/lib/flex";
+import { ANELLO_DEL_RETINO, conRetino } from "@/lib/flex-retino";
 import { flessibileDellaScheda } from "@/lib/flex-zone";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { cuciLaMassa } from "@/lib/ground-stitching";
@@ -90,12 +91,19 @@ interface Compilata {
   circuitJson: El[];
   summary: CompileSummary;
 }
-const compilate: { rigida?: Compilata; flessibile?: Compilata } = {};
+/** the same file with the copper of the tail as a grid where it bends: lines of 0,3 every 0,8 at 45 degrees, a millimetre past the curve */
+const FLEX_A_GRIGLIA = JSON.stringify({
+  ...(JSON.parse(FLEX) as Record<string, unknown>),
+  zone: [{ nome: "coda", strati: ["inner1"], punti: CODA, finestre: [{ nome: "antenna", punti: FINESTRA }], ritagli: [{ nome: "asola", punti: RITAGLIO }], retino: { larghezzaMm: 0.3, passoMm: 0.8, angolo: 45, dove: "piega" } }],
+});
+
+const compilate: { rigida?: Compilata; flessibile?: Compilata; griglia?: Compilata } = {};
 beforeAll(async () => {
   for (const [nome, files] of [
     ["rigida", { "main.tsx": MAIN, [DESIGN_RULES_PATH]: REGOLE }],
     ["flessibile", { "main.tsx": MAIN, [DESIGN_RULES_PATH]: REGOLE, [FLEX_PATH]: FLEX }],
-  ] as Array<["rigida" | "flessibile", Record<string, string>]>) {
+    ["griglia", { "main.tsx": MAIN, [DESIGN_RULES_PATH]: REGOLE, [FLEX_PATH]: FLEX_A_GRIGLIA }],
+  ] as Array<["rigida" | "flessibile" | "griglia", Record<string, string>]>) {
     const esito = await compileProject(files);
     compilate[nome] = { files, circuitJson: esito.circuitJson as El[], summary: esito.summary };
   }
@@ -258,5 +266,83 @@ describe("the same board with flex.json: a one-layer tail folded by 180 degrees"
       expect(v.y).toBeGreaterThan(-10);
     }
     expect(e.scarti.zona_flessibile ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe("the same tail with its copper as a grid where it bends (retino)", () => {
+  type Anello = { vertices: Punto[] } & Record<string, unknown>;
+  const quadratiDi = (cj: El[]) =>
+    cj
+      .filter((e) => e.type === "pcb_copper_pour")
+      .flatMap((e) => ((e.brep_shape as { inner_rings?: Anello[] }).inner_rings ?? []).filter((a) => a[ANELLO_DEL_RETINO] === true).map((a) => ({ strato: String(e.layer), punti: a.vertices })));
+  const centro = (v: Punto[]) => ({ x: v.reduce((t, p) => t + p.x, 0) / v.length, y: v.reduce((t, p) => t + p.y, 0) / v.length });
+
+  it("the grid is cut in the pour of inner1 only, around the fold, and the zone says how many squares", () => {
+    const cj = compilate.griglia!.circuitJson;
+    const q = quadratiDi(cj);
+    expect(q.length).toBeGreaterThan(50);
+    expect(new Set(q.map((x) => x.strato))).toEqual(new Set(["inner1"]));
+    expect(flessibileDellaScheda(cj)!.zone[0].retino).toMatchObject({ aperture: q.length, dove: "piega", margineMm: 1 });
+    // the fold curves from y = -12,35 to -15,65: with a millimetre of margin the squares stand between -11,35 and -16,65
+    for (const { punti } of q) {
+      for (const p of punti) {
+        expect(p.y).toBeLessThanOrEqual(-11.35 + 1e-3);
+        expect(p.y).toBeGreaterThanOrEqual(-16.65 - 1e-3);
+        expect(Math.abs(p.x)).toBeLessThanOrEqual(5.4 + 1e-6);
+      }
+    }
+    // no copper in the middle of a square, copper on the lines around it: a tenth of a millimetre past each of its corners
+    for (const { punti } of q.slice(0, 40)) {
+      const c = centro(punti);
+      expect(rameIn(cj, "inner1", c.x, c.y)).toBe(false);
+      for (const p of punti) {
+        const l = Math.hypot(p.x - c.x, p.y - c.y);
+        expect(rameIn(cj, "inner1", p.x + ((p.x - c.x) / l) * 0.1, p.y + ((p.y - c.y) / l) * 0.1), `${p.x};${p.y}`).toBe(true);
+      }
+    }
+    // below the fold and above it the tail is solid, as it was
+    for (const [x, y] of [[0, -18], [0.5, -21], [5, -29], [0, -10.5]]) expect(rameIn(cj, "inner1", x, y), `${x};${y}`).toBe(true);
+  });
+
+  it("the copper is one piece as before: the same pours, nothing open, no island, no check of the zones", () => {
+    const piena = compilate.flessibile!;
+    const griglia = compilate.griglia!;
+    const colate = (cj: El[]) => cj.filter((e) => e.type === "pcb_copper_pour").map((e) => `${String(e.layer)}:${String(e.pcb_copper_pour_id)}`).sort();
+    expect(colate(griglia.circuitJson)).toEqual(colate(piena.circuitJson));
+    // the outline of every pour and every hole it had are the ones of the solid tail: the grid only adds its squares
+    const forme = (cj: El[]) =>
+      cj
+        .filter((e) => e.type === "pcb_copper_pour")
+        .map((e) => {
+          const f = e.brep_shape as { outer_ring: unknown; inner_rings?: Anello[] };
+          return { id: e.pcb_copper_pour_id, esterno: f.outer_ring, buchi: (f.inner_rings ?? []).filter((a) => a[ANELLO_DEL_RETINO] !== true) };
+        });
+    expect(forme(griglia.circuitJson)).toEqual(forme(piena.circuitJson));
+    expect(griglia.summary.errors).toEqual([]);
+    expect(griglia.summary.unroutedTotal ?? griglia.summary.unroutedConnections.length).toBe(piena.summary.unroutedTotal ?? piena.summary.unroutedConnections.length);
+    expect(griglia.summary.unroutedConnections).toEqual(piena.summary.unroutedConnections);
+    expect(griglia.summary.prcViolations.map((v) => v.rule)).toEqual(piena.summary.prcViolations.map((v) => v.rule));
+    expect(griglia.summary.drcViolations.map((v) => v.rule)).toEqual(piena.summary.drcViolations.map((v) => v.rule));
+    expect(griglia.summary.poursTooClose).toEqual(piena.summary.poursTooClose);
+  });
+
+  it("laid again on the board it is on, as a recheck does, it is the same board", () => {
+    const { circuitJson, files } = compilate.griglia!;
+    expect(conRetino(circuitJson, resolveDesignRules(files).rules.minTraceWidthMm)).toEqual(circuitJson);
+  });
+
+  it("the export writes it in In1_Cu, a clear region per square, and every other file is the one of the solid tail", async () => {
+    const zip = await esportata(compilate.griglia!);
+    const piena = await esportata(compilate.flessibile!);
+    expect(zip.nomi).toEqual(piena.nomi);
+    const regioni = (g: string) => (g.match(/G36\*/g) ?? []).length;
+    const quanti = quadratiDi(compilate.griglia!.circuitJson).length;
+    expect(regioni(await zip.testo("In1_Cu.gbr"))).toBe(regioni(await piena.testo("In1_Cu.gbr")) + quanti);
+    for (const nome of zip.nomi) {
+      if (nome === "In1_Cu.gbr" || nome === FILE_PILA) continue;
+      expect(senzaData(await zip.testo(nome)), nome).toBe(senzaData(await piena.testo(nome)));
+    }
+    expect(await zip.testo(FILE_PILA)).toContain("Copper: cross-hatched (grid), not solid, in the bend area and 1 mm beyond it on each side; solid elsewhere. Lines 0.3 mm wide, pitch 0.8 mm, at 45 degrees");
+    expect(await piena.testo(FILE_PILA)).not.toContain("cross-hatched");
   });
 });

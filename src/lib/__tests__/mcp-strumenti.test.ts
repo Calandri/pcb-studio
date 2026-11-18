@@ -409,6 +409,16 @@ describe("write_file of flex.json", () => {
     }
   });
 
+  it("the grid of a zone is held to the project's own minimum trace width", async () => {
+    const conRetino = (larghezzaMm: number) => ({ ...FLEX, zone: [{ ...FLEX.zone[0], retino: { larghezzaMm, passoMm: 0.8, angolo: 45, dove: "piega" } }] });
+    // a project that draws its narrowest copper at 0,2
+    stato.files[DESIGN_RULES_PATH] = JSON.stringify({ preset: "custom", rules: { minTraceWidthMm: 0.2, minClearanceMm: 0.15 } });
+    const stretta = await scrivi(conRetino(0.15));
+    expect(String(stretta.result.error)).toMatch(/^flex\.json non valido: zone\[0\]\.retino\.larghezzaMm: .* da 0\.2 a 5 \(0\.2 e' la pista minima del progetto, minTraceWidthMm\)/);
+    expect(stato.files["flex.json"]).toBeUndefined();
+    expect((await scrivi(conRetino(0.3))).result).toMatchObject({ ok: true, zones: 1, hatchedZones: 1 });
+  });
+
   it("a file too long is refused before it is read", async () => {
     const r = await scrivi(`{"zone": "${"x".repeat(200_001)}"}`);
     expect(String(r.result.error)).toMatch(/^File too large/);
@@ -451,6 +461,9 @@ describe("write_file of flex.json", () => {
     expect(descrizione.endsWith("Poi chiama compile per validare: e' la compilazione a dire se il progetto sta in piedi.")).toBe(true);
     expect(descrizione).toContain(JSON.stringify(ESEMPIO_FLEX));
     for (const parola of ["finestre", "ritagli", "angolo fino a 180", "flex_plated_hole", "minPlatedHoleToFlexMm", "Mech_RigidFlex.gbr"]) expect(descrizione, parola).toContain(parola);
+    // the grid of the copper: in the example and in the words
+    expect(JSON.stringify(ESEMPIO_FLEX)).toContain('"retino":{"larghezzaMm":0.3,"passoMm":0.8,"angolo":45,"dove":"piega"}');
+    expect(descrizione).toContain("retino, il rame della zona a GRIGLIA");
     expect(DESCRIZIONE_FLEX).toContain(JSON.stringify(ESEMPIO_FLEX));
     expect(DESCRIZIONE_FLEX).toContain("FIRST draw the whole piece in main.tsx");
     const { TOOL_DEFINITIONS } = await import("@/lib/agent-tools");

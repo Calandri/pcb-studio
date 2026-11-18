@@ -33,6 +33,7 @@ import {
   schedaDelFlessibile,
   validaFileDelFlessibile,
 } from "@/lib/flex";
+import { ANELLO_DEL_RETINO, conRetino, MAX_APERTURE_RETINO, senzaRetino } from "@/lib/flex-retino";
 import { flessibileDellaScheda, mezzaFasciaDellaPiega } from "@/lib/flex-zone";
 import { comandiConLaMaschera } from "@/lib/solder-mask";
 
@@ -180,6 +181,8 @@ describe("flex.json, checked whole when it is written", () => {
     expect(z.finestre.map((f) => f.nome)).toEqual(["antenna LTE"]);
     expect(z.ritagli.map((f) => f.nome)).toEqual(["asola vite"]);
     expect(esito.flex.pieghe[0]).toMatchObject({ angolo: 180, raggioMm: 1, verso: "su" });
+    // its ground is a grid where it bends, a millimetre beyond the curve unless the file says otherwise
+    expect(z.retino).toEqual({ larghezzaMm: 0.3, passoMm: 0.8, angolo: 45, dove: "piega", margineMm: 1 });
     expect(esito.flex.pila?.spessoreMm).toBe(0.1);
     expect(esito.flex.irrigiditori).toHaveLength(1);
     expect(esito.flex.aperture).toHaveLength(1);
@@ -842,5 +845,239 @@ describe("the Gerber of a rigid-flex board", () => {
     const senza = fileDelFlessibile(cj, file(COMPLETO), "../../etc/passwd\nX")[FILE_PILA];
     expect(senza).toContain("Stack-up: not declared in the project");
     expect(senza).toContain("Project: -\n");
+  });
+});
+
+describe("the copper of a zone as a grid (retino)", () => {
+  /** lines 0,3 wide every 0,8, straight: squares of 0,5 between them */
+  const RETINO = { larghezzaMm: 0.3, passoMm: 0.8, angolo: 0, dove: "tutta" };
+  const conRetinoNelFile = (retino: Record<string, unknown>, altro: Record<string, unknown> = {}) => ({ ...FLEX, ...altro, zone: [zona({ retino })] });
+  /** the ground of inner1 over the rigid part and down the tail, 0,3 from its cut, as the compile pours it */
+  const PIANO = colata("p_in1", "inner1", rettangolo(-5.7, -29.7, 5.7, 9.7));
+  /** the board as the compile leaves it: the file on it, then the grid laid on its pours (minimum trace width 0,15) */
+  const compilata = (els: El[], corpo: unknown, minima = 0.15) => conRetino(conFile(els, corpo), minima);
+  type AnelloDiProva = { vertices: Punto[] } & Record<string, unknown>;
+  const buchi = (cj: El[], id = "p_in1") => ((cj.find((e) => e.pcb_copper_pour_id === id)!.brep_shape as { inner_rings: AnelloDiProva[] }).inner_rings);
+  const quadrati = (cj: El[], id = "p_in1") => buchi(cj, id).filter((a) => a[ANELLO_DEL_RETINO] === true).map((a) => a.vertices);
+  const areaConSegno = (v: Punto[]) => v.reduce((t, p, i) => t + p.x * v[(i + 1) % v.length].y - v[(i + 1) % v.length].x * p.y, 0) / 2;
+  const centro = (v: Punto[]) => ({ x: v.reduce((t, p) => t + p.x, 0) / v.length, y: v.reduce((t, p) => t + p.y, 0) / v.length });
+
+  describe("in the file", () => {
+    const valida = (retino: unknown, regole?: { larghezzaMinimaMm: number; distanzaMinimaMm: number }, z: Record<string, unknown> = {}) =>
+      validaFileDelFlessibile(JSON.stringify({ ...FLEX, zone: [zona({ retino, ...z })] }), z.punti ? undefined : SCHEDA, regole);
+
+    it("a grid is read with its margin, a millimetre unless written", () => {
+      const esito = valida({ ...RETINO, dove: "piega" });
+      if ("errori" in esito) throw new Error(esito.errori.join("; "));
+      expect(esito.flex.zone[0].retino).toEqual({ larghezzaMm: 0.3, passoMm: 0.8, angolo: 0, dove: "piega", margineMm: 1 });
+      const suo = valida({ ...RETINO, margineMm: 2.5 });
+      expect("flex" in suo && suo.flex.zone[0].retino?.margineMm).toBe(2.5);
+    });
+
+    it("a wrong one refuses the file: its lines under the project's minimum trace width, no square between them, a word that is not one", () => {
+      const REGOLE = { larghezzaMinimaMm: 0.15, distanzaMinimaMm: 0.127 };
+      const casi: Array<[unknown, RegExp, typeof REGOLE | undefined]> = [
+        ["a griglia", /zone\[0\]\.retino: serve un oggetto/, undefined],
+        [{ ...RETINO, colore: "oro" }, /zone\[0\]\.retino: un campo sconosciuto \(ammessi larghezzaMm, passoMm, angolo, dove, margineMm\)/, undefined],
+        // 0,1 is a line a fab makes, and under the 0,15 this project draws its narrowest copper at
+        [{ ...RETINO, larghezzaMm: 0.1 }, /zone\[0\]\.retino\.larghezzaMm: .* da 0\.15 a 5 \(0\.15 e' la pista minima del progetto, minTraceWidthMm\)/, REGOLE],
+        [{ ...RETINO, larghezzaMm: 0.01 }, /zone\[0\]\.retino\.larghezzaMm: .* da 0\.05 a 5$/, undefined],
+        [{ ...RETINO, larghezzaMm: "0.3" }, /zone\[0\]\.retino\.larghezzaMm/, undefined],
+        [{ ...RETINO, passoMm: 0.3 }, /zone\[0\]\.retino\.passoMm: .* almeno 0\.1 piu' della larghezza delle linee/, undefined],
+        // 0,1 of square is under the 0,127 the project keeps between two pieces of copper
+        [{ ...RETINO, passoMm: 0.4 }, /zone\[0\]\.retino\.passoMm: .* almeno 0\.127 piu' della larghezza/, REGOLE],
+        [{ ...RETINO, passoMm: 50 }, /zone\[0\]\.retino\.passoMm: .* fino a 20/, undefined],
+        [{ ...RETINO, angolo: 120 }, /zone\[0\]\.retino\.angolo: .* da 0 a 90/, undefined],
+        [{ ...RETINO, dove: "bordo" }, /zone\[0\]\.retino\.dove: deve essere "piega"/, undefined],
+        [{ ...RETINO, margineMm: -1 }, /zone\[0\]\.retino\.margineMm/, undefined],
+      ];
+      for (const [retino, atteso, regole] of casi) {
+        const esito = valida(retino, regole);
+        expect("errori" in esito && esito.errori.join("; "), String(atteso)).toMatch(atteso);
+      }
+      // equal to the minimum is allowed
+      expect("flex" in valida({ ...RETINO, larghezzaMm: 0.15 }, REGOLE)).toBe(true);
+      // a grid finer than a zone can hold: 400 x 400 mm at a step of 0,8 would be 250 000 squares
+      const grande = valida(RETINO, undefined, { punti: rettangolo(-200, -200, 200, 200) });
+      expect("errori" in grande && grande.errori.join("; ")).toMatch(new RegExp(`zone\\[0\\]\\.retino\\.passoMm: troppo fitto per questa zona \\(piu' di ${MAX_APERTURE_RETINO} quadrati\\)`));
+    });
+
+    it("is put on the zone of the board, for the compile to lay", () => {
+      const [z] = conFile(scena(), conRetinoNelFile({ ...RETINO, dove: "piega" })).filter((e) => e.type === "pcb_flex_zone");
+      expect(z.hatch).toEqual({ width_mm: 0.3, pitch_mm: 0.8, angle_deg: 0, where: "piega", margin_mm: 1 });
+      expect(conFile(scena()).find((e) => e.type === "pcb_flex_zone")!.hatch).toBeUndefined();
+    });
+  });
+
+  describe("on the pours", () => {
+    it("a pour of a layer of the zone gets the squares between the lines as holes: whole in the zone, a line from every edge of the copper", () => {
+      const cj = compilata(scena(PIANO), conRetinoNelFile(RETINO));
+      const q = quadrati(cj);
+      /*
+       * Squares of 0,5 centred every 0,8 from 0,4. Across the tail the copper goes from -5,7 to 5,7 and a line of 0,3
+       * stays along each side: centres from -4,4 to 4,4, twelve columns. Along it, from a line below where the zone
+       * starts (y = -10,3) to a line above the end of the copper (-29,4): centres from -10,8 to -28,4, twenty-three rows.
+       */
+      expect(q).toHaveLength(12 * 23);
+      for (const v of q) {
+        expect(v).toHaveLength(4);
+        // clockwise, as the holes of a pour are, and 0,5 x 0,5
+        expect(areaConSegno(v)).toBeCloseTo(-0.25, 9);
+        for (const p of v) {
+          expect(Math.abs(p.x)).toBeLessThanOrEqual(5.4 + 1e-9);
+          expect(p.y).toBeLessThanOrEqual(-10.3 + 1e-9);
+          expect(p.y).toBeGreaterThanOrEqual(-29.4 - 1e-9);
+        }
+      }
+      const centri = q.map(centro);
+      expect(Math.min(...centri.map((c) => c.x))).toBeCloseTo(-4.4, 9);
+      expect(Math.max(...centri.map((c) => c.y))).toBeCloseTo(-10.8, 9);
+      expect(Math.min(...centri.map((c) => c.y))).toBeCloseTo(-28.4, 9);
+      // between two squares there is a line: no two centres nearer than the step
+      for (let i = 0; i < centri.length; i++) {
+        for (let j = i + 1; j < centri.length; j++) expect(Math.hypot(centri[i].x - centri[j].x, centri[i].y - centri[j].y)).toBeGreaterThanOrEqual(0.8 - 1e-9);
+      }
+      // and the zone says how many were cut
+      expect(flessibileDellaScheda(cj)!.zone[0].retino).toMatchObject({ aperture: 276 });
+    });
+
+    it("the copper stays one piece: the same pour, its outline untouched, lighter by the squares and nothing else", () => {
+      const prima = conFile(scena(PIANO), conRetinoNelFile(RETINO));
+      const dopo = conRetino(prima, 0.15);
+      const colate = (cj: El[]) => cj.filter((e) => e.type === "pcb_copper_pour");
+      expect(colate(dopo)).toHaveLength(1);
+      const forma = (cj: El[]) => colate(cj)[0].brep_shape as { outer_ring: { vertices: Punto[] }; inner_rings: AnelloDiProva[] };
+      expect(forma(dopo).outer_ring).toEqual(forma(prima).outer_ring);
+      expect(forma(dopo).inner_rings).toHaveLength(276);
+      // every other element of the board is the one it was, in its place
+      expect(dopo.map((e) => e.type)).toEqual(prima.map((e) => e.type));
+      // nothing of the rigid part is cut, nor of the other layers
+      const altrove = [...colata("p_top", "top", rettangolo(-9.7, -9.7, 9.7, 9.7)), ...colata("p_in2", "inner2", rettangolo(-9.7, -9.7, 9.7, 9.7))];
+      const cj = compilata(scena(PIANO, altrove), conRetinoNelFile(RETINO));
+      expect(buchi(cj, "p_top")).toEqual([]);
+      expect(buchi(cj, "p_in2")).toEqual([]);
+    });
+
+    it("on the bend only: the stretch the fold curves and the margin beyond it, solid everywhere else", () => {
+      // the fold of the scene curves from y = -12,35 to -15,65; with 0,9 of margin the grid may go from -11,45 to -16,55
+      const q = quadrati(compilata(scena(PIANO), conRetinoNelFile({ ...RETINO, dove: "piega", margineMm: 0.9 })));
+      expect(q).toHaveLength(12 * 5);
+      const ys = q.flatMap((v) => v.map((p) => p.y));
+      expect(Math.max(...ys)).toBeCloseTo(-12.15, 9);
+      expect(Math.min(...ys)).toBeCloseTo(-15.85, 9);
+      // a zone that asks it on the bend and has no bend gets none, and the checks say why
+      const senzaPiega = { pila: PILA, zone: [zona({ retino: { ...RETINO, dove: "piega" } })] };
+      const cj = compilata(scena(PIANO), senzaPiega);
+      expect(quadrati(cj)).toEqual([]);
+      expect(avvisiDelFlessibile(cj, file(senzaPiega)).map((a) => a.message).join(" ")).toContain(
+        "il retino della zona «coda» non ha tagliato nessun quadrato, il rame della zona e' pieno: e' chiesto sulla piega e la zona non ha pieghe",
+      );
+    });
+
+    it("turned by 45 degrees the squares are diamonds, on the same rules", () => {
+      const q = quadrati(compilata(scena(PIANO), conRetinoNelFile({ ...RETINO, angolo: 45 })));
+      expect(q.length).toBeGreaterThan(200);
+      for (const v of q) {
+        // the corners are written to the micron: the area to five decimals
+        expect(areaConSegno(v)).toBeCloseTo(-0.25, 5);
+        // a diamond: its corners above, below, left and right of its middle, 0,354 away
+        const c = centro(v);
+        for (const p of v) expect(Math.min(Math.abs(p.x - c.x), Math.abs(p.y - c.y))).toBeLessThan(1e-6);
+        for (const p of v) {
+          expect(Math.abs(p.x)).toBeLessThanOrEqual(5.4 + 1e-6);
+          expect(p.y).toBeGreaterThanOrEqual(-29.4 - 1e-6);
+          expect(p.y).toBeLessThanOrEqual(-10.3 + 1e-6);
+        }
+      }
+    });
+
+    it("a square is not cut where it would leave less than a line of copper: around a hole of the pour, a window, a cutout", () => {
+      // the opening of the plane around a via of another net, 0,5 of radius, right where a square would be (0,4; -20,4)
+      const ottagono = Array.from({ length: 8 }, (_, i) => ({ x: 0.4 + 0.5 * Math.cos((-i * Math.PI) / 4), y: -20.4 + 0.5 * Math.sin((-i * Math.PI) / 4) }));
+      const conBuco = colata("p_in1", "inner1", rettangolo(-5.7, -29.7, 5.7, 9.7), [ottagono]);
+      const q = quadrati(compilata(scena(conBuco), conRetinoNelFile(RETINO)));
+      // that square is not there, nor the eight around it: the four beside it would be 0,05 from the opening, the four across its corners 0,28
+      expect(q).toHaveLength(276 - 9);
+      for (const v of q) {
+        for (const p of v) expect(Math.hypot(p.x - 0.4, p.y + 20.4)).toBeGreaterThanOrEqual(0.5 * Math.cos(Math.PI / 8) + 0.3 - 1e-6);
+      }
+      // the hole the pour had is still its first, unmarked
+      expect(buchi(compilata(scena(conBuco), conRetinoNelFile(RETINO)))[0]).toEqual({ vertices: ottagono });
+    });
+
+    it("lines narrower than the project's minimum trace width are not laid, and the checks say so", () => {
+      const corpo = conRetinoNelFile(RETINO);
+      const cj = compilata(scena(PIANO), corpo, 0.4);
+      expect(quadrati(cj)).toEqual([]);
+      expect(flessibileDellaScheda(cj)!.zone[0].retino).toMatchObject({ aperture: 0, nonApplicato: "larghezza" });
+      expect(avvisiDelFlessibile(cj, file(corpo)).map((a) => a.message).join(" ")).toContain(
+        "il retino della zona «coda» ha linee da 0.3 mm, sotto la pista minima del progetto (minTraceWidthMm): non e' stato applicato",
+      );
+      // at 0,3 exactly it is laid
+      expect(quadrati(compilata(scena(PIANO), corpo, 0.3))).toHaveLength(276);
+      expect(avvisiDelFlessibile(compilata(scena(PIANO), corpo, 0.3), file(corpo))).toEqual([]);
+    });
+
+    it("laid twice it is the same grid, and it comes off whole: the recheck works on the solid planes and lays it again", () => {
+      const prima = conFile(scena(PIANO), conRetinoNelFile(RETINO));
+      const una = conRetino(prima, 0.15);
+      expect(conRetino(una, 0.15)).toEqual(una);
+      // solid again: the pour it was
+      expect(senzaRetino(una).find((e) => e.type === "pcb_copper_pour")).toEqual(prima.find((e) => e.type === "pcb_copper_pour"));
+      // the file loses its grid: at the next pass the pours are solid again
+      const senza = conRetino(conFile(una, FLEX), 0.15);
+      expect(quadrati(senza)).toEqual([]);
+      // a finer grid in the file replaces the one on the board, it is not cut over it
+      const fine = conRetino(conFile(una, conRetinoNelFile({ ...RETINO, passoMm: 0.6 })), 0.15);
+      expect(quadrati(fine).every((v) => Math.abs(areaConSegno(v) + 0.09) < 1e-9)).toBe(true);
+      expect(quadrati(fine).length).toBeGreaterThan(276);
+    });
+
+    it("a board that asks no grid is given back as it came, the same array", () => {
+      const rigida = scena(PIANO);
+      expect(conRetino(rigida, 0.15)).toBe(rigida);
+      expect(senzaRetino(rigida)).toBe(rigida);
+      const flessibile = conFile(scena(PIANO));
+      expect(conRetino(flessibile, 0.15)).toBe(flessibile);
+    });
+  });
+
+  describe("in the viewer, the Gerber and the text for the fab", () => {
+    const cj = () => compilata(scena(PIANO), conRetinoNelFile(RETINO));
+
+    it("the viewer draws the pour with its squares, as it draws every hole of a pour", () => {
+      const [p] = buildScene(cj())!.pours;
+      // one closed path for the outline and one per square
+      expect((p.path.match(/M /g) ?? []).length).toBe(1 + 276);
+      expect(buildScene(cj())!.flessibile!.zone[0].retino).toMatchObject({ dove: "tutta", larghezzaMm: 0.3, passoMm: 0.8 });
+    });
+
+    it("the Gerber of the layer has the grid: one clear region per square, and no other layer changes", () => {
+      const converti = (els: El[]) => convertSoupToGerberCommands(els as never) as unknown as Record<string, unknown>;
+      const strati = (els: El[]) => stringifyGerberCommandLayers(comandiConIlFlessibile(els, (scheda) => comandiConLaMaschera(scheda, converti)) as never) as Record<string, string>;
+      const senzaData = (g: string) => g.replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "<data>");
+      const piena = strati(conFile(scena(PIANO), conRetinoNelFile(RETINO)));
+      const griglia = strati(cj());
+      const regioni = (g: string) => (g.match(/G36\*/g) ?? []).length;
+      expect(regioni(piena.In1_Cu)).toBe(1);
+      expect(regioni(griglia.In1_Cu)).toBe(1 + 276);
+      expect(griglia.In1_Cu).toContain("%LPC*%");
+      // the lowest square of the first column: its corner at (-4,65; -28,65)
+      expect(griglia.In1_Cu).toMatch(/X-0*4650000Y-0*28650000D0[12]\*/);
+      for (const strato of Object.keys(piena)) {
+        if (strato !== "In1_Cu") expect(senzaData(griglia[strato]), strato).toBe(senzaData(piena[strato]));
+      }
+    });
+
+    it("the text says the copper of the zone is a grid, with its measures", () => {
+      const t = fileDelFlessibile(cj(), file(conRetinoNelFile(RETINO)), "p")[FILE_PILA];
+      expect(t).toContain("Copper: cross-hatched (grid), not solid, in the whole zone. Lines 0.3 mm wide, pitch 0.8 mm, at 0 degrees (276 openings). It is drawn in the copper layers as it is to be made.");
+      const sullaPiega = { ...RETINO, dove: "piega" };
+      expect(fileDelFlessibile(compilata(scena(PIANO), conRetinoNelFile(sullaPiega)), file(conRetinoNelFile(sullaPiega)), "p")[FILE_PILA]).toContain(
+        "Copper: cross-hatched (grid), not solid, in the bend area and 1 mm beyond it on each side; solid elsewhere.",
+      );
+      // a zone with solid copper says nothing of it
+      expect(fileDelFlessibile(conFile(scena(PIANO)), file(FLEX), "p")[FILE_PILA]).not.toContain("cross-hatched");
+    });
   });
 });

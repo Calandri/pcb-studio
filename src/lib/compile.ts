@@ -151,6 +151,7 @@ import {
 import { leggiStencil, padSenzaPasta, pastaDaiPad, STENCIL_PATH } from "./solder-paste";
 import { avvisiDellaMaschera, conMascheraAMano } from "./solder-mask";
 import { avvisiDelFlessibile, conFlessibile, ostacoliDelFlessibile } from "./flex";
+import { conRetino } from "./flex-retino";
 
 export interface UnroutedDetail {
   /** e.g. ".R1 > .pin1 to net.VCC" */
@@ -825,17 +826,21 @@ export async function compileProject(
       ostacoliInPiu: ostacoliDelFlessibile(conMano.circuitJson, projectFsMap, projectRules.rules.minBoardEdgeClearanceMm, bordoDelFlessibile(projectRules.rules)),
     }).catch(() => null);
     // the stencil of each pad is the pad: see solder-paste.ts; the mask windows drawn by hand: see solder-mask.ts;
-    // and the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts
-    const circuitJson = conFlessibile(
-      conMascheraAMano(
-        pastaDaiPad(
-          (ricolate?.circuitJson ?? conDistanzeProprie(conMano.circuitJson as never)) as CircuitElement[],
-          projectRules.rules.pasteExpansionMm ?? 0,
-          { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+    // the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts;
+    // and the copper of a zone that asks it as a grid, cut into the pours just poured: see flex-retino.ts
+    const circuitJson = conRetino(
+      conFlessibile(
+        conMascheraAMano(
+          pastaDaiPad(
+            (ricolate?.circuitJson ?? conDistanzeProprie(conMano.circuitJson as never)) as CircuitElement[],
+            projectRules.rules.pasteExpansionMm ?? 0,
+            { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+          ),
+          projectFsMap,
         ),
         projectFsMap,
       ),
-      projectFsMap,
+      projectRules.rules.minTraceWidthMm,
     );
     const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
     return { circuitJson, rapportoColate };
@@ -1505,17 +1510,21 @@ export async function compileProject(
     ostacoliInPiu: ostacoliDelFlessibile(manual.circuitJson, projectFsMap, projectRules.rules.minBoardEdgeClearanceMm, bordoDelFlessibile(projectRules.rules)),
   }).catch(() => null);
   // the stencil of each pad is the pad: see solder-paste.ts; the mask windows drawn by hand: see solder-mask.ts;
-  // and the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts
-  const circuitJson = conFlessibile(
-    conMascheraAMano(
-      pastaDaiPad(
-        (ricolate?.circuitJson ?? conDistanzeProprie(manual.circuitJson as never)) as CircuitElement[],
-        projectRules.rules.pasteExpansionMm ?? 0,
-        { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+  // the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts;
+  // and the copper of a zone that asks it as a grid, cut into the pours just poured: see flex-retino.ts
+  const circuitJson = conRetino(
+    conFlessibile(
+      conMascheraAMano(
+        pastaDaiPad(
+          (ricolate?.circuitJson ?? conDistanzeProprie(manual.circuitJson as never)) as CircuitElement[],
+          projectRules.rules.pasteExpansionMm ?? 0,
+          { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+        ),
+        projectFsMap,
       ),
       projectFsMap,
     ),
-    projectFsMap,
+    projectRules.rules.minTraceWidthMm,
   );
   const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise

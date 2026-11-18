@@ -56,6 +56,30 @@ export function eDelFlessibile(el: { type?: unknown; pcb_cutout_id?: unknown } |
   return el.type === "pcb_cutout" && typeof el.pcb_cutout_id === "string" && el.pcb_cutout_id.startsWith(RITAGLIO_DEL_FLESSIBILE);
 }
 
+/**
+ * THE GRID a zone asks for its copper (`retino` in flex.json): on the flexible
+ * part PCB Basic wants the ground hatched, not solid ("Use grid ground layer to
+ * enhance flexibility and reduce the risk of copper cracking",
+ * https://www.pcbasic.com/blog/flex_pcb_design.html). The pours of the layers
+ * of the zone are cut into a grid of lines by the compile (flex-retino.ts).
+ */
+export interface Retino {
+  /** the width of a line of the grid (mm) */
+  larghezzaMm: number;
+  /** from the middle of a line to the middle of the next (mm) */
+  passoMm: number;
+  /** degrees the grid is turned by: 45 is the usual one */
+  angolo: number;
+  /** where the copper is a grid: the stretch of tail a bend curves, with a margin, or the whole zone */
+  dove: "piega" | "tutta";
+  /** with "piega": how far past the stretch a bend curves the grid goes on, on each side (mm) */
+  margineMm: number;
+  /** how many openings the compile cut in the pours for it; absent on a board the grid was not laid on yet */
+  aperture?: number;
+  /** why the compile did not lay it, when it did not */
+  nonApplicato?: string;
+}
+
 export interface ZonaFlessibile {
   id: string;
   nome: string;
@@ -74,6 +98,8 @@ export interface ZonaFlessibile {
   finestre: Array<{ nome: string; punti: Punto[] }>;
   /** the cutouts: holes cut through the tail */
   ritagli: Array<{ nome: string; punti: Punto[] }>;
+  /** the grid its copper is cut into, when the zone asks one */
+  retino: Retino | null;
 }
 
 export interface Piega {
@@ -297,6 +323,24 @@ export function latiDellaZona(zona: Punto[], contorno: Punto[]): { bordi: Lato[]
   return { bordi, confini };
 }
 
+/** the grid a zone element carries, when it carries one that can be laid */
+function retinoDi(v: unknown): Retino | null {
+  const h = v as Record<string, unknown> | null | undefined;
+  const larghezza = num(h?.width_mm);
+  const passo = num(h?.pitch_mm);
+  if (!h || larghezza === null || passo === null || larghezza <= 0 || passo <= larghezza) return null;
+  const aperture = num(h.openings);
+  return {
+    larghezzaMm: larghezza,
+    passoMm: passo,
+    angolo: num(h.angle_deg) ?? 45,
+    dove: h.where === "tutta" ? "tutta" : "piega",
+    margineMm: Math.max(0, num(h.margin_mm) ?? 0),
+    ...(aperture !== null ? { aperture } : {}),
+    ...(typeof h.skipped === "string" ? { nonApplicato: h.skipped } : {}),
+  };
+}
+
 /**
  * What flex.json put on a board, read back: null for a board with no flexible
  * zone, which is every board that is not a rigid-flex one. The sides of each
@@ -338,6 +382,7 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
       confini: lati.confini,
       finestre: conNome(el.windows, "finestra"),
       ritagli,
+      retino: retinoDi(el.hatch),
     });
   }
   if (flex.zone.length === 0) return null;

@@ -2,6 +2,7 @@ import { requireProjectAccess } from "@/lib/acl";
 import { conIlPerche, riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { bordoDelFlessibile, resolveDesignRules } from "@/lib/design-rules";
 import { conFlessibile, ostacoliDelFlessibile } from "@/lib/flex";
+import { conRetino, senzaRetino } from "@/lib/flex-retino";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { conMascheraAMano } from "@/lib/solder-mask";
 import { colateSenzaColli } from "@/lib/pour-necks";
@@ -94,7 +95,9 @@ export async function POST(req: Request): Promise<Response> {
     const ricolata = await ricolaSeLeVieEranoParziali({
       circuitJson: conColateFlottanti(
         conDistanzeDichiarate(
-          vieSemprePassanti(cache.circuitJson as Array<Record<string, unknown> & { type: string }>),
+          // a rigid-flex board whose tail has its copper as a grid: the planes are worked on solid (the necks below would
+          // take a line of the grid for one), and the grid is laid again at the end (see flex-retino.ts)
+          vieSemprePassanti(senzaRetino(cache.circuitJson as Array<Record<string, unknown> & { type: string }>)),
           progetto,
           regole.minClearanceMm,
         ),
@@ -112,20 +115,24 @@ export async function POST(req: Request): Promise<Response> {
       regole.minTraceWidthMm,
     );
     // and the mask windows drawn by hand, as the files have them now: see solder-mask.ts;
-    // and the flexible zones of a rigid-flex board, from today's flex.json: see flex.ts
-    const circuitJson = conFlessibile(
-      conMascheraAMano(
-        pastaDaiPad(
-          senzaColli,
-          resolveDesignRules(progetto).rules.pasteExpansionMm ?? 0,
-          {
-            stencil: leggiStencil(progetto).stencil,
-            pasteOnPlatedHoles: resolveDesignRules(progetto).rules.pasteOnPlatedHoles,
-          },
+    // the flexible zones of a rigid-flex board, from today's flex.json: see flex.ts;
+    // and the grid of the copper of a zone that asks one, laid again on its planes: see flex-retino.ts
+    const circuitJson = conRetino(
+      conFlessibile(
+        conMascheraAMano(
+          pastaDaiPad(
+            senzaColli,
+            resolveDesignRules(progetto).rules.pasteExpansionMm ?? 0,
+            {
+              stencil: leggiStencil(progetto).stencil,
+              pasteOnPlatedHoles: resolveDesignRules(progetto).rules.pasteOnPlatedHoles,
+            },
+          ),
+          progetto,
         ),
         progetto,
       ),
-      progetto,
+      regole.minTraceWidthMm,
     );
     // the same schematic, re-evaluated: its key and its measure stay, and a board saved before its schematic stays one
     const summary = riportaLoSchematico(summarizeCircuit(circuitJson as typeof cache.circuitJson, progetto), cache.summary);

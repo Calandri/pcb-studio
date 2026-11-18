@@ -300,7 +300,11 @@ function buildHandler(viewer: Viewer) {
         "pila (obbligatoria): spessoreMm della parte flessibile, coverlay giallo/bianco/nero/nessuno, materiali facoltativi dall'alto al basso. " +
         "zone (1-8): poligono dentro il contorno, coi vertici che stanno sul contorno scritti con le stesse coordinate del contorno, nome unico, strati = gli strati " +
         "di rame che esistono nella zona (top, inner1, inner2, bottom...; gli altri finiscono dove la zona comincia); facoltativi finestre (aree senza rame su nessuno " +
-        "strato, il laminato resta: le zone libere delle antenne) e ritagli (fori nella coda, finiscono nel contorno del Gerber). " +
+        "strato, il laminato resta: le zone libere delle antenne), ritagli (fori nella coda, finiscono nel contorno del Gerber) e retino, il rame della zona a GRIGLIA " +
+        "invece che pieno (PCB Basic chiede la massa a griglia sul flessibile): {\"larghezzaMm\": 0.3, \"passoMm\": 0.8, \"angolo\": 45, \"dove\": \"piega\"}, linee larghe " +
+        "larghezzaMm (non sotto minTraceWidthMm del progetto) ogni passoMm, girate di angolo (0-90), dove \"piega\" (il tratto che ogni piega della zona curva, piu' margineMm, " +
+        "di serie 1, per parte) oppure \"tutta\" (tutta la zona); la compilazione taglia la griglia nelle colate degli strati della zona, piene altrove, e il rame resta un " +
+        "pezzo solo collegato al piano rigido (un quadrato si taglia solo dove resta una linea di rame tutto attorno). " +
         "pieghe: segmento da-a dentro una zona, raggioMm interno, angolo fino a 180, verso su (verso la faccia top) o giu; curva un tratto di coda lungo quanto l'arco, " +
         "meta' per parte della linea (3,3 mm per 180 gradi a raggio 1 su 0,1 mm): la linea sta ad almeno meta' arco dalla parte rigida. " +
         "irrigiditori: poligono, lato top/bottom, materiale poliimmide/fr4/acciaio/alluminio, spessoreMm, fori facoltativi. coverlay: aperture per faccia, dentro una zona. " +

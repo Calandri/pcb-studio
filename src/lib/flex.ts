@@ -45,6 +45,10 @@
  *    the cutouts too.
  *  - A cutout of a zone is also a pcb_cutout of the board, so the outline of
  *    the Gerber (Edge_Cuts) has it: one contour, with its holes.
+ *  - A zone can ask its copper as a GRID (`retino`), on the stretch its bends
+ *    curve or on the whole zone: PCB Basic wants the ground of a flexible part
+ *    hatched. The pours of its layers are cut into it after they are poured
+ *    (flex-retino.ts), and stay one piece.
  *  - Mask and silkscreen stop where the zone starts: there is coverlay there.
  *    In the Gerber the zone is one opening of the mask on both faces, and the
  *    silkscreen drawings that enter it are not written (comandiConIlFlessibile).
@@ -67,7 +71,9 @@
  *    away from the bend area" and none "on the flexible part";
  *  - https://www.pcbasic.com/blog/flex_pcb_design.html: "a minimum bend radius
  *    of >= 10x the board thickness", "Do not place vias in curved areas",
- *    coverlay instead of solder mask, stiffeners at the connectors;
+ *    coverlay instead of solder mask, stiffeners at the connectors, and "Use
+ *    grid ground layer to enhance flexibility and reduce the risk of copper
+ *    cracking";
  *  - https://www.pcbasic.com/blog/rigid_flex_pcb_assembly.html: no parts on
  *    the flexible part unless "rigidized with a stiffener and kept outside the
  *    bend zone".
@@ -76,6 +82,7 @@
  * zones and bend lines, coverlay and stiffener layers, a stack per zone).
  */
 import { resolveStackup } from "./design-rules";
+import { MAX_APERTURE_RETINO } from "./flex-retino";
 import { aperturaDelPad, type FormaRame } from "./drc";
 import {
   APERTURA_COVERLAY,
@@ -95,6 +102,7 @@ import {
   type Flessibile,
   type PilaFlessibile,
   type Punto,
+  type Retino,
 } from "./flex-zone";
 import { areaConSegno, capsula, cerchio, rettangoloArrotondato } from "./pour-geometry";
 import { disegnoStampato } from "./silkscreen-clearance";
@@ -118,6 +126,12 @@ export const MAX_APERTURE_COVERLAY = 100;
 const MAX_MATERIALI = 24;
 /** windows without copper, and cutouts, in one zone */
 export const MAX_FINESTRE = 16;
+/** the grid of a zone (`retino`): the widest line and the longest step a file may write (mm) */
+const RETINO = { larghezzaMin: 0.05, larghezzaMax: 5, passoMax: 20, margineMax: 10 };
+/** the square between two lines of a grid is at least this wide, when the project's rules are not there to say (mm) */
+const APERTURA_MINIMA_RETINO_MM = 0.1;
+/** how far past the stretch a bend curves a grid laid "piega" goes on, when the file does not say (mm) */
+export const MARGINE_RETINO_MM = 1;
 /** no board is bigger: a coordinate past it is a typo, before the board is even known */
 const COORDINATA_MASSIMA_MM = 1000;
 /** a polygon smaller than this is a typo, not a zone */
@@ -157,9 +171,9 @@ const NOME = /^[A-Za-z0-9À-ÿ _.,:+()/%-]{1,60}$/;
  * Wildy as it is asked today. One copper layer (ground, on inner1) 0.1 mm
  * thick, 37 mm wide, leaving the bottom edge of the board (y = -25.75) and
  * folded back over it by 180 degrees at 1 mm of inner radius, ten times its
- * thickness; a window without copper for an antenna, a cutout, a stiffener
- * with a hole, an opening of the coverlay. The tests read it back through the
- * same check a written file goes through.
+ * thickness, its ground a grid where it bends; a window without copper for an
+ * antenna, a cutout, a stiffener with a hole, an opening of the coverlay. The
+ * tests read it back through the same check a written file goes through.
  */
 export const ESEMPIO_FLEX = {
   pila: {
@@ -184,6 +198,7 @@ export const ESEMPIO_FLEX = {
       ],
       finestre: [{ nome: "antenna LTE", punti: [{ x: -16, y: -58 }, { x: -4, y: -58 }, { x: -4, y: -48 }, { x: -16, y: -48 }] }],
       ritagli: [{ nome: "asola vite", punti: [{ x: 8, y: -56 }, { x: 12, y: -56 }, { x: 12, y: -52 }, { x: 8, y: -52 }] }],
+      retino: { larghezzaMm: 0.3, passoMm: 0.8, angolo: 45, dove: "piega" },
     },
   ],
   pieghe: [{ nome: "ripiega sulla scheda", da: { x: -18.5, y: -28.75 }, a: { x: 18.5, y: -28.75 }, raggioMm: 1, angolo: 180, verso: "su" }],
@@ -214,6 +229,10 @@ export const DESCRIZIONE_FLEX =
   `(even by a few hundredths) is where the rigid part ends. ` +
   `In a zone, optional: finestre (up to ${MAX_FINESTRE}), windows WITHOUT COPPER on any layer, the laminate stays (the free area an antenna asks for); and ritagli (up to ${MAX_FINESTRE}), ` +
   `CUTOUTS, holes cut through the tail, which also go on the outline of the Gerber. Each a polygon inside the zone. ` +
+  `And retino, the copper of the zone as a GRID instead of solid (PCB Basic asks hatched ground on the flexible part): {"larghezzaMm": 0.3, "passoMm": 0.8, "angolo": 45, "dove": "piega"}, ` +
+  `lines larghezzaMm wide (not under the project's minTraceWidthMm) every passoMm, turned by angolo (0..90), dove "piega" (the stretch each bend of the zone curves, and margineMm, ` +
+  `${MARGINE_RETINO_MM}mm unless written, beyond it on each side) or "tutta" (the whole zone); the pours of the zone's layers are cut into it by the compile and stay solid elsewhere, ` +
+  `one piece joined to the plane of the rigid part (a square is cut only where a line's width of copper stays all around it). ` +
   `pieghe (up to ${MAX_PIEGHE}): a segment da-a across one zone, raggioMm the inner radius, angolo in degrees (above 0, up to 180: 180 folds the tail back over the board), ` +
   `verso "su" (the tail folds towards the top face) or "giu". What curves is a stretch of tail as long as the arc, angolo in radians x (raggioMm + spessoreMm/2), half on each side of the line ` +
   `(3.3mm for 180 degrees at 1mm on a 0.1mm tail): keep the line at least half of it from the rigid part. ` +
@@ -241,6 +260,8 @@ export interface FlexDelFile {
     /** windows without copper, and cutouts through the tail: each inside the zone */
     finestre: Array<{ nome?: string; punti: Punto[] }>;
     ritagli: Array<{ nome?: string; punti: Punto[] }>;
+    /** the grid its copper is cut into (see flex-retino.ts) */
+    retino?: Retino;
   }>;
   pieghe: Array<{ indice: number; nome?: string; a: Punto; b: Punto; raggioMm: number; angolo: number; verso: "su" | "giu" }>;
   irrigiditori: Array<{
@@ -259,6 +280,12 @@ export interface FlexDelFile {
 export interface SchedaDelFlessibile {
   contorno: Punto[];
   strati: string[];
+}
+
+/** the rules of the project a file is checked against: the narrowest copper and the narrowest gap it allows (mm) */
+export interface RegoleDelFlessibile {
+  larghezzaMinimaMm: number;
+  distanzaMinimaMm: number;
 }
 
 const finito = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -366,9 +393,11 @@ function siSovrappongono(a: Punto[], b: Punto[]): boolean {
  * was sent comes back in a message but numbers and the names of the fields the
  * file may have. `scheda`, when given, is the board as last compiled: a zone, a
  * stiffener or an opening that leaves its outline is wrong too, and so is a
- * layer the board does not have.
+ * layer the board does not have. `regole`, when given, are the project's: a
+ * grid with a line under its minimum trace width, or a square between two
+ * lines under its minimum clearance, is wrong.
  */
-function validaFlex(data: unknown, scheda?: SchedaDelFlessibile): { flex: FlexDelFile; errori: string[] } {
+function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: RegoleDelFlessibile): { flex: FlexDelFile; errori: string[] } {
   const flex: FlexDelFile = { pila: null, zone: [], pieghe: [], irrigiditori: [], aperture: [] };
   const errori: string[] = [];
   if (!oggetto(data)) return { flex, errori: ['serve un oggetto {"pila": {...}, "zone": [...], "pieghe": [...], "irrigiditori": [...], "coverlay": {...}}'] };
@@ -435,7 +464,7 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile): { flex: FlexDe
         errori.push(`${dove}: serve un oggetto {"nome": ..., "strati": [...], "punti": [...]}`);
         return;
       }
-      if (campiSconosciuti(z, ["nome", "strati", "punti", "finestre", "ritagli"], dove, errori)) return;
+      if (campiSconosciuti(z, ["nome", "strati", "punti", "finestre", "ritagli", "retino"], dove, errori)) return;
       if (z.nome === undefined) {
         errori.push(`${dove}.nome: manca, ogni zona ha un nome`);
         return;
@@ -500,9 +529,50 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile): { flex: FlexDe
       const finestre = dentro("finestre");
       const ritagli = dentro("ritagli");
       if (!finestre || !ritagli) return;
+      // the grid of its copper
+      let retino: Retino | undefined;
+      if (z.retino !== undefined) {
+        const r = z.retino;
+        const qui = `${dove}.retino`;
+        if (!oggetto(r)) {
+          errori.push(`${qui}: serve un oggetto {"larghezzaMm": ..., "passoMm": ..., "angolo": ..., "dove": "piega" o "tutta"}`);
+          return;
+        }
+        if (campiSconosciuti(r, ["larghezzaMm", "passoMm", "angolo", "dove", "margineMm"], qui, errori)) return;
+        const minima = Math.max(RETINO.larghezzaMin, regole?.larghezzaMinimaMm ?? 0);
+        if (!finito(r.larghezzaMm) || r.larghezzaMm < minima - 1e-9 || r.larghezzaMm > RETINO.larghezzaMax) {
+          errori.push(
+            `${qui}.larghezzaMm: la larghezza delle linee della griglia in mm, un numero da ${minima} a ${RETINO.larghezzaMax}` +
+              (regole && regole.larghezzaMinimaMm > RETINO.larghezzaMin ? ` (${minima} e' la pista minima del progetto, minTraceWidthMm)` : ""),
+          );
+          return;
+        }
+        const apertura = Math.max(APERTURA_MINIMA_RETINO_MM, regole?.distanzaMinimaMm ?? 0);
+        if (!finito(r.passoMm) || r.passoMm > RETINO.passoMax || r.passoMm - r.larghezzaMm < apertura - 1e-9) {
+          errori.push(`${qui}.passoMm: il passo della griglia in mm, fino a ${RETINO.passoMax}, e almeno ${apertura} piu' della larghezza delle linee (il quadrato fra due linee)`);
+          return;
+        }
+        if (!finito(r.angolo) || r.angolo < 0 || r.angolo > 90) {
+          errori.push(`${qui}.angolo: i gradi di cui e' girata la griglia, un numero da 0 a 90`);
+          return;
+        }
+        if (r.dove !== "piega" && r.dove !== "tutta") {
+          errori.push(`${qui}.dove: deve essere "piega" (il tratto che le pieghe della zona curvano) o "tutta" (tutta la zona)`);
+          return;
+        }
+        if (r.margineMm !== undefined && (!finito(r.margineMm) || r.margineMm < 0 || r.margineMm > RETINO.margineMax)) {
+          errori.push(`${qui}.margineMm: di quanto la griglia va oltre il tratto in piega, un numero da 0 a ${RETINO.margineMax}`);
+          return;
+        }
+        if (Math.abs(areaConSegno(p)) / (r.passoMm * r.passoMm) > MAX_APERTURE_RETINO) {
+          errori.push(`${qui}.passoMm: troppo fitto per questa zona (piu' di ${MAX_APERTURE_RETINO} quadrati)`);
+          return;
+        }
+        retino = { larghezzaMm: r.larghezzaMm, passoMm: r.passoMm, angolo: r.angolo, dove: r.dove, margineMm: finito(r.margineMm) ? r.margineMm : MARGINE_RETINO_MM };
+      }
       nomi.add(nome);
       // in the order of the stack, so two files that say the same thing are the same board
-      flex.zone.push({ indice, nome, punti: p, strati: stratiDiRame(8).filter((l) => (s as string[]).includes(l)), finestre, ritagli });
+      flex.zone.push({ indice, nome, punti: p, strati: stratiDiRame(8).filter((l) => (s as string[]).includes(l)), finestre, ritagli, ...(retino ? { retino } : {}) });
     });
   }
 
@@ -673,16 +743,21 @@ export function leggiFlex(fsMap: Record<string, string>): { flex: FlexDelFile | 
  * A flex.json written by a tool (write_file), checked WHOLE before it is
  * written: one entry wrong refuses the file with every reason, nothing is
  * saved half-right. `scheda` is the board as last compiled, when there is one:
- * a zone off its outline or on a layer it does not have is refused.
+ * a zone off its outline or on a layer it does not have is refused. `regole`
+ * are the project's minimums, for the grid of a zone.
  */
-export function validaFileDelFlessibile(content: string, scheda?: SchedaDelFlessibile): { flex: FlexDelFile } | { errori: string[] } {
+export function validaFileDelFlessibile(
+  content: string,
+  scheda?: SchedaDelFlessibile,
+  regole?: RegoleDelFlessibile,
+): { flex: FlexDelFile } | { errori: string[] } {
   let data: unknown;
   try {
     data = JSON.parse(content);
   } catch {
     return { errori: ["non e' un JSON valido (NaN e Infinity non sono JSON)"] };
   }
-  const { flex, errori } = validaFlex(data, scheda);
+  const { flex, errori } = validaFlex(data, scheda, regole);
   return errori.length > 0 ? { errori } : { flex };
 }
 
@@ -730,6 +805,10 @@ export function conFlessibile<T extends El>(circuitJson: T[], fsMap: Record<stri
       points: z.punti,
       ...(z.finestre.length > 0 ? { windows: z.finestre.map((f) => ({ ...(f.nome ? { nome: f.nome } : {}), points: f.punti })) } : {}),
       ...(z.ritagli.length > 0 ? { cutouts: z.ritagli.map((f) => ({ ...(f.nome ? { nome: f.nome } : {}), points: f.punti })) } : {}),
+      // the grid its copper is to be cut into: conRetino lays it on the pours and writes here how many squares it cut
+      ...(z.retino
+        ? { hatch: { width_mm: z.retino.larghezzaMm, pitch_mm: z.retino.passoMm, angle_deg: z.retino.angolo, where: z.retino.dove, margin_mm: z.retino.margineMm } }
+        : {}),
     });
     // a cutout is a hole in the board: as a pcb_cutout the outline of the Gerber has it, and whatever reads the cutouts of a board
     z.ritagli.forEach((r, k) => {
@@ -859,6 +938,25 @@ export function avvisiDelFlessibile(circuitJson: El[], fsMap: Record<string, str
   }
   if (delFile.pila && delFile.pila.spessoreMm < SPESSORE_MINIMO_PCB_BASIC) {
     out.push({ message: `${FLEX_PATH}: pila.spessoreMm ${delFile.pila.spessoreMm}: la parte flessibile piu' sottile di PCB Basic e' ${SPESSORE_MINIMO_PCB_BASIC} mm` });
+  }
+  for (const z of sopra?.zone ?? []) {
+    const r = z.retino;
+    if (!r) continue;
+    if (r.nonApplicato === "larghezza") {
+      out.push({
+        message: `${FLEX_PATH}: il retino della zona «${z.nome}» ha linee da ${r.larghezzaMm} mm, sotto la pista minima del progetto (minTraceWidthMm): non e' stato applicato, il rame della zona e' pieno`,
+        ...centro(z.punti),
+      });
+    } else if (r.aperture === 0) {
+      out.push({
+        message:
+          `${FLEX_PATH}: il retino della zona «${z.nome}» non ha tagliato nessun quadrato, il rame della zona e' pieno: ` +
+          (r.dove === "piega" && !sopra?.pieghe.some((p) => p.zona === z)
+            ? `e' chiesto sulla piega e la zona non ha pieghe`
+            : `sugli strati della zona (${z.strati.join(", ")}) non c'e' una colata abbastanza larga li' (il rame della coda si mette con un <copperpour> su uno strato dichiarato)`),
+        ...centro(z.punti),
+      });
+    }
   }
   if (sopra && !sopra.pila) {
     out.push({ message: `${FLEX_PATH}: manca la pila della parte flessibile (pila.spessoreMm): il raggio delle pieghe non e' controllato` });
@@ -1275,6 +1373,12 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
     t.push(`    Extent: ${scatola(z.punti)}; area ${numero(area(z.punti))} mm2`);
     t.push(`    Outline: ${coordinate(z.punti)}`);
     for (const l of z.confini) t.push(`    Rigid-flex boundary: from (${numero(l.ax)}, ${numero(l.ay)}) to (${numero(l.bx)}, ${numero(l.by)})`);
+    if (z.retino && (z.retino.aperture ?? 0) > 0) {
+      t.push(
+        `    Copper: cross-hatched (grid), not solid, ${z.retino.dove === "tutta" ? "in the whole zone" : `in the bend area and ${numero(z.retino.margineMm)} mm beyond it on each side; solid elsewhere`}. ` +
+          `Lines ${numero(z.retino.larghezzaMm)} mm wide, pitch ${numero(z.retino.passoMm)} mm, at ${numero(z.retino.angolo)} degrees (${z.retino.aperture} openings). It is drawn in the copper layers as it is to be made.`,
+      );
+    }
     for (const f of z.finestre) t.push(`    Copper-free window "${scritto(f.nome)}" (no copper on any layer, base material and coverlay stay): ${scatola(f.punti)}; outline ${coordinate(f.punti)}`);
     for (const r of z.ritagli) t.push(`    Cutout "${scritto(r.nome)}" (cut through the flexible part, on Edge_Cuts.gbr): ${scatola(r.punti)}; outline ${coordinate(r.punti)}`);
   });

@@ -7,7 +7,9 @@ import type { Flessibile } from "@/lib/flex-zone";
  * THE FLEXIBLE PART OF A RIGID-FLEX BOARD, ON THE BOARD (flex.json, see
  * lib/flex.ts): what bends, drawn over the copper so it is read at a glance.
  *
- *  - a flexible zone: a dashed outline, with a veil of the colour of polyimide;
+ *  - a flexible zone: a dashed outline, with a veil of the colour of polyimide.
+ *    Its copper as a grid (`retino`) is not drawn here: it is in the pours,
+ *    which are drawn with their holes like every other pour;
  *  - its windows without copper: a dotted outline;
  *  - its cutouts: the hole, in the colour of what is under the board;
  *  - a bend: the stretch of tail it curves as a band, and its line dash-dot;
@@ -46,7 +48,10 @@ export const ParteFlessibile = memo(function ParteFlessibile({ flessibile, mmPer
             strokeDasharray={`${mmPerPx * 8} ${mmPerPx * 5}`}
             strokeLinejoin="round"
           >
-            <title>{`zona flessibile «${z.nome}»: rame solo su ${z.strati.join(", ") || "nessuno strato"}`}</title>
+            <title>
+              {`zona flessibile «${z.nome}»: rame solo su ${z.strati.join(", ") || "nessuno strato"}` +
+                (z.retino ? `, a griglia ${z.retino.dove === "tutta" ? "in tutta la zona" : "sulla piega"} (linee ${z.retino.larghezzaMm} mm, passo ${z.retino.passoMm} mm)` : "")}
+            </title>
           </polygon>
           {z.finestre.map((f, i) => (
             <polygon

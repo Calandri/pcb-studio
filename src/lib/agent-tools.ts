@@ -31,6 +31,7 @@ import {
   DESIGN_RULES_PATH,
   dichiaraUnoStackup,
   quoteDelloStackup,
+  resolveDesignRules,
   validaFileDelleRegole,
 } from "./design-rules";
 import {
@@ -517,7 +518,12 @@ async function runTool(
           return { result: { error: `File too large (${content.length} chars, max ${MAX_FILE_CHARS})` } };
         }
         const cache = await getCompileCache(projectId).catch(() => null);
-        const esito = validaFileDelFlessibile(content, schedaDelFlessibile(cache?.circuitJson as unknown[] | undefined));
+        // the grid of a zone is held to the project's own minimums: the narrowest copper, the narrowest gap
+        const regole = resolveDesignRules(fsMap).rules;
+        const esito = validaFileDelFlessibile(content, schedaDelFlessibile(cache?.circuitJson as unknown[] | undefined), {
+          larghezzaMinimaMm: regole.minTraceWidthMm,
+          distanzaMinimaMm: regole.minClearanceMm,
+        });
         if ("errori" in esito) {
           /*
            * With the reasons, a file that IS right: whoever writes flex.json
@@ -544,6 +550,7 @@ async function runTool(
             zones: esito.flex.zone.length,
             bends: esito.flex.pieghe.length,
             stiffeners: esito.flex.irrigiditori.length,
+            hatchedZones: esito.flex.zone.filter((z) => z.retino).length,
             note: "flexible zones saved: compile to put them on the board, cut the pours back from them and run their checks",
           },
           fileChanged: { path, content },
