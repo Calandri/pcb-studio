@@ -86,6 +86,12 @@ export async function POST(req: Request): Promise<Response> {
      * 2026-11-13: twelve seconds of update, the undo three seconds in). So the
      * files are read again before the save, and a board that fell behind is
      * not saved: the page asks again, on the files of now (`retry`).
+     *
+     * `fileCambiati` tells this `retry` from the other one (a board saved
+     * under the update): asking again AT ONCE is seconds of work that the next
+     * save throws away again, since whoever is writing is still at it (copper
+     * gestures in a row, the arrows on a part). The page asks again when the
+     * writes have stopped, and does not count it as a board it cannot follow.
      */
     let ancoraQuelli = true;
     try {
@@ -99,6 +105,7 @@ export async function POST(req: Request): Promise<Response> {
         ...plan.result,
         ok: false,
         retry: true,
+        fileCambiati: true,
         reason: "i file sono cambiati mentre aggiornavo la scheda: riprovo su quelli di adesso",
         ms: Date.now() - t0,
       });

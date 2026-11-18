@@ -86,6 +86,22 @@ describe("Duplica via in Sposta", () => {
     expect(avviso()).toContain("bloccato dalla pista");
   });
 
+  it("le zone vietate al rame si vedono con le vie scelte, e una via rifiutata da una di loro la accende e dice di che strato e'", async () => {
+    // the keepout of the board is of the top alone: drawn all the same, a via is stopped by it on any layer
+    const zone = nodo((n) => n.getAttribute("data-zone-vietate") !== null);
+    expect(zone).toBeDefined();
+    expect(zone!.cerca((n) => n.tagName === "polygon" || n.tagName === "circle").length).toBeGreaterThan(0);
+    expect(nodo((n) => n.getAttribute("data-zona-che-blocca") !== null)).toBeUndefined();
+
+    await scegliEcopia();
+    await f.spara(tavola(), "pointermove", a(0, 1.5));
+    await f.tasto("v", { metaKey: true });
+    expect(salvati).toEqual([]);
+    expect(avviso()).toContain("bloccato da una zona vietata al rame su top: la via e' passante e ci entra");
+    // the zone that said no is lit, in the warning itself
+    expect(nodo((n) => n.getAttribute("data-zona-che-blocca") !== null)).toBeDefined();
+  });
+
   it("col mouse: «Copia via», poi «Incolla con un clic» e ogni clic sulla scheda ne mette una, fino a «Fine» o Esc", async () => {
     const via = nodo((n) => n.getAttribute("data-presa") === "via:v_pwr")!;
     await f.spara(via, "pointerdown", a(6, -9));

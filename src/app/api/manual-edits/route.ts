@@ -25,6 +25,7 @@ import {
 import { mergeManualRoutes, parseManualRoutes } from "@/lib/manual-routes";
 import { parseLength } from "@/lib/pcb-route-model";
 import { portaCorrezioni, rameCheEntra, rameRifiutato, SCHEDA_RISALVATA, seAncoraQuella, SENZA_SCHEDA, SOLO_CON_COPPER } from "@/lib/spinta/porte";
+import { leggiViaTolta, senzaLaViaIncollata } from "@/lib/spinta/rame-locale";
 import { conLaPartenzaDeiFile, leggiRame, verificaRame, type EsitoDelRame } from "@/lib/spinta/verifica";
 import {
   getCompileCache,
@@ -221,6 +222,37 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   /*
+   * A PASTED VIA TAKEN OUT (Canc on the via chosen in "Sposta"): the entry of
+   * `pcb_vias` that pasted it leaves the file. Named by its net and by where
+   * it stands, which is its key; only an entry with `aggiunta` goes, never the
+   * correction of a via of the files. It takes copper away and lays none, so
+   * there is nothing to check against the board, and the board is not read.
+   *
+   * Done inside the write, on the file of that moment: sent as the whole file
+   * without the entry (`set`), a write of somebody else (the agent, another
+   * tab) between the page's read and its save would be lost.
+   */
+  if (body.action === "unpaste") {
+    const via = leggiViaTolta(body.via);
+    if (typeof via === "string") return Response.json({ error: via }, { status: 400 });
+    try {
+      const meta = await getCompileMeta(projectId);
+      await baseBeforeEdit(projectId, meta);
+      let tolta = false;
+      const { edits, avviso } = await commit(projectId, meta, (current) => {
+        // may run again on a conflict: `tolta` is the one of the run that wrote
+        const senza = senzaLaViaIncollata(current, via);
+        tolta = senza !== current;
+        return tolta ? senza : null;
+      });
+      console.log(`[manual-edits ${projectId}] unpaste ${via.net} ${via.x};${via.y}: ${tolta ? "tolta" : "non c'era"}`);
+      return Response.json({ ok: true, removed: tolta, counts: countManualEdits(edits), ...conAvviso(avviso) });
+    } catch (err) {
+      return failure(err);
+    }
+  }
+
+  /*
    * Copper of the files moved in Sposta: a via dragged, the traces it carried
    * or pushed (routes with `replaces`, see lib/manual-routes.ts). One gesture
    * is one save, and every correction of it carries the same `gesto` and the
@@ -254,7 +286,7 @@ export async function POST(req: Request): Promise<Response> {
       if (!scheda?.circuitJson) return rameRifiutato(SENZA_SCHEDA);
       const regole = resolveDesignRules(await getProject(projectId)).rules;
       const meta = await seAncoraQuella(projectId, scheda);
-      if (!meta) return rameRifiutato(SCHEDA_RISALVATA, true);
+      if (!meta) return rameRifiutato(SCHEDA_RISALVATA, true, true);
       await baseBeforeEdit(projectId, meta);
       let esito: EsitoDelRame = { ok: true };
       let scritto: ReturnType<typeof applyCopperPatch> | null = null;
@@ -437,7 +469,7 @@ export async function POST(req: Request): Promise<Response> {
       const daVerificare = correzioniNuove(parseManualEdits(files[MANUAL_EDITS_PATH]), voluto);
       if (daVerificare.routes.length > 0 || daVerificare.vias.length > 0) {
         if (!cache || !scheda) return rameRifiutato(SENZA_SCHEDA);
-        if (!(await seAncoraQuella(projectId, cache))) return rameRifiutato(SCHEDA_RISALVATA, true);
+        if (!(await seAncoraQuella(projectId, cache))) return rameRifiutato(SCHEDA_RISALVATA, true, true);
       }
       const regole = resolveDesignRules(files).rules;
       let esito: EsitoDelRame = { ok: true };

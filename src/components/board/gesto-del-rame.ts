@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DesignRules } from "@/lib/design-rules";
 import { chiudiGesto, iniziaGesto, muoviGesto, preseDelRame, type GestoDelRame } from "@/lib/spinta/gesto";
 import type { BersaglioDelRame, SalvataggioDelGesto, StatoDelGesto } from "@/lib/spinta/gesto-tipi";
+import type { ViaTolta } from "@/lib/spinta/rame-locale";
+import type { Sagoma } from "@/lib/zona";
 
 /*
  * COPPER DRAGGED IN "SPOSTA": a via with its traces, or one straight stretch of
@@ -28,6 +30,12 @@ export interface RameInAttesa {
   salvataggio: SalvataggioDelGesto;
   /** the copper as the gesture left it */
   stato: StatoDelGesto;
+  /**
+   * A pasted via the person took out (Canc on the via chosen): the gesture
+   * carries nothing to save but this. It waits its turn like the others, so a
+   * via pasted and taken out at once leaves the file after it entered it.
+   */
+  togli?: ViaTolta;
 }
 
 /** no gesture waiting: one list for every canvas that has none, so the memos that read it hold */
@@ -37,8 +45,8 @@ export const NESSUN_RAME: readonly RameInAttesa[] = [];
 export interface RameVivo {
   /** the copper in hand as it stands now; null when nothing is in hand */
   stato: StatoDelGesto | null;
-  /** why the thing under the pointer could not be grabbed, and where: said for a moment */
-  rifiuto: (Punto & { frase: string }) | null;
+  /** why the thing under the pointer could not be grabbed, and where: said for a moment; `zona`: the forbidden zone that said no */
+  rifiuto: (Punto & { frase: string; zona?: Sagoma }) | null;
 }
 
 const FERMO: RameVivo = { stato: null, rifiuto: null };
@@ -112,14 +120,28 @@ export function useGestoDelRame({
   regole,
   inAttesa,
   onGesto,
+  onInMano,
 }: {
   /** copper can be grabbed: in Sposta, with the rules and somebody to save the gesture */
   attivo: boolean;
   circuitJson: unknown[] | null;
   regole: DesignRules | undefined;
-  /** the gestures let go and not on the saved board yet */
+  /**
+   * The gestures let go that the board given does NOT show. None, as a rule:
+   * the board the editor hands over already carries the gestures waiting to be
+   * saved (schedaConIlRame), and the next one starts from it at once. Only
+   * when that board could not be worked out are they drawn over the saved one,
+   * as they used to be, and then a new gesture waits for them.
+   */
   inAttesa: readonly RameInAttesa[];
   onGesto: ((g: RameInAttesa) => void) | undefined;
+  /**
+   * A gesture started (true) or ended (false). The canvas keeps the board the
+   * gesture started on until it ends: a board that arrives meanwhile (the
+   * saved one following an earlier gesture) may number the hand copper anew,
+   * and the copper in hand would be drawn twice.
+   */
+  onInMano?: (inMano: boolean) => void;
 }) {
   const [vivo] = useState(() => nuovoGestoVivo());
   /*
@@ -132,6 +154,11 @@ export function useGestoDelRame({
   const [nascostiInMano, setNascostiInMano] = useState<StatoDelGesto["nascosti"] | null>(null);
   const inMano = useRef<InMano | null>(null);
   const timerRifiuto = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // read through a ref: `lascia` must not change with it, or the effect that drops a gesture on leaving Sposta would drop one in hand
+  const diciInMano = useRef(onInMano);
+  useEffect(() => {
+    diciInMano.current = onInMano;
+  }, [onInMano]);
 
   /**
    * What can be grabbed on this board, worked out once per board loaded (not
@@ -164,9 +191,9 @@ export function useGestoDelRame({
 
   /** says for a moment, on the board, why nothing was grabbed or why the gesture ended */
   const dici = useCallback(
-    (frase: string, dove: Punto) => {
+    (frase: string, dove: Punto, zona?: Sagoma) => {
       zittisci();
-      const rifiuto = { ...dove, frase };
+      const rifiuto = { ...dove, frase, ...(zona ? { zona } : {}) };
       vivo.set({ stato: null, rifiuto });
       timerRifiuto.current = setTimeout(() => {
         timerRifiuto.current = null;
@@ -186,6 +213,7 @@ export function useGestoDelRame({
     m.molla();
     vivo.set(FERMO);
     setNascostiInMano(null);
+    diciInMano.current?.(false);
     return m;
   }, [vivo]);
 
@@ -228,13 +256,14 @@ export function useGestoDelRame({
       // the copper is grabbed here: neither the view nor a part must start
       e.stopPropagation();
       /*
-       * One gesture at a time, until the saved board shows it. The keys and
-       * the ids of hand copper change at every save: a gesture begun on the
-       * board of before would be refused by the server as "board changed".
-       * The press is taken all the same, so it does not become the drag of a
-       * part that happens to be under the copper. And it is said: the wait is
-       * seconds on a big board, and a press that did nothing looked like copper
-       * that could not be moved.
+       * The board in hand already carries the gestures let go before this one
+       * (see `inAttesa`), so this one starts at once. Only gestures the board
+       * does not show make it wait: a gesture begun on a board without them
+       * would be solved against copper that is gone, and refused by the server
+       * as "board changed". The press is taken all the same, so it does not
+       * become the drag of a part that happens to be under the copper. And it
+       * is said: a press that did nothing looked like copper that could not be
+       * moved.
        */
       if (inMano.current) return;
       const dove = bersaglio.tipo === "via" ? { x: bersaglio.x, y: bersaglio.y } : { x: (bersaglio.x1 + bersaglio.x2) / 2, y: (bersaglio.y1 + bersaglio.y2) / 2 };
@@ -283,6 +312,7 @@ export function useGestoDelRame({
       };
       vivo.set({ stato: esito.stato, rifiuto: null });
       setNascostiInMano(esito.stato.nascosti);
+      diciInMano.current?.(true);
     },
     [attivo, circuitJson, regole, inAttesa, vivo, lascia, dici, zittisci],
   );
@@ -314,21 +344,23 @@ export function useGestoDelRame({
   );
 
   /**
-   * The pointer was let go. False when no copper is in hand. The gesture closes
+   * The pointer was let go. False when no copper is in hand; else where the
+   * grabbed thing was left (null when it did not move). The gesture closes
    * on the last place of the pointer, and what it asks to be saved goes to the
    * editor with its state, which stays on screen until the saved board shows it.
    */
-  const rilascia = useCallback((): boolean => {
+  const rilascia = useCallback((): false | { posizione: Punto | null } => {
     const m = inMano.current;
     if (!m) return false;
     // a move whose frame had not come yet counts: the copper is let go where the pointer is
-    if (!calcola(m)) return true;
+    if (!calcola(m)) return { posizione: null };
     lascia();
     const gesto = nuovoGestoId();
     const salvataggio = chiudiGesto(m.gesto, m.stato, gesto);
     // nothing moved: nothing to save, and nothing to keep on screen
     if (salvataggio) onGesto?.({ gesto, salvataggio, stato: m.stato });
-    return true;
+    // where the grabbed thing was left; null when nothing moved
+    return { posizione: salvataggio ? m.stato.posizione : null };
   }, [calcola, lascia, onGesto]);
 
   /** a pointer the browser took away (pointercancel): like Esc, everything as it was and nothing sent */

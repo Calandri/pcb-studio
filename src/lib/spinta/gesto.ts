@@ -155,9 +155,12 @@ export function bloccoDelGesto(modello: Modello, blocco: Blocco): BloccoDelGesto
       raggioMm = Math.hypot(o.foro.bx - o.foro.ax, o.foro.by - o.foro.ay) / 2 + o.foro.r;
     }
   }
+  // a keepout or a cutout: its outline, so that what blocks is seen even when it is of a layer not in view
+  const zona = (cosa.tipo === "keepout" || cosa.tipo === "bordo") && cosa.ostacolo !== undefined ? modello.ostacoli[cosa.ostacolo] : undefined;
   return {
     motivo: blocco.messaggio,
     alone: { x: blocco.dove.x, y: blocco.dove.y, raggioMm, ...(blocco.dove.layer ? { layer: blocco.dove.layer } : {}) },
+    ...(zona && (zona.tipo === "keepout" || zona.tipo === "ritaglio") ? { zona: zona.sagoma } : {}),
   };
 }
 

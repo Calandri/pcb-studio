@@ -132,8 +132,10 @@ export type CosaBlocca =
   /** its place in `modello.vie`, and the name of its net */
   | { tipo: "via"; via: number; rete: string }
   /** `ritaglio`: the id of the cutout, when the edge is one inside the board */
-  | { tipo: "bordo"; ritaglio?: string }
-  | { tipo: "keepout"; id: string }
+  /** `ostacolo`: the place of the cutout in `modello.ostacoli` */
+  | { tipo: "bordo"; ritaglio?: string; ostacolo?: number }
+  /** `ostacolo`: its place in `modello.ostacoli` */
+  | { tipo: "keepout"; id: string; ostacolo?: number }
   /** its place in `modello.piste`, the name of its connection, and which of its stretches */
   | { tipo: "pista"; pista: number; connessione: string; tratto: number }
   | { tipo: "niente" };
@@ -206,6 +208,23 @@ export interface Segmento {
 }
 export const segmento = (a: { x: number; y: number }, b: { x: number; y: number }): Segmento => ({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
 const mezzo = (s: Segmento): { x: number; y: number } => ({ x: (s.ax + s.bx) / 2, y: (s.ay + s.by) / 2 });
+
+/**
+ * The sentence of a keepout that blocks, with the layers it is of. A keepout
+ * of one layer stops a via all the same (a via is a through hole: its ring is
+ * on every layer), and on the layer in view there is nothing to see: without
+ * the layers named the block read as a mistake (2026-11-18, a stitching via
+ * under BT1, whose keepout is on the bottom alone).
+ *
+ * `stratiDellaZona`: null for a keepout of every layer. `stratoDelRame`: null
+ * for a via.
+ */
+export function fraseDelKeepout(stratiDellaZona: readonly string[] | null, stratoDelRame: string | null): string {
+  const frase = "bloccato da una zona vietata al rame";
+  if (stratiDellaZona === null) return `${frase} (tutti gli strati)`;
+  const su = `${frase} su ${stratiDellaZona.join(", ")}`;
+  return stratoDelRame === null ? `${su}: la via e' passante e ci entra` : su;
+}
 
 /** why a trace cannot be touched at all, whatever the move; null when it can */
 function pistaFerma(pista: PistaDelModello): Blocco | null {
@@ -454,9 +473,9 @@ export function giudica(
         const serve = keepout ? 0 : bordo;
         prova(misura(p), serve, serve, () => misura(p.prima), p.nuovo, () => ({
           motivo: keepout ? "keepout" : "bordo",
-          cosa: keepout ? { tipo: "keepout", id: o.id } : { tipo: "bordo", ritaglio: o.id },
+          cosa: keepout ? { tipo: "keepout", id: o.id, ostacolo: o.indice } : { tipo: "bordo", ritaglio: o.id, ostacolo: o.indice },
           dove: mezzo(p),
-          messaggio: keepout ? "bloccato da una zona vietata al rame" : "bloccato da un ritaglio della scheda",
+          messaggio: keepout ? fraseDelKeepout(o.strati, p.strato) : "bloccato da un ritaglio della scheda",
         }));
       }
     }

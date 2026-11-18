@@ -27,9 +27,19 @@ export const portaCorrezioni = (lista: unknown): boolean =>
 export const SOLO_CON_COPPER =
   "le correzioni del rame dei file (una pista con replaces) si salvano con l'azione copper, che le verifica sulla scheda salvata: qui si salvano solo piste disegnate";
 
-/** a save of corrections that is not written: the same answer from every door */
-export const rameRifiutato = (reason: string, cambiata = false): Response =>
-  Response.json({ error: `rame non salvato: ${reason}`, reason, ...(cambiata ? { cambiata: true } : {}) }, { status: 409 });
+/**
+ * A save of corrections that is not written: the same answer from every door.
+ * `riprova`: nothing is wrong with the copper, the saved board was only saved
+ * again while this save read it (a fast update that followed an earlier
+ * gesture): the same save, asked again, is checked on the board of now. The
+ * page asks again by itself instead of throwing the gesture away (see
+ * saveCopper in useManualEditor.ts).
+ */
+export const rameRifiutato = (reason: string, cambiata = false, riprova = false): Response =>
+  Response.json(
+    { error: `rame non salvato: ${reason}`, reason, ...(cambiata ? { cambiata: true } : {}), ...(riprova ? { riprova: true } : {}) },
+    { status: 409 },
+  );
 export const SENZA_SCHEDA = "non c'e' una scheda compilata su cui verificarlo: premi Aggiorna";
 export const SCHEDA_RISALVATA = "la scheda e' stata salvata di nuovo mentre la leggevo: riprova sulla scheda di adesso";
 

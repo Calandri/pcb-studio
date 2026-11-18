@@ -5,7 +5,7 @@ import { BoardCanvas } from "../board/BoardCanvas";
 import { colatePerRete, layerDrawOrder } from "../board/render";
 import { VIEW_PRESETS } from "../ViewPresets";
 import { EditorBar } from "../workspace/EditorBar";
-import { AUTOSAVE_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
+import { AUTOSAVE_MS, SEGUE_IL_RAME_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
 import { apriFinestra, dentro, numeri, type Finestra, type Nodo } from "./dom-finto";
 import { BERSAGLI, NASCOSTI, PISTA_A_MANO, SALVATAGGIO, fileDiPartenza, schedaDa, serverFinto, statoConLaViaIn } from "./rame-di-prova";
 
@@ -56,9 +56,16 @@ let radiografia = 0;
 const fuori = {} as { editor: ManualEditor; scheda: unknown[] };
 
 /**
- * The editor and the canvas of Sposta wired as Studio wires them: the rules,
- * the gestures waiting, who saves a gesture, and the board that arrives. The
- * fast update is the page's: here it lays the board from the server's file.
+ * The editor and the canvas of Sposta: the rules, the gestures waiting, who
+ * saves a gesture, and the board that arrives. The fast update is the page's:
+ * here it lays the board from the server's file.
+ *
+ * The canvas is given the SAVED board and the gestures waiting next to it,
+ * which is how Studio wires it only when it cannot lay the gestures on the
+ * board itself (see schedaDiSposta in Studio.tsx): the gestures are drawn over
+ * the board, and a new one waits for the board that shows them. The rule, a
+ * board that already carries them and gestures that do not wait, is tried in
+ * sposta-rame-da-capo-a-fondo.test.ts with the real solver.
  */
 function Pagina() {
   const [circuitJson, setCircuitJson] = useState(() => schedaDa(server.stato.file));
@@ -283,6 +290,7 @@ describe("il gesto sul rame in Sposta: dal puntatore giu' al rilascio", () => {
 
     // a stretch is grabbed by its trace and by the index of its first point
     await passa(AUTOSAVE_MS);
+    await passa(SEGUE_IL_RAME_MS);
     await f.spara(bersaglio("tratto:tr_top:0"), "pointerdown", a(-5, 2));
     expect(gesto.iniziaGesto).toHaveBeenLastCalledWith(
       expect.objectContaining({ presa: { tipo: "tratto", pcbTraceId: "tr_top", indice: 0 } }),
@@ -355,7 +363,9 @@ describe("il gesto sul rame in Sposta: dal puntatore giu' al rilascio", () => {
         corpo: { projectId: "p1", action: "copper", gesto: id, routes: SALVATAGGIO.routes, vias: SALVATAGGIO.vias, riscritte: SALVATAGGIO.riscritte },
       },
     ]);
-    // then the fast update of the parts, once, after the write: in the background, and no compile anywhere
+    // then the fast update of the parts, once, after the write and when the hand has been still: in the background, and no compile anywhere
+    expect(spie.aggiornamenti).toEqual([]);
+    await passa(SEGUE_IL_RAME_MS);
     expect(spie.aggiornamenti).toEqual([{ hint: { background: true }, scritture: 1 }]);
     expect(server.stato.richieste.every((r) => r.url.startsWith("/api/manual-edits"))).toBe(true);
     // the board that came back shows the copper: the gesture leaves the screen, the still copper has it
@@ -377,6 +387,7 @@ describe("il gesto sul rame in Sposta: dal puntatore giu' al rilascio", () => {
     expect(server.scritture()).toHaveLength(2);
     expect(server.scritture()[1].corpo?.gesto).toMatch(/^[\w-]{1,64}$/);
     expect(server.scritture()[1].corpo?.gesto).not.toBe(id);
+    await passa(SEGUE_IL_RAME_MS);
 
     // pressed and let go without moving: chiudiGesto says null, and nothing is sent or kept
     gesto.chiudiGesto.mockReturnValueOnce(null);
@@ -480,6 +491,7 @@ describe("il gesto sul rame in Sposta: dal puntatore giu' al rilascio", () => {
     await passa(AUTOSAVE_MS);
     expect(server.scritture()).toHaveLength(1);
     expect(server.scritture()[0].corpo).toMatchObject({ action: "copper", routes: SALVATAGGIO.routes, vias: SALVATAGGIO.vias });
+    await passa(SEGUE_IL_RAME_MS);
     expect(vie(false)).toEqual([[-3, 6], [5, 5]]);
     // one step back again, and the file is the one of the start
     await f.tasto("z", { metaKey: true });
@@ -552,6 +564,7 @@ describe("il gesto sul rame in Sposta: dal puntatore giu' al rilascio", () => {
 
     // written, and the board that shows it has arrived: copper can be grabbed again, on that board
     await passa(AUTOSAVE_MS);
+    await passa(SEGUE_IL_RAME_MS);
     expect(fuori.editor.copper).toEqual([]);
     expect(server.scritture()).toHaveLength(1);
     await f.spara(bersaglio("via:via_b"), "pointerdown", a(5, 5));

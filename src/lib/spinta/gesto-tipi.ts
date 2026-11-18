@@ -14,6 +14,7 @@
  * Coordinates are mm, board center = (0; 0), as in the Circuit JSON.
  */
 import type { ManualRoute, ManualRoutePoint, ManualViaMove } from "../manual-routes";
+import type { Sagoma } from "../zona";
 
 /** what the pointer can grab: a via, or one straight stretch of a trace */
 export type PresaDelRame =
@@ -75,6 +76,14 @@ export interface BloccoDelGesto {
   motivo: string;
   /** the thing that blocks, where it is: the viewer draws a halo there */
   alone?: { x: number; y: number; raggioMm: number; layer?: string };
+  /**
+   * A forbidden zone or a cutout that blocks, as the board describes it: the
+   * viewer draws its outline. A keepout of one layer is not drawn on the layer
+   * in view, and "blocked by a zone" with nothing to see read as a mistake
+   * (2026-11-18: a stitching via refused under BT1, whose keepout is on the
+   * bottom alone).
+   */
+  zona?: Sagoma;
 }
 
 /** where the copper of a gesture stands, for one position of the pointer */

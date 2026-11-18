@@ -16,7 +16,7 @@ import {
 import { opacitaStrato, stratoScelto } from "./strati-visibili";
 import { BersagliDelRame } from "./BersagliDelRame";
 import { comeSiSposta, type CosaSiSposta } from "./cosa-si-sposta";
-import { AvvisoDelGesto, RameInMovimento } from "./RameInMovimento";
+import { AvvisoDelGesto, RameInMovimento, ZoneVietate } from "./RameInMovimento";
 import { NESSUN_RAME, useGestoDelRame, type PuntatoreGiu, type RameInAttesa, type RameNascosto } from "./gesto-del-rame";
 import { nelPannelloDelleVie, useDuplicaVia } from "./duplica-via";
 import type { BersaglioDelRame } from "@/lib/spinta/gesto-tipi";
@@ -35,6 +35,7 @@ import {
 } from "./net-labels";
 
 import type { DesignRules } from "@/lib/design-rules";
+import { sagomaDiZona } from "@/lib/zona";
 import { rameDellaScheda } from "@/lib/open-connections";
 import { ETICHETTA_FONTE, type DescrizionePezzo } from "@/lib/part-description";
 import { forma, percorsoDellaForma, scontri, type Forma } from "@/lib/ingombro";
@@ -146,7 +147,7 @@ const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const snap = (v: number, on: boolean, grid: number) => (on ? snapToGrid(v, grid) : r3(v));
 
 export function BoardCanvas({
-  circuitJson,
+  circuitJson: circuitoDato,
   flags,
   layer,
   xray = 0,
@@ -177,6 +178,12 @@ export function BoardCanvas({
   onGestoDelRame,
   cosaSiSposta,
 }: {
+  /**
+   * The board to draw. In move mode the editor hands over the saved board with
+   * the copper gestures waiting to be saved already laid on it (see
+   * lib/spinta/rame-locale.ts), so a gesture starts from where the one before
+   * left the copper, without waiting for the server.
+   */
   circuitJson: unknown[] | null;
   flags: ViewFlags;
   /** layer in the foreground: the others stay visible but dimmed */
@@ -250,13 +257,30 @@ export function BoardCanvas({
    * trace (gesto-del-rame.ts). The solver stops the copper at these distances.
    */
   regole?: DesignRules;
-  /** the copper gestures let go and not on the saved board yet: drawn where they were left */
+  /**
+   * The copper gestures let go that `circuitJson` does not show: drawn where
+   * they were left, and a new gesture waits for them. None when the board
+   * given already carries them, which is the rule (see `circuitJson`).
+   */
   rameInAttesa?: readonly RameInAttesa[];
   /** a copper gesture was let go and moved something: what to save, and what to keep on screen */
   onGestoDelRame?: (gesto: RameInAttesa) => void;
   /** in move mode, the one kind of thing a press takes (cosa-si-sposta.ts); left out, everything moves */
   cosaSiSposta?: CosaSiSposta;
 }) {
+  /*
+   * The board a copper gesture started on, kept until the gesture ends: the
+   * saved board that follows an earlier gesture can arrive in the middle of a
+   * drag, with the hand copper numbered anew, and the copper in hand (hidden
+   * by id) would come back under the pointer.
+   */
+  const [circuitoDelGesto, setCircuitoDelGesto] = useState<unknown[] | null>(null);
+  const circuitJson = circuitoDelGesto ?? circuitoDato;
+  const circuitoOra = useRef(circuitJson);
+  useEffect(() => {
+    circuitoOra.current = circuitJson;
+  }, [circuitJson]);
+  const rameInMano = useCallback((inMano: boolean) => setCircuitoDelGesto(inMano ? circuitoOra.current : null), []);
   const scene = useMemo(() => buildScene(circuitJson, { eccedenzaIngombroMm }), [circuitJson, eccedenzaIngombroMm]);
   /** the board's real outline as an SVG path; null when it is a plain rectangle */
   const boardPath = useMemo(() => (scene ? boardOutlinePath(scene.board) : null), [scene]);
@@ -299,6 +323,7 @@ export function BoardCanvas({
     regole,
     inAttesa: rameInAttesa,
     onGesto: onGestoDelRame,
+    onInMano: rameInMano,
   });
   /** DUPLICA VIA: with the vias chosen, a via pressed is chosen, Cmd+C copies it, Cmd+V or a click pastes copies (duplica-via.ts) */
   const duplica = useDuplicaVia({
@@ -311,13 +336,26 @@ export function BoardCanvas({
   });
   const scegliVia = duplica.scegli;
   const prendiRame = rame.prendi;
-  /** a press on copper: a via is chosen too, for Cmd+C */
+  /** the press in hand is on a via: let go, the choice goes where the via went */
+  const viaInMano = useRef(false);
+  /** a press on copper: a via is chosen too, for Cmd+C and Canc */
   const prendiIlRame = useCallback(
     (b: BersaglioDelRame, e: PuntatoreGiu) => {
-      if (b.tipo === "via") scegliVia({ pcbViaId: b.pcbViaId, x: b.x, y: b.y });
+      viaInMano.current = b.tipo === "via";
+      if (b.tipo === "via") scegliVia({ x: b.x, y: b.y });
       prendiRame(b, e);
     },
     [scegliVia, prendiRame],
+  );
+  /** the keepouts of the board, of every layer: drawn while the vias are chosen (see ZoneVietate) */
+  const zoneVietate = useMemo(
+    () =>
+      ((circuitJson ?? []) as Array<{ type: string; [k: string]: unknown } | null>).flatMap((e) => {
+        if (e?.type !== "pcb_keepout") return [];
+        const sagoma = sagomaDiZona(e);
+        return sagoma ? [sagoma] : [];
+      }),
+    [circuitJson],
   );
   /** the parts take the press: always, unless the bar chose the traces or the vias alone */
   const spostaPezzi = cosaSiSposta === undefined || cosaSiSposta === "pezzi";
@@ -1264,7 +1302,13 @@ export function BoardCanvas({
       onPointerCancel={rame.annulla}
       onPointerUp={(e) => {
         // copper in hand is let go here: it becomes a gesture to save
-        if (rame.rilascia()) return;
+        const lasciato = rame.rilascia();
+        if (lasciato) {
+          // the via chosen was the one dragged: the choice follows it, so Cmd+C and Canc still speak of it
+          if (viaInMano.current && lasciato.posizione) duplica.segueLaVia(lasciato.posizione);
+          viaInMano.current = false;
+          return;
+        }
         // the component is dropped here: it becomes a pending edit
         if (compDragFrom.current && compDrag) {
           const d = compDragFrom.current;
@@ -1965,6 +2009,9 @@ export function BoardCanvas({
             <BersagliDelRame bersagli={bersagliDelRame} scelto={scelto} xray={xray} mmPerPx={mmPerPx} soloVie={cosaSiSposta === "vie"} onPrendi={prendiIlRame} />
           )}
 
+          {/* with the vias chosen, the zones no copper enters: a via is stopped by every one of them, whatever layer is in view */}
+          {mode === "move" && cosaSiSposta === "vie" && <ZoneVietate zone={zoneVietate} mmPerPx={mmPerPx} />}
+
           {/* the via chosen for Cmd+C: a dashed ring, that takes no press */}
           {duplica.scelta && (
             <circle
@@ -2158,13 +2205,25 @@ export function BoardCanvas({
           >
             {duplica.incolla ? "Fine" : "Incolla con un clic"}
           </button>
+          <button
+            type="button"
+            data-duplica-via-togli=""
+            disabled={!duplica.incollata}
+            onClick={duplica.togli}
+            title="Toglie la via scelta (Canc), se e' una via incollata: Cmd+Z la rimette"
+            className="rounded-[6px] border border-[#2A3B37] px-1.5 py-0.5 text-[#FF8A96] disabled:opacity-40"
+          >
+            Elimina
+          </button>
           <span className="truncate text-[#5F726C]">
             {duplica.incolla && duplica.copiata
               ? `clicca sulla scheda: una via di ${duplica.copiata.net} per clic`
               : duplica.copiata
                 ? `copiata la via di ${duplica.copiata.net} (${String(duplica.copiata.corona).replace(".", ",")} / ${String(duplica.copiata.foro).replace(".", ",")} mm): Cmd+V la incolla dove sta il puntatore`
                 : duplica.scelta
-                  ? "via scelta: Cmd+C la copia"
+                  ? duplica.incollata
+                    ? "via scelta: Cmd+C la copia, Canc la toglie"
+                    : "via scelta: Cmd+C la copia"
                   : "clicca una via per sceglierla, poi copiala per fare vie di cucitura"}
           </span>
         </div>

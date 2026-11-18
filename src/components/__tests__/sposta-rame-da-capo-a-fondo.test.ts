@@ -1,4 +1,4 @@
-import { Fragment, act, createElement, useCallback, useState } from "react";
+import { Fragment, act, createElement, useCallback, useMemo, useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
@@ -45,11 +45,13 @@ import { MANUAL_EDITS_PATH, parseManualEdits } from "@/lib/manual-edits";
 import { filesHash, getProject, writeProjectFile } from "@/lib/project-store";
 import { rerouteLocal } from "@/lib/reroute-local";
 import { preseDelRame } from "@/lib/spinta/gesto";
+import { rameDelFile, schedaConIlRame } from "@/lib/spinta/rame-locale";
 import { BoardCanvas } from "../board/BoardCanvas";
+import { NESSUN_RAME } from "../board/gesto-del-rame";
 import type { CosaSiSposta } from "../board/cosa-si-sposta";
 import { VIEW_PRESETS } from "../ViewPresets";
 import { EditorBar } from "../workspace/EditorBar";
-import { AUTOSAVE_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
+import { AGGIORNAMENTI_INDIETRO, AUTOSAVE_MS, RIPROVE_DEL_RAME, SEGUE_IL_RAME_MS, useManualEditor, type ManualEditor } from "../workspace/useManualEditor";
 import { apriFinestra, dentro, numeri, type Finestra, type Nodo } from "./dom-finto";
 
 type El = Record<string, unknown> & { type: string };
@@ -141,7 +143,16 @@ let istante = 0;
 let f: Finestra;
 /** every write the page asked of the server, and what the server answered */
 let scritture: Array<{ action: unknown; status: number; error?: unknown }> = [];
-const fuori = {} as { editor: ManualEditor; scheda: unknown[] };
+/** `scheda`: the saved board the page holds; `locale`: the board the canvas draws, with the gestures waiting laid on it */
+const fuori = {} as { editor: ManualEditor; scheda: unknown[]; locale: unknown[] };
+/** when set, the fast update waits for it before it answers: the seconds the saved board takes to follow on a big board */
+let cancelloDellaScheda: Promise<void> | null = null;
+/** how many `copper` saves the server answers with "the board was saved again, try again" before it takes one */
+let riprove = 0;
+/** how many fast updates of the saved board were asked */
+let aggiornamenti = 0;
+/** how many fast updates come back "the files changed while I worked, ask again" before one is done */
+let indietro = 0;
 /** when set, a `copper` save waits for it before it reaches the server: a save that takes seconds, as on a big board */
 let cancello: Promise<void> | null = null;
 
@@ -150,6 +161,12 @@ const server = async (url: string, init?: { method?: string; body?: string; head
   if (!url.startsWith("/api/manual-edits")) return Response.json({ error: "non c'e'" }, { status: 404 });
   if ((init?.method ?? "GET") === "GET") return GET(new Request(`http://x${url}`));
   if (cancello && (JSON.parse(init?.body ?? "{}") as Record<string, unknown>).action === "copper") await cancello;
+  if (riprove > 0 && (JSON.parse(init?.body ?? "{}") as Record<string, unknown>).action === "copper") {
+    riprove -= 1;
+    // what rameRifiutato(SCHEDA_RISALVATA, true, true) answers when a fast update saved a board under the save
+    scritture.push({ action: "copper", status: 409, error: "riprova" });
+    return Response.json({ error: "rame non salvato: la scheda e' stata salvata di nuovo mentre la leggevo: riprova sulla scheda di adesso", cambiata: true, riprova: true }, { status: 409 });
+  }
   const risposta = await POST(new Request(`http://x${url}`, { method: "POST", headers: { "content-type": "application/json" }, body: init?.body }));
   const corpo = (await risposta.clone().json()) as Record<string, unknown>;
   scritture.push({ action: (JSON.parse(init?.body ?? "{}") as Record<string, unknown>).action, status: risposta.status, ...(corpo.error ? { error: corpo.error } : {}) });
@@ -157,6 +174,8 @@ const server = async (url: string, init?: { method?: string; body?: string; head
 };
 /** what /api/reroute-local does after a save: the fast update of the saved board for the files of now, saved in its place */
 const aggiornaVeloce = async (): Promise<unknown[]> => {
+  aggiornamenti += 1;
+  if (cancelloDellaScheda) await cancelloDellaScheda;
   const files = await getProject(P);
   const fatto = rerouteLocal(stato.riga!.circuitJson, files, files[MANUAL_EDITS_PATH]);
   const circuitJson = fatto.circuitJson ?? stato.riga!.circuitJson;
@@ -167,12 +186,20 @@ const aggiornaVeloce = async (): Promise<unknown[]> => {
 /** when set, the page has the choice of what Sposta moves, as Studio has: the parts to begin with */
 let conLaScelta = false;
 
+const REGOLE_LETTE = resolveDesignRules(FILES).rules;
+
 /** the editor and the canvas of Sposta wired as Studio wires them */
 function Pagina() {
   const [cosa, setCosa] = useState<CosaSiSposta>("pezzi");
   const scelta = conLaScelta ? { cosaSiSposta: cosa } : {};
   const [circuitJson, setCircuitJson] = useState(() => stato.riga!.circuitJson);
   const onApplied = useCallback(async () => {
+    if (indietro > 0) {
+      // what Studio answers when /api/reroute-local says `retry` with `fileCambiati`: the board is not saved, nothing is wrong
+      indietro -= 1;
+      aggiornamenti += 1;
+      return { ok: false, retry: true, reason: "i file sono cambiati mentre aggiornavo la scheda: riprovo su quelli di adesso" };
+    }
     setCircuitJson(await aggiornaVeloce());
     return { ok: true };
   }, []);
@@ -182,18 +209,24 @@ function Pagina() {
     setVista(circuitJson);
     editor.dropShownCopper(circuitJson);
   }
-  Object.assign(fuori, { editor, scheda: circuitJson });
+  // the board of Sposta, as Studio works it out: the saved board with the gestures waiting already laid on it
+  const { rameAvanti, rameDaPosare, saved } = editor;
+  const locale = useMemo(
+    () => (rameAvanti ? schedaConIlRame({ circuitJson, regole: REGOLE_LETTE, saved, gesti: rameDaPosare }) : circuitJson),
+    [circuitJson, rameAvanti, rameDaPosare, saved],
+  );
+  Object.assign(fuori, { editor, scheda: circuitJson, locale });
   return createElement(
     Fragment,
     null,
     createElement(EditorBar, { editor, scope: "pcb", ...scelta, ...(conLaScelta ? { onCosaSiSposta: setCosa } : {}) }),
     createElement(BoardCanvas, {
-      circuitJson,
+      circuitJson: locale,
       flags: FLAGS,
       layer: "top",
       mode: editor.mode === "move" ? "move" : "view",
-      regole: resolveDesignRules(FILES).rules,
-      rameInAttesa: editor.copper,
+      regole: REGOLE_LETTE,
+      rameInAttesa: NESSUN_RAME,
       onGestoDelRame: editor.addCopper,
       onMoveComponent: () => {},
       onPickComponent: () => {},
@@ -210,6 +243,11 @@ const calma = async () => {
 const passa = async (ms: number) => {
   await act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
   await calma();
+};
+/** the quiet of the autosave, then the quiet after which the saved board follows the copper: a gesture written and on the saved board */
+const salvaEsegue = async () => {
+  await passa(AUTOSAVE_MS);
+  await passa(SEGUE_IL_RAME_MS);
 };
 const bersaglio = (presa: string): Nodo => f.contenitore.cerca((n) => n.getAttribute("data-presa") === presa)[0];
 const salvati = async () => parseManualEdits((await getProject(P))[MANUAL_EDITS_PATH]);
@@ -251,6 +289,10 @@ beforeEach(async () => {
 afterEach(async () => {
   conLaScelta = false;
   cancello = null;
+  cancelloDellaScheda = null;
+  riprove = 0;
+  aggiornamenti = 0;
+  indietro = 0;
   await smonta?.();
   smonta = null;
   vi.unstubAllGlobals();
@@ -282,7 +324,7 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     expect(fuori.editor.copper).toHaveLength(1);
     expect(scritture).toEqual([]);
 
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     // ONE save, taken by the server as it is: read, checked against the saved board, written
     expect(scritture).toEqual([{ action: "copper", status: 200 }]);
     expect(fuori.editor.error).toBeNull();
@@ -327,7 +369,7 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     const nome = tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "";
     // dragged down by a millimetre and sideways by three: only the part along the normal counts
     await trascina(nome, [-6, -8], [-3, -9]);
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     expect(scritture).toEqual([{ action: "copper", status: 200 }]);
     expect(fuori.editor.error).toBeNull();
     expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-6"]);
@@ -343,7 +385,7 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     await apri();
     const tratto = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
     await trascina(tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "", [-6, -8], [-6, -9]);
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-6"]);
     await f.tasto("z", { metaKey: true });
     await calma();
@@ -357,12 +399,12 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     await apri();
     const primo = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
     await trascina(primo.tipo === "tratto" ? `tratto:${primo.pcbTraceId}:${primo.indice}` : "", [-6, -8], [-6, -9]);
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-6"]);
     // the trace is now a correction laid on the board: its stretch is found again where the first gesture left it
     const secondo = preseDelRame(fuori.scheda).find((p) => p.tipo === "tratto" && p.y1 === -9 && p.y2 === -9)!;
     await trascina(secondo.tipo === "tratto" ? `tratto:${secondo.pcbTraceId}:${secondo.indice}` : "", [-6, -9], [-6, -10]);
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-10 > 0;-10 > 0;-6"]);
 
     await f.tasto("z", { metaKey: true });
@@ -376,43 +418,348 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     expect((await salvati()).pcb_routes).toEqual([]);
   }, 60_000);
 
-  it("un salvataggio che dura secondi: la barra dice che salva, un'altra presa dice di aspettare, e Cmd+Z premuto intanto annulla appena il salvataggio e' finito", async () => {
+  it("un salvataggio che dura secondi: la barra dice che salva, un altro gesto parte subito dalla scheda col primo gia' posato, e i due si salvano in fila", async () => {
     await apri();
     const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
-    const tratto = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
     let apriIlCancello!: () => void;
     cancello = new Promise<void>((ok) => {
       apriIlCancello = ok;
     });
     await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
-    await passa(AUTOSAVE_MS);
-    // the save is on its way and does not come back: the gesture waits on screen
+    await salvaEsegue();
+    // the save is on its way and does not come back: the gesture waits to be written
     expect(fuori.editor.saveState).toBe("salvo");
     expect(fuori.editor.copper).toHaveLength(1);
     expect(scritture).toEqual([]);
+    // the saved board is the one of before; the board the canvas draws has the via where it was put, with its trace
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(percorso(fuori.locale, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-5"]);
+    expect(idDoppi(fuori.locale)).toBeNull();
 
-    // a press on other copper meanwhile starts nothing, and says why on the board
-    const nodo = bersaglio(tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "");
-    await f.spara(nodo, "pointerdown", a(-6, -8));
-    await f.spara(nodo, "pointerup", a(-6, -8));
-    expect(f.contenitore.textContent).toContain("un momento: la scheda sta ancora seguendo lo spostamento di prima");
-    expect(fuori.editor.copper).toHaveLength(1);
+    // a stretch of that same trace, taken meanwhile: the gesture starts at once, from where the first one left the copper
+    const tratto = preseDelRame(fuori.locale).find((p) => p.tipo === "tratto" && p.y1 === -8 && p.y2 === -8)!;
+    expect(tratto.tipo).toBe("tratto");
+    await trascina(tratto.tipo === "tratto" ? `tratto:${tratto.pcbTraceId}:${tratto.indice}` : "", [-6, -8], [-6, -9]);
+    expect(f.contenitore.textContent).not.toContain("un momento");
+    expect(fuori.editor.copper).toHaveLength(2);
+    expect(percorso(fuori.locale, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-5"]);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(idDoppi(fuori.locale)).toBeNull();
+    // what the page expects the file to hold once both are saved
+    const atteso = rameDelFile(fuori.editor.saved, fuori.scheda, fuori.editor.rameDaPosare);
 
-    // Cmd+Z while it saves: it waits its turn behind the save
-    await f.tasto("z", { metaKey: true });
-    await calma();
+    // the first save comes back, the second goes after it: both taken by the server, in the order they were made
+    await salvaEsegue();
     expect(scritture).toEqual([]);
     apriIlCancello();
     cancello = null;
     await calma();
     await calma();
-    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["set", 200]]);
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["copper", 200]]);
     expect(fuori.editor.error).toBeNull();
-    // the file and the board are the ones of before, and nothing is left waiting on screen
+    // written, and the saved board has not followed yet: it does when the hand has been still, once for the two
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(fuori.editor.saveState).toBe("segue");
+    expect(aggiornamenti).toBe(0);
+    await passa(SEGUE_IL_RAME_MS);
+    expect(aggiornamenti).toBe(1);
+    // the file the server holds is the one the page had laid, and the saved board shows the same copper
+    const file = await salvati();
+    const senzaFirma = <T extends { gesto?: string; at?: string }>(v: T) => ({ ...v, gesto: undefined, at: undefined });
+    expect(file.pcb_vias.map(senzaFirma)).toEqual(atteso.vias.map(senzaFirma));
+    expect(file.pcb_routes.map(senzaFirma)).toEqual(atteso.routes.map(senzaFirma));
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-5"]);
+    expect(idDoppi(fuori.scheda)).toBeNull();
+    expect(fuori.editor.copper).toEqual([]);
+    expect(fuori.editor.rameAvanti).toBe(false);
+    // nothing ahead of the saved board: the canvas draws that very board
+    expect(fuori.locale).toBe(fuori.scheda);
+
+    // Cmd+Z twice: one gesture back at a time
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-5"]);
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-8 > 0;-8 > 0;-6"]);
+    expect((await salvati()).pcb_vias).toEqual([]);
+    expect(fuori.editor.error).toBeNull();
+  }, 60_000);
+
+  it("la scheda salvata ci mette secondi a seguire: i gesti non la aspettano, e quando arriva li mostra tutti", async () => {
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    let apriLaScheda!: () => void;
+    cancelloDellaScheda = new Promise<void>((ok) => {
+      apriLaScheda = ok;
+    });
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
+    await salvaEsegue();
+    // written, and the fast update that follows it does not come back: the saved board is still the old one
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200]]);
+    expect(fuori.editor.saveState).toBe("segue");
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+
+    // the via again, from where it stands on the board the canvas draws: no waiting for the saved one
+    const ora = preseDelRame(fuori.locale).find((p) => p.tipo === "via" && p.x === 0 && p.y === -5)!;
+    expect(ora.tipo).toBe("via");
+    await trascina(`via:${ora.tipo === "via" ? ora.pcbViaId : ""}`, [0, -5], [1, -5]);
+    expect(f.contenitore.textContent).not.toContain("un momento");
+    await salvaEsegue();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["copper", 200]]);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "1;-5", "5;0"]);
+    expect(fuori.editor.error).toBeNull();
+
+    // the saved board catches up: it shows both, and the canvas goes back to drawing it as it is
+    apriLaScheda();
+    cancelloDellaScheda = null;
+    await calma();
+    await calma();
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "1;-5", "5;0"]);
+    expect(idDoppi(fuori.scheda)).toBeNull();
+    expect(fuori.editor.copper).toEqual([]);
+    expect(fuori.locale).toBe(fuori.scheda);
+    // one correction in the file, from where the files put the via to where it stands now
+    expect((await salvati()).pcb_vias.map((v) => ({ from: v.from, to: v.to }))).toEqual([{ from: { x: 0, y: -6 }, to: { x: 1, y: -5 } }]);
+  }, 60_000);
+
+  it("la scheda risalvata sotto un salvataggio (l'aggiornamento veloce del gesto di prima): il server dice di riprovare, la pagina riprova da sola e il gesto non si perde", async () => {
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    riprove = 2;
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
+    await salvaEsegue();
+    await passa(300);
+    await passa(600);
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 409], ["copper", 409], ["copper", 200]]);
+    expect(fuori.editor.error).toBeNull();
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(fuori.editor.copper).toEqual([]);
+
+    // a refusal that does not go away is said, and the copper goes back: the gesture is not tried for ever
+    const ora = preseDelRame(fuori.scheda).find((p) => p.tipo === "via" && p.x === 0 && p.y === -5)!;
+    riprove = 99;
+    await trascina(`via:${ora.tipo === "via" ? ora.pcbViaId : ""}`, [0, -5], [1, -5]);
+    await salvaEsegue();
+    for (let i = 1; i <= RIPROVE_DEL_RAME; i++) await passa(300 * i);
+    expect(scritture.filter((s) => s.status === 409)).toHaveLength(2 + RIPROVE_DEL_RAME);
+    expect(fuori.editor.error).toContain("riprova sulla scheda di adesso");
+    expect(fuori.editor.copper).toEqual([]);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+  }, 60_000);
+
+  it("una via incollata si prende subito: spostata, poi tolta con Canc, senza aspettare un salvataggio; i tre si salvano in fila e Cmd+Z la rimette", async () => {
+    conLaScelta = true;
+    await apri();
+    const bottone = (nome: string) => f.contenitore.cerca((n) => n.tagName === "BUTTON" && n.textContent === nome)[0];
+    // the canvas of the board: the svg the copper targets are in (the bar has svgs of its own)
+    const tavola = () => f.contenitore.cerca((n) => n.tagName === "svg" && n.cerca((q) => q.getAttribute("data-presa") !== null).length > 0)[0];
+    const scelta = () => f.contenitore.cerca((n) => n.getAttribute("data-via-scelta") !== null)[0];
+    await f.spara(bottone("vie"), "click");
+    // the lone via of ground, chosen with a press and copied
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    const presa = bersaglio(`via:${via.tipo === "via" ? via.pcbViaId : ""}`);
+    await f.spara(presa, "pointerdown", a(0, -6));
+    await f.spara(presa, "pointerup", a(0, -6));
+    await f.tasto("c", { metaKey: true });
+    // pasted at (6; -9): on the board the canvas draws at once, a via like the others
+    await f.spara(tavola(), "pointermove", a(6, -9));
+    await f.tasto("v", { metaKey: true });
+    expect(fuori.editor.copper).toHaveLength(1);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0", "6;-9"]);
+    const incollata = preseDelRame(fuori.locale).find((p) => p.tipo === "via" && p.x === 6 && p.y === -9)!;
+    expect(incollata.tipo).toBe("via");
+
+    // taken and moved before anything is saved
+    await trascina(`via:${incollata.tipo === "via" ? incollata.pcbViaId : ""}`, [6, -9], [8, -9]);
+    expect(f.contenitore.textContent).not.toContain("un momento");
+    expect(fuori.editor.copper).toHaveLength(2);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0", "8;-9"]);
+    // the choice went with the via: it is the one Canc speaks of
+    expect(numeri(scelta(), "cx", "cy")).toEqual([8, -9]);
+    expect(scritture).toEqual([]);
+
+    // Canc: the via goes at once, and nothing has been written yet
+    await f.tasto("Delete");
+    expect(fuori.editor.copper).toHaveLength(3);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(scelta()).toBeUndefined();
+
+    // the three go in the order they were made: pasted, moved, taken out
+    await salvaEsegue();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["copper", 200], ["unpaste", 200]]);
+    expect(fuori.editor.error).toBeNull();
     expect((await salvati()).pcb_vias).toEqual([]);
     expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
     expect(fuori.editor.copper).toEqual([]);
+
+    // Cmd+Z puts it back where it was taken out, as a pasted via still
+    await f.tasto("z", { metaKey: true });
+    await calma();
+    expect((await salvati()).pcb_vias.map((v) => ({ net: v.net, to: v.to, aggiunta: v.aggiunta }))).toEqual([{ net: "GND", to: { x: 8, y: -9 }, aggiunta: true }]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0", "8;-9"]);
+    expect(fuori.editor.error).toBeNull();
+  }, 60_000);
+
+  it("Canc su una via dei file non la toglie e dice perche'; Canc su una incollata e Cmd+Z prima del salvataggio la rimette senza scrivere niente", async () => {
+    conLaScelta = true;
+    await apri();
+    const bottone = (nome: string) => f.contenitore.cerca((n) => n.tagName === "BUTTON" && n.textContent === nome)[0];
+    // the canvas of the board: the svg the copper targets are in (the bar has svgs of its own)
+    const tavola = () => f.contenitore.cerca((n) => n.tagName === "svg" && n.cerca((q) => q.getAttribute("data-presa") !== null).length > 0)[0];
+    await f.spara(bottone("vie"), "click");
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    const presa = bersaglio(`via:${via.tipo === "via" ? via.pcbViaId : ""}`);
+    await f.spara(presa, "pointerdown", a(0, -6));
+    await f.spara(presa, "pointerup", a(0, -6));
+    // a via of the files: not from here
+    await f.tasto("Delete");
+    expect(f.contenitore.textContent).toContain("da qui si tolgono solo le vie incollate");
+    expect(fuori.editor.copper).toEqual([]);
+    const elimina = () => f.contenitore.cerca((n) => n.getAttribute("data-duplica-via-togli") !== null)[0];
+    expect(elimina().getAttribute("disabled")).not.toBeNull();
+
+    await f.tasto("c", { metaKey: true });
+    await f.spara(tavola(), "pointermove", a(6, -9));
+    await f.tasto("v", { metaKey: true });
+    await salvaEsegue();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200]]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0", "6;-9"]);
+
+    // the pasted one, chosen: the button of the panel takes it out
+    const incollata = preseDelRame(fuori.scheda).find((p) => p.tipo === "via" && p.x === 6 && p.y === -9)!;
+    const sua = bersaglio(`via:${incollata.tipo === "via" ? incollata.pcbViaId : ""}`);
+    await f.spara(sua, "pointerdown", a(6, -9));
+    await f.spara(sua, "pointerup", a(6, -9));
+    expect(elimina().getAttribute("disabled")).toBeNull();
+    await f.spara(elimina(), "click");
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    // Cmd+Z before the quiet of the autosave: the via is back, and the server was asked nothing
+    await f.tasto("z", { metaKey: true });
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0", "6;-9"]);
+    await salvaEsegue();
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200]]);
+    expect((await salvati()).pcb_vias).toHaveLength(1);
+  }, 60_000);
+
+  it("Cmd+Z su un gesto non ancora inviato, mentre quello di prima si sta salvando: sparisce e NON viene scritto quando tocca a lui", async () => {
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
+    // the second let go before the first is sent: one round of saves takes them both, one after the other
+    const ora = preseDelRame(fuori.locale).find((p) => p.tipo === "via" && p.x === 0 && p.y === -5)!;
+    await trascina(`via:${ora.tipo === "via" ? ora.pcbViaId : ""}`, [0, -5], [1, -5]);
+    expect(fuori.editor.copper).toHaveLength(2);
+    let apriIlCancello!: () => void;
+    cancello = new Promise<void>((ok) => {
+      apriIlCancello = ok;
+    });
+    await passa(AUTOSAVE_MS);
+    // the first is on its way, held; the second waits its turn in the same round
+    expect(scritture).toEqual([]);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "1;-5", "5;0"]);
+
+    // Cmd+Z: the second goes back at once
+    await f.tasto("z", { metaKey: true });
+    expect(fuori.editor.copper).toHaveLength(1);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+
+    // the first save comes back: the second is NOT written after it
+    apriIlCancello();
+    cancello = null;
+    await calma();
+    await calma();
+    await passa(AUTOSAVE_MS);
+    await passa(SEGUE_IL_RAME_MS);
+    expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200]]);
+    expect((await salvati()).pcb_vias.map((v) => v.to)).toEqual([{ x: 0, y: -5 }]);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(fuori.editor.copper).toEqual([]);
+    expect(fuori.editor.error).toBeNull();
+    // and it can be done again: it is what Cmd+Shift+Z brings back
     expect(fuori.editor.canRedo).toBe(true);
+  }, 60_000);
+
+  it("l'aggiornamento della scheda resta indietro perche' i file sono cambiati sotto di lui: non e' un errore, si richiede alla prossima quiete e la scheda segue", async () => {
+    await apri();
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    indietro = 2;
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
+    await salvaEsegue();
+    // asked once, came back "ask again": nothing is said, the saved board is the old one and the canvas draws the copper all the same
+    expect(aggiornamenti).toBe(1);
+    expect(fuori.editor.error).toBeNull();
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-6", "5;0"]);
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(fuori.editor.saveState).toBe("segue");
+    // not asked again at once: only when the quiet is over
+    await passa(SEGUE_IL_RAME_MS - 100);
+    expect(aggiornamenti).toBe(1);
+    await passa(100);
+    expect(aggiornamenti).toBe(2);
+    expect(fuori.editor.error).toBeNull();
+    // the third one is done: the board follows
+    await passa(SEGUE_IL_RAME_MS);
+    expect(aggiornamenti).toBe(3);
+    expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
+    expect(fuori.editor.copper).toEqual([]);
+    expect(fuori.locale).toBe(fuori.scheda);
+    expect(fuori.editor.error).toBeNull();
+    expect(fuori.editor.saveState).toBe("salvato");
+
+    // a row of them without end is said, like any update that could not be done
+    indietro = AGGIORNAMENTI_INDIETRO + 1;
+    const ora = preseDelRame(fuori.scheda).find((p) => p.tipo === "via" && p.x === 0 && p.y === -5)!;
+    await trascina(`via:${ora.tipo === "via" ? ora.pcbViaId : ""}`, [0, -5], [1, -5]);
+    await salvaEsegue();
+    for (let i = 0; i < AGGIORNAMENTI_INDIETRO; i++) await passa(SEGUE_IL_RAME_MS);
+    expect(fuori.editor.error).toContain("la scheda non li ha ancora seguiti");
+    // the copper is still where it was put, on the board the canvas draws
+    expect(vie(fuori.locale)).toEqual(["-12;-3", "-5;0", "1;-5", "5;0"]);
+  }, 60_000);
+
+  it("l'azione unpaste toglie solo una via incollata, per rete e posto: una via dei file spostata resta, e un corpo sbagliato e' rifiutato", async () => {
+    conLaScelta = true;
+    await apri();
+    const bottone = (nome: string) => f.contenitore.cerca((n) => n.tagName === "BUTTON" && n.textContent === nome)[0];
+    const tavola = () => f.contenitore.cerca((n) => n.tagName === "svg" && n.cerca((q) => q.getAttribute("data-presa") !== null).length > 0)[0];
+    await f.spara(bottone("vie"), "click");
+    const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
+    const presa = bersaglio(`via:${via.tipo === "via" ? via.pcbViaId : ""}`);
+    await f.spara(presa, "pointerdown", a(0, -6));
+    await f.spara(presa, "pointerup", a(0, -6));
+    await f.tasto("c", { metaKey: true });
+    await f.spara(tavola(), "pointermove", a(6, -9));
+    await f.tasto("v", { metaKey: true });
+    // and the via of the files, moved: a correction, not a pasted via
+    await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -5]);
+    await salvaEsegue();
+    expect((await salvati()).pcb_vias.map((v) => [v.to.x, v.to.y, v.aggiunta === true])).toEqual([[6, -9, true], [0, -5, false]]);
+
+    const chiedi = async (via: unknown) => {
+      const r = await server("/api/manual-edits", { method: "POST", body: JSON.stringify({ projectId: P, action: "unpaste", via }) });
+      return [r.status, ((await r.json()) as { removed?: boolean }).removed];
+    };
+    // what does not read is refused, and nothing is written
+    expect(await chiedi(undefined)).toEqual([400, undefined]);
+    expect(await chiedi({ net: "GND", x: "6", y: -9 })).toEqual([400, undefined]);
+    expect(await chiedi({ net: "GND; DROP", x: 6, y: -9 })).toEqual([400, undefined]);
+    expect(await chiedi({ net: "GND", x: 6, y: Number.NaN })).toEqual([400, undefined]);
+    // the moved via of the files is not a pasted one: it stays
+    expect(await chiedi({ net: "GND", x: 0, y: -5 })).toEqual([200, false]);
+    // another net, another place: nothing
+    expect(await chiedi({ net: "PWR", x: 6, y: -9 })).toEqual([200, false]);
+    expect(await chiedi({ net: "GND", x: 6, y: -8.9 })).toEqual([200, false]);
+    expect((await salvati()).pcb_vias).toHaveLength(2);
+    // the pasted one, by its net and its place
+    expect(await chiedi({ net: "GND", x: 6, y: -9 })).toEqual([200, true]);
+    expect((await salvati()).pcb_vias.map((v) => [v.to.x, v.to.y])).toEqual([[0, -5]]);
+    // gone already: said, and nothing written
+    expect(await chiedi({ net: "GND", x: 6, y: -9 })).toEqual([200, false]);
   }, 60_000);
 
   it("la barra sceglie cosa si sposta: coi componenti il rame non si prende, con le vie si trascina la via, con le piste il tratto", async () => {
@@ -436,7 +783,7 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     expect(bersaglio(presaVia)).toBeDefined();
     expect(bersaglio(presaTratto)).toBeUndefined();
     await trascina(presaVia, [0, -6], [0, -5]);
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     expect(scritture).toEqual([{ action: "copper", status: 200 }]);
     expect(vie(fuori.scheda)).toEqual(["-12;-3", "-5;0", "0;-5", "5;0"]);
 
@@ -448,7 +795,7 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     const presaOra = ora.tipo === "tratto" ? `tratto:${ora.pcbTraceId}:${ora.indice}` : "";
     expect(bersaglio(presaOra)).toBeDefined();
     await trascina(presaOra, [-6, -8], [-6, -9]);
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     expect(scritture.map((s) => [s.action, s.status])).toEqual([["copper", 200], ["copper", 200]]);
     expect(percorso(fuori.scheda, ALLA_VIA)).toEqual(["-10.51;-6 > -12;-6 > -12;-9 > 0;-9 > 0;-5"]);
     expect(fuori.editor.error).toBeNull();
@@ -484,7 +831,7 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     await f.frame();
     await f.spara(nodo, "pointerup", a(0, 0.3));
 
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     // ONE save for the via and for the trace it pushed, taken by the server as it is
     expect(scritture).toEqual([{ action: "copper", status: 200 }]);
     expect(fuori.editor.error).toBeNull();
@@ -512,7 +859,7 @@ describe("il gesto sul rame in Sposta, da capo a fondo: visore, risolutore, serv
     const via = preseDelRame(compilata.circuitJson).find((p) => p.tipo === "via" && p.x === 0 && p.y === -6)!;
     // the board ends at y = -12: the pointer goes well past it
     await trascina(`via:${via.tipo === "via" ? via.pcbViaId : ""}`, [0, -6], [0, -20]);
-    await passa(AUTOSAVE_MS);
+    await salvaEsegue();
     expect(scritture).toEqual([{ action: "copper", status: 200 }]);
     const [doveSta] = vie(fuori.scheda).filter((v) => v.startsWith("0;"));
     const y = Number(doveSta.split(";")[1]);

@@ -69,7 +69,10 @@ describe("incollarla: prima di posarla, le regole del progetto", () => {
   });
   it("sul bordo, in un ritaglio o in una zona vietata al rame: no", () => {
     expect(motivo(prova(19.9, 0))).toContain("bordo");
-    expect(motivo(prova(0, 1.5))).toContain("zona vietata");
+    expect(motivo(prova(0, 1.5))).toContain("zona vietata al rame su top: la via e' passante e ci entra");
+    // the zone that said no goes with the refusal: the viewer draws it, whatever layer is in view
+    const inZona = prova(0, 1.5);
+    expect(inZona.ok === false && inZona.blocco.zona).toBeTruthy();
     expect(motivo(prova(0, 13))).toMatch(/bordo|ritaglio/);
   });
   it("contro l'apertura della maschera di una piazzola, anche della sua rete: no, con la misura", () => {

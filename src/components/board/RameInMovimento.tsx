@@ -2,6 +2,7 @@
 
 import { memo, useSyncExternalStore } from "react";
 import type { StatoDelGesto } from "@/lib/spinta/gesto-tipi";
+import type { Sagoma } from "@/lib/zona";
 import type { GestoVivo, RameInAttesa } from "./gesto-del-rame";
 import { LABEL_FONT, LABEL_METRICS, labelSize } from "./net-labels";
 import { LAYER_COLOR, type LayerId } from "./render";
@@ -108,18 +109,72 @@ export function RameInMovimento({
  * moment, why something could not be grabbed at all. Drawn over everything, in
  * board millimetres; the sentence in screen pixels, so it reads at any zoom.
  */
+/**
+ * The outline of a forbidden zone (or of a cutout) that blocks: drawn whatever
+ * layer is in view, since a keepout of the bottom stops a via looked at from
+ * the top, where nothing says why.
+ */
+function ZonaCheBlocca({ zona, mmPerPx }: { zona: Sagoma; mmPerPx: number }) {
+  const tratto = { fill: "rgba(255,77,94,0.10)", stroke: COLORE_BLOCCO, strokeWidth: mmPerPx * 1.5, strokeDasharray: `${mmPerPx * 6} ${mmPerPx * 4}` };
+  if ("punti" in zona) {
+    return <polygon data-zona-che-blocca="" points={zona.punti.map((p) => `${p.x},${p.y}`).join(" ")} {...tratto} />;
+  }
+  if ("tratti" in zona) {
+    return (
+      <g data-zona-che-blocca="">
+        {zona.tratti.map(([a, b], i) => (
+          <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COLORE_BLOCCO} strokeOpacity={0.35} strokeWidth={Math.max(zona.r * 2, mmPerPx * 2)} strokeLinecap="round" />
+        ))}
+      </g>
+    );
+  }
+  return <circle data-zona-che-blocca="" cx={zona.x} cy={zona.y} r={zona.r} {...tratto} />;
+}
+
+/**
+ * THE FORBIDDEN ZONES OF THE BOARD (pcb_keepout), all of them, whatever layer
+ * they are of: drawn while the vias are what Sposta moves. A via is a through
+ * hole and no keepout lets it in, and the canvas drew none of them: on the
+ * layer in view the board looked free where a pasted via was refused (118
+ * places of a 1 mm grid on sbb-dl-principale are in a keepout of the bottom
+ * alone, 114 in one of the top alone, 2026-11-18).
+ */
+export const ZoneVietate = memo(function ZoneVietate({ zone, mmPerPx }: { zone: readonly Sagoma[]; mmPerPx: number }) {
+  if (zone.length === 0) return null;
+  const tratto = { fill: "rgba(255,77,94,0.05)", stroke: COLORE_BLOCCO, strokeOpacity: 0.45, strokeWidth: mmPerPx, strokeDasharray: `${mmPerPx * 4} ${mmPerPx * 4}` };
+  return (
+    <g data-zone-vietate="" pointerEvents="none">
+      {zone.map((z, i) =>
+        "punti" in z ? (
+          <polygon key={i} points={z.punti.map((p) => `${p.x},${p.y}`).join(" ")} {...tratto} />
+        ) : "tratti" in z ? (
+          <g key={i}>
+            {z.tratti.map(([a, b], j) => (
+              <line key={j} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COLORE_BLOCCO} strokeOpacity={0.12} strokeWidth={Math.max(z.r * 2, mmPerPx)} strokeLinecap="round" />
+            ))}
+          </g>
+        ) : (
+          <circle key={i} cx={z.x} cy={z.y} r={z.r} {...tratto} />
+        ),
+      )}
+    </g>
+  );
+});
+
 export function AvvisoDelGesto({ vivo, mmPerPx }: { vivo: GestoVivo; mmPerPx: number }) {
   const { stato, rifiuto } = useSyncExternalStore(vivo.subscribe, vivo.getSnapshot, vivo.getSnapshot);
   const blocco = stato?.blocco ?? null;
   const frase = blocco?.motivo ?? rifiuto?.frase;
   if (!frase) return null;
   const alone = blocco?.alone;
+  const zona = blocco?.zona ?? rifiuto?.zona;
   // a halo of a few pixels would not be seen from far away
   const raggio = alone ? Math.max(alone.raggioMm, mmPerPx * 6) : 0;
   const dove = alone ? { x: alone.x + raggio, y: alone.y } : (stato?.posizione ?? rifiuto ?? { x: 0, y: 0 });
   const { w, h } = labelSize(frase, "");
   return (
     <g data-blocco-del-gesto="" pointerEvents="none">
+      {zona && <ZonaCheBlocca zona={zona} mmPerPx={mmPerPx} />}
       {alone && (
         <circle
           cx={alone.x}

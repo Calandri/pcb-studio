@@ -534,6 +534,8 @@ export function conLaPartenzaDeiFile(scheda: unknown[], correnti: ManualEdits, r
     const reti = retiDelCircuito(els as never);
     const vie = els.filter((e) => e.type === "pcb_via");
     vias = vias.map((via) => {
+      // a pasted via starts from nothing of the files: where it is pasted is its start
+      if (via.aggiunta) return via;
       if (correnti.pcb_vias.some((v) => v.net === via.net && v.to.x === via.from.x && v.to.y === via.from.y)) return via;
       for (const e of vie) {
         if (!finito(e.x) || !finito(e.y) || round4(e.x) !== via.from.x || round4(e.y) !== via.from.y) continue;

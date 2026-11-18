@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import { applyManualRoutes } from "@/lib/manual-routes";
 import { iniziaGesto, muoviGesto } from "@/lib/spinta/gesto";
 import { leggiModello, type Modello } from "@/lib/spinta/modello";
-import { spostaVia, traslaTratto, type Blocco, type EsitoDellaMossa } from "@/lib/spinta/mosse";
+import { fraseDelKeepout, spostaVia, traslaTratto, type Blocco, type EsitoDellaMossa } from "@/lib/spinta/mosse";
 import { correzioniDellaMossa, rameDelleCorrezioni } from "@/lib/spinta/salvataggio";
 import { trace, wire, type El } from "./scheda-di-prova";
 import { AUX, GND, GND_RAMO, rameDiSerie, REGOLE, schedaDiSpinta, SIG, viaDi } from "./spinta-scheda";
@@ -72,8 +72,20 @@ describe("spinta, blocchi: what stops a via", () => {
 
   it("a keepout, on whatever layer it is of: a via is copper on all of them", () => {
     // the keepout of the top layer, from y = 0.5 up: the ring would reach 0.6
-    expect(lone({ x: 0, y: 0.3 })).toMatchObject({ motivo: "keepout", cosa: { tipo: "keepout", id: "zona_1" }, messaggio: "bloccato da una zona vietata al rame" });
+    // and the sentence names the layer: on the others there is nothing to see where the via stops
+    expect(lone({ x: 0, y: 0.3 })).toMatchObject({
+      motivo: "keepout",
+      cosa: { tipo: "keepout", id: "zona_1" },
+      messaggio: "bloccato da una zona vietata al rame su top: la via e' passante e ci entra",
+    });
     expect(via(modello, "v_pwr", { x: 0, y: 0.1 }).ok).toBe(true);
+  });
+
+  it("the sentence of a keepout: its layers, and for a via that it is a through hole", () => {
+    expect(fraseDelKeepout(null, null)).toBe("bloccato da una zona vietata al rame (tutti gli strati)");
+    expect(fraseDelKeepout(null, "top")).toBe("bloccato da una zona vietata al rame (tutti gli strati)");
+    expect(fraseDelKeepout(["bottom"], null)).toBe("bloccato da una zona vietata al rame su bottom: la via e' passante e ci entra");
+    expect(fraseDelKeepout(["top", "inner1"], "top")).toBe("bloccato da una zona vietata al rame su top, inner1");
   });
 
   it("the edge of the board, and the notch in it", () => {
@@ -183,7 +195,9 @@ describe("spinta, blocchi: what cannot be taken at all", () => {
     if ("rifiuto" in inizio) throw new Error(inizio.rifiuto);
     // up into the keepout: it stops under it, 0.3 mm of ring below y = 0.5
     const fermo = muoviGesto(inizio.gesto, { x: 0, y: 3 });
-    expect(fermo.blocco?.motivo).toBe("bloccato da una zona vietata al rame");
+    expect(fermo.blocco?.motivo).toBe("bloccato da una zona vietata al rame su top: la via e' passante e ci entra");
+    // the zone itself goes with the block, for the viewer to draw: it is of a layer that may not be in view
+    expect(fermo.blocco?.zona).toBeDefined();
     expect(fermo.posizione.y).toBeLessThanOrEqual(0.2);
     expect(fermo.nascosti).toBe(inizio.stato.nascosti);
     expect(fermo.tratti).toEqual([]);

@@ -18,6 +18,8 @@ import { BoardNotCompiled } from "./workspace/BoardNotCompiled";
 import { Chat, type AgentStatus, type ChatItem } from "./Chat";
 import { HandoffButton } from "./HandoffButton";
 import { BoardCanvas, type BoardZone, type SelectMode } from "./board/BoardCanvas";
+import { NESSUN_RAME } from "./board/gesto-del-rame";
+import { schedaConIlRame } from "@/lib/spinta/rame-locale";
 import { useCollegamentiAperti } from "./board/CollegamentiAperti";
 import type { CosaSiSposta } from "./board/cosa-si-sposta";
 import { RouteCanvas } from "./board/RouteCanvas";
@@ -646,7 +648,13 @@ export function Studio({
      * working, and the server did not write over it. Nothing went wrong: the
      * same question again, on that board. A few times, then it is said.
      */
-    let r: { ok?: boolean; reason?: string; retry?: boolean; needsCompile?: boolean } | null = null;
+    /*
+     * `fileCambiati`: the files changed while the update worked (a save landed
+     * in its seconds: copper gestures in a row, the arrows on a part). Asking
+     * again at once would work for seconds more on files the next save changes
+     * again: the editor asks when the writes have stopped (see syncBoard).
+     */
+    let r: { ok?: boolean; reason?: string; retry?: boolean; fileCambiati?: boolean; needsCompile?: boolean } | null = null;
     for (let giro = 0; giro < 4; giro++) {
       r = await fetch("/api/reroute-local", {
         method: "POST",
@@ -655,7 +663,7 @@ export function Studio({
       })
         .then((res) => res.json())
         .catch(() => null);
-      if (!r?.retry) break;
+      if (!r?.retry || r.fileCambiati) break;
       await new Promise((done) => setTimeout(done, 250 * (giro + 1)));
     }
     await loadCircuit();
@@ -667,8 +675,17 @@ export function Studio({
      * never every five seconds for ever.
      */
     const needsCompile = Boolean(r?.needsCompile);
+    /*
+     * An update that only fell behind writes still coming (`retry`) is not a
+     * board that cannot be followed: it is not counted, and never turns into
+     * "da ricompilare". Counted, three of them in a row (a gesture every ten
+     * seconds on a board that takes twelve to update) switched Sposta off.
+     */
+    const soloIndietro = !r?.ok && Boolean(r?.retry);
     if (r?.ok) {
       followFailedAtRef.current = null;
+    } else if (soloIndietro) {
+      // nothing to count: the editor asks again
     } else {
       const at = compiledAtRef.current;
       const prima = followFailedAtRef.current;
@@ -680,9 +697,9 @@ export function Studio({
     if (opts?.background) {
       return r?.ok
         ? { ok: true }
-        : { ok: false, reason: String(r?.reason ?? "il server non ha risposto"), needsCompile };
+        : { ok: false, reason: String(r?.reason ?? "il server non ha risposto"), needsCompile, ...(soloIndietro ? { retry: true } : {}) };
     }
-    if (!r?.ok) {
+    if (!r?.ok && !soloIndietro) {
       // no recompiling behind the user's back: we say what is missing and let them decide
       setChat((c) => [
         ...c,
@@ -696,7 +713,7 @@ export function Studio({
         },
       ]);
     }
-    return { ok: Boolean(r?.ok) };
+    return { ok: Boolean(r?.ok), ...(soloIndietro ? { retry: true } : {}) };
     },
     [projectId, loadCircuit],
   );
@@ -1212,6 +1229,30 @@ export function Studio({
   const regole = useMemo(() => resolveDesignRules(fsMap ?? {}).rules, [fsMap]);
   /** the excess around a part the project asks, for the footprints the viewer draws */
   const eccedenzaIngombro = useMemo(() => eccedenzaDellIngombro(regole), [regole]);
+
+  /*
+   * THE BOARD OF "SPOSTA": the saved board with the copper of the file laid on
+   * it as it will be once the gestures waiting are saved (rame-locale.ts). A
+   * gesture let go is on it at once, so the next one starts from there: a via
+   * pasted is taken, copied, moved or taken out right away, without waiting
+   * the seconds the save and the fast update take (17 a gesture on
+   * sbb-dl-principale, during which the canvas used to refuse every press).
+   * When nothing is ahead of the saved board it is that very board. If the
+   * copper cannot be laid here (it never should), the saved board is drawn
+   * with the gestures over it and a new one waits, as it used to be.
+   */
+  const { rameAvanti, rameDaPosare, fileLetto, saved: fileAMano } = editor;
+  const schedaDiSposta = useMemo((): { circuitJson: unknown[] | null; posata: boolean } => {
+    if (!circuitJson || !rameAvanti) return { circuitJson, posata: true };
+    // the file was never read: laid from an empty one, the board would lose the hand copper it carries
+    if (!fileLetto) return { circuitJson, posata: false };
+    try {
+      return { circuitJson: schedaConIlRame({ circuitJson, regole, saved: fileAMano, gesti: rameDaPosare }), posata: true };
+    } catch (err) {
+      console.error("il rame dei gesti non si posa sulla scheda:", err);
+      return { circuitJson, posata: false };
+    }
+  }, [circuitJson, regole, rameAvanti, rameDaPosare, fileLetto, fileAMano]);
 
   /** ruleset this board was routed and checked with */
   const activeRules =
@@ -1814,7 +1855,8 @@ export function Studio({
                     // no events, the move would not stick.
                     <BoardCanvas
                       vistaKey={projectId}
-                      circuitJson={circuitJson}
+                      // the saved board with the copper gestures waiting already on it: see schedaDiSposta
+                      circuitJson={schedaDiSposta.circuitJson}
                       flags={flags}
                       layer={layer}
                       xray={xray}
@@ -1839,7 +1881,7 @@ export function Studio({
                       onMoveComponent={moveComponent}
                       // copper too: a via with its traces, a stretch of a trace, stopped by the project's rules
                       regole={regole}
-                      rameInAttesa={editor.copper}
+                      rameInAttesa={schedaDiSposta.posata ? NESSUN_RAME : editor.copper}
                       onGestoDelRame={editor.addCopper}
                       // one kind of thing at a time, chosen in the bar: parts, traces or vias
                       cosaSiSposta={cosaSiSposta}

@@ -69,6 +69,29 @@ export function viaDaCopiare(circuitJson: unknown[], regole: DesignRules, pcbVia
   return { net: via.nomeRete, corona: via.corona, foro: via.foro, strati: [...via.strati] };
 }
 
+/**
+ * The via `pcbViaId` of this board, to take out; or why it cannot be taken
+ * out from here. Only a via the person pasted goes (its entry of `pcb_vias`
+ * leaves the file): a via of the files, or one "Cuci la massa" wrote, is in
+ * the sources, and whoever writes them takes it out there.
+ */
+export function viaDaTogliere(
+  circuitJson: unknown[],
+  regole: DesignRules,
+  pcbViaId: string,
+): { net: string; x: number; y: number } | { rifiuto: string } {
+  const el = (circuitJson as El[]).find((e) => e.type === "pcb_via" && e.pcb_via_id === pcbViaId);
+  if (!el || typeof el.x !== "number" || typeof el.y !== "number") return { rifiuto: "questa via non e' sulla scheda: ricarica la scheda" };
+  if (el.aggiunta_da === undefined) {
+    return { rifiuto: "questa via e' dei file del progetto: da qui si tolgono solo le vie incollate" };
+  }
+  const modello = leggiModello(circuitJson, regole);
+  const quale = modello.viaPerId.get(pcbViaId);
+  const via = quale === undefined ? undefined : modello.vie[quale];
+  if (!via?.nomeRete) return { rifiuto: "la via non e' di una rete con un nome: non si toglie da qui" };
+  return { net: via.nomeRete, x: round4(el.x), y: round4(el.y) };
+}
+
 /** a millimetre figure as the bar says it: a comma, three digits at most */
 const millimetri = (v: number): string => String(Math.round(v * 1000) / 1000).replace(".", ",");
 

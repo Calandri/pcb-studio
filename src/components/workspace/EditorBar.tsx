@@ -273,7 +273,7 @@ export function EditorBar({
                   className={`text-[11px] ${saveState === "salvato" ? "text-[#5F726C]" : "text-brand"}`}
                   title={
                     saveState === "segue"
-                      ? "Lo spostamento e' salvato: la scheda lo sta seguendo. Una via o una pista si riprendono appena ha finito"
+                      ? "Lo spostamento e' salvato: la scheda salvata lo segue quando ti fermi. Intanto puoi continuare: il rame e' gia' dove l'hai messo"
                       : "Gli spostamenti si salvano da soli: puoi continuare a spostare"
                   }
                 >
