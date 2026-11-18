@@ -346,3 +346,106 @@ describe("write_file of maschera.json", () => {
     expect(TOOL_DEFINITIONS.find((t) => t.name === "write_file")?.description).toContain(DESCRIZIONE_MASCHERA);
   });
 });
+
+/*
+ * The flexible part of a rigid-flex board (flex.json, flex.ts), written as a
+ * client writes it: checked whole, against the board as last compiled when
+ * there is one, refused with the reasons and nothing written when wrong.
+ */
+describe("write_file of flex.json", () => {
+  const CODA = [
+    { x: -6, y: -10 },
+    { x: 6, y: -10 },
+    { x: 6, y: -30 },
+    { x: -6, y: -30 },
+  ];
+  const FLEX = {
+    pila: { spessoreMm: 0.1, coverlay: "giallo" },
+    zone: [{ nome: "coda", strati: ["inner1"], punti: CODA }],
+    pieghe: [{ nome: "ripiega", da: { x: -6, y: -14 }, a: { x: 6, y: -14 }, raggioMm: 1, angolo: 180, verso: "su" }],
+  };
+  /** the board the tail belongs to: 20 x 20, four layers, the tail under its bottom edge, one outline */
+  const CON_LA_CODA = [{ x: -10, y: -10 }, CODA[0], CODA[3], CODA[2], CODA[1], { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }];
+  const scrivi = (corpo: unknown) =>
+    chiamaStrumento("write_file", { projectId: "p", path: "flex.json", content: typeof corpo === "string" ? corpo : JSON.stringify(corpo) });
+  beforeEach(async () => {
+    stato.accesso = "edit";
+    stato.files = { "main.tsx": "export default () => <board />" };
+    compilazioni.n = 0;
+    const { getCompileCache } = await import("@/lib/project-store");
+    vi.mocked(getCompileCache).mockResolvedValue(null);
+  });
+
+  it("a right file is written as it is, and nothing compiles", async () => {
+    const corpo = JSON.stringify(FLEX, null, 2);
+    const r = await scrivi(corpo);
+    expect(r).toMatchObject({ isError: false, result: { ok: true, path: "flex.json", zones: 1, bends: 1, stiffeners: 0 } });
+    expect(stato.files["flex.json"]).toBe(corpo);
+    expect(compilazioni.n).toBe(0);
+  });
+
+  it("the example of the instructions is a right file", async () => {
+    const { ESEMPIO_FLEX } = await import("@/lib/flex");
+    expect((await scrivi(ESEMPIO_FLEX)).result).toMatchObject({ ok: true, zones: 1, bends: 1, stiffeners: 1 });
+  });
+
+  it("a wrong one is refused whole, with the reasons, and nothing is written", async () => {
+    for (const [corpo, atteso] of [
+      ["{ zone: [", /non e' un JSON valido/],
+      [{ ...FLEX, pila: undefined }, /pila: manca/],
+      [{ ...FLEX, zone: [{ ...FLEX.zone[0], strati: ["rame"] }] }, /zone\[0\]\.strati/],
+      [{ ...FLEX, zone: [{ ...FLEX.zone[0], nome: "<script>alert(1)</script>" }] }, /zone\[0\]\.nome: un testo da 1 a 60 caratteri/],
+      [{ ...FLEX, pieghe: [{ ...FLEX.pieghe[0], angolo: 270 }] }, /pieghe\[0\]\.angolo/],
+      [{ ...FLEX, altro: true }, /campo sconosciuto altro/],
+    ] as Array<[unknown, RegExp]>) {
+      const r = await scrivi(corpo);
+      expect(String(r.result.error)).toMatch(/^flex\.json non valido: /);
+      expect(String(r.result.error)).toMatch(atteso);
+      expect(String(r.result.error)).not.toContain("<script>");
+      expect(stato.files["flex.json"]).toBeUndefined();
+    }
+  });
+
+  it("a file too long is refused before it is read", async () => {
+    const r = await scrivi(`{"zone": "${"x".repeat(200_001)}"}`);
+    expect(String(r.result.error)).toMatch(/^File too large/);
+    expect(stato.files["flex.json"]).toBeUndefined();
+  });
+
+  it("a zone off the outline of the board as last compiled is refused, and one on a layer the board does not have", async () => {
+    const { getCompileCache } = await import("@/lib/project-store");
+    // the rigid board alone: the tail is not in its outline yet
+    vi.mocked(getCompileCache).mockResolvedValue({ circuitJson: [{ type: "pcb_board", center: { x: 0, y: 0 }, width: 20, height: 20, num_layers: 4 }] } as never);
+    const fuori = await scrivi(FLEX);
+    expect(String(fuori.result.error)).toMatch(/^flex\.json non valido: zone\[0\]: esce dal contorno della scheda dell'ultima compilazione/);
+    expect(String(fuori.result.error)).toContain("<board outline>");
+    expect(stato.files["flex.json"]).toBeUndefined();
+    // the outline drawn with the tail, and compiled: now it is written
+    vi.mocked(getCompileCache).mockResolvedValue({ circuitJson: [{ type: "pcb_board", center: { x: 0, y: 0 }, width: 20, height: 40, num_layers: 4, outline: CON_LA_CODA }] } as never);
+    expect((await scrivi(FLEX)).result).toMatchObject({ ok: true });
+    // the same outline on a two-layer board: inner1 is not one of its layers
+    vi.mocked(getCompileCache).mockResolvedValue({ circuitJson: [{ type: "pcb_board", center: { x: 0, y: 0 }, width: 20, height: 40, num_layers: 2, outline: CON_LA_CODA }] } as never);
+    expect(String((await scrivi(FLEX)).result.error)).toBe("flex.json non valido: zone[0].strati: la scheda ha gli strati top, bottom, la zona puo' averne solo di questi");
+  });
+
+  it("the tool and the instructions say how to write it, where an agent reads them, with the whole example", async () => {
+    const r = await POST(
+      new Request("http://localhost/api/mcp/mcp", {
+        method: "POST",
+        headers: { authorization: "Bearer pcbs_prova", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    const corpo = await r.text();
+    const riga = corpo.split("\n").find((l) => l.startsWith("data: ")) ?? corpo;
+    const strumenti = (JSON.parse(riga.replace(/^data: /, "")) as { result: { tools: Array<{ name: string; description: string }> } }).result.tools;
+    const descrizione = strumenti.find((t) => t.name === "write_file")?.description ?? "";
+    expect(descrizione).toContain("flex.json (scheda rigido-flessibile: le zone flessibili del contorno della scheda");
+    expect(descrizione).toContain('"angolo": 180');
+    const { DESCRIZIONE_FLEX, ESEMPIO_FLEX } = await import("@/lib/flex");
+    expect(DESCRIZIONE_FLEX).toContain(JSON.stringify(ESEMPIO_FLEX));
+    expect(DESCRIZIONE_FLEX).toContain("FIRST draw the whole piece in main.tsx");
+    const { TOOL_DEFINITIONS } = await import("@/lib/agent-tools");
+    expect(TOOL_DEFINITIONS.find((t) => t.name === "write_file")?.description).toContain(DESCRIZIONE_FLEX);
+  });
+});

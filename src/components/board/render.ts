@@ -10,6 +10,7 @@
 import { courtyardShape, footprintBoxes, type CourtyardShape } from "@/lib/footprint-bounds";
 import { INGOMBRO_ECCEDENZA_MM } from "@/lib/design-rules";
 import { apertureAMano } from "@/lib/drc";
+import { flessibileDellaScheda, type Flessibile } from "@/lib/flex-zone";
 import { retiDelCircuito } from "@/lib/gruppi-di-rame";
 import { leggiIngombri, type Forma } from "@/lib/ingombro";
 import { COLORE_DEL_RAME, eStratoDiRame, pilaDiRame, type StratoDiRame } from "@/lib/strati-rame";
@@ -118,6 +119,30 @@ export function boardOutlinePath(board: Board): string | null {
   const pts = board.outline;
   if (!pts || pts.length < 3) return null;
   return `${pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`).join(" ")} Z`;
+}
+
+/**
+ * THE MILLIMETRE THE BOARD IS FRAMED ON: the middle of the box of its outline,
+ * when it has one. The canvases framed every board on its origin, which is the
+ * middle of a board drawn around it: a rigid-flex board has a tail on one side
+ * (tm-4l-q1 with a tail of 35 mm goes from y = -60,75 to 25,75), and framed on
+ * the origin the end of the tail was out of the canvas. A plain rectangle is
+ * framed on the origin as it always was.
+ */
+export function centroDelDisegno(board: Board): { x: number; y: number } {
+  const p = board.outline;
+  if (!p || p.length < 3) return { x: 0, y: 0 };
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const q of p) {
+    minX = Math.min(minX, q.x);
+    maxX = Math.max(maxX, q.x);
+    minY = Math.min(minY, q.y);
+    maxY = Math.max(maxY, q.y);
+  }
+  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
 }
 
 export interface TraceSeg {
@@ -400,6 +425,8 @@ export interface BoardScene {
   paste: Paste[];
   /** the mask windows drawn by hand, drawn on the mask layer */
   finestre: FinestraMaschera[];
+  /** the flexible part of a rigid-flex board (flex.json): zones, bends, stiffeners; null on a rigid board (see ParteFlessibile) */
+  flessibile: Flessibile | null;
   silkPaths: SilkPath[];
   silkTexts: SilkText[];
   courtyards: Courtyard[];
@@ -483,6 +510,7 @@ export function buildScene(
     holes: [],
     paste: [],
     finestre: [],
+    flessibile: flessibileDellaScheda(elements),
     silkPaths: [],
     silkTexts: [],
     courtyards: [],

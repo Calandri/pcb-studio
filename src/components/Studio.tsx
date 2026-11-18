@@ -1119,7 +1119,8 @@ export function Studio({
           x: point.x,
           y: point.y,
           message: v.message,
-          severity: /via|escape/.test(v.rule) ? "warn" : "err",
+          // amber: the vias, the escapes and the traces across a bend line of a rigid-flex board (a warning, see drc.ts check 10.g)
+          severity: /via|escape|flex_bend_crossing/.test(v.rule) ? "warn" : "err",
           /*
            * The layer the checker found the problem on (drc.ts, PuntoDrc): the
            * dot follows it like the copper it is about. No layer = through the

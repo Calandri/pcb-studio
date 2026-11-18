@@ -1,6 +1,7 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { conIlPerche, riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
-import { resolveDesignRules } from "@/lib/design-rules";
+import { bordoDelFlessibile, resolveDesignRules } from "@/lib/design-rules";
+import { conFlessibile, ostacoliDelFlessibile } from "@/lib/flex";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { conMascheraAMano } from "@/lib/solder-mask";
 import { colateSenzaColli } from "@/lib/pour-necks";
@@ -103,20 +104,26 @@ export async function POST(req: Request): Promise<Response> {
       clearanceMm: regole.pourClearanceMm ?? regole.minClearanceMm,
       bordoMm: regole.minBoardEdgeClearanceMm,
       larghezzaMinimaMm: regole.minTraceWidthMm,
+      // a rigid-flex board whose planes are poured again: cut back from its flexible zones as the compile does (see flex.ts)
+      ostacoliInPiu: ostacoliDelFlessibile(cache.circuitJson, progetto, regole.minBoardEdgeClearanceMm, bordoDelFlessibile(regole)),
     });
     const senzaColli = await colateSenzaColli(
       ricolata.circuitJson as Array<Record<string, unknown> & { type: string }>,
       regole.minTraceWidthMm,
     );
-    // and the mask windows drawn by hand, as the files have them now: see solder-mask.ts
-    const circuitJson = conMascheraAMano(
-      pastaDaiPad(
-        senzaColli,
-        resolveDesignRules(progetto).rules.pasteExpansionMm ?? 0,
-        {
-          stencil: leggiStencil(progetto).stencil,
-          pasteOnPlatedHoles: resolveDesignRules(progetto).rules.pasteOnPlatedHoles,
-        },
+    // and the mask windows drawn by hand, as the files have them now: see solder-mask.ts;
+    // and the flexible zones of a rigid-flex board, from today's flex.json: see flex.ts
+    const circuitJson = conFlessibile(
+      conMascheraAMano(
+        pastaDaiPad(
+          senzaColli,
+          resolveDesignRules(progetto).rules.pasteExpansionMm ?? 0,
+          {
+            stencil: leggiStencil(progetto).stencil,
+            pasteOnPlatedHoles: resolveDesignRules(progetto).rules.pasteOnPlatedHoles,
+          },
+        ),
+        progetto,
       ),
       progetto,
     );

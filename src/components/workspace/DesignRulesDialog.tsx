@@ -2,7 +2,17 @@
 
 import { useEffect, useState } from "react";
 import type { ClassiRame } from "@/lib/classi-rame";
-import { COPPIE, DIGA_MASCHERA_MM, INGOMBRO_ECCEDENZA_MM, SERIGRAFIA_DISTANZA_MM, VIA_APERTURA_DISTANZA_MM, type ChiaveCoppia, type DesignRules } from "@/lib/design-rules";
+import {
+  BORDO_FLESSIBILE_MM,
+  COPPIE,
+  DIGA_MASCHERA_MM,
+  FORO_FLESSIBILE_MM,
+  INGOMBRO_ECCEDENZA_MM,
+  SERIGRAFIA_DISTANZA_MM,
+  VIA_APERTURA_DISTANZA_MM,
+  type ChiaveCoppia,
+  type DesignRules,
+} from "@/lib/design-rules";
 
 /**
  * Board fabrication rules.
@@ -82,6 +92,20 @@ const FIELDS: Array<{
     hint: "la striscia di maschera piu' stretta fra due aperture della stessa faccia: sotto, il fornitore non la stampa. Sui passi fini una finestra per fila in maschera.json",
     puoEsserVuoto: true,
     diSerie: DIGA_MASCHERA_MM,
+  },
+  {
+    key: "minPlatedHoleToFlexMm",
+    label: "Fori dal flessibile",
+    hint: "schede rigido-flessibili (flex.json): quanto il rame di una via o di un foro metallizzato sta lontano dal confine con la zona flessibile e dal tratto che una piega curva",
+    puoEsserVuoto: true,
+    diSerie: FORO_FLESSIBILE_MM,
+  },
+  {
+    key: "minFlexEdgeClearanceMm",
+    label: "Rame dal taglio del flessibile",
+    hint: "schede rigido-flessibili: quanto il rame di una zona flessibile sta lontano dal suo bordo tagliato e dai suoi ritagli",
+    puoEsserVuoto: true,
+    diSerie: BORDO_FLESSIBILE_MM,
   },
 ];
 

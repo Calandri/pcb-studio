@@ -172,6 +172,13 @@
 // by the compile and the recheck from today's files) and are neither open nor a "pour_island". The pieces of one net
 // on one layer are one where they touch or overlap, as before. Copper and pours do not change: a board of engine 16
 // comes to 17 with a recheck ("Ricontrolla"); a board with no piece cut off counts what it counted
+// (2026-11-18, no new number): rigid-flex boards. flex.json (flex.ts) says which part of the board's outline is flexible,
+// with its copper layers, windows, cutouts, bend lines, stiffeners and coverlay; the compile and the recheck put it on the
+// board, the pours are cut back from the zones, the DRC checks them (drc.ts, check 10) and the Gerber package gets a
+// mechanical layer, the coverlay, the stiffeners and the stacks for the fab. The number stays 17 on purpose: a project
+// without flex.json is checked and exported as it was, byte for byte, so no saved board has to be rechecked; and writing
+// flex.json changes the hash of the files, so the board of a project that has one is compiled by this code before it
+// can be exported
 export const CHECKS_ENGINE_VERSION = 17;
 
 /**

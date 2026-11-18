@@ -1618,8 +1618,16 @@ export async function ricolaPiani({
   clearanceMm,
   bordoMm,
   larghezzaMinimaMm,
+  ostacoliInPiu,
 }: {
   circuitJson: El[];
+  /**
+   * What else the pours of a layer keep away from, as obstacles of the solver
+   * (polygons, see ostacoliEsatti): the flexible zones of a rigid-flex board,
+   * which are a hole in every layer they do not declare (ostacoliDelFlessibile
+   * in flex.ts). Left out, nothing more.
+   */
+  ostacoliInPiu?: (strato: string) => Array<Record<string, unknown>>;
   /**
    * The narrowest copper the project allows (its minimum trace width): no piece
    * of a pour comes out narrower than this. See pour-necks.ts. Left out, the
@@ -1739,7 +1747,7 @@ export async function ricolaPiani({
       pads?: Array<Record<string, unknown>>;
       regionsForPour?: Array<{ connectivityKey?: string; padMargin?: number; traceMargin?: number; cutout_margin?: number }>;
     };
-    p.pads = [...(p.pads ?? []), ...mancanti, ...vicine, ...bordo, ...passanti];
+    p.pads = [...(p.pads ?? []), ...mancanti, ...vicine, ...bordo, ...passanti, ...(ostacoliInPiu?.(String(pour.layer)) ?? [])];
     aggiunti += mancanti.length;
     scavate += vicine.length;
     /*
@@ -1940,6 +1948,7 @@ export async function ricolaSeLeVieEranoParziali({
   clearanceMm,
   bordoMm,
   larghezzaMinimaMm,
+  ostacoliInPiu,
 }: {
   circuitJson: El[];
   /** the engine the saved board was made with */
@@ -1947,11 +1956,13 @@ export async function ricolaSeLeVieEranoParziali({
   clearanceMm: number;
   bordoMm: number;
   larghezzaMinimaMm?: number;
+  /** see ricolaPiani */
+  ostacoliInPiu?: (strato: string) => Array<Record<string, unknown>>;
 }): Promise<{ circuitJson: El[]; ricolata: boolean; vieParziali: number }> {
   const vieParziali = vieDichiarateParziali(circuitJson);
   const diUnMotoreDiPrima = vieParziali > 0 && engineVersion < ENGINE_VIE_PASSANTI;
   if (!diUnMotoreDiPrima && !pianiSopraLeVie(circuitJson)) return { circuitJson, ricolata: false, vieParziali };
-  const esito = await ricolaPiani({ circuitJson: vieSemprePassanti(circuitJson), clearanceMm, bordoMm, larghezzaMinimaMm });
+  const esito = await ricolaPiani({ circuitJson: vieSemprePassanti(circuitJson), clearanceMm, bordoMm, larghezzaMinimaMm, ostacoliInPiu });
   return { circuitJson: esito.circuitJson, ricolata: esito.ricolate > 0, vieParziali };
 }
 

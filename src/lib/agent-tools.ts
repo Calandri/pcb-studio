@@ -1,5 +1,6 @@
 import { leggiStencil, STENCIL_PATH } from "./solder-paste";
 import { contornoDelCircuito, DESCRIZIONE_MASCHERA, MASCHERA_PATH, validaFileDellaMaschera } from "./solder-mask";
+import { DESCRIZIONE_FLEX, FLEX_PATH, schedaDelFlessibile, validaFileDelFlessibile } from "./flex";
 import { boardBaseOf } from "./board-base";
 import { fetchDatasheetFromUrl } from "./datasheet";
 import { importComponentFromLcsc } from "./easyeda-import";
@@ -82,11 +83,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       `{"preset": "jlcpcb_standard", "stackup": {"copperMm": [0.035, 0.035], "dielectrics": [{"mm": 1.5, "er": 4.5, "kind": "core", "name": "FR4"}]}}; fields: ${campiDelloStackup()}. ` +
       `It gives the "Sezione della scheda" panel its depths and no check reads it; the file is whole, so writing it without "stackup" removes the one that was there. ` +
       `${DESCRIZIONE_MASCHERA} ` +
+      `${DESCRIZIONE_FLEX} ` +
       `It does not compile: compile after it.`,
     input_schema: {
       type: "object",
       properties: {
-        path: { type: "string", description: `e.g. main.tsx, schematico.json for the drawing's notes, ${DESIGN_RULES_PATH} for the design rules, ${MASCHERA_PATH} for the mask windows drawn by hand` },
+        path: { type: "string", description: `e.g. main.tsx, schematico.json for the drawing's notes, ${DESIGN_RULES_PATH} for the design rules, ${MASCHERA_PATH} for the mask windows drawn by hand, ${FLEX_PATH} for the flexible zones of a rigid-flex board` },
         content: { type: "string", description: "complete file content" },
       },
       required: ["path", "content"],
@@ -502,6 +504,38 @@ async function runTool(
         };
       }
       /*
+       * THE FLEXIBLE PART OF A RIGID-FLEX BOARD (flex.json, lib/flex.ts): the
+       * zones of the board's outline that bend, their copper layers, windows
+       * and cutouts, the bend lines, the stiffeners, the coverlay. Checked
+       * whole before it is written, like the mask windows, and against the
+       * board as last compiled when there is one (a zone off its outline, or
+       * on a layer it does not have, is refused): a file with one bad entry is
+       * refused with every reason, not half-read at the compile.
+       */
+      if (path === FLEX_PATH) {
+        if (content.length > MAX_FILE_CHARS) {
+          return { result: { error: `File too large (${content.length} chars, max ${MAX_FILE_CHARS})` } };
+        }
+        const cache = await getCompileCache(projectId).catch(() => null);
+        const esito = validaFileDelFlessibile(content, schedaDelFlessibile(cache?.circuitJson as unknown[] | undefined));
+        if ("errori" in esito) {
+          return { result: { error: `${FLEX_PATH} non valido: ${esito.errori.slice(0, 10).join("; ")}` } };
+        }
+        await writeProjectFile(projectId, path, content);
+        return {
+          result: {
+            ok: true,
+            path,
+            chars: content.length,
+            zones: esito.flex.zone.length,
+            bends: esito.flex.pieghe.length,
+            stiffeners: esito.flex.irrigiditori.length,
+            note: "flexible zones saved: compile to put them on the board, cut the pours back from them and run their checks",
+          },
+          fileChanged: { path, content },
+        };
+      }
+      /*
        * THE PROJECT'S DESIGN RULES (design-rules.json): traces, vias, edge,
        * componentCourtyardExcessMm. Only the panel of the rules could set them,
        * so an agent working through the MCP left every board on the defaults.
@@ -543,7 +577,7 @@ async function runTool(
       if (!FILE_PATH_RE.test(path)) {
         return {
           result: {
-            error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}, ${STENCIL_PATH}, ${MASCHERA_PATH}, ${DESIGN_RULES_PATH}) are allowed`,
+            error: `Invalid path "${path}": only relative .tsx paths (or ${SCHEMATIC_NOTES_PATH}, ${STENCIL_PATH}, ${MASCHERA_PATH}, ${FLEX_PATH}, ${DESIGN_RULES_PATH}) are allowed`,
           },
         };
       }

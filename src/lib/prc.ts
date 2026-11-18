@@ -84,7 +84,8 @@ export interface PrcViolation {
     | "power_trace_width"
     | "matched_length"
     | "paste_missing"
-    | "mask_opening";
+    | "mask_opening"
+    | "flex_zone";
   severity: "warn" | "fail";
   message: string;
   x?: number;

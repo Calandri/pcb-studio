@@ -4,6 +4,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useS
 import type { ViewFlags } from "../ViewPresets";
 import { isTypingTarget } from "../keyboard";
 import { useVistaCondivisa } from "./vista-condivisa";
+import { ParteFlessibile } from "./ParteFlessibile";
 import {
   CollegamentiApertiSulVisore,
   LegendaAperti,
@@ -43,6 +44,7 @@ import {
   PAD_COLOR,
   layerDrawOrder,
   boardOutlinePath,
+  centroDelDisegno,
   buildScene,
   colatePerRete,
   holeCopper,
@@ -427,7 +429,10 @@ export function BoardCanvas({
       (size.w - margin * 2) / scene.board.width,
       (size.h - margin * 2) / scene.board.height,
     );
-    setView({ x: size.w / 2, y: size.h / 2, k: Math.min(ZOOM_MAX, Math.max(k, ZOOM_MIN)) });
+    const scala = Math.min(ZOOM_MAX, Math.max(k, ZOOM_MIN));
+    // on the middle of the outline, not on the origin: a board with a flexible tail is not drawn around it (see centroDelDisegno)
+    const c = centroDelDisegno(scene.board);
+    setView({ x: size.w / 2 - c.x * scala, y: size.h / 2 + c.y * scala, k: scala });
   }, [scene, size]);
 
   /*
@@ -1511,6 +1516,9 @@ export function BoardCanvas({
                 )}
             </g>
           ))}
+
+          {/* a rigid-flex board: what bends, over the copper (flex.json) */}
+          <ParteFlessibile flessibile={scene.flessibile} mmPerPx={mmPerPx} />
 
           {/* the copper of the focused nets, in their colour: what is already joined */}
           <RameDelleReti circuitJson={circuitJson} reti={retiFocus} mmPerPx={mmPerPx} forza={(s) => layerOpacity(s as LayerId)} />

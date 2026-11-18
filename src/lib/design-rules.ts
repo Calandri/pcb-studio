@@ -153,6 +153,80 @@ export interface DesignRules {
    * the solder of one pad runs to the next. Missing: DIGA_MASCHERA_MM.
    */
   minSolderMaskBridgeMm?: number;
+  /**
+   * RIGID-FLEX (see flex.ts, and the checks of the flexible zones in drc.ts).
+   * HOW FAR A PLATED HOLE STAYS FROM THE FLEXIBLE PART: the ring of a via or of
+   * a plated hole, edge to edge, from a bend line and from the line where the
+   * rigid part ends and a flexible zone starts. In a flexible zone there is
+   * none at all. Missing: FORO_FLESSIBILE_MM.
+   */
+  minPlatedHoleToFlexMm?: number;
+  /**
+   * HOW FAR THE COPPER OF A FLEXIBLE ZONE STAYS FROM ITS CUT EDGE, the stretch
+   * of the board's outline that is the zone's: traces, pads and pours of the
+   * layers the zone declares. The general minBoardEdgeClearanceMm holds there
+   * too; this one is for a tail that wants more. Missing: BORDO_FLESSIBILE_MM.
+   */
+  minFlexEdgeClearanceMm?: number;
+  /**
+   * THE SMALLEST INNER RADIUS OF A BEND, as a multiple of the thickness of the
+   * flexible part. Missing: the stricter of what PCB Basic says in general and
+   * for the number of copper layers of the zone (raggioDiPiegaPerSpessore).
+   */
+  minBendRadiusPerThickness?: number;
+}
+
+/**
+ * The distance a plated hole keeps from a bend line and from the rigid/flex
+ * boundary in a project that writes none: PCB Basic, "It is recommended that
+ * Plated Through Holes (PTH) should always be at least 0.5mm away from the bend
+ * area" (https://www.pcbasic.com/pcba-f/rigid_flex_pcb.html, design
+ * considerations, point 4).
+ */
+export const FORO_FLESSIBILE_MM = 0.5;
+
+/** the distance of a plated hole from the flexible part the project asks, or the default */
+export function distanzaForoFlessibile(rules: DesignRules): number {
+  const v = rules.minPlatedHoleToFlexMm;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : FORO_FLESSIBILE_MM;
+}
+
+/**
+ * The distance the copper of a flexible zone keeps from the zone's cut edge in
+ * a project that writes none. PCB Basic's pages on flexible and rigid-flex
+ * boards give no figure of their own for it: this is the one of its general
+ * capabilities, row 19, "Line-to-Edge Distance: CNC >= 0.25 mm"
+ * (https://www.pcbasic.com/pcb_capabilities/pcbasic_pcb_capabilities.html).
+ */
+export const BORDO_FLESSIBILE_MM = 0.25;
+
+/** the distance of the copper from the cut edge of a flexible zone the project asks, or the default */
+export function bordoDelFlessibile(rules: DesignRules): number {
+  const v = rules.minFlexEdgeClearanceMm;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : BORDO_FLESSIBILE_MM;
+}
+
+/**
+ * The smallest inner radius of a bend, in thicknesses of the flexible part.
+ * PCB Basic says it twice. In general: "Ensure a minimum bend radius of >= 10x
+ * the board thickness" (https://www.pcbasic.com/blog/flex_pcb_design.html) and
+ * "The minimum bend radius is ten times the overall flex layer thickness"
+ * (https://www.pcbasic.com/blog/rigid_flex_pcb_assembly.html). And by the
+ * number of copper layers, the table "Number of Layers / Bend Radius" of
+ * https://www.pcbasic.com/pcba-f/rigid_flex_pcb.html: "1 or single side only:
+ * Thickness in mm x 6", "2 or two-sided: Thickness in mm x 12", "3 or
+ * multilayer board: Thickness in mm x 24". A project that writes none gets the
+ * stricter of the two for its zone: 10 for one layer, 12 for two, 24 beyond.
+ */
+export const RAGGIO_DI_PIEGA_PER_SPESSORE = { generale: 10, unoStrato: 6, dueStrati: 12, multistrato: 24 } as const;
+
+/** how many thicknesses the inner radius of a bend must be at least, in a zone with that many copper layers */
+export function raggioDiPiegaPerSpessore(rules: DesignRules, stratiDiRame: number): number {
+  const v = rules.minBendRadiusPerThickness;
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  const perStrati =
+    stratiDiRame <= 1 ? RAGGIO_DI_PIEGA_PER_SPESSORE.unoStrato : stratiDiRame === 2 ? RAGGIO_DI_PIEGA_PER_SPESSORE.dueStrati : RAGGIO_DI_PIEGA_PER_SPESSORE.multistrato;
+  return Math.max(RAGGIO_DI_PIEGA_PER_SPESSORE.generale, perStrati);
 }
 
 /**
@@ -349,6 +423,9 @@ const LIMITS: Record<
       | "componentCourtyardExcessMm"
       | "minViaToPadOpeningMm"
       | "minSolderMaskBridgeMm"
+      | "minPlatedHoleToFlexMm"
+      | "minFlexEdgeClearanceMm"
+      | "minBendRadiusPerThickness"
       | "autoPlaneVias"
       | "pasteOnPlatedHoles"
       | "autoroute"
@@ -358,7 +435,10 @@ const LIMITS: Record<
   | "minSilkscreenClearanceMm"
   | "componentCourtyardExcessMm"
   | "minViaToPadOpeningMm"
-  | "minSolderMaskBridgeMm",
+  | "minSolderMaskBridgeMm"
+  | "minPlatedHoleToFlexMm"
+  | "minFlexEdgeClearanceMm"
+  | "minBendRadiusPerThickness",
   { min: number; max: number }
 > = {
   minTraceWidthMm: { min: 0.05, max: 2 },
@@ -384,6 +464,11 @@ const LIMITS: Record<
   minViaToPadOpeningMm: { min: 0, max: 1 },
   // zero: only the openings drawn by hand that touch another are said; beyond a millimetre it is a typo
   minSolderMaskBridgeMm: { min: 0, max: 1 },
+  // rigid-flex: zero means only a hole on the line counts; beyond five millimetres it is a typo
+  minPlatedHoleToFlexMm: { min: 0, max: 5 },
+  minFlexEdgeClearanceMm: { min: 0, max: 5 },
+  // thicknesses of the flexible part: under one the tail is folded flat, beyond a hundred it is not a bend
+  minBendRadiusPerThickness: { min: 1, max: 100 },
 };
 
 /** the limits of one pair's own distance (clearanceByPairMm): under ten microns a mangled file */

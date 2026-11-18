@@ -119,7 +119,8 @@
  */
 
 import { distanzaPuntoForma, foroDi, ingombroForma, pointSegDistance, rameDelForo, rameDelPad, TOLLERANZA_MM, type Capsula, type FormaRame } from "./drc";
-import { distanzaDellaSerigrafia, distanzaMinimaFra, eccedenzaDellIngombro, MAX_POUR_CLEARANCE_MM, type DesignRules } from "./design-rules";
+import { distanzaDellaSerigrafia, distanzaForoFlessibile, distanzaMinimaFra, eccedenzaDellIngombro, MAX_POUR_CLEARANCE_MM, type DesignRules } from "./design-rules";
+import { flessibileDellaScheda, profondita } from "./flex-zone";
 import { distanzaRiquadri, forma as formaDi, leggiIngombri, misuraForme, TOLLERANZA_INGOMBRI_MM, type Forma } from "./ingombro";
 import { MAX_MISURE_SUI_PIANI, tenutaDeiPiani, type TenutaDeiPiani } from "./ground-stitching-planes";
 import { eMassa } from "./net-roles";
@@ -328,6 +329,7 @@ export const MOTIVI = {
   fuori_scheda: "fuori dal contorno della scheda o in un suo ritaglio",
   bordo: "troppo vicina al bordo della scheda (minBoardEdgeClearanceMm)",
   zona_esclusa: "in una zona esclusa dalla chiamata",
+  zona_flessibile: "in una zona flessibile della scheda, o col rame a meno di minPlatedHoleToFlexMm da una zona flessibile o dal tratto che una piega curva (flex.json)",
   zona_vietata: "in una zona vietata della scheda (keepout)",
   massa_su_meno_di_due_strati: "la massa copre tutta la corona su meno di due strati",
   manca_massa_esterna: "su uno strato esterno con colate di massa qui la massa non c'e' (zona senza rame)",
@@ -985,6 +987,10 @@ function cucitura(
     .map(sagomaDiZona)
     .filter((z): z is NonNullable<typeof z> => z !== null)
     .map(conAnello);
+  // the flexible zones of a rigid-flex board and the stretches its bends curve (flex.json, see flex-zone.ts): none on a rigid board
+  const parteFlessibile = flessibileDellaScheda(cj);
+  const flessibile = parteFlessibile ? [...parteFlessibile.zone.map((z) => z.punti), ...parteFlessibile.pieghe.map((p) => p.fascia)] : [];
+  const lontanoDalFlessibile = distanzaForoFlessibile(rules);
   const escluse = (opzioni.zoneEscluse ?? []).map((z) => {
     const punti = "punti" in z ? z.punti : [
       { x: z.x - z.w / 2, y: z.y - z.h / 2 },
@@ -1239,6 +1245,8 @@ function cucitura(
     if (vicinoAdAnello(anelloScheda, x, y, R + bordoMin)) return { ok: false, motivo: "bordo" };
     for (const z of ritagli) if (distanzaDaZona(z, x, y) < R + bordoMin) return { ok: false, motivo: "bordo" };
     for (const z of escluse) if (distanzaDaZona(z, x, y) < R) return { ok: false, motivo: "zona_esclusa" };
+    // a rigid-flex board: no plated hole in a flexible zone, nor that near one or the stretch a bend curves (drc.ts, check 10.a)
+    for (const z of flessibile) if (profondita(x, y, z) > -(R + lontanoDalFlessibile)) return { ok: false, motivo: "zona_flessibile" };
     const sopra = copertura(x, y);
     if (conLeVietate) {
       // the keepouts the ring stands in: all of them count, or (solo_rame) not those with ground poured under them, here too

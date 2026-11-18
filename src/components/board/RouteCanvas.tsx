@@ -13,6 +13,7 @@ import {
 import type { ManualRoute } from "@/lib/manual-routes";
 import { MarqueeStyle, useCanvasView } from "../canvas-view";
 import { useVistaCondivisa } from "./vista-condivisa";
+import { ParteFlessibile } from "./ParteFlessibile";
 import { opacitaStrato, stratoScelto } from "./strati-visibili";
 import { isTypingTarget } from "../keyboard";
 import {
@@ -20,6 +21,7 @@ import {
   PAD_COLOR,
   layerDrawOrder,
   boardOutlinePath,
+  centroDelDisegno,
   buildScene,
   colatePerRete,
   layerForKey,
@@ -169,7 +171,10 @@ export function RouteCanvas({
     if (!scene) return;
     const m = 40;
     const k = Math.min((size.w - m * 2) / scene.board.width, (size.h - m * 2) / scene.board.height);
-    setView({ x: size.w / 2, y: size.h / 2, k: Math.max(k, 2) });
+    const scala = Math.max(k, 2);
+    // on the middle of the outline, not on the origin: see centroDelDisegno
+    const c = centroDelDisegno(scene.board);
+    setView({ x: size.w / 2 - c.x * scala, y: size.h / 2 + c.y * scala, k: scala });
   }, [scene, size, setView]);
   useEffect(() => {
     fitRef.current = fit;
@@ -574,6 +579,9 @@ export function RouteCanvas({
               ))}
             </g>
           ))}
+
+          {/* a rigid-flex board: what bends, over the copper (flex.json) */}
+          <ParteFlessibile flessibile={scene.flessibile} mmPerPx={mm} />
 
           {/* the selected trace: shown in full, on all layers */}
           {selectedTrace &&

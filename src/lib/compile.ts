@@ -27,6 +27,7 @@ import {
 import {
   DEFAULT_DESIGN_RULES,
   DESIGN_RULES_PATH,
+  bordoDelFlessibile,
   distanzaDellaSerigrafia,
   eccedenzaDellIngombro,
   FAB_RULESETS,
@@ -149,6 +150,7 @@ import {
 } from "./variants";
 import { leggiStencil, padSenzaPasta, pastaDaiPad, STENCIL_PATH } from "./solder-paste";
 import { avvisiDellaMaschera, conMascheraAMano } from "./solder-mask";
+import { avvisiDelFlessibile, conFlessibile, ostacoliDelFlessibile } from "./flex";
 
 export interface UnroutedDetail {
   /** e.g. ".R1 > .pin1 to net.VCC" */
@@ -819,13 +821,19 @@ export async function compileProject(
         projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
       bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
       larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
+      // a rigid-flex board: the pours of the layers a flexible zone does not declare are cut back from it (see flex.ts)
+      ostacoliInPiu: ostacoliDelFlessibile(conMano.circuitJson, projectFsMap, projectRules.rules.minBoardEdgeClearanceMm, bordoDelFlessibile(projectRules.rules)),
     }).catch(() => null);
-    // the stencil of each pad is the pad: see solder-paste.ts; and the mask windows drawn by hand: see solder-mask.ts
-    const circuitJson = conMascheraAMano(
-      pastaDaiPad(
-        (ricolate?.circuitJson ?? conDistanzeProprie(conMano.circuitJson as never)) as CircuitElement[],
-        projectRules.rules.pasteExpansionMm ?? 0,
-        { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+    // the stencil of each pad is the pad: see solder-paste.ts; the mask windows drawn by hand: see solder-mask.ts;
+    // and the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts
+    const circuitJson = conFlessibile(
+      conMascheraAMano(
+        pastaDaiPad(
+          (ricolate?.circuitJson ?? conDistanzeProprie(conMano.circuitJson as never)) as CircuitElement[],
+          projectRules.rules.pasteExpansionMm ?? 0,
+          { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+        ),
+        projectFsMap,
       ),
       projectFsMap,
     );
@@ -1493,13 +1501,19 @@ export async function compileProject(
       projectRules.rules.pourClearanceMm ?? projectRules.rules.minClearanceMm,
     bordoMm: projectRules.rules.minBoardEdgeClearanceMm,
     larghezzaMinimaMm: projectRules.rules.minTraceWidthMm,
+    // a rigid-flex board: the pours of the layers a flexible zone does not declare are cut back from it (see flex.ts)
+    ostacoliInPiu: ostacoliDelFlessibile(manual.circuitJson, projectFsMap, projectRules.rules.minBoardEdgeClearanceMm, bordoDelFlessibile(projectRules.rules)),
   }).catch(() => null);
-  // the stencil of each pad is the pad: see solder-paste.ts; and the mask windows drawn by hand: see solder-mask.ts
-  const circuitJson = conMascheraAMano(
-    pastaDaiPad(
-      (ricolate?.circuitJson ?? conDistanzeProprie(manual.circuitJson as never)) as CircuitElement[],
-      projectRules.rules.pasteExpansionMm ?? 0,
-      { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+  // the stencil of each pad is the pad: see solder-paste.ts; the mask windows drawn by hand: see solder-mask.ts;
+  // and the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts
+  const circuitJson = conFlessibile(
+    conMascheraAMano(
+      pastaDaiPad(
+        (ricolate?.circuitJson ?? conDistanzeProprie(manual.circuitJson as never)) as CircuitElement[],
+        projectRules.rules.pasteExpansionMm ?? 0,
+        { stencil: leggiStencil(projectFsMap).stencil, pasteOnPlatedHoles: projectRules.rules.pasteOnPlatedHoles },
+      ),
+      projectFsMap,
     ),
     projectFsMap,
   );
@@ -3070,6 +3084,16 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
    */
   for (const a of avvisiDellaMaschera(circuitJson, sources)) {
     prcViolations.push({ rule: "mask_opening", severity: "warn", ...a });
+  }
+  /*
+   * The flexible part of a rigid-flex board that is not what flex.json meant:
+   * an entry that could not be read, a zone off the outline of the board, a
+   * stack the fab does not offer, silkscreen in a zone (see flex.ts). The
+   * checks of the zones themselves are in the DRC (drc.ts, check 10). Nothing
+   * for a project without flex.json.
+   */
+  for (const a of avvisiDelFlessibile(circuitJson, sources)) {
+    prcViolations.push({ rule: "flex_zone", severity: "warn", ...a });
   }
   // multi-ruleset: the main DRC already covers the ruleset CHOSEN by the
   // project, which is no longer necessarily the first in the list

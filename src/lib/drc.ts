@@ -1,14 +1,18 @@
 import {
+  bordoDelFlessibile,
   DEFAULT_DESIGN_RULES,
   digaDellaMaschera,
+  distanzaForoFlessibile,
   distanzaMinimaFra,
   distanzaViaApertura,
+  raggioDiPiegaPerSpessore,
   type DesignRules,
   type TipoRame,
 } from "./design-rules";
 import type { ColateSuRame, PianiSuVie } from "./engine-version";
+import { contieneTutti, flessibileDellaScheda, latiDi, profondita, type Lato, type Punto, type ZonaFlessibile } from "./flex-zone";
 import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
-import { netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
+import { insidePour, netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia, type PourShape } from "./pours";
 
 /**
  * One dot of a violation. `layer` is the copper layer the problem is ON (top,
@@ -2730,6 +2734,336 @@ export function runDrcChecks(
     }
   }
 
+  /*
+   * --- 10. THE FLEXIBLE ZONES OF A RIGID-FLEX BOARD (Niccolo', 2026-11-18).
+   *
+   * The two modem boards of Wildy become one piece each: the rigid board and a
+   * flexible tail that leaves an edge, folds and goes on in the enclosure as
+   * more ground plane. What bends is said by the project's flex.json and put
+   * on the board by the compile (see flex.ts, flex-zone.ts); nothing here runs
+   * on a board without a flexible zone. The fab is PCB Basic and the
+   * thresholds are the ones it publishes, each a field of design-rules.json
+   * (the pages are quoted there):
+   *
+   *  a. flex_plated_hole: a via or a plated hole in a flexible zone ("Do not
+   *     use Plated Through Holes on the flexible part"), or with its copper
+   *     nearer than minPlatedHoleToFlexMm (0.5 mm) to the line where the rigid
+   *     part ends and a zone starts, or to a bend ("at least 0.5mm away from
+   *     the bend AREA"). The bend is measured as the stretch of tail that
+   *     curves, as long as the arc and half on each side of the line
+   *     (Piega.fascia), not as its line: a fold of 180 degrees at 1 mm takes
+   *     3.3 mm of tail. From the edge of the hole's copper, whatever its
+   *     shape, as every other check measures it;
+   *  b. flex_copper_layer: copper of a layer the zone does not declare, in the
+   *     zone: a pad, a trace, a pour the compile could not cut back. That
+   *     layer does not exist there. And flex_copper_window: copper in a window
+   *     of the zone, where no layer has any;
+   *  c. flex_component: a part with a pad in a flexible zone that is not over
+   *     a stiffener of the other face ("If components must be mounted on a
+   *     flex section, the area should be rigidized with a stiffener");
+   *  d. flex_edge_clearance: copper of a declared layer nearer than
+   *     minFlexEdgeClearanceMm to where the tail is cut: the edge of the zone
+   *     that is the edge of the board, and its cutouts;
+   *  e. flex_bend_radius: a bend whose inner radius is under the multiple of
+   *     the thickness of the flexible part that the number of copper layers of
+   *     its zone asks (10, 12 or 24, or the project's
+   *     minBendRadiusPerThickness). And flex_bend_area: the stretch of tail
+   *     the bend curves leaves the zone, so the bend would start in the rigid
+   *     part or past the end of the tail;
+   *  f. flex_stiffener_bend: a stiffener over the stretch a bend curves, where
+   *     the board then cannot bend ("kept outside the bend zone");
+   *  g. flex_bend_crossing, a WARNING (amber in the viewer, like the escapes):
+   *     a trace that crosses a bend line more than TOLLERANZA_PIEGA_GRADI off
+   *     the perpendicular. It is longer in the bend than it has to be, and its
+   *     two edges are not stressed alike.
+   *
+   * Each has its dot where the problem is, on its layer when it has one.
+   */
+  const flex = flessibileDellaScheda(circuitJson);
+  if (flex) {
+    const sogliaForo = distanzaForoFlessibile(rules);
+    const sogliaBordo = bordoDelFlessibile(rules);
+    const latiDelleZone = flex.zone.map((z) => latiDi(z.punti));
+    const daiLati = (b: Box, latiZona: Lato[]): number => {
+      let d = Infinity;
+      for (const lato of latiZona) d = Math.min(d, segToBoxDistance(lato, b));
+      return d;
+    };
+    /** whether a piece of copper is in a polygon: its centre in it, or its copper on a side of it */
+    const nelPoligono = (b: Box, poligono: Punto[], latiPoligono: Lato[]): boolean => {
+      const c = centroDi(b);
+      return profondita(c.x, c.y, poligono) > TOLLERANZA_MM || daiLati(b, latiPoligono) <= TOLLERANZA_MM;
+    };
+    const zonaDi = (b: Box): ZonaFlessibile | null => {
+      for (let i = 0; i < flex.zone.length; i++) {
+        const z = flex.zone[i];
+        if (b.maxX < z.minX || b.minX > z.maxX || b.maxY < z.minY || b.minY > z.maxY) continue;
+        if (nelPoligono(b, z.punti, latiDelleZone[i])) return z;
+      }
+      return null;
+    };
+    /** the point of a trace that is in a polygon: its middle, an end, or where its copper meets a side; null when it is not in it */
+    const trattoNel = (seg: WireSeg, poligono: Punto[], latiPoligono: Lato[]): Punto | null => {
+      const meta = { x: (seg.ax + seg.bx) / 2, y: (seg.ay + seg.by) / 2 };
+      if (profondita(meta.x, meta.y, poligono) > TOLLERANZA_MM) return meta;
+      if (profondita(seg.ax, seg.ay, poligono) > TOLLERANZA_MM) return { x: seg.ax, y: seg.ay };
+      if (profondita(seg.bx, seg.by, poligono) > TOLLERANZA_MM) return { x: seg.bx, y: seg.by };
+      return latiPoligono.some((l) => segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, l.ax, l.ay, l.bx, l.by) - seg.halfW <= TOLLERANZA_MM) ? meta : null;
+    };
+    const strati = (z: ZonaFlessibile) => z.strati.join(", ");
+    const elDelBox = new Map<Box, El>(piazzole.map((p) => [p.box, p.el]));
+    const mm = (v: number) => String(Number(v.toFixed(3)));
+
+    // --- a. the plated holes and the vias
+    for (const b of boxes) {
+      if (b.foro === undefined) continue;
+      const c = centroDi(b);
+      const el = elDelBox.get(b);
+      const chi = `${b.kind === "via" ? `via ${b.label}` : `foro metallizzato ${el ? nomiDelleAperture().piedino(el) : b.label}`} in (${c.x.toFixed(3)}, ${c.y.toFixed(3)})`;
+      const z = zonaDi(b);
+      if (z) {
+        push("flex_plated_hole", `${chi}: e' nella zona flessibile «${z.nome}», dove non si fanno fori metallizzati`, c);
+        continue;
+      }
+      const portata = raggioEsterno(b) + sogliaForo;
+      const lontano = (l: Lato) =>
+        c.x + portata < Math.min(l.ax, l.bx) || c.x - portata > Math.max(l.ax, l.bx) || c.y + portata < Math.min(l.ay, l.by) || c.y - portata > Math.max(l.ay, l.by);
+      let d = Infinity;
+      let daCosa = "";
+      for (const zona of flex.zone) {
+        for (const l of zona.confini) {
+          if (lontano(l)) continue;
+          const suo = segToBoxDistance(l, b);
+          if (suo < d) {
+            d = suo;
+            daCosa = `dal confine fra la parte rigida e la zona flessibile «${zona.nome}»`;
+          }
+        }
+      }
+      for (const p of flex.pieghe) {
+        // the stretch of tail the bend curves: in it, or that near one of its sides
+        const suo = profondita(c.x, c.y, p.fascia) > 0 ? 0 : daiLati(b, latiDi(p.fascia).filter((l) => !lontano(l)));
+        if (suo < d) {
+          d = suo;
+          daCosa = `dal tratto di coda che la piega «${p.nome}» curva (${mm(2 * p.mezzaFasciaMm)}mm attorno alla linea)`;
+        }
+      }
+      if (d < sogliaForo - TOLLERANZA_MM) push("flex_plated_hole", `${chi}: rame a ${d.toFixed(3)}mm ${daCosa} < min ${sogliaForo}mm`, c);
+    }
+
+    // --- b, d. the pads, and c. the parts they belong to
+    const nellaZona = new Map<string, Array<{ box: Box; zona: ZonaFlessibile }>>();
+    for (const { box, el } of piazzole) {
+      const z = zonaDi(box);
+      if (!z) continue;
+      if (typeof el.pcb_component_id === "string") {
+        const suoi = nellaZona.get(el.pcb_component_id);
+        if (suoi) suoi.push({ box, zona: z });
+        else nellaZona.set(el.pcb_component_id, [{ box, zona: z }]);
+      }
+      // a plated hole is said above, whatever layers it is on
+      if (el.type !== "pcb_smtpad" || !box.layer) continue;
+      const chi = nomiDelleAperture().piedino(el);
+      const c = centroDi(box);
+      if (!z.strati.includes(box.layer)) {
+        push("flex_copper_layer", `${chi}: piazzola su ${box.layer} nella zona flessibile «${z.nome}», che ha rame solo su ${strati(z)}`, c, box.layer);
+        continue;
+      }
+      const finestra = z.finestre.find((f) => nelPoligono(box, f.punti, latiDi(f.punti)));
+      if (finestra) push("flex_copper_window", `${chi}: piazzola nella finestra senza rame «${finestra.nome}» della zona flessibile «${z.nome}»`, c, box.layer);
+      const ritaglio = z.ritagli.find((r) => profondita(c.x, c.y, r.punti) > 0);
+      const d = ritaglio ? 0 : daiLati(box, z.bordi);
+      if (d < sogliaBordo - TOLLERANZA_MM) {
+        push(
+          "flex_edge_clearance",
+          `${chi}: piazzola ${ritaglio ? `nel ritaglio «${ritaglio.nome}»` : `a ${d.toFixed(3)}mm dal taglio`} della zona flessibile «${z.nome}» < min ${sogliaBordo}mm`,
+          c,
+          box.layer,
+        );
+      }
+    }
+    if (nellaZona.size > 0) {
+      const nomeSorgente = new Map<string, string>();
+      for (const el of circuitJson) if (el.type === "source_component") nomeSorgente.set(String(el.source_component_id ?? ""), String(el.name ?? ""));
+      const pezzi = new Map<string, { nome: string; centro: Punto | null; faccia: string | null }>();
+      for (const el of circuitJson) {
+        if (el.type !== "pcb_component" || typeof el.pcb_component_id !== "string") continue;
+        const centro = el.center as { x?: unknown; y?: unknown } | undefined;
+        const x = num(centro?.x);
+        const y = num(centro?.y);
+        pezzi.set(el.pcb_component_id, {
+          nome: nomeSorgente.get(String(el.source_component_id ?? "")) || el.pcb_component_id,
+          centro: x !== null && y !== null ? { x, y } : null,
+          faccia: typeof el.layer === "string" ? el.layer : null,
+        });
+      }
+      for (const [id, suoi] of nellaZona) {
+        // over a stiffener: the pad whole on one glued to the other face (either, for a through pad)
+        const scoperti = suoi.filter(({ box }) => {
+          const c = centroDi(box);
+          const angoli = [c, { x: box.minX, y: box.minY }, { x: box.maxX, y: box.minY }, { x: box.maxX, y: box.maxY }, { x: box.minX, y: box.maxY }];
+          return !flex.irrigiditori.some((r) => (box.layer === null || r.lato !== box.layer) && contieneTutti(r.punti, angoli));
+        });
+        if (scoperti.length === 0) continue;
+        const pezzo = pezzi.get(id);
+        push(
+          "flex_component",
+          `${pezzo?.nome ?? id}: ${scoperti.length === 1 ? "una piazzola" : `${scoperti.length} piazzole`} nella zona flessibile «${scoperti[0].zona.nome}» ` +
+            `${flex.irrigiditori.length > 0 ? "fuori da un irrigiditore della faccia opposta" : "senza irrigiditore"}: sul flessibile un pezzo si monta solo sopra un irrigiditore`,
+          pezzo?.centro ?? centroDi(scoperti[0].box),
+          pezzo?.faccia ?? scoperti[0].box.layer,
+        );
+      }
+    }
+
+    // --- b, d. the traces
+    for (const seg of segs) {
+      for (let i = 0; i < flex.zone.length; i++) {
+        const z = flex.zone[i];
+        if (
+          Math.max(seg.ax, seg.bx) + seg.halfW < z.minX ||
+          Math.min(seg.ax, seg.bx) - seg.halfW > z.maxX ||
+          Math.max(seg.ay, seg.by) + seg.halfW < z.minY ||
+          Math.min(seg.ay, seg.by) - seg.halfW > z.maxY
+        ) {
+          continue;
+        }
+        const dove = trattoNel(seg, z.punti, latiDelleZone[i]);
+        if (!dove) continue;
+        if (seg.layer && !z.strati.includes(seg.layer)) {
+          push("flex_copper_layer", `${seg.label}: pista su ${seg.layer} nella zona flessibile «${z.nome}», che ha rame solo su ${strati(z)}`, dove, seg.layer);
+          break;
+        }
+        for (const f of z.finestre) {
+          const nella = trattoNel(seg, f.punti, latiDi(f.punti));
+          if (nella) push("flex_copper_window", `${seg.label}: pista nella finestra senza rame «${f.nome}» della zona flessibile «${z.nome}»`, nella, seg.layer);
+        }
+        const ritaglio = z.ritagli.find((r) => [dove, { x: seg.ax, y: seg.ay }, { x: seg.bx, y: seg.by }].some((q) => profondita(q.x, q.y, r.punti) > 0));
+        let d = ritaglio ? 0 : Infinity;
+        if (!ritaglio) for (const l of z.bordi) d = Math.min(d, segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, l.ax, l.ay, l.bx, l.by) - seg.halfW);
+        if (d < sogliaBordo - TOLLERANZA_MM) {
+          push(
+            "flex_edge_clearance",
+            `${seg.label}: pista ${ritaglio ? `nel ritaglio «${ritaglio.nome}»` : `a ${Math.max(0, d).toFixed(3)}mm dal taglio`} della zona flessibile «${z.nome}» < min ${sogliaBordo}mm`,
+            dove,
+            seg.layer,
+          );
+        }
+        break;
+      }
+    }
+
+    // --- b, d. the pours
+    let nomiDiRete: Map<string, string> | null = null;
+    const reteDellaColata = (c: PourShape): string => {
+      if (!nomiDiRete) {
+        nomiDiRete = new Map();
+        for (const el of circuitJson) if (el.type === "source_net") nomiDiRete.set(String(el.source_net_id ?? ""), String(el.name ?? el.source_net_id ?? ""));
+      }
+      return nomiDiRete.get(c.net) || c.net || "?";
+    };
+    for (const c of colate) {
+      for (let i = 0; i < flex.zone.length; i++) {
+        const z = flex.zone[i];
+        if (c.maxX < z.minX || c.minX > z.maxX || c.maxY < z.minY || c.minY > z.maxY) continue;
+        const chi = `colata ${reteDellaColata(c)} su ${c.layer}`;
+        if (!z.strati.includes(c.layer)) {
+          const dove = rameNelPoligono(c, z.punti);
+          if (dove) {
+            push(
+              "flex_copper_layer",
+              `${chi}: ha rame nella zona flessibile «${z.nome}», che ha rame solo su ${strati(z)} (la compilazione ritaglia le colate fuori dalla zona: ricompila)`,
+              dove,
+              c.layer,
+            );
+          }
+          continue;
+        }
+        for (const f of z.finestre) {
+          const dove = rameNelPoligono(c, f.punti);
+          if (dove) push("flex_copper_window", `${chi}: ha rame nella finestra senza rame «${f.nome}» della zona flessibile «${z.nome}» (la compilazione ritaglia le colate fuori dalle finestre: ricompila)`, dove, c.layer);
+        }
+        let nelRitaglio: { nome: string; dove: Punto } | null = null;
+        for (const r of z.ritagli) {
+          const dove = rameNelPoligono(c, r.punti);
+          if (dove) {
+            nelRitaglio = { nome: r.nome, dove };
+            break;
+          }
+        }
+        if (nelRitaglio) {
+          push("flex_edge_clearance", `${chi}: ha rame nel ritaglio «${nelRitaglio.nome}» della zona flessibile «${z.nome}» < min ${sogliaBordo}mm (ricompila)`, nelRitaglio.dove, c.layer);
+        } else if (z.bordi.length > 0) {
+          const vicino = colataVicinaAiLati(c, z.bordi, sogliaBordo);
+          if (vicino) push("flex_edge_clearance", `${chi}: rame a ${vicino.d.toFixed(3)}mm dal taglio della zona flessibile «${z.nome}» < min ${sogliaBordo}mm`, vicino.punto, c.layer);
+        }
+      }
+    }
+
+    // --- e, f, g. the bends
+    for (const p of flex.pieghe) {
+      const meta = { x: (p.a.x + p.b.x) / 2, y: (p.a.y + p.b.y) / 2 };
+      const lungo = Math.hypot(p.b.x - p.a.x, p.b.y - p.a.y);
+      if (lungo < 1e-9) continue;
+      if (p.zona && flex.pila) {
+        const fattore = raggioDiPiegaPerSpessore(rules, p.zona.strati.length);
+        const minimo = fattore * flex.pila.spessoreMm;
+        if (p.raggioMm < minimo - TOLLERANZA_MM) {
+          push(
+            "flex_bend_radius",
+            `piega «${p.nome}»: raggio interno ${mm(p.raggioMm)}mm < min ${mm(minimo)}mm, ${mm(fattore)} volte lo spessore della parte flessibile (${mm(flex.pila.spessoreMm)}mm, ` +
+              `${p.zona.strati.length === 1 ? "uno strato" : `${p.zona.strati.length} strati`} di rame nella zona «${p.zona.nome}»)`,
+            meta,
+          );
+        }
+      }
+      if (p.zona && p.mezzaFasciaMm > 0) {
+        // the stretch the bend curves, on both sides of the line: a little in from its two ends, where a tail that tapers is narrower
+        const nx = (-(p.b.y - p.a.y) / lungo) * p.mezzaFasciaMm;
+        const ny = ((p.b.x - p.a.x) / lungo) * p.mezzaFasciaMm;
+        let fuori: Punto | null = null;
+        for (const t of [0.5, 0.05, 0.95]) {
+          for (const verso of [1, -1]) {
+            const q = { x: p.a.x + (p.b.x - p.a.x) * t + nx * verso, y: p.a.y + (p.b.y - p.a.y) * t + ny * verso };
+            if (!fuori && profondita(q.x, q.y, p.zona.punti) < -TOLLERANZA_MM) fuori = q;
+          }
+        }
+        if (fuori) {
+          push(
+            "flex_bend_area",
+            `piega «${p.nome}»: a ${mm(p.angolo)}° con raggio ${mm(p.raggioMm)}mm curva ${mm(2 * p.mezzaFasciaMm)}mm di coda, ${mm(p.mezzaFasciaMm)} per parte attorno alla linea, ` +
+              `e quel tratto esce dalla zona flessibile «${p.zona.nome}»: la linea va ad almeno ${mm(p.mezzaFasciaMm)}mm dalla parte rigida e dalla fine della coda`,
+            fuori,
+          );
+        }
+      }
+      for (const r of flex.irrigiditori) {
+        const sopra = poligoniSovrapposti(p.fascia, r.punti) ?? segmentoNelPoligono(p.a, p.b, r.punti);
+        if (sopra) push("flex_stiffener_bend", `l'irrigiditore «${r.nome}» (${r.lato}) e' sopra il tratto di coda che la piega «${p.nome}» curva: li' la scheda non piega`, sopra);
+      }
+      for (const seg of segs) {
+        const vx = seg.bx - seg.ax;
+        const vy = seg.by - seg.ay;
+        const l = Math.hypot(vx, vy);
+        if (l < 1e-9) continue;
+        if (segSegDistanceRaw(seg.ax, seg.ay, seg.bx, seg.by, p.a.x, p.a.y, p.b.x, p.b.y) > 1e-9) continue;
+        // 90 degrees is straight across the bend
+        const cos = Math.min(1, Math.abs(vx * (p.b.x - p.a.x) + vy * (p.b.y - p.a.y)) / (l * lungo));
+        const storta = 90 - (Math.acos(cos) * 180) / Math.PI;
+        if (storta <= TOLLERANZA_PIEGA_GRADI) continue;
+        // where the two lines meet
+        const den = vx * (p.b.y - p.a.y) - vy * (p.b.x - p.a.x);
+        const t = Math.abs(den) < 1e-12 ? 0.5 : Math.max(0, Math.min(1, ((p.a.x - seg.ax) * (p.b.y - p.a.y) - (p.a.y - seg.ay) * (p.b.x - p.a.x)) / den));
+        push(
+          "flex_bend_crossing",
+          `avviso: ${seg.label} attraversa la linea di piega «${p.nome}» a ${Math.round(90 - storta)}° invece che a 90° (${seg.layer ?? "?"}): sulla piega le piste vanno perpendicolari`,
+          { x: seg.ax + vx * t, y: seg.ay + vy * t },
+          seg.layer,
+        );
+      }
+    }
+  }
+
   // The same violations repeat dozens of times (one per via, per pad...):
   // aggregating them by rule keeps the LLM feedback readable and short.
   const byRule = new Map<string, DrcViolation[]>();
@@ -2847,6 +3181,125 @@ const PRIME_NEL_RAME = 3;
  */
 const sulSuoRame = (r: RameVicinoAUnaColata): boolean =>
   r.nelRameColato !== true && (r.rameProprioMm ?? Infinity) <= r.distanzaMm + TOLLERANZA_COLATA_MM;
+
+/** how far off the perpendicular a trace may cross a bend line before it is said (check 10.g) */
+const TOLLERANZA_PIEGA_GRADI = 10;
+
+/** whether two segments cross each other inside both, not at an end */
+function siTagliano(ax: number, ay: number, bx: number, by: number, l: Lato): boolean {
+  const d1 = crossSign(ax, ay, bx, by, l.ax, l.ay);
+  const d2 = crossSign(ax, ay, bx, by, l.bx, l.by);
+  const d3 = crossSign(l.ax, l.ay, l.bx, l.by, ax, ay);
+  const d4 = crossSign(l.ax, l.ay, l.bx, l.by, bx, by);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+/** a point of a segment that is in a polygon, when the segment enters it: an end, its middle, or the middle of a crossing */
+function segmentoNelPoligono(a: Punto, b: Punto, poligono: Punto[]): Punto | null {
+  const meta = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  for (const p of [meta, a, b]) if (profondita(p.x, p.y, poligono) > TOLLERANZA_MM) return p;
+  return latiDi(poligono).some((l) => siTagliano(a.x, a.y, b.x, b.y, l)) ? meta : null;
+}
+
+/** a point two polygons share inside both: a vertex of one well in the other, or the middle of two sides that cut each other; null when they are apart */
+function poligoniSovrapposti(a: Punto[], b: Punto[]): Punto | null {
+  for (const p of a) if (profondita(p.x, p.y, b) > TOLLERANZA_MM) return p;
+  for (const p of b) if (profondita(p.x, p.y, a) > TOLLERANZA_MM) return p;
+  const latiB = latiDi(b);
+  for (const l of latiDi(a)) {
+    if (latiB.some((m) => siTagliano(l.ax, l.ay, l.bx, l.by, m))) return { x: (l.ax + l.bx) / 2, y: (l.ay + l.by) / 2 };
+  }
+  return null;
+}
+
+/**
+ * WHERE A POUR HAS COPPER IN A POLYGON (check 10.b: a flexible zone of a layer
+ * it does not declare, a window, a cutout), or null when it has none. Copper
+ * and polygon share a point inside the polygon in one of three ways: a vertex
+ * of the pour's outline or of one of its holes is in the polygon (the copper
+ * ends there, so there is copper next to it); a side of the pour cuts a side
+ * of the polygon; or the polygon is whole in the copper, and then any point
+ * inside it is on the copper. Two hundredths of slack, as for every measure on
+ * a pour (TOLLERANZA_COLATA_MM): a pour cut back along the polygon is not in it.
+ */
+function rameNelPoligono(c: PourShape, poligono: Punto[]): Punto | null {
+  const fondo = 2 * TOLLERANZA_COLATA_MM;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of poligono) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+  if (c.maxX < minX || c.minX > maxX || c.maxY < minY || c.minY > maxY) return null;
+  const lati = latiDi(poligono);
+  for (const anello of [c.outer, ...c.holes]) {
+    for (let k = 0; k < anello.length; k++) {
+      const p = anello[k];
+      const q = anello[(k + 1) % anello.length];
+      if (Math.max(p.x, q.x) < minX || Math.min(p.x, q.x) > maxX || Math.max(p.y, q.y) < minY || Math.min(p.y, q.y) > maxY) continue;
+      if (profondita(p.x, p.y, poligono) > fondo) return { x: p.x, y: p.y };
+      const meta = { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 };
+      if (profondita(meta.x, meta.y, poligono) > fondo) return meta;
+      if (lati.some((l) => siTagliano(p.x, p.y, q.x, q.y, l))) {
+        // the stretch of this side that is in the polygon: looked for in steps along it
+        for (let i = 1; i < 16; i++) {
+          const x = p.x + ((q.x - p.x) * i) / 16;
+          const y = p.y + ((q.y - p.y) * i) / 16;
+          if (profondita(x, y, poligono) > fondo) return { x, y };
+        }
+      }
+    }
+  }
+  const dentro = puntoDentro(poligono, fondo);
+  return dentro && insidePour(dentro.x, dentro.y, c) ? dentro : null;
+}
+
+/** a point well inside a polygon: the middle of its vertices, or of two of them, or of its box in steps; null for a sliver */
+function puntoDentro(poligono: Punto[], fondo: number): Punto | null {
+  const n = poligono.length;
+  const candidati: Punto[] = [{ x: poligono.reduce((t, p) => t + p.x, 0) / n, y: poligono.reduce((t, p) => t + p.y, 0) / n }];
+  for (let i = 0; i < n; i++) {
+    const a = poligono[i];
+    const b = poligono[(i + 2) % n];
+    candidati.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  }
+  let meglio: Punto | null = null;
+  let quanto = fondo;
+  for (const p of candidati) {
+    const d = profondita(p.x, p.y, poligono);
+    if (d > quanto) {
+      quanto = d;
+      meglio = p;
+    }
+  }
+  return meglio;
+}
+
+/** the point of a pour's copper nearest to a set of sides, when it is nearer than `soglia` (check 10.d) */
+function colataVicinaAiLati(c: PourShape, lati: Lato[], soglia: number): { d: number; punto: Punto } | null {
+  let vicino: { d: number; punto: Punto } | null = null;
+  for (const l of lati) {
+    const minX = Math.min(l.ax, l.bx) - soglia;
+    const maxX = Math.max(l.ax, l.bx) + soglia;
+    const minY = Math.min(l.ay, l.by) - soglia;
+    const maxY = Math.max(l.ay, l.by) + soglia;
+    if (c.maxX < minX || c.minX > maxX || c.maxY < minY || c.minY > maxY) continue;
+    for (const anello of [c.outer, ...c.holes]) {
+      for (let k = 0; k < anello.length; k++) {
+        const p = anello[k];
+        const q = anello[(k + 1) % anello.length];
+        if (Math.max(p.x, q.x) < minX || Math.min(p.x, q.x) > maxX || Math.max(p.y, q.y) < minY || Math.min(p.y, q.y) > maxY) continue;
+        const d = segSegDistanceRaw(p.x, p.y, q.x, q.y, l.ax, l.ay, l.bx, l.by);
+        if (d < soglia - TOLLERANZA_COLATA_MM && (!vicino || d < vicino.d)) vicino = { d, punto: { x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 } };
+      }
+    }
+  }
+  return vicino;
+}
 
 /** how far apart the points of campioniDiRame are along a trace or a side */
 const PASSO_CAMPIONI_MM = 0.1;

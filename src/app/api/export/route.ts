@@ -13,6 +13,7 @@ import { idDoppi } from "@/lib/duplicate-ids";
 import { senzaRotazioneDiCarico } from "@/lib/gerber-rotation";
 import { serigrafiaStampabile } from "@/lib/silk-stroke";
 import { comandiConLaMaschera } from "@/lib/solder-mask";
+import { comandiConIlFlessibile, fileDelFlessibile } from "@/lib/flex";
 import { viePassantiSuOgniStrato, viePerLaForatura } from "@/lib/via-layers";
 import { colateSopraIlRame, pianiSopraLeVie, type MisureDrc } from "@/lib/drc";
 import { colateCheSiToccano } from "@/lib/pour-pour";
@@ -222,11 +223,13 @@ export async function GET(req: Request): Promise<Response> {
         const inOrdine = await colateInOrdinePerIlGerber(circuitJson as unknown as Array<Record<string, unknown>>);
         const ruotate = senzaRotazioneDiCarico(
           stringifyGerberCommandLayers(
-            // the mask from the windows drawn by hand, when the board has any (see solder-mask.ts)
-            comandiConLaMaschera(
+            // a rigid-flex board: no mask and no silkscreen in its flexible zones (see flex.ts)
+            comandiConIlFlessibile(
               // through vias get their pad on the inner layers too (see via-layers)
               viePassantiSuOgniStrato(inOrdine as never) as never,
-              (cj) => convertSoupToGerberCommands(cj as unknown as AnyCircuitJson),
+              (scheda) =>
+                // the mask from the windows drawn by hand, when the board has any (see solder-mask.ts)
+                comandiConLaMaschera(scheda, (cj) => convertSoupToGerberCommands(cj as unknown as AnyCircuitJson)),
             ),
           ),
         );
@@ -248,6 +251,10 @@ export async function GET(req: Request): Promise<Response> {
             isPlated ? "drill_plated.drl" : "drill_unplated.drl",
             stringifyExcellonDrill(drill),
           );
+        }
+        // a rigid-flex board: the zones and the bend lines, the coverlay, the stiffeners and the two stacks for the fab (see flex.ts)
+        for (const [nome, contenuto] of Object.entries(fileDelFlessibile(circuitJson as unknown[], fsMap, projectId))) {
+          zip.file(nome, contenuto);
         }
         // a board known to be wrong says so inside the package and on its name
         const avviso = avvisoDelProgetto(projectId);
