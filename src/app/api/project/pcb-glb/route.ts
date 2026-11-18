@@ -3,6 +3,7 @@ import { convertCircuitJsonToGltf } from "circuit-json-to-gltf";
 import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { raddrizzaPezziJscad } from "@/lib/glb-jscad";
+import { soloLaParteRigida, type GlbDelFlessibile } from "@/lib/flex-glb";
 import { getProjectModel } from "@/lib/model-store";
 import { filesHash, getCompileCache, getProject } from "@/lib/project-store";
 
@@ -18,7 +19,16 @@ export const maxDuration = 120;
  */
 type GltfCircuitJson = Parameters<typeof convertCircuitJsonToGltf>[0];
 
-const glbCache = new Map<string, ArrayBuffer>();
+/**
+ * What the response says of a rigid-flex board, in the HEADER_FLEX header:
+ * "rigida" the GLB carries only the rigid part (the viewer draws the tail),
+ * "intera" it has flexible zones but the whole outline (the rigid part is not
+ * one piece), absent for a board with no flexible zone.
+ */
+const HEADER_FLEX = "x-pcb-flex";
+type Glb = { bytes: ArrayBuffer; flex: GlbDelFlessibile };
+
+const glbCache = new Map<string, Glb>();
 
 /**
  * The component meshes, put INTO the circuit before it is converted.
@@ -153,16 +163,18 @@ export async function GET(req: Request): Promise<Response> {
 
   try {
     // the circuit was parsed for this request only: stripping it touches nothing else
+    // a rigid-flex board: the GLB is the rigid part only, the viewer draws the tail thin and folded (flex-glb)
+    const flex = await soloLaParteRigida(circuitJson as unknown as unknown[]);
     const gltf = await convertCircuitJsonToGltf(soloModelliSicuri(await conModelli(circuitJson, projectId)), {
       format: "glb",
       boardDrillQuality: "fast",
     });
     // the converter draws cadModel={{ jscad }} parts inside out and grey: see glb-jscad
-    const bytes = raddrizzaPezziJscad(toArrayBuffer(gltf), circuitJson);
+    const glb: Glb = { bytes: raddrizzaPezziJscad(toArrayBuffer(gltf), circuitJson), flex };
     // keeps at most the most recent models: the lambda stays warm only briefly
     if (glbCache.size >= 8) glbCache.delete(glbCache.keys().next().value!);
-    glbCache.set(cacheKey, bytes);
-    return glbResponse(bytes);
+    glbCache.set(cacheKey, glb);
+    return glbResponse(glb);
   } catch (err) {
     return Response.json(
       { error: `conversione GLB fallita: ${err instanceof Error ? err.message : String(err)}` },
@@ -180,11 +192,12 @@ function toArrayBuffer(gltf: unknown): ArrayBuffer {
   return new TextEncoder().encode(JSON.stringify(gltf)).buffer as ArrayBuffer;
 }
 
-function glbResponse(bytes: ArrayBuffer): Response {
+function glbResponse({ bytes, flex }: Glb): Response {
   return new Response(bytes, {
     headers: {
       "content-type": "model/gltf-binary",
       "cache-control": "private, max-age=300",
+      ...(flex ? { [HEADER_FLEX]: flex } : {}),
     },
   });
 }

@@ -1884,6 +1884,7 @@ export function Studio({
                     showEnclosures={showEnclosures}
                     enclosureOpacity={enclosureOpacity}
                     explodedMm={explodedMm}
+                    circuitJson={circuitJson}
                   />
                 )
               ) : circuitChecked ? (

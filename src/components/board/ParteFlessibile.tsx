@@ -1,7 +1,8 @@
 "use client";
 
-import { memo, useId } from "react";
-import type { Flessibile } from "@/lib/flex-zone";
+import { memo, useId, useMemo } from "react";
+import { mezzoDellaPiega, piegaturaDi, postoDelTestoDellaCoda, testoDellaCoda, testoDellaPiega } from "@/lib/flex-piega";
+import type { Flessibile, Punto } from "@/lib/flex-zone";
 
 /**
  * THE FLEXIBLE PART OF A RIGID-FLEX BOARD, ON THE BOARD (flex.json, see
@@ -13,7 +14,12 @@ import type { Flessibile } from "@/lib/flex-zone";
  *  - its windows without copper: a dotted outline;
  *  - its cutouts: the hole, in the colour of what is under the board;
  *  - a bend: the stretch of tail it curves as a band, and its line dash-dot;
- *  - a stiffener: a hatched grey plate with its holes, dimmer on the bottom.
+ *  - a stiffener: a hatched grey plate with its holes, dimmer on the bottom;
+ *  - the WORDS that say how the tail is folded, worked out from flex.json
+ *    (flex-piega.ts): on each bend line its number, angle and side ("piega 1:
+ *    90° verso il top"), and on the tail what the bends make of it together
+ *    ("in tutto 180° verso il top, torna sopra la scheda"). Two dashed lines
+ *    alone did not say whether the tail turned by 90 or by 180 degrees.
  *
  * It is drawn inside the group that turns millimetres into pixels (y up), and
  * takes no pointer: a part or a trace under it is clicked as before. Nothing
@@ -25,9 +31,36 @@ const IRRIGIDITORE = "#A8B3C0";
 
 const punti = (p: Array<{ x: number; y: number }>) => p.map((q) => `${q.x},${q.y}`).join(" ");
 
+/**
+ * Words on the board: the drawing is inside a scale(1,-1) (y up), so the text
+ * is turned back upright where it stands, and kept along its line but never
+ * upside down. A constant size on screen, with a dark halo so it reads over copper.
+ */
+function Scritta({ dove, gradi, testo, mmPerPx, colore, peso }: { dove: Punto; gradi: number; testo: string; mmPerPx: number; colore: string; peso: number }) {
+  const g = ((gradi % 180) + 180) % 180;
+  const dritto = g > 90 ? g - 180 : g;
+  return (
+    <text
+      transform={`translate(${dove.x} ${dove.y}) scale(1 -1) rotate(${-dritto})`}
+      textAnchor="middle"
+      dominantBaseline="middle"
+      fontSize={mmPerPx * 12}
+      fontWeight={peso}
+      fill={colore}
+      stroke="#0B1512"
+      strokeWidth={mmPerPx * 3}
+      strokeLinejoin="round"
+      paintOrder="stroke"
+    >
+      {testo}
+    </text>
+  );
+}
+
 export const ParteFlessibile = memo(function ParteFlessibile({ flessibile, mmPerPx }: { flessibile: Flessibile | null; mmPerPx: number }) {
   // one pattern per canvas: Guarda and Instrada can both be in the page, and two patterns with one id are one
   const tratteggio = `irrigiditore-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+  const piegatura = useMemo(() => (flessibile ? piegaturaDi(flessibile) : null), [flessibile]);
   if (!flessibile) return null;
   const tratto = Math.max(mmPerPx * 1.5, 0.05);
   return (
@@ -97,6 +130,29 @@ export const ParteFlessibile = memo(function ParteFlessibile({ flessibile, mmPer
           >
             <title>{`piega «${p.nome}»: ${p.angolo}° verso ${p.verso === "su" ? "il top" : "il bottom"}, raggio interno ${p.raggioMm} mm`}</title>
           </line>
+        </g>
+      ))}
+      {piegatura?.code.map((coda) => (
+        <g key={`testi-${coda.zona.id}`}>
+          {coda.pieghe.map((p) => (
+            <Scritta
+              key={p.piega.id}
+              dove={mezzoDellaPiega(p)}
+              gradi={(Math.atan2(p.u.y, p.u.x) * 180) / Math.PI}
+              testo={testoDellaPiega(p)}
+              mmPerPx={mmPerPx}
+              colore={PIEGA}
+              peso={600}
+            />
+          ))}
+          <Scritta
+            dove={postoDelTestoDellaCoda(coda, mmPerPx * 14)}
+            gradi={coda.pieghe[0] ? (Math.atan2(coda.pieghe[0].u.y, coda.pieghe[0].u.x) * 180) / Math.PI : 0}
+            testo={testoDellaCoda(coda)}
+            mmPerPx={mmPerPx}
+            colore={POLIIMMIDE}
+            peso={500}
+          />
         </g>
       ))}
     </g>

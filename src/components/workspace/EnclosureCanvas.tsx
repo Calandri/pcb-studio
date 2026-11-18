@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader, OrbitControls } from "three-stdlib";
+import {
+  puntoVersoIlGlb,
+  scenaDelFlessibile,
+  versoIlGlb,
+  type ScenaDelFlessibile,
+  type VistaDelFlessibile,
+} from "@/lib/flex-3d";
 import type { InspectComponent } from "@/lib/inspect";
 import {
   geometryFromMeshData,
@@ -16,6 +23,11 @@ import {
  * boxes derived from the circuit json) plus the meshes of the enclosures and
  * imported modules. three lives only inside here: the component is loaded with
  * next/dynamic ssr:false and the rest of the app passes it plain data.
+ *
+ * A RIGID-FLEX BOARD (flex.json): the GLB carries only the rigid part, and the
+ * tail is drawn here from the compiled circuit (lib/flex-3d), thin as its
+ * stack and FOLDED as it is mounted, each bend with its words on it. A switch
+ * shows it flat instead (Piegata / Spianata); folded is the default.
  */
 export function EnclosureCanvas({
   projectId,
@@ -26,6 +38,7 @@ export function EnclosureCanvas({
   showEnclosures,
   enclosureOpacity,
   explodedMm,
+  circuitJson = null,
   onBoardLoaded,
 }: {
   projectId: string;
@@ -38,6 +51,8 @@ export function EnclosureCanvas({
   enclosureOpacity: number;
   /** lift of the parts above the board (exploded view), in mm */
   explodedMm: number;
+  /** the compiled board: where the flexible tail of a rigid-flex board is read from */
+  circuitJson?: unknown[] | null;
   onBoardLoaded?: (viaGlb: boolean) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -51,6 +66,24 @@ export function EnclosureCanvas({
     meshNodes: Map<string, THREE.Mesh[]>;
   } | null>(null);
   const boardLoadedFor = useRef<string | null>(null);
+
+  // ---- the flexible tail of a rigid-flex board ---------------------------
+  const scena = useMemo(() => scenaDelFlessibile(circuitJson), [circuitJson]);
+  // the board loader reads it when the GLB arrives (declared first, this effect runs before it)
+  const scenaRef = useRef<ScenaDelFlessibile | null>(null);
+  useEffect(() => {
+    scenaRef.current = scena;
+  }, [scena]);
+  const [piegata, setPiegata] = useState(true);
+  /**
+   * The GLB of the board, once loaded: its scene (where the tail goes) and
+   * what it says of the tail ("rigida": the tail is not in it and is drawn
+   * here). Tied to the project it was loaded for: right after a change of
+   * project the old model is not a host for the new tail.
+   */
+  const [caricato, setCaricato] = useState<{ per: string; modello: THREE.Object3D; flex: string | null } | null>(null);
+  const ospite = caricato?.per === projectId ? caricato.modello : null;
+  const glbFlex = caricato?.per === projectId ? caricato.flex : null;
 
   // ---- scene setup (once) ----------------------------------------------
   useEffect(() => {
@@ -151,6 +184,7 @@ export function EnclosureCanvas({
           cache: "no-store",
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const flex = res.headers.get("x-pcb-flex");
         const buffer = await res.arrayBuffer();
         const gltf = await new GLTFLoader().parseAsync(buffer, "");
         if (cancelled) return;
@@ -164,14 +198,30 @@ export function EnclosureCanvas({
         model.rotation.y = Math.PI;
         world.boardGroup.add(model);
         viaGlb = true;
+        /*
+         * The board is centred and laid with the tail FLAT, as it was before
+         * the tail was folded: the frame the enclosures are placed in does not
+         * move with the switch. The folded tail replaces it right after.
+         */
+        const piana = flex === "rigida" && scenaRef.current ? gruppoDellaCoda(scenaRef.current.spianata) : null;
+        if (piana) model.add(piana);
+        normalizeBoardGroup(world.boardGroup, {
+          widthMm: boardWidthMm,
+          heightMm: boardHeightMm,
+        });
+        if (piana) {
+          model.remove(piana);
+          liberaGruppo(piana);
+        }
+        setCaricato({ per: projectId, modello: model, flex });
       } catch {
         if (cancelled) return;
         world.boardGroup.add(fallbackBoard(boardWidthMm, boardHeightMm, parts));
+        normalizeBoardGroup(world.boardGroup, {
+          widthMm: boardWidthMm,
+          heightMm: boardHeightMm,
+        });
       }
-      normalizeBoardGroup(world.boardGroup, {
-        widthMm: boardWidthMm,
-        heightMm: boardHeightMm,
-      });
       frameCamera(world);
       onBoardLoaded?.(viaGlb);
     })();
@@ -183,6 +233,17 @@ export function EnclosureCanvas({
     // components go into the GLB / fallback of the moment
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // ---- the tail, folded or flat ------------------------------------------
+  useEffect(() => {
+    if (!ospite || !scena || glbFlex !== "rigida") return;
+    const gruppo = gruppoDellaCoda(piegata ? scena.piegata : scena.spianata);
+    ospite.add(gruppo);
+    return () => {
+      ospite.remove(gruppo);
+      liberaGruppo(gruppo);
+    };
+  }, [ospite, scena, glbFlex, piegata]);
 
   // ---- enclosure sync ------------------------------------------------
   useEffect(() => {
@@ -246,7 +307,148 @@ export function EnclosureCanvas({
     }
   }, [meshes, showEnclosures, enclosureOpacity, explodedMm]);
 
-  return <div ref={hostRef} className="absolute inset-0" />;
+  return (
+    <>
+      <div ref={hostRef} className="absolute inset-0" />
+      {scena && (
+        <SceltaDellaCoda
+          piegata={piegata}
+          onPiegata={setPiegata}
+          testi={scena.testiDelleCode}
+          intera={glbFlex === "intera"}
+          caricata={glbFlex === "rigida"}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * The switch of a rigid-flex board: folded (as mounted, the default) or flat
+ * (as the fab cuts it), with what the bends make of each tail written under
+ * it, so the 3D says by itself that the tail is folded and how.
+ */
+function SceltaDellaCoda({
+  piegata,
+  onPiegata,
+  testi,
+  intera,
+  caricata,
+}: {
+  piegata: boolean;
+  onPiegata: (v: boolean) => void;
+  testi: string[];
+  intera: boolean;
+  caricata: boolean;
+}) {
+  const idTesti = useId();
+  const bottone = (attivo: boolean) =>
+    `px-3 py-1 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white ${
+      attivo ? "bg-[#E0A040] text-[#1A1206]" : "text-[#E0A040] hover:bg-[rgba(224,160,64,0.12)]"
+    }`;
+  return (
+    <div className="absolute left-[18px] top-[18px] z-10 max-w-[min(420px,calc(100%-36px))] rounded-[10px] border border-[#5A4520] bg-[rgba(11,17,16,0.92)] px-3 py-2.5 text-[11px] text-[#B9CAC5] backdrop-blur">
+      <div className="flex items-center gap-3">
+        <span className="text-[12px] font-semibold text-[#E0A040]">Coda flessibile</span>
+        <div role="group" aria-label="Come mostrare la coda flessibile" className="flex overflow-hidden rounded-md border border-[#E0A040]">
+          <button type="button" aria-pressed={piegata} aria-describedby={idTesti} className={bottone(piegata)} onClick={() => onPiegata(true)}>
+            Piegata
+          </button>
+          <button type="button" aria-pressed={!piegata} aria-describedby={idTesti} className={bottone(!piegata)} onClick={() => onPiegata(false)}>
+            Spianata
+          </button>
+        </div>
+      </div>
+      <div id={idTesti}>
+        {testi.map((t, i) => (
+          <p key={i} className="mt-1.5 leading-snug">
+            {t.replace(/^coda flessibile: /, "")}
+          </p>
+        ))}
+      </div>
+      {intera && (
+        <p className="mt-1.5 leading-snug text-[#E8B23B]">
+          La parte rigida non e&apos; un pezzo solo: qui la coda resta disegnata come la scheda, non piegata.
+        </p>
+      )}
+      {!intera && !caricata && <p className="mt-1.5 leading-snug text-faint">La coda compare quando la scheda e&apos; caricata.</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/** the tail as three objects, in the GLB's frame: one mesh per material, a sprite per bend */
+function gruppoDellaCoda(vista: VistaDelFlessibile): THREE.Group {
+  const gruppo = new THREE.Group();
+  gruppo.name = "coda-flessibile";
+  for (const m of vista.meshes) {
+    const geometria = new THREE.BufferGeometry();
+    geometria.setAttribute("position", new THREE.BufferAttribute(versoIlGlb(m.posizioni), 3));
+    geometria.computeVertexNormals();
+    const trasparente = m.opacita < 1;
+    const materiale = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(m.colore),
+      roughness: m.parte === "rame" ? 0.35 : 0.6,
+      metalness: m.parte === "rame" ? 0.55 : 0.05,
+      side: THREE.DoubleSide,
+      transparent: trasparente,
+      opacity: m.opacita,
+      depthWrite: !trasparente,
+    });
+    gruppo.add(new THREE.Mesh(geometria, materiale));
+  }
+  for (const e of vista.etichette) {
+    const sprite = etichetta(e.testo);
+    sprite.position.set(...puntoVersoIlGlb(e.posizione));
+    gruppo.add(sprite);
+  }
+  return gruppo;
+}
+
+/** the words of a bend, always facing the camera, a constant 1.6 mm tall in the scene */
+function etichetta(testo: string): THREE.Sprite {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const alto = 56;
+  const font = `600 ${alto * 0.62}px system-ui, -apple-system, sans-serif`;
+  let largo = alto * testo.length * 0.5;
+  if (ctx) {
+    ctx.font = font;
+    largo = Math.ceil(ctx.measureText(testo).width + alto * 0.7);
+  }
+  canvas.width = largo;
+  canvas.height = alto;
+  if (ctx) {
+    ctx.fillStyle = "rgba(11,21,18,0.88)";
+    ctx.beginPath();
+    ctx.roundRect(0, 0, largo, alto, alto * 0.3);
+    ctx.fill();
+    ctx.font = font;
+    ctx.fillStyle = "#F2F2F2";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(testo, largo / 2, alto / 2 + 1);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
+  const altezzaMm = 1.6;
+  sprite.scale.set((altezzaMm * largo) / alto, altezzaMm, 1);
+  sprite.renderOrder = 10;
+  return sprite;
+}
+
+function liberaGruppo(gruppo: THREE.Group): void {
+  gruppo.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.geometry.dispose();
+      (o.material as THREE.Material).dispose();
+    } else if (o instanceof THREE.Sprite) {
+      o.material.map?.dispose();
+      o.material.dispose();
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
