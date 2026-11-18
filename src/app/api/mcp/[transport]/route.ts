@@ -314,7 +314,10 @@ function buildHandler(viewer: Viewer) {
         "piega curva), flex_copper_layer, flex_copper_window, flex_component (pezzo nella zona non sopra un irrigiditore della faccia opposta), flex_edge_clearance (0,25 mm dal " +
         "taglio), flex_bend_radius (almeno 10, 12 o 24 volte lo spessore per 1, 2 o piu' strati), flex_bend_area, flex_stiffener_bend e l'avviso flex_bend_crossing; le soglie " +
         "sono minPlatedHoleToFlexMm, minFlexEdgeClearanceMm e minBendRadiusPerThickness di design-rules.json. L'export aggiunge Mech_RigidFlex.gbr, F_Coverlay.gbr, B_Coverlay.gbr, " +
-        "F_Stiffener.gbr / B_Stiffener.gbr e RigidFlex_Stackup.txt. Una voce sbagliata, o una zona fuori dal contorno dell'ultima compilazione, rifiuta tutto il file col motivo, e la risposta ripete l'esempio). " +
+        "F_Stiffener.gbr / B_Stiffener.gbr e RigidFlex_Stackup.txt. Piu' strati flessibili indipendenti (air gap, code che spianate si sovrappongono): pila.flessibili " +
+        "[{\"nome\", \"strati\": [\"inner2\"]}, ...], ogni zona con \"flessibile\", zone di strati diversi possono sovrapporsi, pieghe/irrigiditori/coverlay con \"zona\"; il contorno " +
+        "della scheda e' tutto il materiale e la fessura chiusa fra le code e' un <cutout>; DRC flex_layer_overlap e flex_slot (minFlexSlotMm, 0,5 mm); export Flex<k>_Profile.gbr e " +
+        "Flex<k>_F/B_Coverlay.gbr per strato (esempio completo nella descrizione di write_file). Una voce sbagliata, o una zona fuori dal contorno dell'ultima compilazione, rifiuta tutto il file col motivo, e la risposta ripete l'esempio). " +
         "Poi chiama compile per validare: e' la compilazione a dire se il progetto sta in piedi.",
       { projectId: z.string(), path: z.string(), content: z.string() },
       async ({ projectId, path, content }) => {

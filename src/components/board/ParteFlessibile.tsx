@@ -26,6 +26,17 @@ import type { Flessibile, Punto } from "@/lib/flex-zone";
  * for a board with no flexible zone.
  */
 const POLIIMMIDE = "#E0A040";
+/**
+ * On independent flexible layers (pila.flessibili) every sheet has its colour,
+ * so two tails lying on top of each other, flat, are told apart: the first is
+ * the amber of polyimide, the others cyan, violet and green.
+ */
+const COLORI_DEI_FOGLI = [POLIIMMIDE, "#4FC3F7", "#C792EA", "#9CCC65"];
+const coloreDelFoglio = (flessibile: Flessibile, nome: string | undefined): string => {
+  if (!nome) return POLIIMMIDE;
+  const i = flessibile.pila?.flessibili?.findIndex((f) => f.nome === nome) ?? -1;
+  return COLORI_DEI_FOGLI[Math.max(0, i) % COLORI_DEI_FOGLI.length];
+};
 const PIEGA = "#F2F2F2";
 const IRRIGIDITORE = "#A8B3C0";
 
@@ -71,18 +82,18 @@ export const ParteFlessibile = memo(function ParteFlessibile({ flessibile, mmPer
         </pattern>
       </defs>
       {flessibile.zone.map((z) => (
-        <g key={z.id}>
+        <g key={z.id} data-flessibile={z.flessibile}>
           <polygon
             points={punti(z.punti)}
-            fill={POLIIMMIDE}
+            fill={coloreDelFoglio(flessibile, z.flessibile)}
             fillOpacity={0.1}
-            stroke={POLIIMMIDE}
+            stroke={coloreDelFoglio(flessibile, z.flessibile)}
             strokeWidth={tratto}
             strokeDasharray={`${mmPerPx * 8} ${mmPerPx * 5}`}
             strokeLinejoin="round"
           >
             <title>
-              {`zona flessibile «${z.nome}»: rame solo su ${z.strati.join(", ") || "nessuno strato"}` +
+              {`zona flessibile «${z.nome}»${z.flessibile ? ` (strato flessibile «${z.flessibile}»)` : ""}: rame solo su ${z.strati.join(", ") || "nessuno strato"}` +
                 (z.retino ? `, a griglia ${z.retino.dove === "tutta" ? "in tutta la zona" : "sulla piega"} (linee ${z.retino.larghezzaMm} mm, passo ${z.retino.passoMm} mm)` : "")}
             </title>
           </polygon>
@@ -91,7 +102,7 @@ export const ParteFlessibile = memo(function ParteFlessibile({ flessibile, mmPer
               key={`f-${i}`}
               points={punti(f.punti)}
               fill="none"
-              stroke={POLIIMMIDE}
+              stroke={coloreDelFoglio(flessibile, z.flessibile)}
               strokeWidth={tratto}
               strokeDasharray={`${mmPerPx * 2} ${mmPerPx * 3}`}
               strokeLinecap="round"
@@ -141,7 +152,7 @@ export const ParteFlessibile = memo(function ParteFlessibile({ flessibile, mmPer
               gradi={(Math.atan2(p.u.y, p.u.x) * 180) / Math.PI}
               testo={testoDellaPiega(p)}
               mmPerPx={mmPerPx}
-              colore={PIEGA}
+              colore={coda.zona.flessibile ? coloreDelFoglio(flessibile, coda.zona.flessibile) : PIEGA}
               peso={600}
             />
           ))}
@@ -150,7 +161,7 @@ export const ParteFlessibile = memo(function ParteFlessibile({ flessibile, mmPer
             gradi={coda.pieghe[0] ? (Math.atan2(coda.pieghe[0].u.y, coda.pieghe[0].u.x) * 180) / Math.PI : 0}
             testo={testoDellaCoda(coda)}
             mmPerPx={mmPerPx}
-            colore={POLIIMMIDE}
+            colore={coloreDelFoglio(flessibile, coda.zona.flessibile)}
             peso={500}
           />
         </g>

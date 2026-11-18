@@ -387,7 +387,7 @@ function pezziDellaZona(els: El[], zona: ZonaFlessibile): Array<{ angoli: Punto[
 
 function vista(els: El[], flex: Flessibile, coda: CodaDaPiegare, spessore: number, piegata: boolean, r: Raccolta): EtichettaDelFlessibile[] {
   const zona = coda.zona;
-  const mappa: Mappa = piegata ? (x, y, w) => piegaPunto(coda, x, y, w) : (x, y, w) => [x, y, w];
+  const mappa: Mappa = piegata ? (x, y, w) => piegaPunto(coda, x, y, w) : (x, y, w) => [x, y, w + coda.quotaMm];
   const linee = piegata ? lineeDiTaglio(coda) : [];
   const t2 = spessore / 2;
 
@@ -463,6 +463,8 @@ function vista(els: El[], flex: Flessibile, coda: CodaDaPiegare, spessore: numbe
 /** the stiffeners whose centre is in a zone */
 function irrigiditoriDellaZona(flex: Flessibile, zona: ZonaFlessibile): Flessibile["irrigiditori"] {
   return flex.irrigiditori.filter((irr) => {
+    // the zone it names, on independent flexible layers: two zones may hold it
+    if (irr.zonaId) return irr.zonaId === zona.id;
     const cx = irr.punti.reduce((t, p) => t + p.x, 0) / irr.punti.length;
     const cy = irr.punti.reduce((t, p) => t + p.y, 0) / irr.punti.length;
     return profondita(cx, cy, zona.punti) > 0;
@@ -483,8 +485,8 @@ export function scenaDelFlessibile(circuitJson: unknown[] | null | undefined): S
   const etichetteP: EtichettaDelFlessibile[] = [];
   const etichetteS: EtichettaDelFlessibile[] = [];
   for (const coda of piegatura.code) {
-    etichetteP.push(...vista(els, flex, coda, piegatura.spessoreMm, true, piegata));
-    etichetteS.push(...vista(els, flex, coda, piegatura.spessoreMm, false, spianata));
+    etichetteP.push(...vista(els, flex, coda, coda.spessoreMm, true, piegata));
+    etichetteS.push(...vista(els, flex, coda, coda.spessoreMm, false, spianata));
   }
   return {
     piegata: { meshes: piegata.meshes(), etichette: etichetteP },

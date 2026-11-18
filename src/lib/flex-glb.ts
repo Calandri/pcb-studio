@@ -19,7 +19,7 @@
  * and does not fold the tail.
  */
 import { getManifoldModule } from "@tscircuit/manifold-2d";
-import { contornoDellaScheda, flessibileDellaScheda, profondita, type Punto } from "./flex-zone";
+import { contornoDellaScheda, flessibileDellaScheda, nelPoligono, profondita, vuotiDellaScheda, type Punto } from "./flex-zone";
 
 type El = Record<string, unknown> & { type: string };
 
@@ -29,8 +29,14 @@ const areaConSegno = (p: Punto[]): number => {
   return -a / 2;
 };
 
-/** the outline of the board minus its flexible zones: null when the rigid part is not one piece, or on any failure */
-export async function contornoRigido(contorno: Punto[], zone: Punto[][]): Promise<Punto[] | null> {
+/**
+ * The outline of the board minus its flexible zones and its own cutouts (on
+ * independent flexible layers the gap closed between two tails is one: it is
+ * not rigid board). null when the rigid part is not one piece, when a hole is
+ * left that is not one of the board's cutouts (the converter cuts those by
+ * itself), or on any failure.
+ */
+export async function contornoRigido(contorno: Punto[], zone: Punto[][], vuoti: Punto[][] = []): Promise<Punto[] | null> {
   if (contorno.length < 3 || zone.length === 0) return null;
   const m = await getManifoldModule();
   const daLiberare: Array<{ delete(): void }> = [];
@@ -38,7 +44,7 @@ export async function contornoRigido(contorno: Punto[], zone: Punto[][]): Promis
     const tutto = m.CrossSection.ofPolygons([contorno.map((p) => [p.x, p.y] as [number, number])], "EvenOdd");
     daLiberare.push(tutto);
     const via = m.CrossSection.ofPolygons(
-      zone.map((z) => z.map((p) => [p.x, p.y] as [number, number])),
+      [...zone, ...vuoti].map((z) => z.map((p) => [p.x, p.y] as [number, number])),
       "NonZero",
     );
     daLiberare.push(via);
@@ -48,8 +54,13 @@ export async function contornoRigido(contorno: Punto[], zone: Punto[][]): Promis
       .map((c) => c.map(([x, y]) => ({ x, y })))
       .filter((c) => c.length >= 3);
     const pieni = anelli.filter((c) => areaConSegno(c) > 1e-6);
-    // one piece and no hole the outline cannot carry (the board's own holes are elements, not rings of the outline)
-    if (pieni.length !== 1 || anelli.length !== 1) return null;
+    const buchi = anelli.filter((c) => areaConSegno(c) < -1e-6);
+    // one piece; a hole only where the board has a cutout of its own, which the converter cuts by itself
+    const deiVuoti = (b: Punto[]) => {
+      const c = { x: b.reduce((t, q) => t + q.x, 0) / b.length, y: b.reduce((t, q) => t + q.y, 0) / b.length };
+      return vuoti.some((v) => nelPoligono(c.x, c.y, v));
+    };
+    if (pieni.length !== 1 || !buchi.every(deiVuoti)) return null;
     return pieni[0];
   } catch {
     return null;
@@ -86,6 +97,7 @@ export async function soloLaParteRigida(circuitJson: unknown[]): Promise<GlbDelF
   const rigido = await contornoRigido(
     contornoDellaScheda(els),
     flex.zone.map((z) => z.punti),
+    vuotiDellaScheda(els),
   );
   if (!rigido) return "intera";
   board.outline = rigido.map((p) => ({ x: p.x, y: p.y }));

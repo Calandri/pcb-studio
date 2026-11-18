@@ -92,6 +92,7 @@ import {
   flessibileDellaScheda,
   IRRIGIDITORE,
   latiDi,
+  type Lato,
   PIEGA,
   PILA_FLESSIBILE,
   profondita,
@@ -102,9 +103,11 @@ import {
   type Flessibile,
   type PilaFlessibile,
   type Punto,
+  type StratoFlessibile,
   type Retino,
 } from "./flex-zone";
 import { areaConSegno, capsula, cerchio, rettangoloArrotondato } from "./pour-geometry";
+import { zonaSenzaLoStrato } from "./flex-strati";
 import { disegnoStampato } from "./silkscreen-clearance";
 import { eStratoDiRame, nomeDelloStrato, stratiDiRame } from "./strati-rame";
 
@@ -124,6 +127,8 @@ export const MAX_FORI = 50;
 export const MAX_APERTURE_COVERLAY = 100;
 /** rows of the stack of the flexible part */
 const MAX_MATERIALI = 24;
+/** independent flexible layers in one stack (air gap): PCB Basic's form goes to 10 flexible layers, two or three sheets is what a board asks */
+export const MAX_STRATI_FLESSIBILI = 4;
 /** windows without copper, and cutouts, in one zone */
 export const MAX_FINESTRE = 16;
 /** the grid of a zone (`retino`): the widest line and the longest step a file may write (mm) */
@@ -215,6 +220,66 @@ export const ESEMPIO_FLEX = {
   coverlay: { top: [{ nome: "contatto", punti: [{ x: 0, y: -57 }, { x: 4, y: -57 }, { x: 4, y: -55 }, { x: 0, y: -55 }] }], bottom: [] },
 };
 
+/**
+ * TWO INDEPENDENT FLEXIBLE LAYERS (air gap), the case of the modem boards of
+ * Wildy in their v3: a "parte ripiegata" on the sheet with inner2, folded back
+ * over the board by two bends of 90 degrees, and a "striscia" on the sheet
+ * with inner1, one bend of 90 degrees, whose end turns under the first tail:
+ * flat, the two overlap. The outline of the board in main.tsx is all the
+ * material (rigid part, both tails flat) and the gap closed between the two
+ * tails is a <cutout>. Solid copper (no retino): what Antenova asked for.
+ */
+export const ESEMPIO_FLEX_DUE_STRATI = {
+  pila: {
+    spessoreMm: 0.1,
+    coverlay: "giallo",
+    flessibili: [
+      { nome: "foglio inner2", strati: ["inner2"] },
+      { nome: "foglio inner1", strati: ["inner1"] },
+    ],
+  },
+  zone: [
+    {
+      nome: "parte ripiegata",
+      flessibile: "foglio inner2",
+      punti: [
+        { x: -16.25, y: -25.75 },
+        { x: 14.2, y: -25.75 },
+        { x: 14.2, y: -60 },
+        { x: -16.25, y: -60 },
+      ],
+    },
+    {
+      nome: "striscia",
+      flessibile: "foglio inner1",
+      punti: [
+        { x: 14.7, y: -25.75 },
+        { x: 20.75, y: -25.75 },
+        { x: 20.75, y: -62 },
+        { x: -30, y: -62 },
+        { x: -30, y: -56 },
+        { x: 14.7, y: -56 },
+      ],
+    },
+  ],
+  pieghe: [
+    { nome: "ripiegata 1", zona: "parte ripiegata", da: { x: -16.25, y: -28.117 }, a: { x: 14.2, y: -28.117 }, raggioMm: 2.2, angolo: 90, verso: "su" },
+    { nome: "ripiegata 2", zona: "parte ripiegata", da: { x: -16.25, y: -34.002 }, a: { x: 14.2, y: -34.002 }, raggioMm: 2.2, angolo: 90, verso: "su" },
+    { nome: "striscia", zona: "striscia", da: { x: 14.7, y: -28.117 }, a: { x: 20.75, y: -28.117 }, raggioMm: 2.2, angolo: 90, verso: "su" },
+  ],
+  irrigiditori: [
+    {
+      nome: "rinforzo vite",
+      zona: "parte ripiegata",
+      lato: "bottom",
+      materiale: "fr4",
+      spessoreMm: 0.8,
+      punti: [{ x: 5.7, y: -50.419 }, { x: 13.4, y: -50.419 }, { x: 13.4, y: -42.719 }, { x: 5.7, y: -42.719 }],
+      fori: [{ x: 9.7, y: -46.719, diametroMm: 2.4 }],
+    },
+  ],
+};
+
 /** the file, for whoever writes it: the agent's write_file and the MCP's instructions */
 export const DESCRIZIONE_FLEX =
   `${FLEX_PATH} makes the board a RIGID-FLEX one: it says which part of the board's outline is flexible. ` +
@@ -247,7 +312,16 @@ export const DESCRIZIONE_FLEX =
   `flex_stiffener_bend (a stiffener over that stretch) and, as a warning, flex_bend_crossing (a trace crossing a bend line more than 10 degrees off the perpendicular). The three thresholds ` +
   `are fields of design-rules.json. The Gerber package gets Mech_RigidFlex.gbr (zones, windows and bend lines), F_Coverlay.gbr and B_Coverlay.gbr, F_Stiffener.gbr / B_Stiffener.gbr and ` +
   `RigidFlex_Stackup.txt for the fab. Checked whole when written: one wrong entry refuses the file with the reasons, and so does a zone that leaves the outline of the board as last compiled. ` +
-  `Without the file the board is rigid.`;
+  `Without the file the board is rigid. ` +
+  `TWO OR MORE INDEPENDENT FLEXIBLE LAYERS (air gap: tails of different sheets, bonded together only inside the rigid part, that flat lie ON TOP of each other): ` +
+  `pila.flessibili, 2 to ${MAX_STRATI_FLESSIBILI} sheets {"nome", "strati": the copper layers of the board that go on into that sheet (each layer in one sheet at most), optional spessoreMm, coverlay, materiali}; ` +
+  `every zone then says "flessibile" (its sheet; its strati default to the sheet's) and zones of DIFFERENT sheets may overlap (of the same sheet never). The <board outline> in main.tsx is then ALL the material, ` +
+  `the rigid part and every tail flat; a gap closed between two tails is a <cutout> of the board; the rigid part is what is in the outline and in no zone. A bend, a stiffener and a coverlay opening ` +
+  `that lie where two zones overlap name theirs with "zona" (write it always, it is clearer). What changes: the copper of a layer belongs to the zone of the sheet that has it (a pour is cut back from ` +
+  `a zone without its layer only where no zone with it lies over it), a cutout cuts one sheet only (it is on that sheet's profile, not on Edge_Cuts), each tail folds in 3D on its own; the DRC adds ` +
+  `flex_layer_overlap (two zones of one sheet overlapping) and flex_slot (two tails of two sheets leaving the rigid part nearer than minFlexSlotMm, 0.5mm); the Gerber package gets, per sheet k, ` +
+  `Flex<k>_Profile.gbr (where that sheet is cut, and its bends) and Flex<k>_F_Coverlay.gbr / Flex<k>_B_Coverlay.gbr, and the stack note describes the sheets. Example: ${JSON.stringify(ESEMPIO_FLEX_DUE_STRATI)} ` +
+  `(in main.tsx the outline goes round the rigid part and both tails, and the gap between them, x 14.2 to 14.7 down to y -56, is a <cutout shape="polygon">).`;
 
 /** flex.json as it was read: what is right in it */
 export interface FlexDelFile {
@@ -257,13 +331,15 @@ export interface FlexDelFile {
     nome: string;
     punti: Punto[];
     strati: string[];
+    /** the independent flexible layer it is on (pila.flessibili), on a board that has them */
+    flessibile?: string;
     /** windows without copper, and cutouts through the tail: each inside the zone */
     finestre: Array<{ nome?: string; punti: Punto[] }>;
     ritagli: Array<{ nome?: string; punti: Punto[] }>;
     /** the grid its copper is cut into (see flex-retino.ts) */
     retino?: Retino;
   }>;
-  pieghe: Array<{ indice: number; nome?: string; a: Punto; b: Punto; raggioMm: number; angolo: number; verso: "su" | "giu" }>;
+  pieghe: Array<{ indice: number; nome?: string; a: Punto; b: Punto; raggioMm: number; angolo: number; verso: "su" | "giu"; zona?: string }>;
   irrigiditori: Array<{
     indice: number;
     nome?: string;
@@ -272,8 +348,9 @@ export interface FlexDelFile {
     materiale: string;
     spessoreMm: number;
     fori: Array<{ x: number; y: number; diametroMm: number }>;
+    zona?: string;
   }>;
-  aperture: Array<{ lato: Faccia; indice: number; nome?: string; punti: Punto[] }>;
+  aperture: Array<{ lato: Faccia; indice: number; nome?: string; punti: Punto[]; zona?: string }>;
 }
 
 /** the board a file is checked against: its outline and its copper layers */
@@ -410,7 +487,7 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
   const pila = data.pila;
   if (!oggetto(pila)) {
     errori.push('pila: manca, serve {"spessoreMm": ..., "coverlay": ...}: lo spessore della parte flessibile decide il raggio minimo di piega');
-  } else if (!campiSconosciuti(pila, ["spessoreMm", "coverlay", "materiali"], "pila", errori)) {
+  } else if (!campiSconosciuti(pila, ["spessoreMm", "coverlay", "materiali", "flessibili"], "pila", errori)) {
     let giusta = true;
     if (!finito(pila.spessoreMm) || pila.spessoreMm < SPESSORE_FLEX.min || pila.spessoreMm > SPESSORE_FLEX.max) {
       errori.push(`pila.spessoreMm: lo spessore della parte flessibile in mm, un numero da ${SPESSORE_FLEX.min} a ${SPESSORE_FLEX.max}`);
@@ -448,8 +525,98 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
         });
       }
     }
-    if (giusta) flex.pila = { spessoreMm: pila.spessoreMm as number, coverlay: pila.coverlay as string, materiali };
+    // the independent flexible layers (air gap): each with the copper layers of the board that go on into it
+    let flessibili: NonNullable<PilaFlessibile["flessibili"]> | undefined;
+    if (pila.flessibili !== undefined) {
+      flessibili = [];
+      const v = pila.flessibili;
+      if (!Array.isArray(v) || v.length < 2 || v.length > MAX_STRATI_FLESSIBILI) {
+        errori.push(`pila.flessibili: serve un elenco da 2 a ${MAX_STRATI_FLESSIBILI} strati flessibili indipendenti {"nome": ..., "strati": [...]} (con uno solo non serve: basta la pila)`);
+        giusta = false;
+      } else {
+        const giaUsati = new Set<string>();
+        v.forEach((f, i) => {
+          const dove = `pila.flessibili[${i}]`;
+          if (!oggetto(f)) {
+            errori.push(`${dove}: serve un oggetto {"nome": ..., "strati": [...]} (facoltativi spessoreMm, coverlay, materiali)`);
+            giusta = false;
+            return;
+          }
+          if (campiSconosciuti(f, ["nome", "strati", "spessoreMm", "coverlay", "materiali"], dove, errori)) {
+            giusta = false;
+            return;
+          }
+          const nome = leggiNome(f.nome, `${dove}.nome`, errori);
+          if (!nome || flessibili!.some((g) => g.nome === nome)) {
+            if (nome) errori.push(`${dove}.nome: un altro strato flessibile ha lo stesso nome`);
+            else if (nome === undefined) errori.push(`${dove}.nome: manca, ogni strato flessibile ha un nome`);
+            giusta = false;
+            return;
+          }
+          const st = f.strati;
+          if (!Array.isArray(st) || st.length === 0 || !st.every(eStratoDiRame) || new Set(st).size !== st.length) {
+            errori.push(`${dove}.strati: serve un elenco senza doppi degli strati di rame della scheda che continuano in questo strato flessibile (top, inner1, ..., bottom), almeno uno`);
+            giusta = false;
+            return;
+          }
+          if ((st as string[]).some((l) => giaUsati.has(l))) {
+            errori.push(`${dove}.strati: uno strato di rame continua in un solo strato flessibile`);
+            giusta = false;
+            return;
+          }
+          if (scheda && !(st as string[]).every((l) => scheda.strati.includes(l))) {
+            errori.push(`${dove}.strati: la scheda ha gli strati ${scheda.strati.join(", ")}`);
+            giusta = false;
+            return;
+          }
+          if (f.spessoreMm !== undefined && (!finito(f.spessoreMm) || f.spessoreMm < SPESSORE_FLEX.min || f.spessoreMm > SPESSORE_FLEX.max)) {
+            errori.push(`${dove}.spessoreMm: lo spessore di questo strato flessibile in mm, da ${SPESSORE_FLEX.min} a ${SPESSORE_FLEX.max} (senza: quello della pila)`);
+            giusta = false;
+            return;
+          }
+          if (f.coverlay !== undefined && voce(COVERLAY, f.coverlay) === undefined) {
+            errori.push(`${dove}.coverlay: deve essere uno di ${Object.keys(COVERLAY).join(", ")}`);
+            giusta = false;
+            return;
+          }
+          const suoi: PilaFlessibile["materiali"] = [];
+          if (f.materiali !== undefined) {
+            if (!Array.isArray(f.materiali) || f.materiali.length > MAX_MATERIALI) {
+              errori.push(`${dove}.materiali: serve un elenco di al massimo ${MAX_MATERIALI} righe {"tipo": ..., "mm": ...}`);
+              giusta = false;
+              return;
+            }
+            for (const [k, m] of f.materiali.entries()) {
+              const qui = `${dove}.materiali[${k}]`;
+              if (!oggetto(m) || campiSconosciuti(m, ["tipo", "nome", "mm"], qui, errori) || voce(TIPI_DI_MATERIALE, m.tipo) === undefined || !finito(m.mm) || m.mm <= 0 || m.mm > 2) {
+                errori.push(`${qui}: serve {"tipo": ${Object.keys(TIPI_DI_MATERIALE).join("/")}, "mm": da 0 a 2} (facoltativo nome)`);
+                giusta = false;
+                return;
+              }
+              const n = leggiNome(m.nome, `${qui}.nome`, errori);
+              if (n === null) {
+                giusta = false;
+                return;
+              }
+              suoi.push({ tipo: m.tipo as string, ...(n ? { nome: n } : {}), mm: m.mm });
+            }
+          }
+          for (const l of st as string[]) giaUsati.add(l);
+          flessibili!.push({
+            nome,
+            strati: stratiDiRame(8).filter((l) => (st as string[]).includes(l)),
+            spessoreMm: finito(f.spessoreMm) ? f.spessoreMm : (pila.spessoreMm as number),
+            coverlay: typeof f.coverlay === "string" ? f.coverlay : (pila.coverlay as string),
+            materiali: suoi,
+          });
+        });
+      }
+    }
+    if (giusta) flex.pila = { spessoreMm: pila.spessoreMm as number, coverlay: pila.coverlay as string, materiali, ...(flessibili ? { flessibili } : {}) };
   }
+  /** the independent flexible layers of the stack: empty on a board with one flexible part */
+  const flessibili = flex.pila?.flessibili ?? [];
+  const fraStrati = oggetto(pila) && pila.flessibili !== undefined;
 
   // --- the zones
   const zone = data.zone;
@@ -464,7 +631,7 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
         errori.push(`${dove}: serve un oggetto {"nome": ..., "strati": [...], "punti": [...]}`);
         return;
       }
-      if (campiSconosciuti(z, ["nome", "strati", "punti", "finestre", "ritagli", "retino"], dove, errori)) return;
+      if (campiSconosciuti(z, ["nome", "strati", "punti", "finestre", "ritagli", "retino", "flessibile"], dove, errori)) return;
       if (z.nome === undefined) {
         errori.push(`${dove}.nome: manca, ogni zona ha un nome`);
         return;
@@ -475,7 +642,24 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
         errori.push(`${dove}.nome: un'altra zona ha lo stesso nome`);
         return;
       }
-      const s = z.strati;
+      // on a stack of independent flexible layers, the zone is on one of them and its copper is that layer's
+      let suoStrato: (typeof flessibili)[number] | undefined;
+      if (z.flessibile !== undefined || fraStrati) {
+        suoStrato = typeof z.flessibile === "string" ? flessibili.find((f) => f.nome === z.flessibile) : undefined;
+        if (!fraStrati) {
+          errori.push(`${dove}.flessibile: la pila non dichiara strati flessibili indipendenti (pila.flessibili)`);
+          return;
+        }
+        if (!suoStrato) {
+          if (flessibili.length > 0) errori.push(`${dove}.flessibile: serve il nome di uno strato flessibile della pila (${flessibili.map((f) => f.nome).join(", ")})`);
+          return;
+        }
+      }
+      const s = z.strati === undefined && suoStrato ? suoStrato.strati : z.strati;
+      if (suoStrato && Array.isArray(s) && !s.every((l) => typeof l === "string" && suoStrato.strati.includes(l))) {
+        errori.push(`${dove}.strati: lo strato flessibile «${suoStrato.nome}» ha il rame di ${suoStrato.strati.join(", ")}: la zona puo' averne solo di questi`);
+        return;
+      }
       if (!Array.isArray(s) || s.length === 0 || !s.every(eStratoDiRame) || new Set(s).size !== s.length) {
         errori.push(`${dove}.strati: serve un elenco senza doppi degli strati di rame che esistono nella zona (top, inner1, inner2, ..., bottom), almeno uno`);
         return;
@@ -488,13 +672,16 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
       if (!p) return;
       if (scheda && !sullaScheda(p, scheda.contorno)) {
         errori.push(
-          `${dove}: esce dal contorno della scheda dell'ultima compilazione. Il contorno della scheda e' uno solo, parte rigida e code insieme: ` +
-            `prima si disegna la coda nel <board outline> di main.tsx e si compila, poi si scrive ${FLEX_PATH}`,
+          `${dove}: esce dal contorno della scheda dell'ultima compilazione. Il contorno della scheda e' uno solo, parte rigida e code insieme` +
+            (fraStrati ? ` (con piu' strati flessibili: tutto il materiale, ogni coda spianata, e i vuoti chiusi fra le code come <cutout>)` : "") +
+            `: prima si disegna la coda nel <board outline> di main.tsx e si compila, poi si scrive ${FLEX_PATH}`,
         );
         return;
       }
-      if (flex.zone.some((altra) => siSovrappongono(altra.punti, p))) {
-        errori.push(`${dove}: si sovrappone a un'altra zona`);
+      // two zones may lie on top of each other only on two independent flexible layers
+      const sovrapposta = flex.zone.find((altra) => siSovrappongono(altra.punti, p) && (!suoStrato || altra.flessibile === suoStrato.nome));
+      if (sovrapposta) {
+        errori.push(suoStrato ? `${dove}: si sovrappone alla zona «${sovrapposta.nome}», che e' sullo stesso strato flessibile «${suoStrato.nome}»` : `${dove}: si sovrappone a un'altra zona`);
         return;
       }
       // the windows without copper and the cutouts: each a polygon inside the zone
@@ -572,7 +759,16 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
       }
       nomi.add(nome);
       // in the order of the stack, so two files that say the same thing are the same board
-      flex.zone.push({ indice, nome, punti: p, strati: stratiDiRame(8).filter((l) => (s as string[]).includes(l)), finestre, ritagli, ...(retino ? { retino } : {}) });
+      flex.zone.push({
+        indice,
+        nome,
+        punti: p,
+        strati: stratiDiRame(8).filter((l) => (s as string[]).includes(l)),
+        finestre,
+        ritagli,
+        ...(retino ? { retino } : {}),
+        ...(suoStrato ? { flessibile: suoStrato.nome } : {}),
+      });
     });
   }
 
@@ -582,6 +778,33 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
    * of their own: theirs is the zone's, already said, and they come back with it.
    */
   const zoneRifiutate = Array.isArray(zone) && Math.min(zone.length, MAX_ZONE) > flex.zone.length;
+
+  /**
+   * The zone an entry is in: the one it names (`zona`), which must hold it, or
+   * the only one that holds it. Where two zones of two flexible layers lie on
+   * top of each other the entry must name its own. undefined (said, unless the
+   * zone was refused) when there is none; null when it is not one zone.
+   */
+  const zonaDellaVoce = (v: Record<string, unknown>, dentro: Punto[], dove: string, comeDirlo: string): FlexDelFile["zone"][number] | undefined | null => {
+    if (v.zona !== undefined) {
+      const z = typeof v.zona === "string" ? flex.zone.find((q) => q.nome === v.zona) : undefined;
+      if (!z) {
+        if (!zoneRifiutate) errori.push(`${dove}.zona: serve il nome di una zona del file`);
+        return undefined;
+      }
+      if (!contieneTutti(z.punti, dentro, 2 * SLACK_MM)) {
+        errori.push(`${dove}: ${comeDirlo} nella zona «${z.nome}» che nomina`);
+        return undefined;
+      }
+      return z;
+    }
+    const tutte = flex.zone.filter((q) => contieneTutti(q.punti, dentro, 2 * SLACK_MM));
+    if (tutte.length > 1 && fraStrati) {
+      errori.push(`${dove}: sta in ${tutte.length} zone sovrapposte (${tutte.map((q) => `«${q.nome}»`).join(", ")}): scrivi "zona" con il nome della sua`);
+      return null;
+    }
+    return tutte[0];
+  };
 
   // --- the bend lines
   if (data.pieghe !== undefined) {
@@ -594,7 +817,7 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
           errori.push(`${dove}: serve un oggetto {"da": {...}, "a": {...}, "raggioMm": ..., "angolo": ..., "verso": ...}`);
           return;
         }
-        if (campiSconosciuti(v, ["nome", "da", "a", "raggioMm", "angolo", "verso"], dove, errori)) return;
+        if (campiSconosciuti(v, ["nome", "da", "a", "raggioMm", "angolo", "verso", "zona"], dove, errori)) return;
         const nome = leggiNome(v.nome, `${dove}.nome`, errori);
         if (nome === null) return;
         const a = leggiPunto(v.da);
@@ -621,11 +844,13 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
         }
         // across one zone: its two ends and its middle in the same one
         const meta = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-        if (!flex.zone.some((z) => contieneTutti(z.punti, [a, meta, b], 2 * SLACK_MM))) {
-          if (!zoneRifiutate) errori.push(`${dove}: la linea di piega deve stare tutta in una zona flessibile, da un suo bordo all'altro`);
+        const suaZona = zonaDellaVoce(v, [a, meta, b], dove, "la linea di piega deve stare tutta");
+        if (suaZona === null) return;
+        if (!suaZona) {
+          if (!zoneRifiutate && v.zona === undefined) errori.push(`${dove}: la linea di piega deve stare tutta in una zona flessibile, da un suo bordo all'altro`);
           return;
         }
-        flex.pieghe.push({ indice, ...(nome ? { nome } : {}), a, b, raggioMm: v.raggioMm, angolo: v.angolo, verso: v.verso });
+        flex.pieghe.push({ indice, ...(nome ? { nome } : {}), a, b, raggioMm: v.raggioMm, angolo: v.angolo, verso: v.verso, ...(fraStrati ? { zona: suaZona.nome } : {}) });
       });
     }
   }
@@ -641,7 +866,7 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
           errori.push(`${dove}: serve un oggetto {"lato": ..., "materiale": ..., "spessoreMm": ..., "punti": [...]}`);
           return;
         }
-        if (campiSconosciuti(v, ["nome", "lato", "materiale", "spessoreMm", "punti", "fori"], dove, errori)) return;
+        if (campiSconosciuti(v, ["nome", "lato", "materiale", "spessoreMm", "punti", "fori", "zona"], dove, errori)) return;
         const nome = leggiNome(v.nome, `${dove}.nome`, errori);
         if (nome === null) return;
         if (v.lato !== "top" && v.lato !== "bottom") {
@@ -679,7 +904,18 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
             fori.push({ ...centro, diametroMm: d });
           }
         }
-        flex.irrigiditori.push({ indice, ...(nome ? { nome } : {}), lato: v.lato, punti: p, materiale: v.materiale, spessoreMm: v.spessoreMm, fori });
+        // on independent flexible layers a stiffener is glued on one sheet: its zone
+        let suaZona: string | undefined;
+        if (fraStrati || v.zona !== undefined) {
+          const z = zonaDellaVoce(v, p, dove, "un irrigiditore deve stare tutto");
+          if (z === null) return;
+          if (!z) {
+            if (!zoneRifiutate && v.zona === undefined) errori.push(`${dove}: con piu' strati flessibili un irrigiditore sta tutto in una zona`);
+            return;
+          }
+          suaZona = z.nome;
+        }
+        flex.irrigiditori.push({ indice, ...(nome ? { nome } : {}), lato: v.lato, punti: p, materiale: v.materiale, spessoreMm: v.spessoreMm, fori, ...(suaZona ? { zona: suaZona } : {}) });
       });
     }
   }
@@ -707,16 +943,18 @@ function validaFlex(data: unknown, scheda?: SchedaDelFlessibile, regole?: Regole
             errori.push(`${dove}: serve un oggetto {"punti": [...]} (facoltativo nome)`);
             return;
           }
-          if (campiSconosciuti(v, ["nome", "punti"], dove, errori)) return;
+          if (campiSconosciuti(v, ["nome", "punti", "zona"], dove, errori)) return;
           const nome = leggiNome(v.nome, `${dove}.nome`, errori);
           if (nome === null) return;
           const p = leggiPoligono(v.punti, `${dove}.punti`, errori);
           if (!p) return;
-          if (!flex.zone.some((z) => contieneTutti(z.punti, p, 2 * SLACK_MM))) {
-            if (!zoneRifiutate) errori.push(`${dove}: un'apertura del coverlay sta tutta in una zona flessibile (fuori non c'e' coverlay)`);
+          const suaZona = zonaDellaVoce(v, p, dove, "un'apertura del coverlay deve stare tutta");
+          if (suaZona === null) return;
+          if (!suaZona) {
+            if (!zoneRifiutate && v.zona === undefined) errori.push(`${dove}: un'apertura del coverlay sta tutta in una zona flessibile (fuori non c'e' coverlay)`);
             return;
           }
-          flex.aperture.push({ lato, indice, ...(nome ? { nome } : {}), punti: p });
+          flex.aperture.push({ lato, indice, ...(nome ? { nome } : {}), punti: p, ...(fraStrati ? { zona: suaZona.nome } : {}) });
         });
       }
       if (totale > MAX_APERTURE_COVERLAY) errori.push(`coverlay: troppe aperture (${totale}, massimo ${MAX_APERTURE_COVERLAY} fra top e bottom)`);
@@ -796,6 +1034,12 @@ export function conFlessibile<T extends El>(circuitJson: T[], fsMap: Record<stri
   const zone = zoneSullaScheda(flex, schedaDelFlessibile(out));
   if (zone.length === 0) return out;
   const metti = (el: Record<string, unknown>) => out.push(el as unknown as T);
+  // independent flexible layers: every element says its sheet or its zone, and a cutout goes through one sheet only
+  const fraStrati = (flex.pila?.flessibili?.length ?? 0) > 0;
+  const idDellaZona = (nome: string | undefined) => {
+    const z = nome === undefined ? undefined : zone.find((q) => q.nome === nome);
+    return z ? `pcb_flex_zone_${z.indice}` : undefined;
+  };
   for (const z of zone) {
     metti({
       type: ZONA_FLESSIBILE,
@@ -803,6 +1047,7 @@ export function conFlessibile<T extends El>(circuitJson: T[], fsMap: Record<stri
       nome: z.nome,
       layers: z.strati,
       points: z.punti,
+      ...(fraStrati && z.flessibile ? { flex_layer: z.flessibile } : {}),
       ...(z.finestre.length > 0 ? { windows: z.finestre.map((f) => ({ ...(f.nome ? { nome: f.nome } : {}), points: f.punti })) } : {}),
       ...(z.ritagli.length > 0 ? { cutouts: z.ritagli.map((f) => ({ ...(f.nome ? { nome: f.nome } : {}), points: f.punti })) } : {}),
       // the grid its copper is to be cut into: conRetino lays it on the pours and writes here how many squares it cut
@@ -810,17 +1055,23 @@ export function conFlessibile<T extends El>(circuitJson: T[], fsMap: Record<stri
         ? { hatch: { width_mm: z.retino.larghezzaMm, pitch_mm: z.retino.passoMm, angle_deg: z.retino.angolo, where: z.retino.dove, margin_mm: z.retino.margineMm } }
         : {}),
     });
-    // a cutout is a hole in the board: as a pcb_cutout the outline of the Gerber has it, and whatever reads the cutouts of a board
-    z.ritagli.forEach((r, k) => {
+    /*
+     * a cutout is a hole in the board: as a pcb_cutout the outline of the Gerber has it, and whatever reads the cutouts of a board.
+     * Not on independent flexible layers: there it cuts one sheet, and another may lie under it (it is on that sheet's profile)
+     */
+    if (!fraStrati) z.ritagli.forEach((r, k) => {
       metti({ type: "pcb_cutout", pcb_cutout_id: `${RITAGLIO_DEL_FLESSIBILE}${z.indice}_${k}`, shape: "polygon", points: r.punti });
     });
   }
   for (const p of flex.pieghe) {
     const meta = { x: (p.a.x + p.b.x) / 2, y: (p.a.y + p.b.y) / 2 };
     if (!zone.some((z) => contieneTutti(z.punti, [p.a, meta, p.b], 2 * SLACK_MM))) continue;
+    const suaZona = idDellaZona(p.zona);
+    if (fraStrati && !suaZona) continue;
     metti({
       type: PIEGA,
       pcb_flex_bend_id: `pcb_flex_bend_${p.indice}`,
+      ...(fraStrati ? { pcb_flex_zone_id: suaZona } : {}),
       ...(p.nome ? { nome: p.nome } : {}),
       from: p.a,
       to: p.b,
@@ -830,9 +1081,12 @@ export function conFlessibile<T extends El>(circuitJson: T[], fsMap: Record<stri
     });
   }
   for (const r of flex.irrigiditori) {
+    const suaZona = idDellaZona(r.zona);
+    if (fraStrati && !suaZona) continue;
     metti({
       type: IRRIGIDITORE,
       pcb_flex_stiffener_id: `pcb_flex_stiffener_${r.indice}`,
+      ...(suaZona ? { pcb_flex_zone_id: suaZona } : {}),
       ...(r.nome ? { nome: r.nome } : {}),
       layer: r.lato,
       material: r.materiale,
@@ -843,9 +1097,12 @@ export function conFlessibile<T extends El>(circuitJson: T[], fsMap: Record<stri
   }
   for (const a of flex.aperture) {
     if (!zone.some((z) => contieneTutti(z.punti, a.punti, 2 * SLACK_MM))) continue;
+    const suaZona = idDellaZona(a.zona);
+    if (fraStrati && !suaZona) continue;
     metti({
       type: APERTURA_COVERLAY,
       pcb_flex_coverlay_opening_id: `pcb_flex_coverlay_opening_${a.lato}_${a.indice}`,
+      ...(fraStrati ? { pcb_flex_zone_id: suaZona } : {}),
       ...(a.nome ? { nome: a.nome } : {}),
       layer: a.lato,
       points: a.punti,
@@ -858,6 +1115,11 @@ export function conFlessibile<T extends El>(circuitJson: T[], fsMap: Record<stri
       thickness_mm: flex.pila.spessoreMm,
       coverlay: flex.pila.coverlay,
       materials: flex.pila.materiali,
+      ...(fraStrati
+        ? {
+            flex_layers: flex.pila.flessibili!.map((f) => ({ name: f.nome, copper_layers: f.strati, thickness_mm: f.spessoreMm, coverlay: f.coverlay, materials: f.materiali })),
+          }
+        : {}),
     });
   }
   return out;
@@ -939,6 +1201,9 @@ export function avvisiDelFlessibile(circuitJson: El[], fsMap: Record<string, str
   if (delFile.pila && delFile.pila.spessoreMm < SPESSORE_MINIMO_PCB_BASIC) {
     out.push({ message: `${FLEX_PATH}: pila.spessoreMm ${delFile.pila.spessoreMm}: la parte flessibile piu' sottile di PCB Basic e' ${SPESSORE_MINIMO_PCB_BASIC} mm` });
   }
+  for (const f of delFile.pila?.flessibili ?? []) {
+    if (f.spessoreMm < SPESSORE_MINIMO_PCB_BASIC) out.push({ message: `${FLEX_PATH}: lo strato flessibile «${f.nome}» e' spesso ${f.spessoreMm} mm: il piu' sottile di PCB Basic e' ${SPESSORE_MINIMO_PCB_BASIC} mm` });
+  }
   for (const z of sopra?.zone ?? []) {
     const r = z.retino;
     if (!r) continue;
@@ -1010,6 +1275,7 @@ export function ostacoliDelFlessibile(
   const scheda = schedaDelFlessibile(circuitJson);
   const zone = zoneSullaScheda(flex, scheda);
   if (zone.length === 0) return undefined;
+  if ((flex.pila?.flessibili?.length ?? 0) > 0) return ostacoliFraStrati(circuitJson as El[], zone, bordoMm, bordoFlessibileMm);
   const sulBordo = zone.map((z) => {
     // the sides of the zone that are the edge of the board, as flex-zone.ts tells them apart on the board
     const comeSopra = flessibileDellaScheda([
@@ -1067,6 +1333,64 @@ export function ostacoliDelFlessibile(
         });
       }
     });
+    return fuori;
+  };
+}
+
+/**
+ * THE OBSTACLES OF THE POURS ON INDEPENDENT FLEXIBLE LAYERS. As for one
+ * flexible part, with what two sheets lying on top of each other change:
+ *  - on a layer a zone does not declare, the zone is a hole only where no zone
+ *    that declares the layer lies over it (zonaSenzaLoStrato), and the band of
+ *    the board's edge clearance runs only along the stretch where the rigid
+ *    part ends (its `confini`): its other sides are cut edges, along the
+ *    outline (whose band the pours keep already) or over another sheet;
+ *  - on a layer it declares, windows, cutouts and the flexible edge clearance
+ *    along its cut edges as before, the cut edges measured among the sheets.
+ */
+function ostacoliFraStrati(circuitJson: El[], zone: FlexDelFile["zone"], bordoMm: number, bordoFlessibileMm: number): (strato: string) => Array<Record<string, unknown>> {
+  const sopra = flessibileDellaScheda([
+    ...circuitJson.filter((el) => el?.type === "pcb_board" || (el?.type === "pcb_cutout" && !eDelFlessibile(el))),
+    ...zone.map((z) => ({ type: ZONA_FLESSIBILE, pcb_flex_zone_id: `z${z.indice}`, layers: z.strati, points: z.punti, flex_layer: z.flessibile ?? "" })),
+  ]);
+  const lati = new Map((sopra?.zone ?? []).map((z) => [z.id, z]));
+  const antiorario = (punti: Punto[]) => (areaConSegno(punti) < 0 ? [...punti].reverse() : punti);
+  const taglio = Math.max(bordoMm, bordoFlessibileMm);
+  return (strato) => {
+    const fuori: Array<Record<string, unknown>> = [];
+    const buco = (id: string, punti: Punto[], margineMm: number) => {
+      const p = antiorario(punti);
+      fuori.push({
+        shape: "polygon",
+        padId: id,
+        layer: strato,
+        connectivityKey: `unconnected:${id}`,
+        points: p,
+        ...(margineMm > 0 ? { formaEsatta: { tipo: "poligono", punti: p }, margineMm } : {}),
+      });
+    };
+    const capsule = (id: string, segmenti: Lato[], r: number) => {
+      segmenti.forEach((l, k) => {
+        if (Math.hypot(l.bx - l.ax, l.by - l.ay) < 1e-9) return;
+        fuori.push({ shape: "polygon", padId: `${id}_${k}`, layer: strato, connectivityKey: `unconnected:${id}_${k}`, points: capsula({ x: l.ax, y: l.ay }, { x: l.bx, y: l.by }, r) });
+      });
+    };
+    for (const z of zone) {
+      const suoi = lati.get(`z${z.indice}`);
+      if (!z.strati.includes(strato)) {
+        zonaSenzaLoStrato(z, strato, zone).forEach((pezzo, k) => buco(`flessibile_${z.indice}_${k}`, pezzo, 0));
+        if (bordoMm > 0 && suoi) capsule(`flessibile_${z.indice}_confine`, suoi.confini, bordoMm);
+        continue;
+      }
+      z.finestre.forEach((f, k) => buco(`flessibile_${z.indice}_finestra_${k}`, f.punti, 0));
+      z.ritagli.forEach((r, k) => buco(`flessibile_${z.indice}_ritaglio_${k}`, r.punti, taglio));
+      // the cut edges of the zone (its own cutouts are above): along the outline the board's band holds already, but not over another sheet
+      if (suoi) {
+        const daiRitagli = new Set(z.ritagli.flatMap((r) => latiDi(r.punti)).map((l) => `${l.ax},${l.ay},${l.bx},${l.by}`));
+        const bordi = suoi.bordi.filter((l) => !daiRitagli.has(`${l.ax},${l.ay},${l.bx},${l.by}`));
+        if (taglio > 0) capsule(`flessibile_${z.indice}_bordo`, bordi, taglio);
+      }
+    }
     return fuori;
   };
 }
@@ -1237,6 +1561,11 @@ export const FILE_MECCANICO = "Mech_RigidFlex.gbr";
 export const FILE_COVERLAY: Record<Faccia, string> = { top: "F_Coverlay.gbr", bottom: "B_Coverlay.gbr" };
 export const FILE_IRRIGIDITORI: Record<Faccia, string> = { top: "F_Stiffener.gbr", bottom: "B_Stiffener.gbr" };
 export const FILE_PILA = "RigidFlex_Stackup.txt";
+/** on independent flexible layers, the files of the k-th sheet (1, 2, ...): its profile (where it is cut) and its coverlay per face */
+export const fileDelloStrato = (k: number) => ({
+  profilo: `Flex${k}_Profile.gbr`,
+  coverlay: { top: `Flex${k}_F_Coverlay.gbr`, bottom: `Flex${k}_B_Coverlay.gbr` } as Record<Faccia, string>,
+});
 
 const area = (p: Punto[]) => Math.abs(areaConSegno(p));
 const scatola = (p: Punto[]) => {
@@ -1247,6 +1576,11 @@ const scatola = (p: Punto[]) => {
 const coordinate = (p: Punto[]) => p.map((q) => `(${numero(q.x)}, ${numero(q.y)})`).join(" ");
 /** a name as it goes in the text for the fab: the ones the file may carry, and nothing else */
 const scritto = (nome: string) => (NOME.test(nome) ? nome : "-");
+
+/** the sheets of a board with independent flexible layers, numbered from 1 in the order of the stack, each with its zones: empty on a board with one flexible part */
+export function fogliDelFlessibile(flex: Flessibile): Array<{ numero: number; strato: StratoFlessibile; zone: Flessibile["zone"] }> {
+  return (flex.pila?.flessibili ?? []).map((strato, i) => ({ numero: i + 1, strato, zone: flex.zone.filter((z) => z.flessibile === strato.nome) }));
+}
 
 /**
  * THE FILES A RIGID-FLEX BOARD ADDS TO ITS GERBER PACKAGE, by name: empty for
@@ -1282,6 +1616,19 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
   }
   for (const p of flex.pieghe) meccanico.tratteggio(p.a, p.b, PENNA_PIEGA_MM, TRATTO_PIEGA_MM.pieno, TRATTO_PIEGA_MM.vuoto);
   fuori[FILE_MECCANICO] = meccanico.testo();
+  // independent flexible layers: the profile of each sheet, where the fab cuts it (its zones and their cutouts) and where it bends
+  for (const f of fogliDelFlessibile(flex)) {
+    const profilo = new StratoGerber(
+      `Profile,Flex${f.numero}`,
+      `profile of flexible layer ${f.numero} "${scritto(f.strato.nome)}": cut outline of its zones and of their cutouts (solid line), bend lines (dashed line). Cut this sheet along it; not bonded to the other flexible layers outside the rigid part (air gap)`,
+    );
+    for (const z of f.zone) {
+      profilo.tratto(z.punti, PENNA_ZONA_MM, true);
+      for (const r of z.ritagli) profilo.tratto(r.punti, PENNA_ZONA_MM, true);
+    }
+    for (const p of flex.pieghe) if (p.zona && f.zone.includes(p.zona)) profilo.tratteggio(p.a, p.b, PENNA_PIEGA_MM, TRATTO_PIEGA_MM.pieno, TRATTO_PIEGA_MM.vuoto);
+    fuori[fileDelloStrato(f.numero).profilo] = profilo.testo();
+  }
 
   /** the openings of the coverlay the pads of a face ask for: their mask opening, when the pad is in a zone */
   const apertureDeiPad = (lato: Faccia): Punto[][] => {
@@ -1297,16 +1644,40 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
     return out;
   };
   const aperteDaiPad: Record<Faccia, number> = { top: 0, bottom: 0 };
+  // independent flexible layers: every sheet has its own profile and its own coverlay (fogliDelFlessibile)
+  const fogli = fogliDelFlessibile(flex);
   for (const lato of LATI) {
-    const coverlay = new StratoGerber(`Coverlay,${lato === "top" ? "Top" : "Bot"}`, `coverlay, ${lato} side. POSITIVE: dark = coverlay, clear = opening in the coverlay`);
-    for (const z of flex.zone) coverlay.regione(z.punti);
-    // no coverlay over a hole cut through the tail
-    for (const z of flex.zone) for (const r of z.ritagli) coverlay.regione(r.punti, true);
-    for (const a of flex.aperture) if (a.lato === lato) coverlay.regione(a.punti, true);
-    const deiPad = apertureDeiPad(lato);
-    aperteDaiPad[lato] = deiPad.length;
-    for (const p of deiPad) coverlay.regione(p, true);
-    fuori[FILE_COVERLAY[lato]] = coverlay.testo();
+    if (fogli.length === 0) {
+      const coverlay = new StratoGerber(`Coverlay,${lato === "top" ? "Top" : "Bot"}`, `coverlay, ${lato} side. POSITIVE: dark = coverlay, clear = opening in the coverlay`);
+      for (const z of flex.zone) coverlay.regione(z.punti);
+      // no coverlay over a hole cut through the tail
+      for (const z of flex.zone) for (const r of z.ritagli) coverlay.regione(r.punti, true);
+      for (const a of flex.aperture) if (a.lato === lato) coverlay.regione(a.punti, true);
+      const deiPad = apertureDeiPad(lato);
+      aperteDaiPad[lato] = deiPad.length;
+      for (const p of deiPad) coverlay.regione(p, true);
+      fuori[FILE_COVERLAY[lato]] = coverlay.testo();
+    } else {
+      for (const f of fogli) {
+        const nomi = fileDelloStrato(f.numero);
+        const coverlay = new StratoGerber(
+          `Coverlay,${lato === "top" ? "Top" : "Bot"},Flex${f.numero}`,
+          `coverlay of flexible layer ${f.numero} "${scritto(f.strato.nome)}", ${lato} side. POSITIVE: dark = coverlay, clear = opening in the coverlay`,
+        );
+        const ids = new Set(f.zone.map((z) => z.id));
+        for (const z of f.zone) coverlay.regione(z.punti);
+        for (const z of f.zone) for (const r of z.ritagli) coverlay.regione(r.punti, true);
+        for (const a of flex.aperture) if (a.lato === lato && a.zonaId && ids.has(a.zonaId)) coverlay.regione(a.punti, true);
+        // the pads of this face in a zone of this sheet: a pad is on the sheet that has its copper layer
+        const deiPad = apertureDeiPad(lato).filter((p) => {
+          const c = { x: p.reduce((t, q) => t + q.x, 0) / p.length, y: p.reduce((t, q) => t + q.y, 0) / p.length };
+          return f.zone.some((z) => z.strati.includes(lato) && profondita(c.x, c.y, z.punti) > 0);
+        });
+        aperteDaiPad[lato] += deiPad.length;
+        for (const p of deiPad) coverlay.regione(p, true);
+        fuori[nomi.coverlay[lato]] = coverlay.testo();
+      }
+    }
     const suoi = flex.irrigiditori.filter((r) => r.lato === lato);
     if (suoi.length === 0) continue;
     const irrigiditori = new StratoGerber(`Stiffener,${lato === "top" ? "Top" : "Bot"}`, `stiffeners, ${lato} side. POSITIVE: dark = stiffener, clear = hole through it`);
@@ -1325,13 +1696,26 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
   t.push("Written by PCB Studio from the project's flex.json. All dimensions in millimetres. Coordinates are those of the Gerber files (same origin), seen from the top side.");
   t.push("");
   t.push("1. FILES OF THIS PACKAGE THAT DESCRIBE THE FLEXIBLE PART");
-  t.push("  Edge_Cuts.gbr        ONE outline for the whole piece: the rigid part and the flexible zones together, and the cutouts through the flexible zones.");
+  if (fogli.length === 0) t.push("  Edge_Cuts.gbr        ONE outline for the whole piece: the rigid part and the flexible zones together, and the cutouts through the flexible zones.");
+  else {
+    t.push(
+      `  Edge_Cuts.gbr        The envelope of the whole piece: ALL the material, the rigid part and each of the ${fogli.length} flexible layers laid flat, overlapping; ` +
+        "a gap closed between two tails is a hole of it. Each flexible layer is cut along its own profile (below).",
+    );
+    for (const f of fogli) {
+      const nomi = fileDelloStrato(f.numero);
+      t.push(`  ${nomi.profilo.padEnd(20)} Profile of flexible layer ${f.numero} "${scritto(f.strato.nome)}": where that sheet is cut (its zones and the cutouts through it, solid line) and its bend lines (dashed).`);
+      t.push(`  ${nomi.coverlay.top.padEnd(20)} ${nomi.coverlay.bottom}  Coverlay of flexible layer ${f.numero}, top and bottom side. POSITIVE: dark = coverlay, clear = opening.`);
+    }
+  }
   t.push(
     `  ${FILE_MECCANICO.padEnd(20)} Outline of every flexible zone (solid line, ${PENNA_ZONA_MM} mm), copper-free windows (dotted line) and bend lines (dashed line, ${PENNA_PIEGA_MM} mm). ` +
       "Reference only: not copper, not a cut.",
   );
-  t.push(`  ${FILE_COVERLAY.top.padEnd(20)} Coverlay on the top side of the flexible zones. POSITIVE: dark = coverlay, clear = opening.`);
-  t.push(`  ${FILE_COVERLAY.bottom.padEnd(20)} Coverlay on the bottom side of the flexible zones. POSITIVE: dark = coverlay, clear = opening.`);
+  if (fogli.length === 0) {
+    t.push(`  ${FILE_COVERLAY.top.padEnd(20)} Coverlay on the top side of the flexible zones. POSITIVE: dark = coverlay, clear = opening.`);
+    t.push(`  ${FILE_COVERLAY.bottom.padEnd(20)} Coverlay on the bottom side of the flexible zones. POSITIVE: dark = coverlay, clear = opening.`);
+  }
   for (const lato of LATI) {
     if (FILE_IRRIGIDITORI[lato] in fuori) t.push(`  ${FILE_IRRIGIDITORI[lato].padEnd(20)} Stiffeners glued on the ${lato} side. POSITIVE: dark = stiffener, clear = hole through the stiffener.`);
   }
@@ -1354,8 +1738,21 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
     t.push("  Stack-up: not declared in the project (design-rules.json has no \"stackup\"): fabricator's standard for this thickness.");
   }
   t.push("");
-  t.push("3. FLEXIBLE PART");
-  if (flex.pila) {
+  t.push(fogli.length === 0 ? "3. FLEXIBLE PART" : `3. FLEXIBLE PART: ${fogli.length} INDEPENDENT FLEXIBLE LAYERS (AIR GAP)`);
+  if (fogli.length > 0) {
+    t.push(
+      `  The ${fogli.length} flexible layers are bonded together and to the rigid layers ONLY inside the rigid part. Outside it they are NOT bonded to each other ` +
+        "(air gap, no adhesive between them): each tail bends on its own. Flat, their outlines overlap: each is cut along its own profile.",
+    );
+    for (const f of fogli) {
+      t.push(`  Flexible layer ${f.numero} "${scritto(f.strato.nome)}": copper layers of the board that continue in it: ${f.strato.strati.map(nomeDelloStrato).join(", ")} (${f.strato.strati.length}).`);
+      t.push(`    Thickness: ${numero(f.strato.spessoreMm)} mm (coverlay included, stiffeners not included); coverlay: ${voce(COVERLAY, f.strato.coverlay) ?? "-"}`);
+      f.strato.materiali.forEach((m, i) => {
+        t.push(`    ${String(i + 1).padStart(2)}. ${(voce(TIPI_DI_MATERIALE, m.tipo) ?? "other").padEnd(10)} ${numero(m.mm)} mm${m.nome ? `  ${scritto(m.nome)}` : ""}`);
+      });
+      t.push(`    Zones: ${f.zone.map((z) => `"${scritto(z.nome)}"`).join(", ") || "none"}`);
+    }
+  } else if (flex.pila) {
     t.push(`  Thickness: ${numero(flex.pila.spessoreMm)} mm (coverlay included, stiffeners not included)`);
     t.push(`  Coverlay: ${voce(COVERLAY, flex.pila.coverlay) ?? "-"}`);
     if (flex.pila.materiali.length > 0) {
@@ -1369,7 +1766,10 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
   }
   t.push("  Base material: polyimide. No plated through holes and no vias in the flexible zones.");
   flex.zone.forEach((z, i) => {
-    t.push(`  Zone ${i + 1} "${scritto(z.nome)}": copper layers of the board that continue in the zone: ${z.strati.map(nomeDelloStrato).join(", ") || "none"} (${z.strati.length}). Every other layer ends at the rigid-flex boundary.`);
+    t.push(
+      `  Zone ${i + 1} "${scritto(z.nome)}"${z.flessibile ? ` (flexible layer ${fogli.findIndex((f) => f.strato.nome === z.flessibile) + 1})` : ""}: copper layers of the board that continue in the zone: ` +
+        `${z.strati.map(nomeDelloStrato).join(", ") || "none"} (${z.strati.length}). Every other layer ends at the rigid-flex boundary.`,
+    );
     t.push(`    Extent: ${scatola(z.punti)}; area ${numero(area(z.punti))} mm2`);
     t.push(`    Outline: ${coordinate(z.punti)}`);
     for (const l of z.confini) t.push(`    Rigid-flex boundary: from (${numero(l.ax)}, ${numero(l.ay)}) to (${numero(l.bx)}, ${numero(l.by)})`);
@@ -1380,7 +1780,10 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
       );
     }
     for (const f of z.finestre) t.push(`    Copper-free window "${scritto(f.nome)}" (no copper on any layer, base material and coverlay stay): ${scatola(f.punti)}; outline ${coordinate(f.punti)}`);
-    for (const r of z.ritagli) t.push(`    Cutout "${scritto(r.nome)}" (cut through the flexible part, on Edge_Cuts.gbr): ${scatola(r.punti)}; outline ${coordinate(r.punti)}`);
+    for (const r of z.ritagli) {
+      const dove = z.flessibile ? `through this flexible layer only, on ${fileDelloStrato(fogli.findIndex((f) => f.strato.nome === z.flessibile) + 1).profilo}` : "cut through the flexible part, on Edge_Cuts.gbr";
+      t.push(`    Cutout "${scritto(r.nome)}" (${dove}): ${scatola(r.punti)}; outline ${coordinate(r.punti)}`);
+    }
   });
   for (const lato of LATI) {
     const sue = flex.aperture.filter((a) => a.lato === lato);
@@ -1403,7 +1806,11 @@ export function fileDelFlessibile(circuitJson: unknown[], fsMap: Record<string, 
   t.push("5. STIFFENERS");
   if (flex.irrigiditori.length === 0) t.push("  None.");
   for (const r of flex.irrigiditori) {
-    t.push(`  "${scritto(r.nome)}": ${r.lato} side, ${voce(MATERIALI_IRRIGIDITORE, r.materiale)?.nome ?? "-"}, ${numero(r.spessoreMm)} mm thick; extent ${scatola(r.punti)}; area ${numero(area(r.punti))} mm2`);
+    const suaZona = r.zonaId ? flex.zone.find((z) => z.id === r.zonaId) : undefined;
+    t.push(
+      `  "${scritto(r.nome)}": ${r.lato} side${suaZona ? ` of zone "${scritto(suaZona.nome)}"` : ""}, ${voce(MATERIALI_IRRIGIDITORE, r.materiale)?.nome ?? "-"}, ${numero(r.spessoreMm)} mm thick; ` +
+        `extent ${scatola(r.punti)}; area ${numero(area(r.punti))} mm2`,
+    );
     t.push(`    Outline: ${coordinate(r.punti)}`);
     if (r.fori.length > 0) t.push(`    Holes through the stiffener: ${r.fori.map((f) => `d ${numero(f.diametroMm)} at (${numero(f.x)}, ${numero(f.y)})`).join("; ")}`);
   }

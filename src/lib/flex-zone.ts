@@ -24,6 +24,19 @@
  *  - the STACK of the flexible part (PILA_FLESSIBILE): thickness, coverlay,
  *    materials.
  *
+ * TWO OR MORE INDEPENDENT FLEXIBLE LAYERS (an "air gap" or bookbinder
+ * construction): when flex.json declares `pila.flessibili`, every zone says
+ * which flexible layer of the stack it is on (`flex_layer` on the element) and
+ * zones of different layers may lie on top of each other, flat: two tails cut
+ * from two sheets that are bonded together only inside the rigid part. The
+ * outline of the board is then ALL the material, the rigid part and every sheet
+ * flat; a gap closed between two tails is a cutout of the board. Which side of
+ * a zone is where the rigid part ends is measured, not guessed: just outside
+ * that side there is rigid board (inside the outline, out of the board's
+ * cutouts and of every other zone). A bend, a stiffener and an opening of the
+ * coverlay name their zone (`pcb_flex_zone_id`), since a point can be in two.
+ * Boards whose flex.json has no `pila.flessibili` are read exactly as before.
+ *
  * This file only reads them back, for whoever needs to know where the board
  * bends: the checks (drc.ts), the pours, the Gerber and the viewer. It imports
  * nothing of theirs, so each of them can import it.
@@ -83,6 +96,8 @@ export interface Retino {
 export interface ZonaFlessibile {
   id: string;
   nome: string;
+  /** the flexible layer of the stack the zone is on, on a board with independent flexible layers (pila.flessibili) */
+  flessibile?: string;
   punti: Punto[];
   /** the copper layers that exist in the zone: top, inner1, inner2, bottom... */
   strati: string[];
@@ -129,6 +144,8 @@ export interface Piega {
 export interface Irrigiditore {
   id: string;
   nome: string;
+  /** the zone it is glued on, when the board says it (independent flexible layers) */
+  zonaId?: string;
   lato: "top" | "bottom";
   punti: Punto[];
   materiale: string;
@@ -139,6 +156,8 @@ export interface Irrigiditore {
 export interface AperturaCoverlay {
   id: string;
   nome: string;
+  /** the zone it opens, when the board says it (independent flexible layers) */
+  zonaId?: string;
   lato: "top" | "bottom";
   punti: Punto[];
 }
@@ -148,6 +167,28 @@ export interface PilaFlessibile {
   spessoreMm: number;
   coverlay: string;
   materiali: Array<{ tipo: string; nome?: string; mm: number }>;
+  /** the independent flexible layers, when the stack has more than one (air gap): absent on a board with one */
+  flessibili?: StratoFlessibile[];
+}
+
+/**
+ * ONE FLEXIBLE LAYER of a stack with independent ones: a sheet of polyimide
+ * with its copper layers, its thickness and its coverlay, bonded to the others
+ * only inside the rigid part.
+ */
+export interface StratoFlessibile {
+  nome: string;
+  /** the copper layers of the board that go on into this sheet */
+  strati: string[];
+  spessoreMm: number;
+  coverlay: string;
+  materiali: Array<{ tipo: string; nome?: string; mm: number }>;
+}
+
+/** the thickness of the sheet a zone is on: its flexible layer's, or the stack's */
+export function spessoreDellaZona(flex: Flessibile, zona: ZonaFlessibile | null | undefined): number | null {
+  const suo = zona?.flessibile ? flex.pila?.flessibili?.find((f) => f.nome === zona.flessibile) : undefined;
+  return suo?.spessoreMm ?? flex.pila?.spessoreMm ?? null;
 }
 
 export interface Flessibile {
@@ -323,6 +364,72 @@ export function latiDellaZona(zona: Punto[], contorno: Punto[]): { bordi: Lato[]
   return { bordi, confini };
 }
 
+/** how far outside a side of a zone the material is looked at, to tell a cut edge from the rigid boundary (mm) */
+const FUORI_DAL_LATO_MM = 0.02;
+
+/**
+ * THE SIDES OF A ZONE ON A BOARD WITH INDEPENDENT FLEXIBLE LAYERS: a side is
+ * where the rigid part ends (`confini`) where, just outside it, there is rigid
+ * board: inside the outline, out of the board's own cutouts and out of every
+ * other zone. Everywhere else it is cut (`bordi`): along the outline, along a
+ * gap closed between two tails, across a tail of another layer lying over it.
+ */
+export function latiDellaZonaFraStrati(zona: Punto[], contorno: Punto[], vuoti: Punto[][], altre: Punto[][]): { bordi: Lato[]; confini: Lato[] } {
+  const bordi: Lato[] = [];
+  const confini: Lato[] = [];
+  // counterclockwise: the outside of a side is on its right
+  let area = 0;
+  for (let i = 0, j = zona.length - 1; i < zona.length; j = i++) area += (zona[j].x + zona[i].x) * (zona[j].y - zona[i].y);
+  const antiorario = area < 0;
+  const rigido = (x: number, y: number): boolean =>
+    (contorno.length < 3 || profondita(x, y, contorno) > 0) && !vuoti.some((v) => nelPoligono(x, y, v)) && !altre.some((a) => profondita(x, y, a) > -FUORI_DAL_LATO_MM / 2);
+  for (const lato of latiDi(zona)) {
+    const lungo = Math.hypot(lato.bx - lato.ax, lato.by - lato.ay);
+    if (lungo < 1e-9) continue;
+    const ox = ((antiorario ? 1 : -1) * (lato.by - lato.ay)) / lungo;
+    const oy = ((antiorario ? -1 : 1) * (lato.bx - lato.ax)) / lungo;
+    const passi = Math.min(MAX_PASSI_LATO, Math.max(1, Math.ceil(lungo / PASSO_LATO_MM)));
+    const a = (k: number): Punto => ({ x: lato.ax + ((lato.bx - lato.ax) * k) / passi, y: lato.ay + ((lato.by - lato.ay) * k) / passi });
+    let inizio = 0;
+    let tipo: boolean | null = null;
+    for (let k = 0; k <= passi; k++) {
+      const m = k < passi ? a(k + 0.5) : null;
+      const confine = m ? rigido(m.x + ox * FUORI_DAL_LATO_MM, m.y + oy * FUORI_DAL_LATO_MM) : null;
+      if (confine === tipo) continue;
+      if (tipo !== null) {
+        const da = a(inizio);
+        const fino = a(k);
+        (tipo ? confini : bordi).push({ ax: da.x, ay: da.y, bx: fino.x, by: fino.y });
+      }
+      inizio = k;
+      tipo = confine;
+    }
+  }
+  return { bordi, confini };
+}
+
+/** the board's own cutouts (not those of a flexible zone), as polygons: a gap closed between two tails is one */
+export function vuotiDellaScheda(circuitJson: El[]): Punto[][] {
+  const out: Punto[][] = [];
+  for (const el of circuitJson) {
+    if (el?.type !== "pcb_cutout" || eDelFlessibile(el)) continue;
+    if (el.shape === "polygon") {
+      const p = punti(el.points);
+      if (p.length >= 3) out.push(p);
+    } else if (el.shape === "rect") {
+      const c = punto(el.center);
+      const w = num(el.width);
+      const h = num(el.height);
+      if (c && w !== null && h !== null) out.push([{ x: c.x - w / 2, y: c.y - h / 2 }, { x: c.x + w / 2, y: c.y - h / 2 }, { x: c.x + w / 2, y: c.y + h / 2 }, { x: c.x - w / 2, y: c.y + h / 2 }]);
+    } else if (el.shape === "circle") {
+      const c = punto(el.center);
+      const r = num(el.radius);
+      if (c && r !== null) out.push(Array.from({ length: 24 }, (_, i) => ({ x: c.x + r * Math.cos((i * Math.PI) / 12), y: c.y + r * Math.sin((i * Math.PI) / 12) })));
+    }
+  }
+  return out;
+}
+
 /** the grid a zone element carries, when it carries one that can be laid */
 function retinoDi(v: unknown): Retino | null {
   const h = v as Record<string, unknown> | null | undefined;
@@ -351,6 +458,10 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
   if (!els.some((el) => el?.type === ZONA_FLESSIBILE)) return null;
   const contorno = contornoDellaScheda(els);
   const flex: Flessibile = { zone: [], pieghe: [], irrigiditori: [], aperture: [], pila: null };
+  // independent flexible layers: zones may overlap, and their sides are told apart by what is outside them
+  const fraStrati = els.some((el) => el?.type === ZONA_FLESSIBILE && typeof el.flex_layer === "string");
+  const vuoti = fraStrati ? vuotiDellaScheda(els) : [];
+  const tutte = fraStrati ? els.filter((el) => el?.type === ZONA_FLESSIBILE).map((el) => ({ el, p: punti(el.points) })) : [];
   /** the windows or the cutouts of a zone, as its element carries them */
   const conNome = (v: unknown, comeSiChiama: string): Array<{ nome: string; punti: Punto[] }> => {
     const out: Array<{ nome: string; punti: Punto[] }> = [];
@@ -366,7 +477,9 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
     if (p.length < 3) continue;
     const xs = p.map((q) => q.x);
     const ys = p.map((q) => q.y);
-    const lati = latiDellaZona(p, contorno);
+    const lati = fraStrati
+      ? latiDellaZonaFraStrati(p, contorno, vuoti, tutte.filter((t) => t.el !== el && t.p.length >= 3).map((t) => t.p))
+      : latiDellaZona(p, contorno);
     const ritagli = conNome(el.cutouts, "ritaglio");
     flex.zone.push({
       id: String(el.pcb_flex_zone_id ?? `zona_${flex.zone.length}`),
@@ -383,6 +496,7 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
       finestre: conNome(el.windows, "finestra"),
       ritagli,
       retino: retinoDi(el.hatch),
+      ...(fraStrati && typeof el.flex_layer === "string" ? { flessibile: el.flex_layer } : {}),
     });
   }
   if (flex.zone.length === 0) return null;
@@ -397,8 +511,28 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
       if (mm === null || typeof m?.tipo !== "string") continue;
       materiali.push({ tipo: m.tipo, ...(typeof m.nome === "string" ? { nome: m.nome } : {}), mm });
     }
-    flex.pila = { spessoreMm: spessore, coverlay: String(el.coverlay ?? ""), materiali };
+    const flessibili: StratoFlessibile[] = [];
+    for (const f of Array.isArray(el.flex_layers) ? (el.flex_layers as Array<Record<string, unknown> | null>) : []) {
+      const sp = num(f?.thickness_mm);
+      if (typeof f?.name !== "string" || sp === null || sp <= 0) continue;
+      const suoi: PilaFlessibile["materiali"] = [];
+      for (const m of Array.isArray(f.materials) ? (f.materials as Array<Record<string, unknown> | null>) : []) {
+        const mm = num(m?.mm);
+        if (mm === null || typeof m?.tipo !== "string") continue;
+        suoi.push({ tipo: m.tipo, ...(typeof m.nome === "string" ? { nome: m.nome } : {}), mm });
+      }
+      flessibili.push({
+        nome: f.name,
+        strati: Array.isArray(f.copper_layers) ? (f.copper_layers as unknown[]).filter((x): x is string => typeof x === "string") : [],
+        spessoreMm: sp,
+        coverlay: String(f.coverlay ?? el.coverlay ?? ""),
+        materiali: suoi,
+      });
+    }
+    flex.pila = { spessoreMm: spessore, coverlay: String(el.coverlay ?? ""), materiali, ...(flessibili.length > 0 ? { flessibili } : {}) };
   }
+  /** the zone an element names, when it names one that is on the board */
+  const zonaNominata = (v: unknown): ZonaFlessibile | undefined => (typeof v === "string" ? flex.zone.find((z) => z.id === v) : undefined);
   for (const el of els) {
     if (el?.type === PIEGA) {
       const a = punto(el.from);
@@ -409,7 +543,9 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
       const mx = (a.x + b.x) / 2;
       const my = (a.y + b.y) / 2;
       const angolo = num(el.angle_deg) ?? 90;
-      const mezza = mezzaFasciaDellaPiega(raggio, angolo, flex.pila?.spessoreMm ?? 0);
+      // the zone it names, or the one its middle is in; the thickness of that zone's sheet
+      const zona = zonaNominata(el.pcb_flex_zone_id) ?? flex.zone.find((z) => profondita(mx, my, z.punti) >= -SUL_BORDO_MM) ?? null;
+      const mezza = mezzaFasciaDellaPiega(raggio, angolo, spessoreDellaZona(flex, zona) ?? 0);
       flex.pieghe.push({
         id: String(el.pcb_flex_bend_id ?? `piega_${flex.pieghe.length}`),
         nome: typeof el.nome === "string" && el.nome ? el.nome : `piega ${flex.pieghe.length + 1}`,
@@ -418,7 +554,7 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
         raggioMm: raggio,
         angolo,
         verso: el.direction === "su" ? "su" : "giu",
-        zona: flex.zone.find((z) => profondita(mx, my, z.punti) >= -SUL_BORDO_MM) ?? null,
+        zona,
         mezzaFasciaMm: mezza,
         fascia: fasciaDi(a, b, mezza),
       });
@@ -435,6 +571,7 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
       flex.irrigiditori.push({
         id: String(el.pcb_flex_stiffener_id ?? `irrigiditore_${flex.irrigiditori.length}`),
         nome: typeof el.nome === "string" && el.nome ? el.nome : `irrigiditore ${flex.irrigiditori.length + 1}`,
+        ...(zonaNominata(el.pcb_flex_zone_id) ? { zonaId: String(el.pcb_flex_zone_id) } : {}),
         lato: el.layer,
         punti: p,
         materiale: String(el.material ?? ""),
@@ -447,6 +584,7 @@ export function flessibileDellaScheda(circuitJson: unknown[] | null | undefined)
       flex.aperture.push({
         id: String(el.pcb_flex_coverlay_opening_id ?? `apertura_${flex.aperture.length}`),
         nome: typeof el.nome === "string" && el.nome ? el.nome : `apertura ${flex.aperture.length + 1}`,
+        ...(zonaNominata(el.pcb_flex_zone_id) ? { zonaId: String(el.pcb_flex_zone_id) } : {}),
         lato: el.layer,
         punti: p,
       });

@@ -150,7 +150,8 @@ import {
 } from "./variants";
 import { leggiStencil, padSenzaPasta, pastaDaiPad, STENCIL_PATH } from "./solder-paste";
 import { avvisiDellaMaschera, conMascheraAMano } from "./solder-mask";
-import { avvisiDelFlessibile, conFlessibile, ostacoliDelFlessibile } from "./flex";
+import { avvisiDelFlessibile, conFlessibile, FLEX_PATH, ostacoliDelFlessibile } from "./flex";
+import { preparaStratiFlessibili } from "./flex-strati";
 import { conRetino } from "./flex-retino";
 
 export interface UnroutedDetail {
@@ -814,6 +815,8 @@ export async function compileProject(
     // the planes, poured again with the copper in place: see pours-recompute.ts
     // from the outlines the files declare, not the shrunken ones, when tscircuit poured them: see colateDichiarate
     const dichiarate = colateDichiarate(conMano.circuitJson as never, projectFsMap);
+    // independent flexible layers: their obstacles are worked out with the geometry runtime, loaded here (see flex-strati.ts)
+    await preparaStratiFlessibili(projectFsMap[FLEX_PATH]);
     const ricolate = await ricolaPiani({
       // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
       circuitJson: conDistanzeProprie(dichiarate.circuitJson as never) as never,
@@ -1499,6 +1502,7 @@ export async function compileProject(
    */
   // from the outlines the files declare, not the shrunken ones, when tscircuit poured them: see colateDichiarate
   const dichiarate = colateDichiarate(manual.circuitJson as never, projectFsMap);
+  await preparaStratiFlessibili(projectFsMap[FLEX_PATH]);
   const ricolate = await ricolaPiani({
     // each with the clearance its <copperpour> declares, if it does: see conDistanzeDichiarate
     circuitJson: conDistanzeProprie(dichiarate.circuitJson as never) as never,

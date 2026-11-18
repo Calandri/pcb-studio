@@ -174,6 +174,12 @@ export interface DesignRules {
    * for the number of copper layers of the zone (raggioDiPiegaPerSpessore).
    */
   minBendRadiusPerThickness?: number;
+  /**
+   * THE GAP BETWEEN TWO TAILS OF TWO INDEPENDENT FLEXIBLE LAYERS where they
+   * leave the rigid part side by side (flex.json with pila.flessibili): the
+   * cut between two sheets. Missing: FESSURA_FLESSIBILE_MM.
+   */
+  minFlexSlotMm?: number;
 }
 
 /**
@@ -204,6 +210,20 @@ export const BORDO_FLESSIBILE_MM = 0.25;
 export function bordoDelFlessibile(rules: DesignRules): number {
   const v = rules.minFlexEdgeClearanceMm;
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : BORDO_FLESSIBILE_MM;
+}
+
+/**
+ * The gap between two tails of two independent flexible layers where they
+ * leave the rigid part, in a project that writes none: 0.5 mm, the slot asked
+ * for the modem boards of Wildy (B2 v3, 2026-11-18). PCB Basic publishes no
+ * figure for it; its smallest milled slot is about this wide.
+ */
+export const FESSURA_FLESSIBILE_MM = 0.5;
+
+/** the gap between two tails of two flexible layers the project asks, or the default */
+export function fessuraDelFlessibile(rules: DesignRules): number {
+  const v = rules.minFlexSlotMm;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : FESSURA_FLESSIBILE_MM;
 }
 
 /**
@@ -426,6 +446,7 @@ const LIMITS: Record<
       | "minPlatedHoleToFlexMm"
       | "minFlexEdgeClearanceMm"
       | "minBendRadiusPerThickness"
+      | "minFlexSlotMm"
       | "autoPlaneVias"
       | "pasteOnPlatedHoles"
       | "autoroute"
@@ -438,7 +459,8 @@ const LIMITS: Record<
   | "minSolderMaskBridgeMm"
   | "minPlatedHoleToFlexMm"
   | "minFlexEdgeClearanceMm"
-  | "minBendRadiusPerThickness",
+  | "minBendRadiusPerThickness"
+  | "minFlexSlotMm",
   { min: number; max: number }
 > = {
   minTraceWidthMm: { min: 0.05, max: 2 },
@@ -469,6 +491,8 @@ const LIMITS: Record<
   minFlexEdgeClearanceMm: { min: 0, max: 5 },
   // thicknesses of the flexible part: under one the tail is folded flat, beyond a hundred it is not a bend
   minBendRadiusPerThickness: { min: 1, max: 100 },
+  // two tails of two flexible layers: zero means only tails that touch are said; beyond five millimetres it is a typo
+  minFlexSlotMm: { min: 0, max: 5 },
 };
 
 /** the limits of one pair's own distance (clearanceByPairMm): under ten microns a mangled file */

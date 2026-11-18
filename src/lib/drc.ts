@@ -5,12 +5,14 @@ import {
   distanzaForoFlessibile,
   distanzaMinimaFra,
   distanzaViaApertura,
+  fessuraDelFlessibile,
   raggioDiPiegaPerSpessore,
   type DesignRules,
   type TipoRame,
 } from "./design-rules";
 import type { ColateSuRame, PianiSuVie } from "./engine-version";
-import { contieneTutti, flessibileDellaScheda, latiDi, profondita, type Lato, type Punto, type ZonaFlessibile } from "./flex-zone";
+import { contieneTutti, flessibileDellaScheda, latiDi, profondita, spessoreDellaZona, type Lato, type Punto, type ZonaFlessibile } from "./flex-zone";
+import { fessuraFraLeZone, zonaSenzaLoStrato } from "./flex-strati";
 import { stessoStrato, stratoDelPad, stratoDelPunto } from "./pcb-route-model";
 import { insidePour, netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia, type PourShape } from "./pours";
 
@@ -2772,6 +2774,16 @@ export function runDrcChecks(
    *     part or past the end of the tail;
    *  f. flex_stiffener_bend: a stiffener over the stretch a bend curves, where
    *     the board then cannot bend ("kept outside the bend zone");
+   *  h. on INDEPENDENT FLEXIBLE LAYERS (pila.flessibili), where two zones of
+   *     two sheets may lie on top of each other: the copper of a layer belongs
+   *     to the zone that declares it (b and d are measured on that zone), a
+   *     pour is wrong in a zone without its layer only where no zone with the
+   *     layer lies over it, a bend's radius uses the thickness of its zone's
+   *     sheet, a stiffener is weighed against the bends of its own zone. And
+   *     flex_layer_overlap: two zones of the same sheet on top of each other
+   *     (one sheet cannot be in one place twice); flex_slot: two tails of two
+   *     sheets that leave the rigid part nearer than minFlexSlotMm (0.5 mm),
+   *     the cut the fab makes between them;
    *  g. flex_bend_crossing, a WARNING (amber in the viewer, like the escapes):
    *     a trace that crosses a bend line more than TOLLERANZA_PIEGA_GRADI off
    *     the perpendicular. It is longer in the bend than it has to be, and its
@@ -2794,14 +2806,20 @@ export function runDrcChecks(
       const c = centroDi(b);
       return profondita(c.x, c.y, poligono) > TOLLERANZA_MM || daiLati(b, latiPoligono) <= TOLLERANZA_MM;
     };
+    /** the zone a piece of copper is in: of the zones that hold it, the one that declares its layer when one does */
     const zonaDi = (b: Box): ZonaFlessibile | null => {
+      let prima: ZonaFlessibile | null = null;
       for (let i = 0; i < flex.zone.length; i++) {
         const z = flex.zone[i];
         if (b.maxX < z.minX || b.minX > z.maxX || b.maxY < z.minY || b.minY > z.maxY) continue;
-        if (nelPoligono(b, z.punti, latiDelleZone[i])) return z;
+        if (!nelPoligono(b, z.punti, latiDelleZone[i])) continue;
+        if (!b.layer || z.strati.includes(b.layer)) return z;
+        prima ??= z;
       }
-      return null;
+      return prima;
     };
+    /** independent flexible layers: zones may overlap, on two sheets */
+    const fraStrati = flex.zone.some((z) => z.flessibile !== undefined);
     /** the point of a trace that is in a polygon: its middle, an end, or where its copper meets a side; null when it is not in it */
     const trattoNel = (seg: WireSeg, poligono: Punto[], latiPoligono: Lato[]): Punto | null => {
       const meta = { x: (seg.ax + seg.bx) / 2, y: (seg.ay + seg.by) / 2 };
@@ -2918,7 +2936,9 @@ export function runDrcChecks(
 
     // --- b, d. the traces
     for (const seg of segs) {
-      for (let i = 0; i < flex.zone.length; i++) {
+      // the zones it is in, the one with its layer first: two sheets may lie on top of each other
+      const ordine = fraStrati && seg.layer ? [...flex.zone.keys()].sort((a, b) => Number(!flex.zone[a].strati.includes(seg.layer!)) - Number(!flex.zone[b].strati.includes(seg.layer!))) : [...flex.zone.keys()];
+      for (const i of ordine) {
         const z = flex.zone[i];
         if (
           Math.max(seg.ax, seg.bx) + seg.halfW < z.minX ||
@@ -2968,7 +2988,10 @@ export function runDrcChecks(
         if (c.maxX < z.minX || c.minX > z.maxX || c.maxY < z.minY || c.minY > z.maxY) continue;
         const chi = `colata ${reteDellaColata(c)} su ${c.layer}`;
         if (!z.strati.includes(c.layer)) {
-          const dove = rameNelPoligono(c, z.punti);
+          // where the layer does not exist: the zone, less any zone of another sheet that declares it lying over it
+          const dove = fraStrati
+            ? zonaSenzaLoStrato(z, c.layer, flex.zone).reduce<Punto | null>((trovato, pezzo) => trovato ?? rameNelPoligono(c, pezzo), null)
+            : rameNelPoligono(c, z.punti);
           if (dove) {
             push(
               "flex_copper_layer",
@@ -3005,13 +3028,14 @@ export function runDrcChecks(
       const meta = { x: (p.a.x + p.b.x) / 2, y: (p.a.y + p.b.y) / 2 };
       const lungo = Math.hypot(p.b.x - p.a.x, p.b.y - p.a.y);
       if (lungo < 1e-9) continue;
-      if (p.zona && flex.pila) {
+      const spessore = spessoreDellaZona(flex, p.zona);
+      if (p.zona && flex.pila && spessore !== null) {
         const fattore = raggioDiPiegaPerSpessore(rules, p.zona.strati.length);
-        const minimo = fattore * flex.pila.spessoreMm;
+        const minimo = fattore * spessore;
         if (p.raggioMm < minimo - TOLLERANZA_MM) {
           push(
             "flex_bend_radius",
-            `piega «${p.nome}»: raggio interno ${mm(p.raggioMm)}mm < min ${mm(minimo)}mm, ${mm(fattore)} volte lo spessore della parte flessibile (${mm(flex.pila.spessoreMm)}mm, ` +
+            `piega «${p.nome}»: raggio interno ${mm(p.raggioMm)}mm < min ${mm(minimo)}mm, ${mm(fattore)} volte lo spessore della parte flessibile (${mm(spessore)}mm, ` +
               `${p.zona.strati.length === 1 ? "uno strato" : `${p.zona.strati.length} strati`} di rame nella zona «${p.zona.nome}»)`,
             meta,
           );
@@ -3038,6 +3062,8 @@ export function runDrcChecks(
         }
       }
       for (const r of flex.irrigiditori) {
+        // glued on another sheet: that sheet bends elsewhere
+        if (r.zonaId && p.zona && r.zonaId !== p.zona.id) continue;
         const sopra = poligoniSovrapposti(p.fascia, r.punti) ?? segmentoNelPoligono(p.a, p.b, r.punti);
         if (sopra) push("flex_stiffener_bend", `l'irrigiditore «${r.nome}» (${r.lato}) e' sopra il tratto di coda che la piega «${p.nome}» curva: li' la scheda non piega`, sopra);
       }
@@ -3060,6 +3086,30 @@ export function runDrcChecks(
           { x: seg.ax + vx * t, y: seg.ay + vy * t },
           seg.layer,
         );
+      }
+    }
+
+    // --- h. two sheets: zones of one sheet never on top of each other, and the gap between two tails where they leave the rigid part
+    if (fraStrati) {
+      const soglia = fessuraDelFlessibile(rules);
+      for (let i = 0; i < flex.zone.length; i++) {
+        for (let j = i + 1; j < flex.zone.length; j++) {
+          const a = flex.zone[i];
+          const b = flex.zone[j];
+          if (a.flessibile === b.flessibile) {
+            const dove = a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY ? null : poligoniSovrapposti(a.punti, b.punti);
+            if (dove) push("flex_layer_overlap", `le zone «${a.nome}» e «${b.nome}» sono sullo stesso strato flessibile «${a.flessibile ?? "-"}» e si sovrappongono: un foglio non sta in un posto due volte`, dove);
+            continue;
+          }
+          const f = fessuraFraLeZone(a, b);
+          if (f && f.mm < soglia - TOLLERANZA_MM) {
+            push(
+              "flex_slot",
+              `le code «${a.nome}» (${a.flessibile ?? "-"}) e «${b.nome}» (${b.flessibile ?? "-"}) escono dalla parte rigida a ${mm(f.mm)}mm l'una dall'altra < min ${mm(soglia)}mm (minFlexSlotMm): fra due strati flessibili serve la fessura`,
+              f.dove,
+            );
+          }
+        }
       }
     }
   }

@@ -1,6 +1,6 @@
 import { leggiStencil, STENCIL_PATH } from "./solder-paste";
 import { contornoDelCircuito, DESCRIZIONE_MASCHERA, MASCHERA_PATH, validaFileDellaMaschera } from "./solder-mask";
-import { DESCRIZIONE_FLEX, ESEMPIO_FLEX, FLEX_PATH, schedaDelFlessibile, validaFileDelFlessibile } from "./flex";
+import { DESCRIZIONE_FLEX, ESEMPIO_FLEX, ESEMPIO_FLEX_DUE_STRATI, FLEX_PATH, schedaDelFlessibile, validaFileDelFlessibile } from "./flex";
 import { boardBaseOf } from "./board-base";
 import { fetchDatasheetFromUrl } from "./datasheet";
 import { importComponentFromLcsc } from "./easyeda-import";
@@ -535,8 +535,10 @@ async function runTool(
             result: {
               error: `${FLEX_PATH} non valido: ${esito.errori.slice(0, 10).join("; ")}`,
               esempio: ESEMPIO_FLEX,
+              esempioDueStrati: ESEMPIO_FLEX_DUE_STRATI,
               nota:
-                "esempio: un flex.json completo e valido (coda a un solo strato, piega a 180 gradi, finestra, ritaglio, irrigiditore). " +
+                "esempio: un flex.json completo e valido (coda a un solo strato, piega a 180 gradi, finestra, ritaglio, irrigiditore); " +
+                "esempioDueStrati: due strati flessibili indipendenti (air gap) con due code che spianate si sovrappongono, in main.tsx la fessura chiusa fra le code e' un <cutout>. " +
                 "Il contorno della scheda in main.tsx (<board outline>) deve gia' comprendere la coda, ed essere stato compilato, prima di scrivere il file",
             },
           };

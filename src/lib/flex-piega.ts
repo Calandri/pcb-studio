@@ -25,7 +25,7 @@
  *
  * Pure geometry, nothing of three: the viewer, its tests and the PCB view use it.
  */
-import { dalSegmento, type Flessibile, type Piega, type Punto, type ZonaFlessibile } from "./flex-zone";
+import { dalSegmento, spessoreDellaZona, type Flessibile, type Piega, type Punto, type ZonaFlessibile } from "./flex-zone";
 
 /** a point in space, board coordinates in mm, Z up */
 export type Punto3 = [number, number, number];
@@ -54,6 +54,10 @@ export interface PiegaOrdinata {
 
 export interface CodaDaPiegare {
   zona: ZonaFlessibile;
+  /** the thickness of its sheet (mm) */
+  spessoreMm: number;
+  /** the height of the middle of its sheet in the rigid board (mm, 0 = the middle of the board): 0 with one flexible part */
+  quotaMm: number;
   /** the bends of the zone, from the rigid part outwards; empty when the tail stays flat */
   pieghe: PiegaOrdinata[];
   /** the sum of the angles, positive towards the top (degrees) */
@@ -70,6 +74,21 @@ export interface Piegatura {
 
 /** the thickness used when flex.json declares no stack: a single-layer tail */
 export const SPESSORE_FLESSIBILE_PREDEFINITO_MM = 0.1;
+/** with independent flexible layers, how far apart the middles of two sheets are drawn in the rigid board (mm) */
+export const PASSO_FRA_I_FOGLI_MM = 0.3;
+const ORDINE_DEL_RAME = ["top", "inner1", "inner2", "inner3", "inner4", "inner5", "inner6", "bottom"];
+
+/**
+ * The height of each independent flexible layer in the rigid board, in the
+ * order of the stack (the sheet whose copper is higher, higher), centred on the
+ * middle of the board: the two tails leave the rigid part one over the other.
+ */
+function quoteDeiFogli(flex: Flessibile): Map<string, number> {
+  const fogli = [...(flex.pila?.flessibili ?? [])].sort(
+    (a, b) => Math.min(...a.strati.map((l) => ORDINE_DEL_RAME.indexOf(l))) - Math.min(...b.strati.map((l) => ORDINE_DEL_RAME.indexOf(l))),
+  );
+  return new Map(fogli.map((f, k) => [f.nome, ((fogli.length - 1) / 2 - k) * PASSO_FRA_I_FOGLI_MM]));
+}
 
 const sub = (a: Punto, b: Punto): Punto => ({ x: a.x - b.x, y: a.y - b.y });
 const dot = (a: Punto, b: Punto): number => a.x * b.x + a.y * b.y;
@@ -94,8 +113,10 @@ function vicinoAlRigido(zona: ZonaFlessibile, p: Punto): Punto | null {
 /** the bends of a board, zone by zone, ordered and ready to fold the tail */
 export function piegaturaDi(flex: Flessibile): Piegatura {
   const spessoreMm = flex.pila?.spessoreMm ?? SPESSORE_FLESSIBILE_PREDEFINITO_MM;
+  const quote = quoteDeiFogli(flex);
   const code: CodaDaPiegare[] = [];
   for (const zona of flex.zone) {
+    const suoSpessore = spessoreDellaZona(flex, zona) ?? SPESSORE_FLESSIBILE_PREDEFINITO_MM;
     const proprie = flex.pieghe.filter((p) => p.zona?.id === zona.id);
     const ordinate: PiegaOrdinata[] = [];
     let nonPiegata: string | undefined;
@@ -116,7 +137,7 @@ export function piegaturaDi(flex: Flessibile): Piegatura {
         n = { x: -n.x, y: -n.y };
         distanza = -distanza;
       }
-      const rm = piega.raggioMm + spessoreMm / 2;
+      const rm = piega.raggioMm + suoSpessore / 2;
       const theta = (Math.max(0, Math.min(180, piega.angolo)) * Math.PI) / 180;
       ordinate.push({ piega, numero: 0, c: piega.a, u, n, s: piega.verso === "su" ? 1 : -1, rm, theta, h: (rm * theta) / 2, distanza });
     }
@@ -134,6 +155,8 @@ export function piegaturaDi(flex: Flessibile): Piegatura {
     const angoloTotale = ordinate.reduce((t, p) => t + p.s * p.piega.angolo, 0);
     code.push({
       zona,
+      spessoreMm: suoSpessore,
+      quotaMm: (zona.flessibile && quote.get(zona.flessibile)) || 0,
       pieghe: nonPiegata ? [] : ordinate,
       angoloTotale,
       ...(nonPiegata ? { nonPiegata } : {}),
@@ -177,10 +200,11 @@ export function piegaPunto(coda: CodaDaPiegare, x: number, y: number, w: number)
     const p = pieghe[i];
     if ((x - p.c.x) * p.n.x + (y - p.c.y) * p.n.y > -p.h) ultima = i;
   }
-  if (ultima < 0) return [x, y, w];
+  if (ultima < 0) return [x, y, w + coda.quotaMm];
   let q = dopoLaPiega(pieghe[ultima], [x, y, w], true);
   for (let j = ultima - 1; j >= 0; j--) q = dopoLaPiega(pieghe[j], q, false);
-  return q;
+  // the bends are worked out around the middle of its sheet: then the sheet is put at its height in the board
+  return [q[0], q[1], q[2] + coda.quotaMm];
 }
 
 /**
@@ -211,6 +235,10 @@ export function testoDellaPiega(p: PiegaOrdinata): string {
 
 /** what a tail says of itself, from its bends: "coda flessibile: in tutto 180° verso il top, torna sopra la scheda" */
 export function testoDellaCoda(coda: CodaDaPiegare): string {
+  return testoDellaCodaSenzaNome(coda).replace(/^coda flessibile: /, coda.zona.flessibile ? `coda «${coda.zona.nome}» (${coda.zona.flessibile}): ` : "coda flessibile: ");
+}
+
+function testoDellaCodaSenzaNome(coda: CodaDaPiegare): string {
   const tutte = coda.pieghe.length;
   if (coda.nonPiegata) return `coda flessibile: ${coda.nonPiegata}`;
   if (tutte === 0) return "coda flessibile: nessuna piega dichiarata, resta piana";

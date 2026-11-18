@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { ClassiRame } from "@/lib/classi-rame";
 import {
   BORDO_FLESSIBILE_MM,
+  FESSURA_FLESSIBILE_MM,
   COPPIE,
   DIGA_MASCHERA_MM,
   FORO_FLESSIBILE_MM,
@@ -106,6 +107,13 @@ const FIELDS: Array<{
     hint: "schede rigido-flessibili: quanto il rame di una zona flessibile sta lontano dal suo bordo tagliato e dai suoi ritagli",
     puoEsserVuoto: true,
     diSerie: BORDO_FLESSIBILE_MM,
+  },
+  {
+    key: "minFlexSlotMm",
+    label: "Fessura fra due code",
+    hint: "schede con piu' strati flessibili indipendenti (pila.flessibili in flex.json): la distanza minima fra due code di strati diversi dove escono dalla parte rigida",
+    puoEsserVuoto: true,
+    diSerie: FESSURA_FLESSIBILE_MM,
   },
 ];
 

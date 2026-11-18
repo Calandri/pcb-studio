@@ -1,7 +1,8 @@
 import { requireProjectAccess } from "@/lib/acl";
 import { conIlPerche, riportaLoSchematico, summarizeCircuit } from "@/lib/compile";
 import { bordoDelFlessibile, resolveDesignRules } from "@/lib/design-rules";
-import { conFlessibile, ostacoliDelFlessibile } from "@/lib/flex";
+import { conFlessibile, FLEX_PATH, ostacoliDelFlessibile } from "@/lib/flex";
+import { preparaStratiFlessibili } from "@/lib/flex-strati";
 import { conRetino, senzaRetino } from "@/lib/flex-retino";
 import { leggiStencil, pastaDaiPad } from "@/lib/solder-paste";
 import { conMascheraAMano } from "@/lib/solder-mask";
@@ -84,6 +85,8 @@ export async function POST(req: Request): Promise<Response> {
      * they are.
      */
     const regole = resolveDesignRules(progetto).rules;
+    // independent flexible layers: the geometry runtime their pour obstacles need (see flex-strati.ts)
+    await preparaStratiFlessibili(progetto[FLEX_PATH]);
     /*
      * The clearance each <copperpour> declares, written on its pours from
      * today's files (see conDistanzeDichiarate): a board saved before it was
