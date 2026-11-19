@@ -9,6 +9,7 @@ import { compileBudgetMs, rigaDiFine } from "@/lib/compile-run";
 import { campiDelleRegole, campiDelloStackup } from "@/lib/design-rules";
 import { DESCRIZIONE_MASCHERA } from "@/lib/solder-mask";
 import { DESCRIZIONE_FLEX, ESEMPIO_FLEX } from "@/lib/flex";
+import { correggiVieIncollate, leggiRichiestaVieIncollate, MAX_VIE_INCOLLATE, puoCorreggereVieIncollate } from "@/lib/vie-incollate";
 import { rilasciaPezzi } from "@/lib/manual-edits-store";
 import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
@@ -617,6 +618,53 @@ function buildHandler(viewer: Viewer) {
             schematic: edits.schematic_placements.map((p) => p.selector),
           },
           ...(avviso ? { avviso } : {}),
+        });
+      },
+    );
+
+    server.tool(
+      "edit_pasted_vias",
+      "Toglie o sposta le VIE INCOLLATE a mano dall'utente nel visore (le voci di manual-edits.json con aggiunta: true), " +
+        "e nient'altro: mai una via dei file, mai pezzi o piste. Usalo SOLO quando l'utente lo chiede esplicitamente per quelle vie. " +
+        "Solo col token di chi possiede il progetto. unpaste: [{net, x, y}] le vie da togliere, nominate dalla rete e dal posto dove stanno; " +
+        "movePastedVias: [{net, from: {x, y}, to: {x, y}}] le vie da spostare, dal posto dove stanno al posto nuovo (dentro la scheda). " +
+        "Uno spostamento passa dagli stessi controlli di un trascinamento nel visore (distanze dal rame della scheda salvata). " +
+        "Tutto o niente: una via che non c'e', un posto fuori dalla scheda o una distanza violata non scrive nulla e dice quale. " +
+        "Poi compile per vedere la scheda aggiornata.",
+      {
+        projectId: z.string(),
+        unpaste: z
+          .array(z.object({ net: z.string().min(1).max(200), x: z.number().finite(), y: z.number().finite() }))
+          .max(MAX_VIE_INCOLLATE)
+          .optional()
+          .describe("le vie incollate da togliere"),
+        movePastedVias: z
+          .array(
+            z.object({
+              net: z.string().min(1).max(200),
+              from: z.object({ x: z.number().finite(), y: z.number().finite() }),
+              to: z.object({ x: z.number().finite(), y: z.number().finite() }),
+            }),
+          )
+          .max(MAX_VIE_INCOLLATE)
+          .optional()
+          .describe("le vie incollate da spostare"),
+      },
+      async ({ projectId, unpaste, movePastedVias }) => {
+        if (!(await puoCorreggereVieIncollate(projectId, viewer, true))) {
+          return fail("solo chi possiede il progetto puo' togliere o spostare le vie incollate col token");
+        }
+        const richiesta = leggiRichiestaVieIncollate({ unpaste, movePastedVias });
+        if (typeof richiesta === "string") return fail(richiesta);
+        const esito = await correggiVieIncollate(projectId, `${viewer.email} (mcp)`, richiesta);
+        if (!esito.ok) return fail(esito.error);
+        return text({
+          ok: true,
+          removed: esito.tolte.map((v) => ({ net: v.net, x: v.to.x, y: v.to.y })),
+          moved: esito.spostate.map((m) => ({ net: m.prima.net, from: m.prima.to, to: m.dopo.to })),
+          counts: esito.counts,
+          ...(esito.avviso ? { avviso: esito.avviso } : {}),
+          note: "manual-edits.json aggiornato: compila per vedere la scheda",
         });
       },
     );

@@ -1,4 +1,5 @@
-import { accessoDaRichiesta, requireProjectAccess } from "@/lib/acl";
+import { accessoDaRichiesta, currentViewer, requireProjectAccess } from "@/lib/acl";
+import { resolveApiToken } from "@/lib/api-tokens";
 import { withLibrary } from "@/lib/agent-tools";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { boardStanding, commitManualEdits, rilasciaPezzi } from "@/lib/manual-edits-store";
@@ -27,6 +28,7 @@ import { parseLength } from "@/lib/pcb-route-model";
 import { portaCorrezioni, rameCheEntra, rameRifiutato, SCHEDA_RISALVATA, seAncoraQuella, SENZA_SCHEDA, SOLO_CON_COPPER } from "@/lib/spinta/porte";
 import { leggiViaTolta, senzaLaViaIncollata } from "@/lib/spinta/rame-locale";
 import { conLaPartenzaDeiFile, leggiRame, verificaRame, type EsitoDelRame } from "@/lib/spinta/verifica";
+import { correggiVieIncollate, leggiRichiestaVieIncollate, puoCorreggereVieIncollate } from "@/lib/vie-incollate";
 import {
   getCompileCache,
   getCompileMeta,
@@ -126,6 +128,33 @@ export async function POST(req: Request): Promise<Response> {
         .filter((n): n is string => typeof n === "string" && n.length > 0 && n.length <= 120)
         .slice(0, POST_LIMITS.maxNames)
     : null;
+
+  /*
+   * THE VIAS THE PERSON PASTED, taken out or moved, by the browser session or
+   * by an agent with the personal token of who OWNS the project (see
+   * lib/vie-incollate.ts): `pasted_vias` with `unpaste` [{net, x, y}] and
+   * `movePastedVias` [{net, from, to}]. With the token, the single `unpaste`
+   * of the viewer goes the same way. Nothing else of the file opens to the
+   * token. All or nothing, and logged with who and what, before and after.
+   */
+  const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (body.action === "pasted_vias" || (bearer && body.action === "unpaste")) {
+    const viewer = bearer ? await resolveApiToken(bearer) : await currentViewer();
+    if (!viewer || !(await puoCorreggereVieIncollate(projectId, viewer, Boolean(bearer)))) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+    const richiesta = leggiRichiestaVieIncollate(body.action === "unpaste" ? { unpaste: [body.via] } : body);
+    if (typeof richiesta === "string") return Response.json({ error: richiesta }, { status: 400 });
+    const esito = await correggiVieIncollate(projectId, `${viewer.email}${bearer ? " (token)" : ""}`, richiesta);
+    if (!esito.ok) return Response.json({ error: esito.error }, { status: esito.status });
+    return Response.json({
+      ok: true,
+      removed: esito.tolte,
+      moved: esito.spostate,
+      counts: esito.counts,
+      ...conAvviso(esito.avviso),
+    });
+  }
 
   /*
    * Who may write. The browser session, for everything, as before. A personal

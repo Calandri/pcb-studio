@@ -141,6 +141,7 @@ export const MANUAL_EDITS_RULES = `## The user's manual edits (manual-edits.json
 - The compile returns manualEdits with the counts: {schematic, pcb, traceHints}. When those are non-zero, some components are PINNED: whatever pcbX/pcbY you write for them is overridden. Editing their coordinates is wasted work and confusing to the user.
 - So: keep changing the electrical design freely (components, values, traces, sections) — that is yours. Do not fight the user's placement. If a pinned component is genuinely in the wrong place (it causes a DRC violation, or it blocks the routing), say so in your answer and let the user move it or unpin it, instead of working around it silently.
 - Never write manual-edits.json with write_file. It belongs to the editor: an unpinning is one click for the user ("sblocca") and a whole category of conflicts for you.
+- The vias the user PASTED in the viewer (pcb_vias entries with aggiunta: true) are taken out or moved only with the tool edit_pasted_vias (MCP, when you have it), and only when the user explicitly asks it for those vias: unpaste [{net, x, y}], movePastedVias [{net, from, to}], with the owner's token. It touches nothing else of the file, and a move goes through the same distance checks as a drag in the viewer. write_file on manual-edits.json stays forbidden.
 - One exception worth knowing: if the user explicitly asks you to redo the placement from scratch, tell them to unpin first, otherwise your work will have no visible effect.`;
 
 /**
