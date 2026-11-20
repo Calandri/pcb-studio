@@ -21,6 +21,7 @@ import { colateInOrdinePerIlGerber } from "@/lib/pours-recompute";
 import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION, colateDiUnMotoreDiPrima, nonCertificata } from "@/lib/engine-version";
+import { polaritaDellaSchedaCheEsce } from "@/lib/polarita";
 import { compileGeometryOnly } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { applyManualEditsToFsMap } from "@/lib/manual-edits";
@@ -141,6 +142,8 @@ export async function GET(req: Request): Promise<Response> {
           copperFromFiles: resolveDesignRules(fsMap).rules.autoroute === false,
           // nor one with a connection still open: measured from the copper, not read from the summary (aperti-export.ts)
           openConnections: apertiDellaSchedaCheEsce(cache.circuitJson as unknown[]),
+          // nor one where a part with a way round has no roles or no mark in the silkscreen (polarita.ts)
+          polarity: polaritaDellaSchedaCheEsce(cache.circuitJson as unknown[]),
         })
       : null;
   if (fabrication && (!cacheFresh || coperta)) {

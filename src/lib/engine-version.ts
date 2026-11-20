@@ -395,6 +395,18 @@ export function nonCertificata(summary: unknown): string | null {
         `chiudili (nel visore la vista "Collegamenti mancanti" li mostra) e riprova`,
     );
   }
+  /*
+   * And a board where a part with a way round has no roles or no mark in the silkscreen (polarita.ts): on the sonda del
+   * suolo a LED went on the wrong way round. Niccolo', 2026-11-20: "ci devono essere obblighi". Measured on the board
+   * about to go and passed here by the export.
+   */
+  const pol = (summary as { polarity?: { detail?: unknown } | null } | null | undefined)?.polarity;
+  if (pol && typeof pol.detail === "string" && pol.detail) {
+    perche.push(
+      `${pol.detail}. La scheda NON e' certificata per l'export finche' ogni pezzo con un verso (LED, diodo, condensatore polarizzato, batteria, ` +
+        `integrato o connettore con un pin 1) non ha i ruoli dei piedini e il suo segno in serigrafia: la regola «polarita» dei controlli dice cosa manca pezzo per pezzo`,
+    );
+  }
   return perche.length > 0 ? perche.join(". ") : null;
 }
 

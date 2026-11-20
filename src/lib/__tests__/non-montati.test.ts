@@ -163,7 +163,9 @@ const main = (nonMontato: boolean) => `export default () => (
     <resistor name="R1" resistance="10k" footprint="0402" pcbX={-6} pcbY={3} supplierPartNumbers={{ jlcpcb: ["C25744"] }} />
     <capacitor name="C1" capacitance="100nF" footprint="0402" pcbX={-6} pcbY={-3} pcbRotation={90} layer="bottom" />
     <chip name="U1" footprint="soic8" pcbX={2} pcbY={4} manufacturerPartNumber="TCA6408APWR" />
-    <chip name="J5" description={"connettore di programmazione Tag-Connect TC2030-NL, senza componente (non montare)"} manufacturerPartNumber="TC2030-NL" ${nonMontato ? "doNotPlace " : ""}pcbX={6} pcbY={-4} pcbRotation={180} layer="bottom" pinLabels={{ pin1: "VTREF", pin2: "SWDIO" }} footprint={<footprint><smtpad portHints={["1"]} shape="circle" radius={0.3935} pcbX={-1.27} pcbY={-0.635} layer="top" /><smtpad portHints={["2"]} shape="circle" radius={0.3935} pcbX={1.27} pcbY={-0.635} layer="top" /><hole diameter={0.9906} pcbX={0} pcbY={1.0} /></footprint>} />
+    <chip name="J5" description={"connettore di programmazione Tag-Connect TC2030-NL, senza componente (non montare)"} manufacturerPartNumber="TC2030-NL" ${nonMontato ? "doNotPlace " : ""}pcbX={6} pcbY={-4} pcbRotation={180} layer="bottom" pinLabels={{ pin1: "VTREF", pin2: "SWDIO" }} footprint={<footprint><smtpad portHints={["1"]} shape="circle" radius={0.3935} pcbX={-1.27} pcbY={-0.635} layer="top" /><smtpad portHints={["2"]} shape="circle" radius={0.3935} pcbX={1.27} pcbY={-0.635} layer="top" /><hole diameter={0.9906} pcbX={0} pcbY={1.0} /><silkscreencircle pcbX={-1.27} pcbY={-1.45} radius={0.2} layer="top" /></footprint>} />
+    {/* the pin 1 marks the export asks of every part with a way round (polarita.ts) */}
+    <silkscreencircle pcbX={-1.6} pcbY={6.6} radius={0.2} />
   </board>
 )
 `;

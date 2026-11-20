@@ -151,6 +151,7 @@ import {
 import { leggiStencil, padSenzaPasta, pastaDaiPad, STENCIL_PATH } from "./solder-paste";
 import { avvisiDellaMaschera, conMascheraAMano } from "./solder-mask";
 import { avvisiDelFlessibile, conFlessibile, FLEX_PATH, ostacoliDelFlessibile } from "./flex";
+import { controllaPolarita, serigrafiaDellaPolarita } from "./polarita";
 import { preparaStratiFlessibili } from "./flex-strati";
 import { conRetino } from "./flex-retino";
 
@@ -613,6 +614,9 @@ export interface CompileProgress {
  * engine only touches named sections, so a link BETWEEN sections has no other
  * chance of being closed.
  */
+/** the parts without roles or mark listed one by one in the checks; the rest are counted (PrcViolation.more) */
+const MAX_POLARITA_ELENCATE = 40;
+
 export async function compileProject(
   projectFsMap: FsMap,
   opts: CompileOptions = {},
@@ -831,7 +835,8 @@ export async function compileProject(
     // the stencil of each pad is the pad: see solder-paste.ts; the mask windows drawn by hand: see solder-mask.ts;
     // the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts;
     // and the copper of a zone that asks it as a grid, cut into the pours just poured: see flex-retino.ts
-    const circuitJson = conRetino(
+    // and the silkscreen of every <led> and <diode>: a bar on the cathode and a "+" on the anode, not tscircuit's U on the anode (see polarita.ts)
+    const circuitJson = serigrafiaDellaPolarita(conRetino(
       conFlessibile(
         conMascheraAMano(
           pastaDaiPad(
@@ -844,7 +849,7 @@ export async function compileProject(
         projectFsMap,
       ),
       projectRules.rules.minTraceWidthMm,
-    );
+    ));
     const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
     return { circuitJson, rapportoColate };
   };
@@ -1516,7 +1521,8 @@ export async function compileProject(
   // the stencil of each pad is the pad: see solder-paste.ts; the mask windows drawn by hand: see solder-mask.ts;
   // the flexible zones, the bends and the stiffeners of a rigid-flex board: see flex.ts;
   // and the copper of a zone that asks it as a grid, cut into the pours just poured: see flex-retino.ts
-  const circuitJson = conRetino(
+  // and the silkscreen of every <led> and <diode>: a bar on the cathode and a "+" on the anode (see polarita.ts)
+  const circuitJson = serigrafiaDellaPolarita(conRetino(
     conFlessibile(
       conMascheraAMano(
         pastaDaiPad(
@@ -1529,7 +1535,7 @@ export async function compileProject(
       projectFsMap,
     ),
     projectRules.rules.minTraceWidthMm,
-  );
+  ));
   const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise
   // every hand-pinned component would be flagged as a spurious schX/schY
@@ -3107,6 +3113,20 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
    */
   for (const a of avvisiDelFlessibile(circuitJson, sources)) {
     prcViolations.push({ rule: "flex_zone", severity: "warn", ...a });
+  }
+  /*
+   * The parts with a way round (LED, diode, polarized capacitor, battery, every
+   * part with a pin 1) that lack their roles or their mark in the silkscreen:
+   * in red, by name, with what to do (see polarita.ts). The board still
+   * compiles; the export does not certify it (see nonCertificata).
+   */
+  const polarita = controllaPolarita(circuitJson);
+  for (const v of polarita.slice(0, MAX_POLARITA_ELENCATE)) {
+    prcViolations.push({ rule: "polarita", severity: "fail", message: v.messaggio, x: v.x, y: v.y });
+  }
+  if (polarita.length > MAX_POLARITA_ELENCATE) {
+    const ultima = prcViolations[prcViolations.length - 1];
+    ultima.more = polarita.length - MAX_POLARITA_ELENCATE;
   }
   // multi-ruleset: the main DRC already covers the ruleset CHOSEN by the
   // project, which is no longer necessarily the first in the list
