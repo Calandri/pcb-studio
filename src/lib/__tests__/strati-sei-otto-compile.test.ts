@@ -201,9 +201,9 @@ describe.each([6, 8])("una scheda a %i strati compilata da tscircuit", (n) => {
     // one copper file per layer: the two faces and In1..In(n-2)
     const rame = ["F_Cu.gbr", ...Array.from({ length: n - 2 }, (_, k) => `In${k + 1}_Cu.gbr`), "B_Cu.gbr"];
     expect(nomi.filter((f) => f.endsWith("_Cu.gbr")).sort()).toEqual([...rame].sort());
-    // and the others as on every board: mask, paste and silkscreen of the two faces, the outline, the two drill files
+    // and the others as on every board: mask, paste and silkscreen of the two faces, the outline, the two drill files, the assembly (montaggio.ts)
     expect(nomi.filter((f) => !f.endsWith("_Cu.gbr"))).toEqual(
-      ["B_Mask.gbr", "B_Paste.gbr", "B_SilkScreen.gbr", "Edge_Cuts.gbr", "F_Mask.gbr", "F_Paste.gbr", "F_SilkScreen.gbr", "drill_plated.drl", "drill_unplated.drl"],
+      ["Assembly_bottom.svg", "Assembly_notes.txt", "Assembly_top.svg", "B_Mask.gbr", "B_Paste.gbr", "B_SilkScreen.gbr", "Edge_Cuts.gbr", "F_Mask.gbr", "F_Paste.gbr", "F_SilkScreen.gbr", "drill_plated.drl", "drill_unplated.drl"],
     );
 
     /** what a copper file draws outside its regions (the pours): the straight runs and the flashes, in mm */

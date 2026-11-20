@@ -140,7 +140,8 @@ describe("the board without flex.json: a rigid board with an odd outline, as bef
     const scheda = compilate.rigida!;
     const zip = await esportata(scheda);
     expect(zip.nomi).toEqual(
-      ["B_Cu.gbr", "B_Mask.gbr", "B_Paste.gbr", "B_SilkScreen.gbr", "Edge_Cuts.gbr", "F_Cu.gbr", "F_Mask.gbr", "F_Paste.gbr", "F_SilkScreen.gbr", "In1_Cu.gbr", "In2_Cu.gbr", "drill_plated.drl", "drill_unplated.drl"].sort(),
+      // and the assembly notes and drawings (montaggio.ts)
+      ["Assembly_bottom.svg", "Assembly_notes.txt", "Assembly_top.svg", "B_Cu.gbr", "B_Mask.gbr", "B_Paste.gbr", "B_SilkScreen.gbr", "Edge_Cuts.gbr", "F_Cu.gbr", "F_Mask.gbr", "F_Paste.gbr", "F_SilkScreen.gbr", "In1_Cu.gbr", "In2_Cu.gbr", "drill_plated.drl", "drill_unplated.drl"].sort(),
     );
     // the steps of the export as they were in v0.41.0, on the same board
     const inOrdine = await colateInOrdinePerIlGerber(scheda.circuitJson as unknown as Array<Record<string, unknown>>);

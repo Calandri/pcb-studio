@@ -315,11 +315,11 @@ const NOTA_MASSIMA = 300;
 const NON_PEZZI = new Set(["trace", "net", "netlabel", "schematicsection", "footprint"]);
 
 /**
- * The note of each part named in `nomi`, read from the sources: the text of a
- * `nota` prop, else of `description`, only when it is a plain string (an
- * expression is code, not a note), on one line and at most NOTA_MASSIMA long.
+ * The first of `props` that each part named in `nomi` writes in the sources, as
+ * plain text: only a plain string (an expression is code, not a text), on one
+ * line and at most NOTA_MASSIMA long. Parts of the library (lib/) are not read.
  */
-function noteDaiSorgenti(sources: Record<string, string>, nomi: Set<string>): Map<string, string> {
+export function propDaiSorgenti(sources: Record<string, string>, nomi: Set<string>, props: readonly string[]): Map<string, string> {
   const note = new Map<string, string>();
   for (const [path, content] of Object.entries(sources)) {
     if (path.startsWith("lib/") || !path.endsWith(".tsx")) continue;
@@ -331,7 +331,7 @@ function noteDaiSorgenti(sources: Record<string, string>, nomi: Set<string>): Ma
       const nome = readAttr(body, "name");
       if (!nome || !nomi.has(nome) || note.has(nome)) continue;
       const attrs = parseJsxAttrs(body);
-      for (const prop of PROP_DELLA_NOTA) {
+      for (const prop of props) {
         const a = attrs.find((x) => x.name === prop);
         if (!a || (a.kind !== "string" && a.kind !== "expr")) continue;
         const valore = readAttr(body, prop);
@@ -346,6 +346,9 @@ function noteDaiSorgenti(sources: Record<string, string>, nomi: Set<string>): Ma
   }
   return note;
 }
+
+/** the note of each part named in `nomi`: its `nota` prop, else its `description` (see propDaiSorgenti) */
+const noteDaiSorgenti = (sources: Record<string, string>, nomi: Set<string>) => propDaiSorgenti(sources, nomi, PROP_DELLA_NOTA);
 
 /**
  * The parts that are not mounted, one row each, for the file of their own

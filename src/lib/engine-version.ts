@@ -407,6 +407,11 @@ export function nonCertificata(summary: unknown): string | null {
         `integrato o connettore con un pin 1) non ha i ruoli dei piedini e il suo segno in serigrafia: la regola «polarita» dei controlli dice cosa manca pezzo per pezzo`,
     );
   }
+  // and a board whose pick and place, read back with its convention, does not put a cathode, a + or a pin 1 where it belongs (montaggio.ts)
+  const mont = (summary as { assembly?: { detail?: unknown } | null } | null | undefined)?.assembly;
+  if (mont && typeof mont.detail === "string" && mont.detail) {
+    perche.push(`${mont.detail}. La scheda NON e' certificata per l'export finche' il pick and place non mette ogni pezzo nel suo verso`);
+  }
   return perche.length > 0 ? perche.join(". ") : null;
 }
 

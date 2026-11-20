@@ -36,6 +36,7 @@ import {
 } from "@/lib/bom";
 import { compileGeometryOnly } from "@/lib/compile";
 import { CHECKS_ENGINE_VERSION } from "@/lib/engine-version";
+import { montaggio } from "@/lib/montaggio";
 import { nomiNonMontati } from "@/lib/non-montati";
 import { filesHash } from "@/lib/project-store";
 
@@ -44,6 +45,10 @@ type El = Record<string, unknown> & { type: string };
 /** the pick and place as it was written before 16/11/2026: every pcb_component, none left out */
 const cplDiPrima = (cj: unknown[]) =>
   pnpToCsv(centriDiMontaggio(convertCircuitJsonToPickAndPlaceRows(cj as never), cj));
+/** a pick and place without its rotations: names, coordinates and sides, which the convention of the export does not change (montaggio.ts) */
+const senzaRotazioni = (csv: string) => csv.split("\r\n").map((r) => r.split(",").slice(0, 4).join(","));
+/** the pick and place the export writes, in the JLCPCB / EasyEDA convention, with no LCSC footprint read (the tests do not reach EasyEDA) */
+const cplDellExport = (cj: unknown[]) => pnpToCsv(montaggio(cj, new Map()).righe);
 
 // ---------------------------------------------------------------------------
 // a hand-written circuit: two parts mounted, J5 not, on the bottom
@@ -226,9 +231,10 @@ describe("the export of a compiled board with a part that is not mounted", () =>
     expect(altre).toEqual([]);
     expect(j5).toMatch(/^"J5","<footprint> inline","TC2030-NL","","bottom",-?\d+\.\d{3},-?\d+\.\d{3},\d+,"connettore di programmazione Tag-Connect TC2030-NL, senza componente \(non montare\)"$/);
 
-    // every other row is the one the old pick and place wrote, in the same order
+    // every other row is the one the old pick and place wrote, in the same order: the same places, and the rotations of the convention
     const prima = cplDiPrima(schede.con.cj).split("\r\n");
-    expect(cpl).toBe(prima.filter((r) => !r.startsWith('"J5"')).join("\r\n"));
+    expect(senzaRotazioni(cpl)).toEqual(senzaRotazioni(prima.filter((r) => !r.startsWith('"J5"')).join("\r\n")));
+    expect(cpl).toBe(cplDellExport(schede.con.cj));
     // and J5 sits in its file where the old pick and place had it
     const vecchiaJ5 = prima.find((r) => r.startsWith('"J5"'))!.split(",");
     expect(j5.split(",").slice(4, 8)).toEqual([vecchiaJ5[3], vecchiaJ5[1], vecchiaJ5[2], vecchiaJ5[4]]);
@@ -240,7 +246,8 @@ describe("the export of a compiled board with a part that is not mounted", () =>
     const contenuto = async () => {
       const zip = await JSZip.loadAsync(await (await scarica("gerber")).arrayBuffer());
       const out: Record<string, string> = {};
-      for (const nome of Object.keys(zip.files).sort()) out[nome] = senzaOra(await zip.file(nome)!.async("string"));
+      // the Gerber and the drill files: the assembly notes and drawings rightly say whether J5 is mounted
+      for (const nome of Object.keys(zip.files).sort()) if (!nome.startsWith("Assembly_")) out[nome] = senzaOra(await zip.file(nome)!.async("string"));
       return out;
     };
     usa("con");
@@ -256,7 +263,8 @@ describe("the export of a compiled board with a part that is not mounted", () =>
   it("the same board without doNotPlace exports the files of before, byte for byte, and an empty list", async () => {
     usa("senza");
     const cpl = await (await scarica("pnp")).text();
-    expect(cpl).toBe(cplDiPrima(schede.senza.cj));
+    expect(senzaRotazioni(cpl)).toEqual(senzaRotazioni(cplDiPrima(schede.senza.cj)));
+    expect(cpl).toBe(cplDellExport(schede.senza.cj));
     expect(cpl).toMatch(/"J5"/);
     const bom = await (await scarica("bom")).text();
     expect(bom).toBe(bomToCsv(buildBom(schede.senza.cj, schede.senza.files)));

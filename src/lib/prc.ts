@@ -86,7 +86,8 @@ export interface PrcViolation {
     | "paste_missing"
     | "mask_opening"
     | "flex_zone"
-    | "polarita";
+    | "polarita"
+    | "polarita_lcsc";
   severity: "warn" | "fail";
   message: string;
   x?: number;

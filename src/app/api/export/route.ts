@@ -22,6 +22,8 @@ import { rispostaLibreriaNonLetta, withLibrary } from "@/lib/agent-tools";
 import { requireProjectAccess } from "@/lib/acl";
 import { CHECKS_ENGINE_VERSION, colateDiUnMotoreDiPrima, nonCertificata } from "@/lib/engine-version";
 import { polaritaDellaSchedaCheEsce } from "@/lib/polarita";
+import { improntePerCodici } from "@/lib/lcsc-impronte";
+import { codiciLcsc, disegnoDiMontaggio, montaggio, montaggioDaCertificare, noteDiMontaggio, verificaMontaggio } from "@/lib/montaggio";
 import { compileGeometryOnly } from "@/lib/compile";
 import { resolveDesignRules } from "@/lib/design-rules";
 import { applyManualEditsToFsMap } from "@/lib/manual-edits";
@@ -129,6 +131,20 @@ export async function GET(req: Request): Promise<Response> {
    * same run that measures the vias (`misure`).
    */
   const misure: MisureDrc = {};
+  /*
+   * THE ASSEMBLY IN ONE CONVENTION (montaggio.ts): the rotations of the pick and place from the LCSC footprint of
+   * each part, laid on our pads and decided by the function of the pins; read back by a check of its own, and a
+   * board whose rows do not pass it is not certified. The footprints come from the database; the ones never read
+   * are asked to EasyEDA within a minute, and a code not read in time keeps our footprint's angle, said in the notes.
+   */
+  const assemblaggio =
+    fabrication && cache && hasBoard(cache.circuitJson)
+      ? await (async () => {
+          const impronte = await improntePerCodici(codiciLcsc(cache.circuitJson as unknown[]), { budgetMs: 60_000 });
+          const m = montaggio(cache.circuitJson as unknown[], impronte, fsMap);
+          return { ...m, scarti: verificaMontaggio(cache.circuitJson as unknown[], m.righe, impronte, fsMap) };
+        })()
+      : null;
   const coperta =
     fabrication && cache && hasBoard(cache.circuitJson)
       ? nonCertificata({
@@ -143,7 +159,9 @@ export async function GET(req: Request): Promise<Response> {
           // nor one with a connection still open: measured from the copper, not read from the summary (aperti-export.ts)
           openConnections: apertiDellaSchedaCheEsce(cache.circuitJson as unknown[]),
           // nor one where a part with a way round has no roles or no mark in the silkscreen (polarita.ts)
-          polarity: polaritaDellaSchedaCheEsce(cache.circuitJson as unknown[]),
+          polarity: polaritaDellaSchedaCheEsce(cache.circuitJson as unknown[], fsMap),
+          // nor one whose pick and place does not pass its own check (montaggio.ts)
+          assembly: montaggioDaCertificare(assemblaggio?.scarti ?? []),
         })
       : null;
   if (fabrication && (!cacheFresh || coperta)) {
@@ -211,7 +229,8 @@ export async function GET(req: Request): Promise<Response> {
         // the library's rows, our CSV: no formulas, rotations in [0, 360)
         // the body centre, not the middle of the footprint box (see centriDiMontaggio)
         // and no part that is not mounted: the assembler would look for it (see righeCpl)
-        const csv = pnpToCsv(righeCpl(circuitJson as unknown[]));
+        // in the JLCPCB / EasyEDA convention, the rotations from the LCSC footprints (montaggio.ts)
+        const csv = pnpToCsv(assemblaggio?.righe ?? righeCpl(circuitJson as unknown[]));
         return csvResponse(csv, "pnp.csv", avvisoDelProgetto(projectId));
       }
       case "non-montati": {
@@ -258,6 +277,12 @@ export async function GET(req: Request): Promise<Response> {
         // a rigid-flex board: the zones and the bend lines, the coverlay, the stiffeners and the two stacks for the fab (see flex.ts)
         for (const [nome, contenuto] of Object.entries(fileDelFlessibile(circuitJson as unknown[], fsMap, projectId))) {
           zip.file(nome, contenuto);
+        }
+        // the assembly: the notes with the convention and the polarity in words, the drawings of the two faces (montaggio.ts)
+        if (assemblaggio) {
+          zip.file("Assembly_notes.txt", noteDiMontaggio(circuitJson as unknown[], assemblaggio.righe, assemblaggio.avvisi, projectId, fsMap));
+          zip.file("Assembly_top.svg", disegnoDiMontaggio(circuitJson as unknown[], "top", projectId, fsMap));
+          zip.file("Assembly_bottom.svg", disegnoDiMontaggio(circuitJson as unknown[], "bottom", projectId, fsMap));
         }
         // a board known to be wrong says so inside the package and on its name
         const avviso = avvisoDelProgetto(projectId);

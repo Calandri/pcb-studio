@@ -152,6 +152,8 @@ import { leggiStencil, padSenzaPasta, pastaDaiPad, STENCIL_PATH } from "./solder
 import { avvisiDellaMaschera, conMascheraAMano } from "./solder-mask";
 import { avvisiDelFlessibile, conFlessibile, FLEX_PATH, ostacoliDelFlessibile } from "./flex";
 import { controllaPolarita, serigrafiaDellaPolarita } from "./polarita";
+import { impronteInMemoria, scaldaImpronte } from "./lcsc-impronte";
+import { codiciLcsc, montaggio } from "./montaggio";
 import { preparaStratiFlessibili } from "./flex-strati";
 import { conRetino } from "./flex-retino";
 
@@ -631,6 +633,8 @@ export async function compileProject(
   // a copy, never the caller's map: whoever hashes it afterwards must hash
   // the project files, not what the runner added to them
   projectFsMap = { ...projectFsMap };
+  // the LCSC footprints of the parts, read while the board compiles: the checks compare the polarity with them (see montaggio.ts)
+  const impronteLcsc = scaldaImpronte(projectFsMap);
   let fsMap = applyManualEditsToFsMap(projectFsMap);
   const parsedManualEdits = parseManualEdits(projectFsMap[MANUAL_EDITS_PATH]);
   const manualEdits = countManualEdits(parsedManualEdits);
@@ -849,7 +853,7 @@ export async function compileProject(
         projectFsMap,
       ),
       projectRules.rules.minTraceWidthMm,
-    ));
+    ), projectFsMap);
     const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
     return { circuitJson, rapportoColate };
   };
@@ -872,6 +876,7 @@ export async function compileProject(
   ): Promise<{ summary: CompileSummary; circuitJson: CircuitElement[]; scheda: SchedaCalcolata }> => {
     const { circuitJson, rapportoColate } = await rameDellaScheda(geometry);
     if (announce) say({ step: "Controllo le regole", progress: 0.95, circuitJson });
+    await impronteLcsc;
     const scheda: SchedaCalcolata = {
       circuitJson,
       rapportoColate,
@@ -1535,12 +1540,13 @@ export async function compileProject(
       projectFsMap,
     ),
     projectRules.rules.minTraceWidthMm,
-  ));
+  ), projectFsMap);
   const rapportoColate = ricolate ? esitoColate(ricolate, dichiarate.senzaPezzi) : undefined;
   // we analyze the REAL sources, not the ones with injected props: otherwise
   // every hand-pinned component would be flagged as a spurious schX/schY
   // and the agent would chase a defect that does not exist
   say({ step: "Controllo le regole", progress: 0.95, circuitJson });
+  await impronteLcsc;
   const summary = await profiler.run("controlli (DRC, elettrici, schematico, footprint)", () =>
     summarize(circuitJson, projectFsMap),
   );
@@ -3120,13 +3126,22 @@ function controlliDellaScheda(circuitJson: CircuitElement[], sources: FsMap): Co
    * in red, by name, with what to do (see polarita.ts). The board still
    * compiles; the export does not certify it (see nonCertificata).
    */
-  const polarita = controllaPolarita(circuitJson);
+  const polarita = controllaPolarita(circuitJson, sources);
   for (const v of polarita.slice(0, MAX_POLARITA_ELENCATE)) {
     prcViolations.push({ rule: "polarita", severity: "fail", message: v.messaggio, x: v.x, y: v.y });
   }
   if (polarita.length > MAX_POLARITA_ELENCATE) {
     const ultima = prcViolations[prcViolations.length - 1];
     ultima.more = polarita.length - MAX_POLARITA_ELENCATE;
+  }
+  /*
+   * And what the LCSC footprint of each part with a way round says of it, by NAME (montaggio.ts): pads whose
+   * numbering is the opposite of the LCSC one (pad 1 = cathode on one, anode on the other), a footprint whose
+   * cathode cannot fall on ours, an LCSC footprint of a bidirectional part. Compared with the footprints read
+   * while compiling; a warning: the pick and place is decided by name and goes right all the same.
+   */
+  for (const a of montaggio(circuitJson, impronteInMemoria(codiciLcsc(circuitJson)), sources).avvisi) {
+    prcViolations.push({ rule: "polarita_lcsc", severity: "warn", message: a.messaggio });
   }
   // multi-ruleset: the main DRC already covers the ruleset CHOSEN by the
   // project, which is no longer necessarily the first in the list
