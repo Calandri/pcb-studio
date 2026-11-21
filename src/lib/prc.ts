@@ -12,7 +12,7 @@
 
 import { eMassa, ePotenza } from "./net-roles";
 import { insidePour, readPours } from "./pours";
-import { distanzaPuntoForma, rameDelPad, type FormaRame } from "./drc";
+import { distanzaPuntoForma, distanzaSegmentoForma, rameDelPad, type FormaRame } from "./drc";
 
 /** the outer ring of a pour, whatever shape it was written as */
 function anelloDi(pour: El): Array<{ x: number; y: number }> | null {
@@ -29,6 +29,30 @@ function anelloDi(pour: El): Array<{ x: number; y: number }> | null {
     }));
   }
   return null;
+}
+
+/** the holes of a brep pour (the openings it was carved around) */
+function buchiDi(pour: El): Array<Array<{ x: number; y: number }>> {
+  if (pour.shape !== "brep") return [];
+  const rings = (pour.brep_shape as { inner_rings?: Array<{ vertices?: Array<{ x: number; y: number }> }> })?.inner_rings ?? [];
+  return rings
+    .map((r) => (r?.vertices ?? []).map((p) => ({ x: Number(p.x), y: Number(p.y) })))
+    .filter((r) => r.length >= 3);
+}
+
+/**
+ * A point ON THE COPPER of a pour: inside its outer ring and outside every hole.
+ *
+ * The outer ring alone is not the copper. A plane carved round the pins of an
+ * LQFP has the whole chip inside its outer ring, and the scrap of copper left
+ * between the pin rows sits in one of its holes: tested against the outer ring
+ * it "touched" the plane, and the 13 mm2 island inside the STM32 of BIRDY_BAT_BS
+ * V1.2 (07/11/2026) went to the Gerber with the island check silent.
+ */
+function sulRame(x: number, y: number, pour: El): boolean {
+  const anello = anelloDi(pour);
+  if (!anello || !pointInPolygon(x, y, anello)) return false;
+  return !buchiDi(pour).some((h) => pointInPolygon(x, y, h));
 }
 
 /**
@@ -56,8 +80,9 @@ function touchesSamePour(
      * sharing a vertex: the test has to be point against segment, or a T
      * junction reads as two separate islands.
      */
-    if (mio.some((p) => pointInPolygon(p.x, p.y, suo))) return true;
-    if (suo.some((p) => pointInPolygon(p.x, p.y, mio))) return true;
+    // on the other piece's COPPER, not merely inside its outer ring (see sulRame)
+    if (mio.some((p) => sulRame(p.x, p.y, altro))) return true;
+    if (suo.some((p) => sulRame(p.x, p.y, pour))) return true;
     const vicino = (punti: Array<{ x: number; y: number }>, anello: Array<{ x: number; y: number }>) =>
       punti.some((p) =>
         anello.some((a, i) => {
@@ -71,6 +96,8 @@ function touchesSamePour(
         }),
       );
     if (vicino(mio, suo) || vicino(suo, mio)) return true;
+    // a piece that fills a hole of the other one touches it along the hole's edge
+    if (buchiDi(altro).some((h) => vicino(mio, h)) || buchiDi(pour).some((h) => vicino(suo, h))) return true;
   }
   return false;
 }
@@ -79,6 +106,7 @@ export interface PrcViolation {
   rule:
     | "decoupling_distance"
     | "pour_island"
+    | "pour_unstitched"
     | "return_via_connector"
     | "power_trace_width"
     | "matched_length";
@@ -384,6 +412,100 @@ function soloColli(route: Array<Record<string, unknown>>, pads: Array<{ forma: F
   });
 }
 
+/*
+ * A GROUND POUR PIECE THAT HOLDS NO VIA (Niccolo', 07/11/2026, BIRDY_BAT_BS V1.2: "serve un controllo per verificare se
+ * ci sono piazzole senza connessioni, dove andrebbero messe vie di massa").
+ *
+ * The compiler counts a ground pad inside the pour as connected, and the island check above is satisfied by that pad:
+ * but if the piece of pour around it has no via, it reaches the plane only through that pad and whatever trace leaves
+ * it, or not at all. On the HTL-401 (01/11/2026) twenty ground pads sat in such pieces with the checks at zero. A piece
+ * is fine when a via or a plated hole of its net stands on its copper, or when it shares a pad of its net with a piece
+ * that has one (the pour flows through the pad). Pieces under 1 mm2 are left alone: they are the rim of the pour around a
+ * pad, where a via does not fit (a scrap that touches nothing is the island check's business).
+ */
+const AREA_PEZZO_MM2 = 1;
+
+function areaAnello(r: Array<{ x: number; y: number }>): number {
+  let a = 0;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += r[j].x * r[i].y - r[i].x * r[j].y;
+  return Math.abs(a) / 2;
+}
+
+function colateDiMassaSenzaVia(circuitJson: El[], maps: Maps): PrcViolation[] {
+  const pezzi = circuitJson
+    .filter((el) => el.type === "pcb_copper_pour" && el.shape === "brep" && el.source_net_id)
+    .map((el) => {
+      const net = maps.netNameById.get(String(el.source_net_id)) ?? "";
+      const anello = anelloDi(el);
+      return { el, net, anello, layer: String(el.layer ?? "") };
+    })
+    .filter((p) => p.anello && eMassa(p.net));
+  if (pezzi.length === 0) return [];
+  const rame = circuitJson.filter((el) => el.type === "pcb_smtpad" || el.type === "pcb_plated_hole" || el.type === "pcb_via");
+  const netDi = new Map<El, string | null>(rame.map((el) => [el, netNameOfPad(el, maps)]));
+  const facce = (el: El): string[] =>
+    el.type === "pcb_smtpad" ? [String(el.layer ?? "top")] : ["top", "inner1", "inner2", "bottom"];
+  const cucito = pezzi.map((p) =>
+    rame.some((el) => {
+      if (el.type === "pcb_smtpad" || netDi.get(el) !== p.net || !facce(el).includes(p.layer)) return false;
+      const x = num(el.x);
+      const y = num(el.y);
+      return x !== null && y !== null && sulRame(x, y, p.el);
+    }),
+  );
+  // pieces joined by a pad of their net: the stitching of one serves the other
+  const padDi = pezzi.map((p) =>
+    rame.filter((el) => {
+      if (netDi.get(el) !== p.net || !facce(el).includes(p.layer)) return false;
+      const f = el.type === "pcb_via" ? null : rameDelPad(el);
+      if (!f) return false;
+      // the pad stands on the piece's copper, or touches one of its edges (a pad on the border between two pieces)
+      if (sulRame(f.x, f.y, p.el)) return true;
+      return [p.anello as Array<{ x: number; y: number }>, ...buchiDi(p.el)].some((r) =>
+        r.some((a, i) => {
+          const b = r[(i + 1) % r.length];
+          return distanzaSegmentoForma(f, a.x, a.y, b.x, b.y) < 0.06;
+        }),
+      );
+    }),
+  );
+  for (let giro = 0; giro < pezzi.length; giro++) {
+    let cambiato = false;
+    for (let i = 0; i < pezzi.length; i++) {
+      if (cucito[i]) continue;
+      for (let j = 0; j < pezzi.length; j++) {
+        if (!cucito[j] || pezzi[j].layer !== pezzi[i].layer || pezzi[j].net !== pezzi[i].net) continue;
+        if (padDi[i].some((el) => padDi[j].includes(el))) {
+          cucito[i] = true;
+          cambiato = true;
+          break;
+        }
+      }
+    }
+    if (!cambiato) break;
+  }
+  const out: PrcViolation[] = [];
+  pezzi.forEach((p, i) => {
+    if (cucito[i]) return;
+    const ang = p.anello as Array<{ x: number; y: number }>;
+    const area = areaAnello(ang) - buchiDi(p.el).reduce((t, h) => t + areaAnello(h), 0);
+    if (area < AREA_PEZZO_MM2) return;
+    const xs = ang.map((v) => v.x);
+    const ys = ang.map((v) => v.y);
+    const pads = padDi[i].length;
+    out.push({
+      rule: "pour_unstitched",
+      severity: "warn",
+      message: `ground pour piece on ${p.layer} (${p.net}, ${area.toFixed(2)} mm2) has no via of its own: ` +
+        (pads ? `it reaches the plane only through ${pads} pad(s) and their traces` : "it holds no pad either") +
+        ` — add a ${p.net} via inside it, or remove it`,
+      x: (Math.min(...xs) + Math.max(...xs)) / 2,
+      y: (Math.min(...ys) + Math.max(...ys)) / 2,
+    });
+  });
+  return out;
+}
+
 export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
   const violations: PrcViolation[] = [];
   const perRegola = new Map<string, number>();
@@ -472,13 +594,7 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
           })),
         );
       }
-      if (pour.shape === "brep") {
-        const ring = (pour.brep_shape as { outer_ring?: { vertices?: Array<{ x: number; y: number }> } })
-          ?.outer_ring?.vertices;
-        if (ring && ring.length >= 3) {
-          return pointInPolygon(x, y, ring.map((p) => ({ x: Number(p.x), y: Number(p.y) })));
-        }
-      }
+      if (pour.shape === "brep" && anelloDi(pour)) return sulRame(x, y, pour);
       return true; // unknown shapes: don't flag
     };
     let connected = false;
@@ -513,6 +629,9 @@ export function runPrcChecks(circuitJson: El[]): PrcViolation[] {
       });
     }
   }
+
+  // --- 2.b ground pour pieces with no via of their own
+  for (const v of colateDiMassaSenzaVia(circuitJson, maps)) push(v);
 
   // --- 3. return-path vias at connectors (multilayer boards with a GND plane)
   const board = circuitJson.find((el) => el.type === "pcb_board");

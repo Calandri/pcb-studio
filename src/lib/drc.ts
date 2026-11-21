@@ -4,7 +4,7 @@ import {
   type DesignRules,
   type TipoRame,
 } from "./design-rules";
-import { netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
+import { insidePour, netOfViaKey, padsOffPlane, pourLayersByNet, readPours, tutteLeVia } from "./pours";
 
 export interface DrcViolation {
   rule: string;
@@ -959,6 +959,243 @@ export function runDrcChecks(
         midpoint(ca, cb),
       );
     }
+  }
+
+  /*
+   * --- 4.c VIAS TOO CLOSE TOGETHER (Niccolo', 07/11/2026, BIRDY_BAT_BS V1.2: "la distanza VIA-VIA la stai analizzando?
+   * qui mi sembrano troppo vicine", a big via with three small ones whose rings overlapped).
+   *
+   * hole_to_hole above measures the drill against the project rule and is right that rings may touch electrically. Two
+   * things it does not say:
+   *  - the RINGS of two vias of the same net that overlap or come closer than the copper spacing (3Bee 0.152 mm, the
+   *    PCBasic Standard chosen on 04/11/2026): a slot of copper no fab etches cleanly, or a lump that hides where the
+   *    holes are; on the V1.2 there were 45 such pairs, all power and ground clusters;
+   *  - the DRILLS against the strictest fab we order from, when the project rule is looser: different nets 0.35 mm
+   *    between finished holes for vias (Eurocircuits: 0.25 of laminate measured on the drill, finished + 0.10), 0.45 when
+   *    a component hole is involved (PCBasic and JLCPCB "Pad Hole-to-Hole Spacing"); same net 0.25 (Eurocircuits).
+   * Sources read on 07/11/2026: eurocircuits.com "The smallest possible distance between two holes", pcbasic.com help
+   * center "The hole spacing is too small", jlcpcb.com/capabilities/pcb-capabilities.
+   */
+  const ANELLO_3BEE_MM = 0.152;
+  const VIA_MAX_FINITO_MM = 0.45;
+  const FORO_FAB_VIA_MM = 0.35;
+  const FORO_FAB_PTH_MM = 0.45;
+  const FORO_FAB_STESSA_RETE_MM = 0.25;
+  const sogliaAnello = Math.max(rules.minClearanceMm, ANELLO_3BEE_MM);
+  const foriVia = circuitJson
+    .filter((el) => el.type === "pcb_via" || el.type === "pcb_plated_hole")
+    .map((el) => {
+      const x = num(el.x);
+      const y = num(el.y);
+      const anello = el.type === "pcb_via" ? num(el.outer_diameter) : null;
+      const foro = num(el.hole_diameter);
+      const gruppo = el.type === "pcb_via" ? groupOfVia(el) : groupOfPcbPort(el.pcb_port_id);
+      return { el, x, y, anello, foro, gruppo, via: el.type === "pcb_via" };
+    })
+    .filter((v) => v.x !== null && v.y !== null && v.foro !== null && v.foro > 0) as Array<{
+    el: El;
+    x: number;
+    y: number;
+    anello: number | null;
+    foro: number;
+    gruppo: string | null;
+    via: boolean;
+  }>;
+  for (let i = 0; i < foriVia.length; i++) {
+    for (let j = i + 1; j < foriVia.length; j++) {
+      const a = foriVia[i];
+      const b = foriVia[j];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d > 3) continue;
+      const stessa = a.gruppo !== null && a.gruppo === b.gruppo;
+      if (stessa && a.via && b.via && a.anello !== null && b.anello !== null) {
+        const gap = d - a.anello / 2 - b.anello / 2;
+        if (gap < sogliaAnello - TOLLERANZA_MM) {
+          push(
+            "via_spacing",
+            `vie della stessa rete con gli anelli a ${gap.toFixed(3)}mm (${gap < 0 ? "sovrapposti" : "quasi a contatto"}; ` +
+              `min ${sogliaAnello}mm come il rame) in (${a.x.toFixed(3)}, ${a.y.toFixed(3)}) e (${b.x.toFixed(3)}, ${b.y.toFixed(3)}): togline una o allontanale`,
+            midpoint({ x: a.x, y: a.y }, { x: b.x, y: b.y }),
+          );
+          continue;
+        }
+      }
+      const gapForo = d - a.foro / 2 - b.foro / 2;
+      if (gapForo < rules.minHoleToHoleMm - TOLLERANZA_MM) continue; // hole_to_hole has already said it
+      const pth = a.foro > VIA_MAX_FINITO_MM + TOLLERANZA_MM || b.foro > VIA_MAX_FINITO_MM + TOLLERANZA_MM;
+      const soglia = stessa ? (pth && a.foro > VIA_MAX_FINITO_MM && b.foro > VIA_MAX_FINITO_MM ? FORO_FAB_PTH_MM : FORO_FAB_STESSA_RETE_MM)
+        : (pth ? FORO_FAB_PTH_MM : FORO_FAB_VIA_MM);
+      if (gapForo < soglia - TOLLERANZA_MM) {
+        push(
+          "via_spacing",
+          `fori a ${gapForo.toFixed(3)}mm in (${a.x.toFixed(3)}, ${a.y.toFixed(3)}) e (${b.x.toFixed(3)}, ${b.y.toFixed(3)}): ` +
+            `sotto i ${soglia}mm del fabbricante piu' severo (${stessa ? "stessa rete" : "reti diverse"}${pth ? ", foro di componente" : ""})`,
+          midpoint({ x: a.x, y: a.y }, { x: b.x, y: b.y }),
+        );
+      }
+    }
+  }
+
+  /*
+   * --- 4.d VIA IN AN SMD PAD (Niccolo', 07/11/2026: "vie dentro piazzole SMD"). An open via inside a pad, or at its
+   * edge with less than a mask bridge between the hole and the opening (0.10 mm, JLCPCB "Min. pad spacing" for 1 oz
+   * green), drinks the solder of the joint. Thermal pads with several vias are meant: a pad of at least 1.5 mm2 holding
+   * two or more of them is left alone.
+   */
+  const VIA_PONTE_MM = 0.1;
+  const PAD_TERMICO_MM2 = 1.5;
+  const padSmd = circuitJson
+    .filter((el) => el.type === "pcb_smtpad" && el.is_covered_with_solder_mask !== true)
+    .map((el) => ({ el, f: rameDelPad(el), m: num(el.soldermask_margin) ?? 0 }))
+    .filter((p): p is { el: El; f: FormaRame; m: number } => p.f !== null);
+  const areaForma = (f: FormaRame): number =>
+    f.tipo === "cerchio" ? Math.PI * f.r * f.r
+      : f.tipo === "capsula" ? Math.PI * f.capsula.r ** 2 + 2 * f.capsula.r * Math.hypot(f.capsula.bx - f.capsula.ax, f.capsula.by - f.capsula.ay)
+        : f.w * f.h;
+  const soloVie = foriVia.filter((v) => v.via);
+  for (const p of padSmd) {
+    const box = ingombroForma(p.f);
+    const dentro = soloVie.filter(
+      (v) => v.x > box.minX - 1 && v.x < box.maxX + 1 && v.y > box.minY - 1 && v.y < box.maxY + 1,
+    );
+    if (dentro.length === 0) continue;
+    const nelPadPieno = dentro.filter((v) => distanzaPuntoForma(p.f, v.x, v.y) === 0).length;
+    if (areaForma(p.f) >= PAD_TERMICO_MM2 && nelPadPieno >= 2) continue;
+    for (const v of dentro) {
+      const ponte = distanzaPuntoForma(p.f, v.x, v.y) - p.m - v.foro / 2;
+      if (ponte >= VIA_PONTE_MM - TOLLERANZA_MM) continue;
+      push(
+        "via_in_pad",
+        `via (${v.x.toFixed(3)}, ${v.y.toFixed(3)}) ${ponte <= -v.foro / 2 ? "dentro" : "a filo di"} una piazzola SMD (${String(p.el.pcb_smtpad_id ?? "")}, ` +
+          `${String(p.el.layer ?? "top")}): ponte di maschera ${Math.max(ponte, 0).toFixed(3)}mm < ${VIA_PONTE_MM}mm, lo stagno scende nel foro. ` +
+          `Spostala fuori con un tratto di pista (dogbone)`,
+        { x: v.x, y: v.y },
+      );
+    }
+  }
+
+  /*
+   * --- 4.e SILKSCREEN ON COPPER (Niccolo', 07/11/2026: the "C4" of C47 printed across a via ring). Silkscreen over an
+   * opening of the mask (a pad) does not stick and smears the joint; over the ring of a via it prints on a step and the
+   * name cannot be read. Measured on the stroke as drawn, against the opening (pad + mask margin) and the via ring.
+   */
+  const setaTratti: Array<{ ax: number; ay: number; bx: number; by: number; r: number; layer: string }> = [];
+  for (const el of circuitJson) {
+    if (el.type !== "pcb_silkscreen_path") continue;
+    const r = (num(el.stroke_width) ?? 0.1) / 2;
+    const pts = ((el.route as Array<Record<string, unknown>> | undefined) ?? [])
+      .map((q) => ({ x: num(q.x), y: num(q.y) }))
+      .filter((q): q is { x: number; y: number } => q.x !== null && q.y !== null);
+    for (let k = 1; k < pts.length; k++) {
+      setaTratti.push({ ax: pts[k - 1].x, ay: pts[k - 1].y, bx: pts[k].x, by: pts[k].y, r, layer: String(el.layer ?? "top") });
+    }
+  }
+  const foriPiazzola = circuitJson
+    .filter((el) => el.type === "pcb_plated_hole")
+    .map((el) => ({ el, f: rameDelForo(el), m: num(el.soldermask_margin) ?? 0 }))
+    .filter((p): p is { el: El; f: FormaRame; m: number } => p.f !== null);
+  const giaDetto = new Set<string>();
+  for (const t of setaTratti) {
+    const minX = Math.min(t.ax, t.bx) - t.r - 1;
+    const maxX = Math.max(t.ax, t.bx) + t.r + 1;
+    const minY = Math.min(t.ay, t.by) - t.r - 1;
+    const maxY = Math.max(t.ay, t.by) + t.r + 1;
+    for (const p of [...padSmd.filter((q) => String(q.el.layer ?? "top") === t.layer), ...foriPiazzola]) {
+      const b = ingombroForma(p.f);
+      if (b.maxX < minX || b.minX > maxX || b.maxY < minY || b.minY > maxY) continue;
+      if (distanzaSegmentoForma(p.f, t.ax, t.ay, t.bx, t.by) - t.r - p.m >= 0) continue;
+      const id = String(p.el.pcb_smtpad_id ?? p.el.pcb_plated_hole_id ?? "");
+      if (giaDetto.has(id)) continue;
+      giaDetto.add(id);
+      push("silk_over_copper", `serigrafia (${t.layer}) sopra la piazzola ${id}: spostala o tagliala`, { x: p.f.x, y: p.f.y });
+    }
+    for (const v of soloVie) {
+      if (v.anello === null || v.x < minX || v.x > maxX || v.y < minY || v.y > maxY) continue;
+      if (pointSegDistance(v.x, v.y, t.ax, t.ay, t.bx, t.by) - t.r - v.anello / 2 >= 0) continue;
+      const id = `via:${v.x.toFixed(3)},${v.y.toFixed(3)}`;
+      if (giaDetto.has(id)) continue;
+      giaDetto.add(id);
+      push(
+        "silk_over_copper",
+        `serigrafia (${t.layer}) sopra l'anello della via (${v.x.toFixed(3)}, ${v.y.toFixed(3)}): sposta la scritta o la via, o interrompi il tratto`,
+        { x: v.x, y: v.y },
+      );
+    }
+  }
+
+  /*
+   * --- 4.f UNDER THE HEAD OF A SCREW (Niccolo', 07/11/2026, BIRDY_BAT_BS V1.2: the two 2.4 mm mounting holes, not plated,
+   * had the ground pour 0.25 mm from the drill on three layers and a ground via under the head; "questo e' grave"). A hole
+   * of at least 2 mm is a mounting hole and the head of its screw (4.5 mm for the boards' screws, plus 0.25 a side) presses
+   * on the board: the mask wears through and the screw touches whatever copper is under it. On a hole that is NOT plated
+   * nothing may be under the head, on any layer: no pour, no trace, no pad, no via, and no silkscreen (the head would sit
+   * on it). On a PLATED hole the copper of the hole's own net is the point (a ground ring for the screw), so only the
+   * copper of other nets on the outer layers, the vias of other nets and the silkscreen count.
+   */
+  const TESTA_VITE_MM = 2.25 + 0.25;
+  const FORO_VITE_MM = 2.0;
+  const pourVite = readPours(circuitJson);
+  const distanzaDaColata = (pour: ReturnType<typeof readPours>[number], x: number, y: number): number => {
+    if (insidePour(x, y, pour)) return 0;
+    let d = Infinity;
+    for (const ring of [pour.outer, ...pour.holes]) {
+      for (let k = 0; k < ring.length; k++) {
+        const a = ring[k];
+        const b = ring[(k + 1) % ring.length];
+        d = Math.min(d, pointSegDistance(x, y, a.x, a.y, b.x, b.y));
+      }
+    }
+    return d;
+  };
+  for (const el of circuitJson) {
+    const metallizzato = el.type === "pcb_plated_hole";
+    if (!metallizzato && el.type !== "pcb_hole") continue;
+    const x = num(el.x);
+    const y = num(el.y);
+    const d = num(el.hole_diameter) ?? Math.max(num(el.hole_width) ?? 0, num(el.hole_height) ?? 0);
+    if (x === null || y === null || d === null || d < FORO_VITE_MM - TOLLERANZA_MM) continue;
+    const gruppoForo = metallizzato ? groupOfPcbPort(el.pcb_port_id) : null;
+    const conta = (layer: string, gruppo: string | null): boolean =>
+      !metallizzato || ((layer === "top" || layer === "bottom") && (gruppo === null || gruppo !== gruppoForo));
+    const sotto: string[] = [];
+    for (const t of circuitJson) {
+      if (t.type !== "pcb_trace") continue;
+      const gruppo = groupOfTrace(t);
+      const w = num(t.width) ?? 0.15;
+      const pts = ((t.route as Array<Record<string, unknown>> | undefined) ?? []).filter((q) => num(q.x) !== null && num(q.y) !== null);
+      for (let k = 1; k < pts.length; k++) {
+        const layer = String(pts[k].layer ?? pts[k - 1].layer ?? "top");
+        if (String(pts[k - 1].layer ?? layer) !== layer || !conta(layer, gruppo)) continue;
+        const wk = num(pts[k].width) ?? w;
+        if (pointSegDistance(x, y, num(pts[k - 1].x)!, num(pts[k - 1].y)!, num(pts[k].x)!, num(pts[k].y)!) - wk / 2 < TESTA_VITE_MM - TOLLERANZA_MM) {
+          sotto.push(`pista (${layer})`);
+          break;
+        }
+      }
+    }
+    for (const v of soloVie) {
+      if (v.anello === null || (metallizzato && v.gruppo !== null && v.gruppo === gruppoForo)) continue;
+      if (Math.hypot(v.x - x, v.y - y) - v.anello / 2 < TESTA_VITE_MM - TOLLERANZA_MM) sotto.push(`via (${v.x.toFixed(3)}, ${v.y.toFixed(3)})`);
+    }
+    for (const p of padSmd) {
+      const layer = String(p.el.layer ?? "top");
+      if (!conta(layer, groupOfPcbPort(p.el.pcb_port_id))) continue;
+      if (distanzaPuntoForma(p.f, x, y) < TESTA_VITE_MM - TOLLERANZA_MM) sotto.push(`piazzola ${String(p.el.pcb_smtpad_id ?? "")}`);
+    }
+    for (const pour of pourVite) {
+      if (!conta(pour.layer, gruppoDiRete.get(pour.net) ?? null)) continue;
+      const dp = distanzaDaColata(pour, x, y);
+      if (dp < TESTA_VITE_MM - TOLLERANZA_MM) sotto.push(`colata ${pour.layer} a ${dp.toFixed(2)}mm dal centro`);
+    }
+    if (setaTratti.some((t) => pointSegDistance(x, y, t.ax, t.ay, t.bx, t.by) - t.r < TESTA_VITE_MM - TOLLERANZA_MM)) sotto.push("serigrafia");
+    if (sotto.length === 0) continue;
+    push(
+      "screw_head_keepout",
+      `foro di fissaggio ${metallizzato ? "metallizzato" : "non metallizzato"} Ø${d}mm in (${x.toFixed(3)}, ${y.toFixed(3)}): sotto la testa ` +
+        `della vite (r ${TESTA_VITE_MM}mm) ${[...new Set(sotto)].slice(0, 6).join(", ")}${sotto.length > 6 ? ` e altri ${sotto.length - 6}` : ""}. ` +
+        (metallizzato ? "Solo rame della rete del foro sotto la testa" : "Niente rame su nessuno strato ne' serigrafia: colate che girano attorno, vie e scritte fuori"),
+      { x, y },
+    );
   }
 
   /*
