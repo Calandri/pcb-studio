@@ -17,51 +17,22 @@ export async function GET(req: Request): Promise<Response> {
   const { ok } = await requireProjectAccess(projectId, "view");
   if (!ok) return Response.json({ error: "forbidden" }, { status: 403 });
 
-  /*
-   * ?meta=1: solo i metadati della compilazione, senza circuitJson ne' summary.
-   * E' la risposta per il controllo periodico della pagina: sapere SE il
-   * compilato e' cambiato costa una riga, scaricarlo ogni cinque secondi
-   * costava qualche megabyte a botta. Il filesHash si ricalcola comunque per
-   * poter dire `stale`: e' il confronto ad avere senso, non la serializzazione.
-   */
-  if (url.searchParams.get("meta") === "1") {
-    const cache = await getCompileCache(projectId).catch(() => null);
-    if (!cache) return Response.json({ projectId, compile: null });
-    let stale = false;
-    try {
-      stale = cache.filesHash !== filesHash(await withLibrary(await getProject(projectId)));
-    } catch {
-      // se non si riesce a confrontare, meglio non gridare al lupo
-    }
-    return Response.json({
-      projectId,
-      compile: {
-        stale,
-        filesHash: cache.filesHash,
-        createdAt: cache.createdAt,
-        engineVersion: cache.engineVersion,
-        currentEngineVersion: CHECKS_ENGINE_VERSION,
-        checksStale: cache.engineVersion < CHECKS_ENGINE_VERSION,
-      },
-    });
-  }
-
   // ?circuit=1: also return the server-validated routed Circuit JSON so the
   // FE can render the exact routing the agent checked (no browser re-route)
   if (url.searchParams.get("circuit") === "1") {
     const cache = await getCompileCache(projectId).catch(() => null);
     /*
-     * "Vecchia" vuol dire: i file sono cambiati dopo l'ultima compilazione,
-     * quindi la scheda che si vede non e' quella che si sta scrivendo. Senza
-     * questo l'interfaccia mostrava serenamente un disegno superato e chi
-     * guardava pensava che la modifica non fosse stata presa.
+     * "Stale" means: the files changed after the last compilation, so the
+     * board you see is not the one you are writing. Without this, the UI
+     * happily showed an outdated drawing and the viewer thought the change
+     * had not been picked up.
      */
     let stale = false;
     if (cache) {
       try {
         stale = cache.filesHash !== filesHash(await withLibrary(await getProject(projectId)));
       } catch {
-        // se non si riesce a confrontare, meglio non gridare al lupo
+        // if we cannot compare, better not to cry wolf
       }
     }
     return Response.json({
@@ -75,7 +46,7 @@ export async function GET(req: Request): Promise<Response> {
             createdAt: cache.createdAt,
             engineVersion: cache.engineVersion,
             currentEngineVersion: CHECKS_ENGINE_VERSION,
-            // i controlli sono piu' nuovi della verifica: la scheda va ricontrollata
+            // the checks are newer than the verification: the board must be re-checked
             checksStale: cache.engineVersion < CHECKS_ENGINE_VERSION,
           }
         : null,

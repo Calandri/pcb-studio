@@ -3,27 +3,19 @@ import { currentViewer, projectAccess } from "@/lib/acl";
 import { describeComponent, listDescriptions } from "@/lib/component-descriptions";
 import { getAgentKeys } from "@/lib/llm-keys";
 import { listUserOrganizations } from "@/lib/org-store";
-import { countRecentRunsByIp } from "@/lib/project-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-/*
- * Ogni POST brucia un turno di modello: stesso freno dell'agente, stessa
- * finestra (un'ora per IP), soglia dedicata. Senza, un utente autenticato
- * poteva rigenerare descrizioni in loop a spese delle chiavi del server.
- */
-const MAX_DESCRIPTIONS_PER_IP_PER_HOUR = 30;
-
 /**
- * Descrizioni dei componenti scritte dal modello (datasheet + connessioni).
+ * Component descriptions written by the model (datasheet + connections).
  *
- * GET  ?projectId=...        le descrizioni gia' generate, le vedono tutti
- *                            quelli che possono vedere il progetto.
- * POST {projectId, component} genera (o rigenera) la descrizione di un
- *                            componente: costa un turno di modello, quindi
- *                            come per l'agente serve accesso in modifica e
- *                            si paga con le chiavi BYOK se ci sono.
+ * GET  ?projectId=...        the descriptions already generated, visible to
+ *                            everyone who can see the project.
+ * POST {projectId, component} generates (or regenerates) the description of
+ *                            a component: it costs a model turn, so
+ *                            like the agent it requires edit access and
+ *                            is paid for with BYOK keys when present.
  */
 
 const PostSchema = z.object({
@@ -61,15 +53,6 @@ export async function POST(req: Request): Promise<Response> {
     viewer.userId,
     orgs.map((o) => o.id),
   ).catch(() => ({}));
-
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
-  if ((await countRecentRunsByIp(ip).catch(() => 0)) >= MAX_DESCRIPTIONS_PER_IP_PER_HOUR) {
-    return Response.json(
-      { error: "rate limit superato: troppe descrizioni generate nell'ultima ora, riprova piu' tardi" },
-      { status: 429 },
-    );
-  }
 
   try {
     const result = await describeComponent(projectId, component, keys);

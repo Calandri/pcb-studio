@@ -78,8 +78,7 @@ const PROVIDERS: Provider[] = [
     call: async (pngB64) => {
       const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
       if (!apiKey) return err("gemini", "no key");
-      // policy del workspace: solo i 5 modelli consentiti, come in llm.ts
-      const model = process.env.GEMINI_VISION_MODEL ?? "gemini-3.5-flash";
+      const model = process.env.GEMINI_VISION_MODEL ?? "gemini-3.1-pro-preview";
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
